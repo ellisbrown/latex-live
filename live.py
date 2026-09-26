@@ -124,7 +124,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not name.endswith(".pdf") or os.path.basename(name) != name:
                 return self.send_error(404)
             pdf = pdf_path(self.server.paper_root, name)
-            doc_pdf = re.sub(r"-(clean|diff)\.pdf$", ".pdf", name)  # the document a derived PDF belongs to
+            doc_pdf = re.sub(r"(-head)?-(clean|diff|head)\.pdf$", ".pdf", name)  # the document a derived PDF belongs to
             if path.startswith("/status/"):
                 body = json.dumps(status(self.server, name)).encode()
             elif path.startswith("/outline/"):
@@ -215,8 +215,9 @@ def clean_file(paper_root, pdf_name, ext):
 
 
 def pdf_path(paper_root, name):
-    """Published <doc>.pdf in the paper root; derived <doc>-clean.pdf / <doc>-diff.pdf in build/."""
-    if re.search(r"-(clean|diff)\.pdf$", name):
+    """Published <doc>.pdf in the paper root; derived <doc>-clean.pdf / -diff.pdf / -head.pdf /
+    -head-clean.pdf in build/."""
+    if re.search(r"-(clean|diff|head)\.pdf$", name):
         return os.path.join(paper_root, BUILD, name)
     return os.path.join(paper_root, PUBLISH, name)
 
@@ -285,6 +286,7 @@ def status(server, pdf_name):
     clean_pdf = pdf_path(root, pdf_name[:-4] + "-clean.pdf")
     if server.page_limit and os.path.isfile(clean_pdf):
         info["clean"] = {"version": str(mtime(clean_pdf)), "refs": refs_start(root, pdf_name, clean=True)}
+    info["head"] = head_status(server, pdf_name)
     return info
 
 
@@ -697,13 +699,18 @@ def file_hash(path, cache={}):
 
 
 def graphics(paper_root, pdf_name):
-    """The graphics the build included: [{file, hash, src, line}] (src:line is the \\includegraphics).
-    The viewer compares hashes across rebuilds to mark figures whose files changed."""
+    """The graphics the build included: [{file, hash, dirty, src, line}] (src:line is the
+    \\includegraphics; dirty: changed since HEAD, or untracked). The viewer compares hashes across
+    rebuilds to mark figures whose files changed, or marks the dirty ones against HEAD."""
+    git = ["git", "-C", paper_root]
+    dirty = set(subprocess.run(git + ["diff", "--name-only", "--relative", "HEAD"], capture_output=True, text=True).stdout.splitlines())
+    dirty |= set(subprocess.run(git + ["ls-files", "-o", "--exclude-standard"], capture_output=True, text=True).stdout.splitlines())
     found = []
     for path, (src, line) in include_sites(paper_root, pdf_name).items():
         if path.lower().endswith(GRAPHIC_EXTS):
             try:
-                found.append({"file": path, "hash": file_hash(os.path.join(paper_root, path)), "src": src, "line": line})
+                found.append({"file": path, "hash": file_hash(os.path.join(paper_root, path)), "dirty": path in dirty,
+                              "src": src, "line": line})
             except OSError:
                 pass
     return found
@@ -1298,6 +1305,88 @@ def build_diff(server, sha):
         server.diff = {**server.diff, "state": "failed", "time": time.strftime("%H:%M:%S"), "msg": str(e)[:300]}
 
 
+def head_status(server, pdf_name):
+    """The baseline the viewer diffs against to mark uncommitted changes: PDFs of the committed
+    document (build_head), rebuilt whenever HEAD moves. HEAD is checked every few seconds. The
+    versions appear once a build has finished; None outside git."""
+    root = server.paper_root
+    if time.monotonic() - server.head_checked > 3 and server.head_lock.acquire(blocking=False):
+        try:
+            server.head_checked = time.monotonic()
+            r = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True)
+            sha = r.stdout.strip() if r.returncode == 0 else None
+            h = server.head
+            if not sha:
+                server.head = {}
+            elif sha != h.get("sha") and h.get("state") != "running" and os.path.isfile(job_file(root, pdf_name, ".aux")):
+                server.head = {**h, "sha": sha, "state": "running", "msg": ""}
+                threading.Thread(target=build_head, args=(server, sha), daemon=True).start()
+        finally:
+            server.head_lock.release()
+    h = server.head
+    if not h:
+        return None
+    info = {"sha": h["sha"][:9], "state": h["state"], "msg": h.get("msg", "")}
+    if h.get("built"):
+        for key, name in (("version", "-head.pdf"), ("clean", "-head-clean.pdf")):
+            path = pdf_path(root, pdf_name[:-4] + name)
+            if os.path.isfile(path):
+                info[key] = str(mtime(path))
+    return info
+
+
+def build_head(server, sha):
+    """The document as committed at sha: build/<doc>-head.pdf, plus build/<doc>-head-clean.pdf
+    without notes (with --page-limit, as for the live build).
+
+    Like build_diff, only the .tex files come from git (`git archive` into build/head/src/).
+    Figures, styles and the bibliography resolve to the working tree's through TEXINPUTS, so the
+    diff shows text edits; the viewer marks changed figures itself. The live build's .aux/.bbl
+    seed the references: two passes with notes, then one without.
+    """
+    root = server.paper_root
+    doc = server.default_pdf[:-4]
+    out = os.path.join(root, BUILD, "head")
+    src = os.path.join(out, "src")
+    job = f"{doc}-head"
+    sys.path.insert(0, HERE)
+    import latex_report
+
+    def tex(jobname, source):
+        cmd = (f"{server.tex_exec} pdflatex -interaction=batchmode -output-directory='{out}' -jobname={jobname}"
+               f" '{source}' >/dev/null 2>&1")
+        subprocess.run(["sh", "-c", cmd], cwd=src, timeout=300, env={**os.environ, "TEXINPUTS": f"{src}:{root}:"})
+        return os.path.join(out, f"{jobname}.pdf")
+
+    try:
+        shutil.rmtree(out, ignore_errors=True)
+        os.makedirs(src)
+        archive = subprocess.Popen(["git", "-C", root, "archive", sha, "--", ":(glob)**/*.tex"], stdout=subprocess.PIPE)
+        subprocess.run(["tar", "-x", "-C", src], stdin=archive.stdout, check=True)
+        archive.wait()
+        if not os.path.isfile(os.path.join(src, f"{doc}.tex")):
+            raise RuntimeError(f"{doc}.tex is not in {sha[:9]}")
+        for ext in (".aux", ".bbl"):
+            if os.path.exists(job_file(root, server.default_pdf, ext)):
+                shutil.copyfile(job_file(root, server.default_pdf, ext), os.path.join(out, job + ext))
+        for _ in range(2):
+            pdf = tex(job, doc)
+        if not os.path.isfile(pdf):
+            raise RuntimeError(f"pdflatex produced no PDF; see {BUILD}/head/{job}.log")
+        clean_pdf = None
+        if server.page_limit:
+            for ext in (".aux", ".bbl", ".out", ".toc"):
+                if os.path.exists(os.path.join(out, job + ext)):
+                    shutil.copyfile(os.path.join(out, job + ext), os.path.join(out, f"{job}-clean{ext}"))
+            clean_pdf = tex(f"{job}-clean", f"{latex_report.NOTES_OFF}\\input{{{doc}}}")
+        os.replace(pdf, os.path.join(root, BUILD, f"{job}.pdf"))
+        if clean_pdf and os.path.isfile(clean_pdf):
+            os.replace(clean_pdf, os.path.join(root, BUILD, f"{job}-clean.pdf"))
+        server.head = {**server.head, "state": "done", "built": sha}
+    except Exception as e:  # reported in the viewer's tooltip; the previous baseline stays
+        server.head = {**server.head, "state": "failed", "msg": str(e)[:300]}
+
+
 def serve(paper_root, default_pdf, port, page_limit):
     for p in range(port, port + 10):  # a small range, for tunnels that forward only a few ports
         try:
@@ -1312,6 +1401,8 @@ def serve(paper_root, default_pdf, port, page_limit):
     server.default_pdf = default_pdf
     server.page_limit = page_limit
     server.diff = {}
+    server.head, server.head_checked, server.head_lock = {}, 0, threading.Lock()
+    server.tex_exec = ""  # main: the podman prefix, as for latexmk
     server.token = load_token()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
@@ -1401,7 +1492,7 @@ def main():
     if args.host_tex:
         print("=== latex-live: TeX from the host", flush=True)
     elif subprocess.run(["podman", "image", "exists", TEXLIVE_IMAGE]).returncode == 0:
-        env["LATEX_LIVE_EXEC"] = container_exec(os.path.realpath(os.getcwd()))
+        env["LATEX_LIVE_EXEC"] = server.tex_exec = container_exec(os.path.realpath(os.getcwd()))
         print("=== latex-live: TeX Live 2024 (podman)", flush=True)
     else:
         print(f"=== latex-live: {TEXLIVE_IMAGE} not pulled; using the host's TeX."

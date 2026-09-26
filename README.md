@@ -25,8 +25,10 @@ below makes it a general tool.
   expand it; click it to open the source.
 - **Page-limit badge.** Main-text pages against the venue limit, measured with
   and without notes.
-- **Change highlights.** A word-level diff of the text after each rebuild,
-  plus "figure updated" marks.
+- **Change highlights.** A word-level diff of the text against the last
+  commit (a PDF of `HEAD`'s `.tex` files, rebuilt when `HEAD` moves) or
+  against the previous build, plus outlines on changed figures. The toolbar
+  arrows (or `,` and `.`) step through them.
 - **Space hints (✂).** Marks short last lines and large blank gaps.
 - **Sidebar:**
   - an outline, with pages per section;

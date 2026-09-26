@@ -184,10 +184,11 @@
   </span>
   <button id="compare" title="latexdiff against a git commit (opens in a new tab)">Compare&hellip;</button>
   <span id="diffInfo" hidden></span>
-  <span id="changes" class="navgroup" hidden title="What changed in the last build: text in green (red bars mark deletions), regenerated figures outlined">
+  <span id="changes" class="navgroup" hidden title="What changed, against the last commit or the previous build: text in green (red bars mark deletions), changed figures outlined">
     <span id="changeCount"></span>
-    <button id="prevChange" title="Previous change">&lsaquo;</button>
-    <button id="nextChange" title="Next change">&rsaquo;</button>
+    <button id="changeBase"></button>
+    <button id="prevChange" title="Previous change (,)">&lsaquo;</button>
+    <button id="nextChange" title="Next change (.)">&rsaquo;</button>
     <button id="clearChanges" title="Clear the highlights">&#10005;</button>
   </span>
   <span id="spacer"></span>
@@ -387,6 +388,7 @@ window.addEventListener("keydown", (e) => {
   else if ((e.altKey && e.key === "ArrowLeft") || (e.metaKey && e.key === "[")) { e.preventDefault(); travel(back, ahead); }
   else if ((e.altKey && e.key === "ArrowRight") || (e.metaKey && e.key === "]")) { e.preventDefault(); travel(ahead, back); }
   else if (e.key === "Escape") { hidePreview(); $("comparePanel").hidden = true; }
+  else if (!mod && !e.altKey && (e.key === "." || e.key === ",")) { e.preventDefault(); goToChange(e.key === "." ? 1 : -1); }
 });
 
 // Trackpad pinch (Chromium reports it as ctrl+wheel) and ctrl/cmd+scroll zoom the PDF around the
@@ -1093,18 +1095,53 @@ async function docWords(d) {
 }
 // Myers diff of string arrays: {inserted: indices into b, deletedAt: indices into b before which
 // words of a were removed}, or null when there are too many changes to show usefully.
-function diffWords(a, b) {
+// Words: {inserted: indices into b, deletedAt: indices into b before which words of a went}.
+// Myers' diff; one too large for it (many edits against HEAD) is split at anchors (words that
+// occur once in each, in the same order) and diffed piece by piece.
+function diffWords(a, b, depth = 0) {
   let s = 0;
   while (s < a.length && s < b.length && a[s] === b[s]) s++;
   let ea = a.length, eb = b.length;
   while (ea > s && eb > s && a[ea - 1] === b[eb - 1]) { ea--; eb--; }
-  const A = a.slice(s, ea), B = b.slice(s, eb), N = A.length, M = B.length;
+  const A = a.slice(s, ea), B = b.slice(s, eb);
+  const r = myers(A, B) || (depth < 3 && byAnchors(A, B, depth)) || replaced(A, B);
+  return { inserted: r.inserted.map((j) => s + j), deletedAt: [...new Set(r.deletedAt)].map((j) => s + j) };
+}
+function replaced(A, B) { // no alignment found: all of B is new
+  return { inserted: B.map((_, j) => j), deletedAt: A.length ? [0] : [] };
+}
+function byAnchors(A, B, depth) {
+  const count = (xs) => xs.reduce((m, x) => m.set(x, (m.get(x) || 0) + 1), new Map());
+  const ca = count(A), cb = count(B), inB = new Map();
+  B.forEach((x, j) => { if (ca.get(x) === 1 && cb.get(x) === 1) inB.set(x, j); });
+  const pairs = [];
+  A.forEach((x, i) => { if (inB.has(x)) pairs.push([i, inB.get(x)]); });
+  // The longest run of pairs increasing in B too (patience sorting).
+  const tails = [], prev = [];
+  pairs.forEach(([, j], p) => {
+    let lo = 0, hi = tails.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (pairs[tails[mid]][1] < j) lo = mid + 1; else hi = mid; }
+    prev[p] = lo ? tails[lo - 1] : -1;
+    tails[lo] = p;
+  });
+  if (!tails.length) return null;
+  const anchors = [];
+  for (let p = tails.at(-1); p >= 0; p = prev[p]) anchors.push(pairs[p]);
+  anchors.reverse().push([A.length, B.length]);
   const inserted = [], deletedAt = [];
-  if (!N || !M) {
-    for (let j = 0; j < M; j++) inserted.push(s + j);
-    if (N) deletedAt.push(s);
-    return { inserted, deletedAt };
+  let i0 = 0, j0 = 0;
+  for (const [i, j] of anchors) {
+    const r = diffWords(A.slice(i0, i), B.slice(j0, j), depth + 1);
+    inserted.push(...r.inserted.map((k) => j0 + k));
+    deletedAt.push(...r.deletedAt.map((k) => j0 + k));
+    i0 = i + 1; j0 = j + 1;
   }
+  return { inserted, deletedAt };
+}
+function myers(A, B) {
+  const N = A.length, M = B.length;
+  const inserted = [], deletedAt = [];
+  if (!N || !M) return replaced(A, B);
   const LIMIT = 3000, off = LIMIT + 2, trace = [];
   const v = new Int32Array(2 * off + 1);
   let D = -1;
@@ -1126,14 +1163,14 @@ function diffWords(a, b) {
     const prevK = k === -d || (k !== d && at(k - 1) < at(k + 1)) ? k + 1 : k - 1;
     const prevX = at(prevK), prevY = prevX - prevK;
     while (x > prevX && y > prevY) { x--; y--; }
-    if (x === prevX) inserted.push(s + prevY); // B[prevY] was inserted
-    else deletedAt.push(s + y);                // A[prevX] was deleted before B[y]
+    if (x === prevX) inserted.push(prevY); // B[prevY] was inserted
+    else deletedAt.push(y);                // A[prevX] was deleted before B[y]
     x = prevX; y = prevY;
   }
   return { inserted: inserted.reverse(), deletedAt: [...new Set(deletedAt)].reverse() };
 }
 let changeList = [], changeIndex = -1;
-function showChanges(oldWords, newWords, figures = []) {
+function showChanges(oldWords, newWords, figures, againstHead) {
   marks.changes.clear();
   changeList = [];
   changeIndex = -1;
@@ -1142,16 +1179,70 @@ function showChanges(oldWords, newWords, figures = []) {
   if (result) textChanges(result, newWords, add);
   const texts = changeList.length;
   for (const f of figures) {
-    add(f.page, { rect: f.rect, cls: "chg fig", label: "figure updated" });
+    add(f.page, { rect: f.rect, cls: "chg fig", label: againstHead ? "figure changed since the commit" : "figure updated" });
     changeList.push({ page: f.page, rect: f.rect });
   }
   changeList.sort((a, b) => a.page - b.page || b.rect[3] - a.rect[3]);
-  const many = oldWords && !result;
   const figs = figures.length ? `${figures.length} figure${figures.length === 1 ? "" : "s"}` : "";
-  $("changes").hidden = !many && !changeList.length;
-  $("changeCount").textContent = [many ? "many changes" : texts ? `${texts} change${texts === 1 ? "" : "s"}` : "", figs].filter(Boolean).join(" · ");
+  // In a git checkout the group stays, to switch baselines (and to say there are no changes).
+  $("changes").hidden = !changeList.length && !headInfo;
+  $("changeCount").textContent = [texts || !figs ? `${texts} change${texts === 1 ? "" : "s"}` : "", figs].filter(Boolean).join(" · ");
   drawAllMarks();
 }
+
+// The baseline for the change highlights: the last commit ("head": build/<doc>-head[-clean].pdf,
+// built by the server whenever HEAD moves) or the previous build ("build"). Until the HEAD
+// baseline exists (or outside git), the previous build.
+let changeBase = localStorage.getItem("latex-live:changeBase") === "build" ? "build" : "head";
+let headInfo = null;       // status().head
+let prevBuildWords = null; // words of the build shown before this one (same variant)
+let figuresPromise = null; // {build, head}: changed figures of the shown PDF
+let docSeq = 0, changesKey = null, baseCache = null;
+function headBase() {
+  const version = shownVariant === "clean" ? headInfo?.clean : headInfo?.version;
+  if (changeBase !== "head" || !version) return null;
+  const name = docFile.replace(/\.pdf$/, shownVariant === "clean" ? "-head-clean.pdf" : "-head.pdf");
+  return { key: `head:${name}:${version}`, name, version };
+}
+function baseWords(head) {
+  if (baseCache?.key !== head.key) {
+    baseCache = { key: head.key, promise: pdfjsLib.getDocument({ url: `pdf/${encodeURIComponent(head.name)}?v=${head.version}`, ...assets }).promise
+      .then(async (d) => { try { return await docWords(d); } finally { d.destroy(); } }) };
+  }
+  return baseCache.promise;
+}
+async function updateChanges() {
+  if (isDiff || !wordsPromise) return;
+  const head = headBase();
+  const key = `${head ? head.key : "build"}|${docSeq}`;
+  showBase(head);
+  if (key === changesKey) return;
+  changesKey = key;
+  try {
+    const [words, figs, base] = await Promise.all([wordsPromise, figuresPromise, head ? baseWords(head) : prevBuildWords]);
+    if (key === changesKey) showChanges(base, words, head ? figs.head : figs.build, !!head);
+  } catch (e) {
+    console.warn(e);
+    if (key === changesKey) changesKey = null; // try again on the next poll
+  }
+}
+function showBase(head) {
+  const b = $("changeBase");
+  b.hidden = !headInfo;
+  if (!headInfo) return;
+  const pending = changeBase === "head" && !head;
+  b.textContent = changeBase === "head" ? (pending ? "vs HEAD…" : "vs HEAD") : "vs last build";
+  b.title = (changeBase === "head"
+    ? (pending ? (headInfo.state === "failed" ? `The HEAD build failed (${headInfo.msg}); showing changes since the last build.`
+                                              : `Building the HEAD (${headInfo.sha}) baseline; showing changes since the last build meanwhile.`)
+               : `Changes since the last commit (${headInfo.sha}).`)
+    : "Changes since the previous build.") + " Click to switch.";
+}
+$("changeBase").onclick = () => {
+  changeBase = changeBase === "head" ? "build" : "head";
+  localStorage.setItem("latex-live:changeBase", changeBase);
+  updateChanges();
+};
 function textChanges(result, newWords, add) {
   // Group inserted words into runs (small gaps allowed), each run one change; deletions next to a
   // run belong to it, others are changes of their own.
@@ -1189,23 +1280,25 @@ function textChanges(result, newWords, add) {
   }
 }
 
-// Regenerated figures: the text diff can't see them, so compare the included graphics files'
-// hashes between builds and outline the changed ones (placed by SyncTeX at their \includegraphics).
+// Changed figures: the text diff can't see them, so compare the included graphics files' hashes
+// between builds, and ask git which differ from HEAD. Outlined, placed by SyncTeX at their
+// \includegraphics: {build, head}, one list per baseline.
 let graphicsHashes = null;
 async function changedFigures(d, variant) {
   const list = await (await fetch(`graphics/${encodeURIComponent(file)}`)).json();
   const before = graphicsHashes;
   graphicsHashes = new Map(list.map((g) => [g.file, g.hash]));
-  if (!before) return [];
-  const found = [];
-  for (const g of list.filter((g) => before.get(g.file) !== g.hash)) {
+  const build = before ? list.filter((g) => before.get(g.file) !== g.hash) : [], head = list.filter((g) => g.dirty);
+  const found = new Map();
+  for (const g of new Set([...build, ...head])) {
     const r = await fetch(`forward?${new URLSearchParams({ file: g.src, line: g.line, ...(variant === "clean" ? { clean: 1 } : {}) })}`);
     if (!r.ok) continue;
     const t = await r.json();
     const [, , W, H] = (await d.getPage(t.page)).view;
-    found.push({ page: t.page, file: g.file, rect: [Math.max(0, t.x), H - t.y - t.h, Math.min(W, t.x + t.w), H - t.y] });
+    found.set(g, { page: t.page, file: g.file, rect: [Math.max(0, t.x), H - t.y - t.h, Math.min(W, t.x + t.w), H - t.y] });
   }
-  return found;
+  const placed = (gs) => gs.map((g) => found.get(g)).filter(Boolean);
+  return { build: placed(build), head: placed(head) };
 }
 function goToChange(step) {
   if (!changeList.length) return;
@@ -1494,10 +1587,12 @@ async function load(name, version, variant, info) {
   $("count").textContent = next.numPages;
   setStatus(`updated ${new Date().toLocaleTimeString()}`, "fresh");
   setTimeout(() => $("status").classList.remove("fresh"), 1500);
+  prevBuildWords = oldWords || null;
   wordsPromise = docWords(next);
-  const figures = isDiff ? [] : changedFigures(next, variant).catch((e) => { console.warn(e); return []; });
-  Promise.all([wordsPromise, figures]).then(([words, figs]) => { showUnresolved(words); showChanges(oldWords, words, figs); })
-    .catch((e) => console.warn(e));
+  figuresPromise = isDiff ? null : changedFigures(next, variant).catch((e) => { console.warn(e); return { build: [], head: [] }; });
+  docSeq++;
+  wordsPromise.then(showUnresolved).catch((e) => console.warn(e));
+  updateChanges();
   renderOutline().catch(() => {});
   if (!isDiff) loadNotes().catch(() => {});
   if (!isDiff && variant === "clean") loadMargin(next).catch((e) => { console.warn(e); setGutter(false); });
@@ -1528,6 +1623,7 @@ async function poll() {
     else if ($("status").className === "busy") setStatus(info.build?.ok === false ? "build failed" : "", info.build?.ok === false ? "error" : "");
     if (!info.version) return info.building || setStatus(`waiting for ${file}…`);
     buildVersion = info.version;
+    headInfo = info.head || null;
     $("notesView").hidden = isDiff || !info.clean?.version;
     const clean = !isDiff && view === "clean" && info.clean?.version ? info.clean : null;
     const want = clean ? `clean:${clean.version}` : info.version;
@@ -1536,6 +1632,7 @@ async function poll() {
       await load(clean ? cleanFile : file, clean ? clean.version : info.version, clean ? "clean" : "notes", info);
       shown = want;
     }
+    updateChanges();
     if (info.pageLimit && !measuring) { // the page count of the build that is not on screen
       if (shownVariant === "notes" && info.clean?.refs && info.clean.version !== cleanShown) measureVariant("clean", info);
       else if (shownVariant === "clean" && info.refs && info.version !== notesShown) measureVariant("notes", info);
