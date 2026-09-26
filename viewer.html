@@ -43,6 +43,8 @@
   #status.fresh { color: #8f8; opacity: 1; }
   #status.busy { color: #fd6; opacity: 1; }
   #status.error { color: #f88; opacity: 1; }
+  #texImage { color: #fd6; cursor: help; }
+  #texImage[hidden] { display: none; }
   #banner { position: fixed; top: 32px; right: 12px; z-index: 10; max-width: 60%; padding: 8px 30px 8px 12px;
             background: #5c1f1f; color: #fee; border-radius: 0 0 6px 6px; box-shadow: 0 2px 8px #0008; }
   #banner[hidden] { display: none; }
@@ -192,6 +194,7 @@
     <button id="clearChanges" title="Clear the highlights">&#10005;</button>
   </span>
   <span id="spacer"></span>
+  <span id="texImage" hidden>&#9888; TeX image missing</span>
   <span id="pages"></span>
   <span id="status">loading&hellip;</span>
 </div>
@@ -1619,6 +1622,8 @@ async function poll() {
     const info = await r.json();
     showBuild(info.building ? null : info.build);
     showDiffInfo(info.diff);
+    $("texImage").hidden = !info.texImage; // builds fall back to the host's TeX; SyncTeX may not work
+    $("texImage").title = info.texImage || "";
     if (info.building) setStatus(isDiff ? "building diff…" : "building…", "busy");
     else if ($("status").className === "busy") setStatus(info.build?.ok === false ? "build failed" : "", info.build?.ok === false ? "error" : "");
     if (!info.version) return info.building || setStatus(`waiting for ${file}…`);

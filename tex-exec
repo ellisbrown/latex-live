@@ -1,0 +1,16 @@
+#!/bin/sh
+# tex-exec IMAGE PAPER_ROOT TOOL [ARGS...]: run a TeX tool in the TeX Live image, at the same paths
+# as on the host (live.py sets LATEX_LIVE_EXEC to this). The image is checked on every call (~30 ms):
+# while it is missing, the host's TeX runs instead, and the image is used again once it is pulled.
+#
+# Rootless podman maps container root to the caller, so outputs stay owned by us. latexmk passes
+# BIBINPUTS/BSTINPUTS/TEXINPUTS through the environment when it runs bibtex from build/; forward
+# them (unset ones are skipped), plus max_print_line (unwrapped log lines, for latex_report.py).
+image=$1 root=$2
+shift 2
+if podman image exists "$image"; then
+    exec podman run --rm --init --pull=never --network=none --security-opt label=disable \
+        -v "$root:$root" -w "$(pwd -P)" -e BIBINPUTS -e BSTINPUTS -e TEXINPUTS -e max_print_line "$image" "$@"
+fi
+echo "=== latex-live: $image is not pulled (to fix: podman pull $image); using the host's $1" >&2
+exec "$@"

@@ -57,6 +57,7 @@ import urllib.parse
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 TEXLIVE_IMAGE = "docker.io/minidocks/texlive:2024-full"
+IMAGE_MISSING = f"{TEXLIVE_IMAGE} is not pulled (to fix: podman pull {TEXLIVE_IMAGE})"
 # Build directory, relative to the paper root (--build-dir; LATEX_LIVE_BUILD for latexmkrc,
 # latex_report.py, and forward.py). With a non-default one, <doc>.pdf is published there too,
 # so a second instance can run beside the usual build without touching its files.
@@ -184,6 +185,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
+def image_pulled():
+    """Whether the TeX Live image is present (~30 ms). Checked per use, not once: it can be removed
+    (e.g. by a cleanup job) or pulled while the server runs."""
+    return subprocess.run(["podman", "image", "exists", TEXLIVE_IMAGE]).returncode == 0
+
+
+def synctex_unavailable():
+    """IMAGE_MISSING when SyncTeX needs the image (no host synctex) and it is missing, else None."""
+    return None if shutil.which("synctex") or image_pulled() else IMAGE_MISSING
+
+
+def image_problem(server):
+    """IMAGE_MISSING for the viewer while builds or SyncTeX need the image and it is missing, else
+    None; checked at most every 5 s (the viewer polls twice a second)."""
+    if not server.tex_exec and shutil.which("synctex"):
+        return None
+    if time.time() - server.image_checked > 5:
+        server.image_checked, server.image_ok = time.time(), image_pulled()
+    return None if server.image_ok else IMAGE_MISSING
+
+
 def run_synctex(paper_root, *args):
     """Run `synctex <args>` and return its result records (dicts of the Key:value lines).
 
@@ -287,6 +309,7 @@ def status(server, pdf_name):
     if server.page_limit and os.path.isfile(clean_pdf):
         info["clean"] = {"version": str(mtime(clean_pdf)), "refs": refs_start(root, pdf_name, clean=True)}
     info["head"] = head_status(server, pdf_name)
+    info["texImage"] = image_problem(server)
     return info
 
 
@@ -430,7 +453,11 @@ def forward_request(paper_root, query):
     if not src.startswith(os.path.realpath(paper_root) + os.sep):
         return 404, {"error": "not a file in the paper"}
     found = forward_target(paper_root, src, line, clean=query.get("clean") == ["1"])
-    return (200, found[1]) if found else (404, {"error": f"{query['file'][0]}:{line} is not in the PDF"})
+    if found:
+        return 200, found[1]
+    if missing := synctex_unavailable():
+        return 503, {"error": missing}
+    return 404, {"error": f"{query['file'][0]}:{line} is not in the PDF"}
 
 
 def project_tex_files(paper_root, fls):
@@ -1217,7 +1244,8 @@ def synctex_edit(paper_root, query):
         return 404, f"no {os.path.relpath(pdf, paper_root)} yet"
     result = next((r for r in run_synctex(paper_root, "edit", "-o", f"{page}:{x:.2f}:{y:.2f}:{pdf}") if "Input" in r), {})
     if "Input" not in result:
-        return 404, "no source location here"
+        missing = synctex_unavailable()
+        return (503, missing) if missing else (404, "no source location here")
     src, line = os.path.normpath(result["Input"]), max(1, int(result["Line"]))
     if src.startswith(os.path.join(paper_root, BUILD) + os.sep):  # generated, e.g. the table of contents
         return 404, f"generated text ({os.path.basename(src)}); no source line"
@@ -1279,8 +1307,7 @@ def build_diff(server, sha):
             if os.path.isfile(os.path.join(root, rel_path)):
                 os.makedirs(os.path.dirname(os.path.join(new, rel_path)), exist_ok=True)
                 shutil.copyfile(os.path.join(root, rel_path), os.path.join(new, rel_path))
-        image = subprocess.run(["podman", "image", "exists", TEXLIVE_IMAGE]).returncode == 0
-        exec_ = container_argv(root) if image else []  # else the host's, if it has latexdiff
+        exec_ = container_argv(root) if image_pulled() else []  # else the host's, if it has latexdiff
         r = run([*exec_, "latexdiff", "--flatten", "--type=UNDERLINE", "--math-markup=coarse",
                  "--config", "PICTUREENV=(?:picture|DIFnomarkup|tikzpicture|NiceTabular|tabular)[\\w\\d*@]*",
                  os.path.join(old, f"{doc}.tex"), os.path.join(new, f"{doc}.tex")], timeout=300)
@@ -1402,7 +1429,8 @@ def serve(paper_root, default_pdf, port, page_limit):
     server.page_limit = page_limit
     server.diff = {}
     server.head, server.head_checked, server.head_lock = {}, 0, threading.Lock()
-    server.tex_exec = ""  # main: the podman prefix, as for latexmk
+    server.tex_exec = ""  # main: the tex-exec prefix, as for latexmk
+    server.image_checked, server.image_ok = 0, True
     server.token = load_token()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
@@ -1419,22 +1447,15 @@ def open_in_editor(pdf):
 
 
 def container_argv(paper_root):
-    """container_exec as an argument list (for subprocess, with cwd = paper root)."""
+    """Argument list that runs a tool in the TeX Live image (for subprocess, with cwd = paper root)."""
     return ["podman", "run", "--rm", "--init", "--pull=never", "--network=none", "--security-opt", "label=disable",
             "-v", f"{paper_root}:{paper_root}", "-w", os.path.realpath(paper_root), "-e", "max_print_line", TEXLIVE_IMAGE]
 
 
 def container_exec(paper_root):
-    """Command prefix that runs a TeX tool in the TeX Live image, at the same paths as on the host.
-
-    Rootless podman maps container root to the caller, so outputs stay owned by us.
-    latexmk passes BIBINPUTS/BSTINPUTS/TEXINPUTS through the environment when it
-    runs bibtex from build/; forward them (unset ones are skipped), plus
-    max_print_line (unwrapped log lines, for latex_report.py).
-    """
-    return (f"podman run --rm --init --pull=never --network=none --security-opt label=disable "
-            f"-v '{paper_root}:{paper_root}' -w \"$(pwd -P)\" "
-            f"-e BIBINPUTS -e BSTINPUTS -e TEXINPUTS -e max_print_line {TEXLIVE_IMAGE}")
+    """Command prefix that runs a TeX tool in the TeX Live image (see tex-exec), or on the host
+    while the image is missing."""
+    return f"'{os.path.join(HERE, 'tex-exec')}' {TEXLIVE_IMAGE} '{paper_root}'"
 
 
 def print_urls(port):
@@ -1491,12 +1512,10 @@ def main():
         env["LATEX_LIVE_NOTES_FREE"] = "1"  # latex_report.py: also build without the notes, to measure
     if args.host_tex:
         print("=== latex-live: TeX from the host", flush=True)
-    elif subprocess.run(["podman", "image", "exists", TEXLIVE_IMAGE]).returncode == 0:
-        env["LATEX_LIVE_EXEC"] = server.tex_exec = container_exec(os.path.realpath(os.getcwd()))
-        print("=== latex-live: TeX Live 2024 (podman)", flush=True)
     else:
-        print(f"=== latex-live: {TEXLIVE_IMAGE} not pulled; using the host's TeX."
-              f" To fix: podman pull {TEXLIVE_IMAGE}", flush=True)
+        env["LATEX_LIVE_EXEC"] = server.tex_exec = container_exec(os.path.realpath(os.getcwd()))
+        print("=== latex-live: TeX Live 2024 (podman)" if image_pulled()
+              else f"=== latex-live: {IMAGE_MISSING}; until then, the host's TeX runs", flush=True)
     # PR_SET_PDEATHSIG: latexmk gets SIGTERM if this process dies, however it dies.
     latexmk = subprocess.Popen(
         ["latexmk", "-r", os.path.join(HERE, "latexmkrc"), "-pvc", f"-jobname={doc}-live", doc],

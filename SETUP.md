@@ -45,9 +45,10 @@ The path `~/.local/share/latex-live` matches the task file in step 4. Any
 other path works if the task file points to it.
 
 pdflatex, bibtex, synctex and latexdiff run in that TeX Live 2024 image, which
-is close to Overleaf. latexmk runs on the host. If the image is missing at
-startup, latex-live says so and falls back to the TeX installed on the host,
-if there is one.
+is close to Overleaf. latexmk runs on the host. latex-live checks for the
+image on each call. While it is missing, builds use the TeX installed on the
+host, if there is one, and the viewer shows ⚠ TeX image missing. Once the image
+is pulled again, latex-live uses it with no restart.
 
 ## 3. First run from a terminal
 
@@ -179,7 +180,7 @@ open a pull request rather than pushing to `main`.
 
 | Symptom | Fix |
 | --- | --- |
-| `not pulled; using the host's TeX` at startup, or builds fail in odd ways | Pull the image (step 2), then restart the task. |
+| ⚠ TeX image missing in the viewer, `is not pulled` in the task output, or double-click does nothing | Pull the image (step 2). No restart is needed. If it disappears again, a cleanup job on the machine may be pruning podman images. |
 | `already running for <doc>.tex` | Another instance holds the lock, e.g. another VS Code window. It prints that instance's URL. |
 | 403 in the browser | Open the full URL with `?t=` once. The token is in `~/.local/share/latex-live/token`. |
 | Stopping the task leaves latexmk running | Your `python3` may be a wrapper that doesn't pass signals on. Use the interpreter itself, e.g. `/usr/bin/python3`. |
