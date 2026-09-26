@@ -1,0 +1,1563 @@
+<!doctype html>
+<!-- latex-live PDF viewer: reloads the PDF in place whenever live.py reports a new version;
+     double-click jumps VS Code to the source line (SyncTeX), and forward.py jumps here from a
+     source line. Also: build-status banner, page-limit check (with and without the inline
+     notes), search, back/forward, hover previews of references, highlights of what changed in
+     the last build (text and regenerated figures), a "where to cut" overlay, a switch to the
+     notes-free build (with the notes as bubbles in a margin, wired to where they sit), and a
+     sidebar with the outline (pages per section), page thumbnails, the notes, and a
+     pre-submission check. With file=<doc>-diff.pdf it shows a latexdiff built by
+     live.py. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>latex-live</title>
+<link rel="stylesheet" href="pdfjs/web/pdf_viewer.css">
+<style>
+  body { margin: 0; background: #525659; font: 13px system-ui, sans-serif; }
+  body.dark { background: #1e1e1e; }
+  body.dark #viewer .canvasWrapper, body.dark #preview canvas, body.dark .thumb canvas { filter: invert(0.88) hue-rotate(180deg); }
+  #bar { position: fixed; top: 0; left: 0; right: 0; height: 32px; z-index: 10; display: flex; gap: 6px;
+         align-items: center; padding: 0 10px; background: #323639; color: #eee; white-space: nowrap; }
+  #bar button { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 8px; cursor: pointer; }
+  #bar button:hover:not(:disabled) { background: #5b6164; }
+  #bar button:disabled { opacity: 0.35; cursor: default; }
+  #bar button.on { background: #2f6fb0; }
+  #bar input { background: #202124; color: #eee; border: 1px solid #555; }
+  #bar a { color: #9cf; }
+  #page { width: 3em; text-align: right; }
+  #zoom { min-width: 3.5em; text-align: center; }
+  #find { width: 11em; padding: 2px 4px; }
+  #findCount { min-width: 4em; opacity: 0.8; }
+  #findCount.none { color: #f88; opacity: 1; }
+  .gap { width: 10px; }
+  .navgroup { display: flex; gap: 3px; align-items: center; padding: 1px 3px 1px 7px; border-radius: 3px; }
+  #changes { background: #2c4a36; } #cutNav { background: #5a4220; }
+  #changes[hidden], #cutNav[hidden], #diffInfo[hidden], #compare[hidden], #notesView[hidden] { display: none; }
+  .navgroup button { padding: 1px 6px; }
+  #spacer { margin-left: auto; }
+  #pages { padding: 2px 6px; border-radius: 3px; }
+  #pages:empty { display: none; }
+  #pages.ok { background: #2d4a2d; } #pages.tight { background: #5a4a1a; } #pages.over { background: #6a2424; }
+  #status { opacity: 0.8; transition: color 0.3s; }
+  #status.fresh { color: #8f8; opacity: 1; }
+  #status.busy { color: #fd6; opacity: 1; }
+  #status.error { color: #f88; opacity: 1; }
+  #banner { position: fixed; top: 32px; right: 12px; z-index: 10; max-width: 60%; padding: 8px 30px 8px 12px;
+            background: #5c1f1f; color: #fee; border-radius: 0 0 6px 6px; box-shadow: 0 2px 8px #0008; }
+  #banner[hidden] { display: none; }
+  #banner a { color: #fcc; cursor: pointer; text-decoration: underline; }
+  #banner div { margin-top: 4px; font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; }
+  #banner .close { position: absolute; top: 4px; right: 8px; cursor: pointer; opacity: 0.7; }
+  #comparePanel { position: fixed; top: 32px; z-index: 11; width: 440px; max-height: 70vh; overflow: auto;
+                  background: #2a2d2f; color: #ddd; border-radius: 0 0 6px 6px; box-shadow: 0 4px 12px #000a; }
+  #comparePanel[hidden] { display: none; }
+  #comparePanel .head { padding: 8px 10px; opacity: 0.75; font-size: 12px; }
+  #comparePanel .commit { padding: 5px 10px; cursor: pointer; display: grid; grid-template-columns: 5.5em 7.5em 1fr; gap: 6px; }
+  #comparePanel .commit:hover { background: #3d4245; }
+  #comparePanel .commit span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #comparePanel .rev { font-family: ui-monospace, monospace; color: #9cf; }
+  #comparePanel .date { opacity: 0.6; }
+
+  /* Sidebar: outline, page thumbnails, notes, checks. */
+  #side { position: absolute; top: 32px; left: 0; bottom: 0; width: 290px; display: flex; flex-direction: column;
+          background: #2a2d2f; color: #ddd; box-sizing: border-box; }
+  #side[hidden] { display: none; }
+  #tabs { display: flex; border-bottom: 1px solid #3d4245; flex: none; }
+  #tabs button { flex: 1; background: none; color: #bbb; border: 0; border-bottom: 2px solid transparent;
+                 padding: 7px 2px 5px; cursor: pointer; font: inherit; }
+  #tabs button:hover { color: #fff; }
+  #tabs button.on { color: #fff; border-bottom-color: #4a90d9; }
+  #tabs button[hidden] { display: none; }
+  #tabs .n { font-size: 11px; opacity: 0.7; }
+  .panel { flex: 1; overflow: auto; padding: 6px 0; }
+  #side .panel[hidden] { display: none; }
+  .panel .empty { padding: 10px 14px; opacity: 0.6; }
+  body.side #viewerContainer { left: 290px; }
+  #outline ul { list-style: none; margin: 0; padding-left: 12px; }
+  #outline > ul { padding-left: 4px; }
+  #outline li > span { display: flex; gap: 6px; padding: 3px 8px; border-radius: 3px; cursor: pointer; white-space: nowrap; }
+  #outline .t { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  #outline .pp { flex: none; font-size: 11px; opacity: 0.55; font-variant-numeric: tabular-nums; }
+  #outline li > span:hover { background: #3d4245; }
+  #outline li.minor > span { font-size: 12px; opacity: 0.7; padding-top: 1px; padding-bottom: 1px; }
+  #thumbs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 8px; padding: 10px; align-content: start; }
+  .thumb { cursor: pointer; text-align: center; font-size: 11px; color: #aaa; }
+  .thumb .img { position: relative; background: #fff; box-shadow: 0 1px 3px #0008; outline: 2px solid transparent; overflow: hidden; }
+  .thumb canvas { display: block; width: 100%; height: 100%; }
+  .thumb.current .img { outline-color: #4a90d9; }
+  .thumb.current { color: #fff; }
+  .thumb .over { position: absolute; left: 0; right: 0; top: 0; background: rgba(220, 40, 40, 0.28); }
+  .thumb.last-allowed .img { box-shadow: 0 1px 3px #0008, 0 4px 0 -1px #e04040; }
+  .thumb .tag { color: #f88; }
+  #notes .filters, #checks .toolbar { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 10px 8px; align-items: center; }
+  .chip { border-radius: 10px; padding: 1px 8px; font-size: 11px; cursor: pointer; color: #111; font-weight: 600; user-select: none; }
+  .chip.off { opacity: 0.3; }
+  .note { padding: 6px 10px; cursor: pointer; border-top: 1px solid #33373a; }
+  .note:hover, .check li:hover { background: #3d4245; }
+  .note .text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin-top: 3px; }
+  .note .where, .check .where { font-size: 11px; color: #9cf; cursor: pointer; }
+  .note .where:hover, .check .where:hover { text-decoration: underline; }
+  .note .who { float: right; }
+  #checks button { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 8px; cursor: pointer; }
+  #checks .when { font-size: 11px; opacity: 0.6; }
+  .check { border-top: 1px solid #33373a; }
+  .check summary { padding: 6px 10px; cursor: pointer; list-style: none; display: grid; grid-template-columns: 1.4em 1fr; }
+  .check summary::-webkit-details-marker { display: none; }
+  .check .detail { grid-column: 2; font-size: 11px; opacity: 0.7; }
+  .check .icon.ok { color: #7c7; } .check .icon.info { color: #8bf; } .check .icon.warn { color: #fc5; } .check .icon.fail { color: #f77; }
+  .check ul { list-style: none; margin: 0 0 6px; padding: 0; }
+  .check li { padding: 3px 10px 3px 28px; font-size: 12px; cursor: pointer; word-break: break-word; }
+
+  #viewerContainer { position: absolute; top: 32px; left: 0; right: 0; bottom: 0; overflow: auto; }
+  .sync-flash { position: absolute; z-index: 5; pointer-events: none; border-radius: 3px;
+                background: rgba(255, 200, 0, 0.4); animation: sync-fade 2.5s ease-in forwards; }
+  .sync-flash.dot { border-radius: 50%; }
+  @keyframes sync-fade { 0%, 40% { opacity: 1; } 100% { opacity: 0; } }
+  /* Marks drawn over pages (in % of the page, so they follow zoom): changes and unresolved "??". */
+  .ll-marks { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+  .ll-marks div { position: absolute; border-radius: 2px; }
+  .ll-marks .chg { background: rgba(60, 200, 110, 0.22); box-shadow: -3px 0 0 rgba(40, 170, 90, 0.9); }
+  .ll-marks .del { background: rgba(230, 60, 60, 0.9); }
+  .ll-marks .unres { outline: 2px solid rgba(230, 40, 40, 0.9); background: rgba(230, 40, 40, 0.15); }
+  .ll-marks .chg.fig { background: rgba(60, 200, 110, 0.07); box-shadow: none; outline: 3px solid rgba(40, 170, 90, 0.9); outline-offset: 2px; }
+  .ll-marks .cut { background: repeating-linear-gradient(135deg, rgba(240, 140, 20, 0.3) 0 4px, transparent 4px 8px);
+                   outline: 1px dashed rgba(220, 120, 10, 0.85); }
+  .ll-marks [data-label]::after { content: attr(data-label); position: absolute; left: 100%; top: 50%; margin-left: 6px;
+                                  transform: translateY(-50%); padding: 0 5px; border-radius: 2px; white-space: nowrap;
+                                  font: 10px/15px system-ui, sans-serif; color: #fff; background: rgba(200, 110, 10, 0.95); }
+  .ll-marks .chg.fig[data-label]::after { left: -2px; top: -20px; margin: 0; transform: none; background: rgba(40, 170, 90, 0.95); }
+  /* Margin notes (notes-free view): bubbles in a gutter right of each page, wired to a caret
+     where the note sits in the text. Sized in screen pixels, so they stay readable at any zoom. */
+  #viewerContainer.gutter .pdfViewer { padding-right: 250px; }
+  .ll-margin { position: absolute; inset: 0; z-index: 6; pointer-events: none; }
+  .ll-margin svg { position: absolute; left: 0; top: 0; overflow: visible; }
+  .ll-margin path { fill: none; stroke-width: 1.2; stroke-dasharray: 2 2; opacity: 0.7; }
+  .ll-margin path.hot { stroke-width: 2; stroke-dasharray: none; opacity: 1; }
+  .ll-margin .caret { position: absolute; width: 2px; margin-left: -1px; border-radius: 1px; pointer-events: auto; cursor: pointer; }
+  .ll-margin .caret::before { content: ""; position: absolute; left: -3px; top: -3px; width: 8px; height: 4px;
+                              border-radius: 2px; background: inherit; }
+  .ll-margin .caret.hot { box-shadow: 0 0 0 3px rgba(255, 200, 0, 0.6); }
+  .ll-bubble { position: absolute; left: calc(100% + 16px); width: 214px; box-sizing: border-box; padding: 3px 7px 4px;
+               border-radius: 5px; border-left: 4px solid; background: #fcfcf7; color: #222; box-shadow: 0 1px 3px #0007;
+               font: 11px/1.35 system-ui, sans-serif; pointer-events: auto; cursor: pointer; }
+  .ll-bubble .text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+  .ll-bubble b { margin-right: 4px; }
+  .ll-bubble.hot { z-index: 2; box-shadow: 0 3px 12px #000b; outline: 2px solid rgba(255, 200, 0, 0.8); }
+  .ll-bubble.hot .text { -webkit-line-clamp: 30; }
+  body.dark .ll-bubble { background: #2e3134; color: #ddd; }
+  #marginBtn[hidden] { display: none; }
+  #preview { position: fixed; z-index: 20; background: #fff; border-radius: 4px; box-shadow: 0 4px 18px #000b;
+             padding: 6px; cursor: pointer; }
+  #preview[hidden] { display: none; }
+  body.dark #preview { background: #2b2b2b; }
+  #preview canvas { display: block; }
+  #preview .hint { font-size: 10px; color: #888; text-align: right; margin-top: 2px; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="toggleSide" title="Sidebar: outline, pages, notes, checks">&#9776;</button>
+  <button id="back" title="Back (Alt+&larr; or Cmd+[)" disabled>&larr;</button>
+  <button id="forward" title="Forward (Alt+&rarr; or Cmd+])" disabled>&rarr;</button>
+  <span class="gap"></span>
+  <button id="prev" title="Previous page">&lsaquo;</button>
+  <input id="page" value="1"> / <span id="count">&ndash;</span>
+  <button id="next" title="Next page">&rsaquo;</button>
+  <span class="gap"></span>
+  <button id="zoomOut" title="Zoom out (Ctrl -)">&minus;</button>
+  <span id="zoom"></span>
+  <button id="zoomIn" title="Zoom in (Ctrl +)">+</button>
+  <button id="fitWidth">Fit width</button>
+  <button id="fitPage">Fit page</button>
+  <span class="gap"></span>
+  <input id="find" placeholder="Search (Cmd+F)" title="Enter: next match, Shift+Enter: previous, Esc: clear">
+  <span id="findCount"></span>
+  <button id="dark" title="Dark mode (inverts the PDF)">&#9680;</button>
+  <button id="notesView" hidden>Notes</button>
+  <button id="marginBtn" hidden>&#128172;</button>
+  <button id="cut" title="Where to cut: short last lines of paragraphs and large empty gaps in the main text">&#9986;</button>
+  <span id="cutNav" class="navgroup" hidden title="Space to reclaim in the main text of the PDF as shown">
+    <span id="cutCount"></span>
+    <button id="prevCut" title="Previous spot">&lsaquo;</button>
+    <button id="nextCut" title="Next spot">&rsaquo;</button>
+  </span>
+  <button id="compare" title="latexdiff against a git commit (opens in a new tab)">Compare&hellip;</button>
+  <span id="diffInfo" hidden></span>
+  <span id="changes" class="navgroup" hidden title="What changed in the last build: text in green (red bars mark deletions), regenerated figures outlined">
+    <span id="changeCount"></span>
+    <button id="prevChange" title="Previous change">&lsaquo;</button>
+    <button id="nextChange" title="Next change">&rsaquo;</button>
+    <button id="clearChanges" title="Clear the highlights">&#10005;</button>
+  </span>
+  <span id="spacer"></span>
+  <span id="pages"></span>
+  <span id="status">loading&hellip;</span>
+</div>
+<div id="banner" hidden></div>
+<div id="comparePanel" hidden></div>
+<aside id="side" hidden>
+  <div id="tabs">
+    <button data-tab="outline">Outline</button>
+    <button data-tab="thumbs">Pages</button>
+    <button data-tab="notes">Notes <span class="n"></span></button>
+    <button data-tab="checks">Checks <span class="n"></span></button>
+  </div>
+  <nav id="outline" class="panel" hidden></nav>
+  <div id="thumbs" class="panel" hidden></div>
+  <div id="notes" class="panel" hidden></div>
+  <div id="checks" class="panel" hidden></div>
+</aside>
+<div id="viewerContainer"><div id="viewer" class="pdfViewer"></div></div>
+<div id="preview" hidden></div>
+
+<script type="module">
+import * as pdfjsLib from "./pdfjs/build/pdf.min.mjs";
+globalThis.pdfjsLib = pdfjsLib; // pdf_viewer.mjs reads the library from the global
+pdfjsLib.GlobalWorkerOptions.workerSrc = "./pdfjs/build/pdf.worker.min.mjs";
+const { EventBus, PDFViewer, PDFLinkService, PDFFindController, FindState, LinkTarget } =
+  await import("./pdfjs/web/pdf_viewer.mjs");
+
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, ...children) => { const e = Object.assign(document.createElement(tag), props); e.append(...children); return e; };
+const file = new URLSearchParams(location.search).get("file");
+const isDiff = file.endsWith("-diff.pdf");
+const docFile = file.replace(/-(clean|diff)\.pdf$/, ".pdf"); // the document a derived PDF belongs to
+const cleanFile = docFile.replace(/\.pdf$/, "-clean.pdf");
+// Which build to show: "notes" (the live build) or "clean" (the notes-free build, when there is one).
+let view = localStorage.getItem("latex-live:view") === "notes" ? "notes" : "clean"; // notes-free unless chosen otherwise
+let shownVariant = null; // the one on screen
+const viewKey = `latex-live:${file}`;
+document.title = isDiff ? `diff: ${docFile}` : file;
+
+const container = $("viewerContainer");
+const eventBus = new EventBus();
+const linkService = new PDFLinkService({ eventBus, externalLinkTarget: LinkTarget.BLANK });
+const findController = new PDFFindController({ eventBus, linkService });
+const viewer = new PDFViewer({ container, eventBus, linkService, findController });
+linkService.setViewer(viewer);
+
+// Scroll/zoom state survives PDF reloads, refreshing this tab, and restarting the browser.
+let restore = JSON.parse(localStorage.getItem(viewKey) || "null");
+const saveView = () => localStorage.setItem(viewKey, JSON.stringify(
+  { scale: viewer.currentScaleValue, top: container.scrollTop, left: container.scrollLeft }));
+container.addEventListener("scroll", saveView, { passive: true });
+
+let pagesReady = false, pendingForward = null;
+eventBus.on("pagesinit", () => {
+  viewer.currentScaleValue = restore?.scale ?? "page-width";
+  if (restore) { container.scrollTop = restore.top; container.scrollLeft = restore.left; }
+  pagesReady = true;
+  if (pendingForward) showForward(pendingForward); // arrived while this document was loading
+  pendingForward = null;
+});
+eventBus.on("pagechanging", (e) => { $("page").value = e.pageNumber; markCurrentThumb(e.pageNumber); });
+eventBus.on("scalechanging", (e) => { $("zoom").textContent = `${Math.round(e.scale * 100)}%`; saveView(); });
+
+const refit = () => {
+  const v = viewer.currentScaleValue;
+  if (isNaN(+v)) viewer.currentScaleValue = v; // re-fit named scales to the new size
+};
+const goToPage = (n) => { remember(); viewer.currentPageNumber = Math.min(viewer.pagesCount, Math.max(1, n)); };
+$("prev").onclick = () => { viewer.currentPageNumber = Math.max(1, viewer.currentPageNumber - 1); };
+$("next").onclick = () => { viewer.currentPageNumber = Math.min(viewer.pagesCount, viewer.currentPageNumber + 1); };
+$("page").onchange = (e) => { viewer.currentPageNumber = Math.min(viewer.pagesCount, Math.max(1, +e.target.value || 1)); };
+$("zoomIn").onclick = () => viewer.increaseScale();
+$("zoomOut").onclick = () => viewer.decreaseScale();
+$("fitWidth").onclick = () => { viewer.currentScaleValue = "page-width"; };
+$("fitPage").onclick = () => { viewer.currentScaleValue = "page-fit"; };
+window.addEventListener("resize", refit);
+
+// Dark mode, the sidebar, and its tab are remembered across sessions.
+function setToggle(name, on) {
+  document.body.classList.toggle(name, on);
+  localStorage.setItem(`latex-live:${name}`, on ? "1" : "");
+}
+$("dark").onclick = () => { setToggle("dark", !document.body.classList.contains("dark")); $("dark").classList.toggle("on"); };
+if (localStorage.getItem("latex-live:dark")) { document.body.classList.add("dark"); $("dark").classList.add("on"); }
+
+let tab = localStorage.getItem("latex-live:tab") || "outline";
+if (isDiff && (tab === "notes" || tab === "checks")) tab = "outline";
+for (const name of ["notes", "checks"]) document.querySelector(`#tabs [data-tab=${name}]`).hidden = isDiff;
+$("toggleSide").onclick = () => showSide($("side").hidden);
+for (const b of document.querySelectorAll("#tabs button")) b.onclick = () => showTab(b.dataset.tab);
+function showSide(on) {
+  $("side").hidden = !on;
+  $("toggleSide").classList.toggle("on", on);
+  setToggle("side", on);
+  refit();
+  if (on) showTab(tab);
+}
+function showTab(name) {
+  tab = name;
+  localStorage.setItem("latex-live:tab", name);
+  for (const b of document.querySelectorAll("#tabs button")) b.classList.toggle("on", b.dataset.tab === name);
+  for (const p of document.querySelectorAll(".panel")) p.hidden = p.id !== name;
+  refreshTab();
+}
+const sideOpen = (name) => !$("side").hidden && tab === name;
+function refreshTab() {
+  if (!doc) return;
+  if (sideOpen("thumbs")) renderThumbs();
+  if (sideOpen("checks") && checksVersion !== `${buildVersion}/${shown}`) runChecks();
+}
+
+// With/without the inline notes: switches the view to the notes-free build (what would be submitted).
+function showNotesButton() {
+  const b = $("notesView");
+  b.textContent = view === "notes" ? "Notes: on" : "Notes: off";
+  b.classList.toggle("on", view === "notes");
+  b.title = view === "notes" ? "Showing the inline notes; click to show the notes-free build (what you would submit)"
+                             : "Showing the notes-free build; click to show the inline notes";
+}
+$("notesView").onclick = () => {
+  view = view === "notes" ? "clean" : "notes";
+  localStorage.setItem("latex-live:view", view);
+  showNotesButton();
+  poll();
+};
+showNotesButton();
+
+// Back/forward after following a link (a \ref, a citation, the outline) or a forward search.
+// Positions are PDF coordinates, so they survive zoom changes and reloads.
+const back = [], ahead = [];
+let here = null;
+eventBus.on("updateviewarea", (e) => { here = e.location; });
+const position = () => here && { page: here.pageNumber, left: here.left, top: here.top };
+function remember() {
+  if (!here) return;
+  back.push(position());
+  ahead.length = 0;
+  updateHistory();
+}
+function travel(from, to) {
+  if (!from.length) return;
+  to.push(position());
+  const p = from.pop();
+  viewer.scrollPageIntoView({ pageNumber: p.page, destArray: [null, { name: "XYZ" }, p.left, p.top, null] });
+  updateHistory();
+}
+function updateHistory() { $("back").disabled = !back.length; $("forward").disabled = !ahead.length; }
+const goToDestination = linkService.goToDestination.bind(linkService);
+linkService.goToDestination = (dest) => { remember(); hidePreview(); return goToDestination(dest); };
+$("back").onclick = () => travel(back, ahead);
+$("forward").onclick = () => travel(ahead, back);
+container.addEventListener("mouseup", (e) => { // mouse side buttons
+  if (e.button === 3) travel(back, ahead);
+  else if (e.button === 4) travel(ahead, back);
+});
+
+// Search (PDF.js's find controller: searches every page, not just the rendered ones).
+let lastQuery = null;
+function find(findPrevious = false) {
+  const query = $("find").value;
+  if (!query) return clearFind();
+  eventBus.dispatch("find", { source: window, type: query === lastQuery ? "again" : "", query, findPrevious,
+                              caseSensitive: false, entireWord: false, highlightAll: true, matchDiacritics: false });
+  lastQuery = query;
+}
+function clearFind() {
+  $("find").value = "";
+  $("findCount").textContent = "";
+  lastQuery = null;
+  eventBus.dispatch("findbarclose", { source: window });
+}
+function showFindCount({ current, total }) {
+  $("findCount").textContent = total ? `${current} / ${total}` : "";
+}
+eventBus.on("updatefindmatchescount", (e) => showFindCount(e.matchesCount));
+eventBus.on("updatefindcontrolstate", (e) => {
+  $("findCount").classList.toggle("none", e.state === FindState.NOT_FOUND);
+  if (e.state === FindState.NOT_FOUND) $("findCount").textContent = "no match";
+  else showFindCount(e.matchesCount);
+});
+$("find").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); find(e.shiftKey); }
+  else if (e.key === "Escape") { clearFind(); $("find").blur(); }
+});
+
+window.addEventListener("keydown", (e) => {
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && (e.key === "=" || e.key === "+")) { e.preventDefault(); viewer.increaseScale(); }
+  else if (mod && e.key === "-") { e.preventDefault(); viewer.decreaseScale(); }
+  else if (mod && e.key === "0") { e.preventDefault(); viewer.currentScaleValue = "page-width"; }
+  else if (mod && e.key === "f") { e.preventDefault(); $("find").focus(); $("find").select(); }
+  else if (mod && e.key === "g") { e.preventDefault(); find(e.shiftKey); }
+  else if (e.target.tagName === "INPUT") return; // keep word-wise cursor keys in the text boxes
+  else if ((e.altKey && e.key === "ArrowLeft") || (e.metaKey && e.key === "[")) { e.preventDefault(); travel(back, ahead); }
+  else if ((e.altKey && e.key === "ArrowRight") || (e.metaKey && e.key === "]")) { e.preventDefault(); travel(ahead, back); }
+  else if (e.key === "Escape") { hidePreview(); $("comparePanel").hidden = true; }
+});
+
+// Trackpad pinch (Chromium reports it as ctrl+wheel) and ctrl/cmd+scroll zoom the PDF around the
+// cursor instead of zooming the whole page. updateScale rounds to 0.01, so accumulate small
+// pinch steps until they change the scale (as PDF.js's own viewer does).
+let pinchFactor = 1;
+container.addEventListener("wheel", (e) => {
+  if (!(e.ctrlKey || e.metaKey)) return;
+  e.preventDefault();
+  const px = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? e.deltaY * 30 : e.deltaY;
+  pinchFactor *= Math.exp(-Math.max(-25, Math.min(25, px)) / 100); // clamp mouse-wheel notches
+  const current = viewer.currentScale;
+  const next = Math.round(current * pinchFactor * 100) / 100;
+  if (next === current) return;
+  viewer.updateScale({ scaleFactor: next / current, drawingDelay: 400, origin: [e.clientX, e.clientY] });
+  // Keep the rounding remainder, unless the scale hit its min/max limit.
+  pinchFactor = viewer.currentScale === next ? (current * pinchFactor) / next : 1;
+}, { passive: false });
+
+// Briefly highlight a rectangle [x1, y1, x2, y2] (PDF coordinates, y up) on a page.
+function flash(pageNumber, rect, cls = "") {
+  const pageView = viewer.getPageView(pageNumber - 1);
+  if (!pageView) return;
+  const [a, b, c, d] = pageView.viewport.convertToViewportRectangle(rect);
+  const div = el("div", { className: `sync-flash ${cls}` });
+  Object.assign(div.style, { left: `${Math.min(a, c)}px`, top: `${Math.min(b, d)}px`,
+                             width: `${Math.abs(c - a)}px`, height: `${Math.abs(d - b)}px` });
+  pageView.div.append(div);
+  setTimeout(() => div.remove(), 2600);
+}
+
+// Scroll so that a rectangle (PDF coordinates) is a third of the way down the view, and flash it.
+function reveal(pageNumber, rect) {
+  const pageView = viewer.getPageView(pageNumber - 1);
+  if (!pageView) return;
+  remember();
+  viewer.scrollPageIntoView({ pageNumber, destArray: [null, { name: "XYZ" }, null, rect[3], null] });
+  container.scrollTop -= container.clientHeight / 3;
+  flash(pageNumber, rect);
+}
+
+// Persistent marks over pages: {page: [{rect (PDF coordinates), cls, title}]}. PDF.js empties a
+// page's div when it re-renders it (zoom, reload), so they are redrawn on every "pagerendered".
+const marks = { changes: new Map(), unresolved: new Map(), cut: new Map() };
+function drawMarks(pageNumber) {
+  const pageView = viewer.getPageView(pageNumber - 1);
+  if (!pageView?.div || !pageView.pdfPage) return;
+  pageView.div.querySelector(".ll-marks")?.remove();
+  const list = [...(marks.changes.get(pageNumber) || []), ...(marks.unresolved.get(pageNumber) || []),
+                ...(cutOn ? marks.cut.get(pageNumber) || [] : [])];
+  if (!list.length) return;
+  const [vx, vy, vw, vh] = pageView.pdfPage.view;
+  const W = vw - vx, H = vh - vy;
+  const layer = el("div", { className: "ll-marks" });
+  for (const m of list) {
+    const [x0, y0, x1, y1] = m.rect;
+    const div = el("div", { className: m.cls });
+    if (m.label) div.dataset.label = m.label;
+    Object.assign(div.style, { left: `${(x0 - vx) / W * 100}%`, top: `${(vh - y1) / H * 100}%`,
+                               width: `${(x1 - x0) / W * 100}%`, height: `${(y1 - y0) / H * 100}%` });
+    layer.append(div);
+  }
+  pageView.div.append(layer);
+}
+const drawAllMarks = () => { for (let n = 1; n <= (doc?.numPages || 0); n++) drawMarks(n); };
+eventBus.on("pagerendered", (e) => { drawMarks(e.pageNumber); drawMargin(e.pageNumber); });
+
+// SyncTeX inverse search: double-click a spot on a page to open its source line in VS Code.
+container.addEventListener("dblclick", async (e) => {
+  const pageDiv = e.target.closest(".page");
+  if (!pageDiv || e.target.closest(".ll-margin")) return;
+  const pageView = viewer.getPageView(+pageDiv.dataset.pageNumber - 1);
+  const rect = pageDiv.getBoundingClientRect();
+  const [x, y] = pageView.viewport.convertToPdfPoint(
+    e.clientX - rect.left - pageDiv.clientLeft, e.clientY - rect.top - pageDiv.clientTop);
+  window.getSelection().removeAllRanges(); // undo the word selection from the double-click
+  flash(pageView.id, [x - 6, y - 6, x + 6, y + 6], "dot");
+  if (isDiff) return setStatus("inverse search is off in the diff view", "error");
+  const top = pageView.pdfPage.view[3] - y; // synctex measures y down from the page top
+  const q = new URLSearchParams({ file, page: pageView.id, x: x.toFixed(1), y: top.toFixed(1), ...cleanParam() });
+  try {
+    const r = await fetch(`synctex?${q}`);
+    const text = await r.text();
+    setStatus(r.ok ? `→ ${text}` : text, r.ok ? "fresh" : "error");
+  } catch (err) {
+    setStatus(`${err.message || err}`, "error");
+  }
+});
+
+// SyncTeX forward search (forward.py, or a note or check in the sidebar): scroll to the source
+// line's boxes ({page, x, y, w, h}, points from the page's top-left) and highlight them.
+function showForward(t) {
+  if (!pagesReady) return (pendingForward = t);
+  const pageView = viewer.getPageView(t.page - 1);
+  if (!pageView) return;
+  const H = pageView.pdfPage.view[3];
+  reveal(t.page, [t.x - 2, H - t.y - t.h - 2, t.x + t.w + 2, H - t.y + 2]);
+  setStatus(`← page ${t.page}`, "fresh");
+}
+// Show a source line in the PDF; sources with no PDF location (e.g. a .bib entry) open in VS Code.
+const cleanParam = () => (shownVariant === "clean" ? { clean: 1 } : {}); // SyncTeX of the notes-free build
+async function showSource(file, line, openIfMissing = false) {
+  const r = await fetch(`forward?${new URLSearchParams({ file, line, ...cleanParam() })}`);
+  const body = await r.json();
+  if (r.ok) return showForward(body);
+  if (openIfMissing) return openSource(file, line);
+  setStatus(body.error, "error");
+}
+const openSource = (file, line) => fetch(`open?${new URLSearchParams({ file, line })}`);
+
+function setStatus(text, cls = "") {
+  $("status").textContent = text;
+  $("status").className = cls;
+}
+
+// Build-status banner: shows the first errors of a failed build; click one to open it in VS Code.
+let dismissed = null;
+function showBuild(build) {
+  const banner = $("banner");
+  if (!build || build.ok || dismissed === build.time) return (banner.hidden = true);
+  banner.replaceChildren();
+  const close = el("span", { className: "close", textContent: "✕" });
+  close.onclick = () => { dismissed = build.time; banner.hidden = true; };
+  banner.append(close, isDiff ? `Diff failed at ${build.time}.` : `Build failed at ${build.time}; showing the last good PDF.`);
+  for (const err of build.errors.slice(0, 3)) {
+    const line = el("div");
+    if (err.file) {
+      const a = el("a", { textContent: `${err.file}:${err.line}` });
+      a.onclick = () => openSource(err.file, err.line);
+      line.append(a, `  ${err.msg}`);
+    } else {
+      line.append(err.msg);
+    }
+    banner.append(line);
+  }
+  if (build.errors.length > 3) banner.append(`(+${build.errors.length - 3} more in the Problems panel)`);
+  banner.hidden = false;
+}
+
+// Outline, rebuilt on each reload: the PDF's bookmarks (hyperref), or else the .toc entries from
+// live.py (e.g. this ICLR draft, whose restored \addcontentsline skips hyperref).
+// Each heading shows how many pages its section takes (up to the end of the main text for the
+// last main-text section).
+let outlineRows = [];
+async function renderOutline() {
+  outlineRows = [];
+  const build = (items, depth) => {
+    const ul = el("ul");
+    for (const item of items) {
+      const li = el("li");
+      li.classList.toggle("minor", !!item.minor);
+      const pp = el("span", { className: "pp" });
+      const span = el("span", { title: item.title }, el("span", { className: "t", textContent: item.title }), pp);
+      span.onclick = () => (item.dest ? linkService.goToDestination(item.dest) : goToHeading(item));
+      outlineRows.push({ item, depth, pp });
+      li.append(span);
+      if (item.items.length) li.append(build(item.items, depth + 1));
+      ul.append(li);
+    }
+    return ul;
+  };
+  let outline = await doc.getOutline();
+  if (!outline?.length) outline = nest(await (await fetch(`outline/${encodeURIComponent(shownVariant === "clean" ? cleanFile : file)}`)).json());
+  const nav = $("outline");
+  const scroll = nav.scrollTop;
+  nav.replaceChildren(outline.length ? build(outline, 0) : el("div", { className: "empty", textContent: "No outline: the PDF has no bookmarks and the build no .toc." }));
+  nav.scrollTop = scroll;
+  fillSectionPages();
+}
+async function fillSectionPages() {
+  const d = doc, r = displayedResult(), rows = outlineRows;
+  if (!r || !rows.length) return;
+  const pos = []; // page index + fraction of the text area, found in reading order
+  let from = 0;
+  for (const { item } of rows) {
+    if (item.minor) { pos.push(null); continue; } // (run-in paragraph titles: too generic to find reliably)
+    const p = await headingPos(d, item, from).catch(() => null);
+    if (p?.found) from = p.index;
+    pos.push(p?.found ? p.index + Math.min(1, Math.max(0, (p.top - MARGIN) / (p.H - 2 * MARGIN))) : null);
+  }
+  if (d !== doc || rows !== outlineRows) return;
+  const mainEnd = r.page - 1 + r.fill;
+  rows.forEach((row, i) => {
+    row.pp.textContent = "";
+    if (row.item.minor || pos[i] == null) return;
+    let j = i + 1; // the next heading at the same or a higher level
+    while (j < rows.length && (rows[j].depth > row.depth || pos[j] == null)) j++;
+    let end = j < rows.length ? pos[j] : d.numPages;
+    const main = pos[i] < mainEnd;
+    if (main && end > mainEnd) end = mainEnd;
+    const pages = end - pos[i];
+    if (pages < 0.05) return;
+    row.pp.textContent = pages.toFixed(1);
+    row.pp.title = `≈${pages.toFixed(1)} pages${main ? " of main text" : ""}`;
+  });
+}
+
+// Flat .toc entries ({level, title, page, dest}) to a bookmark-style tree.
+function nest(entries) {
+  const root = { level: -1, items: [] }, stack = [root];
+  for (const e of entries) {
+    while (stack.at(-1).level >= e.level) stack.pop();
+    const item = { ...e, minor: e.level >= 4, items: [] };
+    stack.at(-1).items.push(item);
+    stack.push(item);
+  }
+  return root.items;
+}
+
+// A .toc entry without an anchor: go to its page label, then to the line that holds its title.
+const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+async function goToHeading(entry) {
+  const p = await headingPos(doc, entry);
+  if (p) linkService.goToDestination([p.index, { name: "XYZ" }, null, p.H - p.top + 4, null]);
+}
+// Where a heading is: {index (page), top (points from the page top), H, found}: on its labeled
+// page, or nearby (not before `from`, the previous heading's page) should the label be stale.
+async function headingPos(d, entry, from = null) {
+  if (entry.dest) {
+    const dest = typeof entry.dest === "string" ? await d.getDestination(entry.dest) : entry.dest;
+    if (!Array.isArray(dest)) return null;
+    const index = typeof dest[0] === "object" && dest[0] ? await d.getPageIndex(dest[0]) : dest[0];
+    const H = (await d.getPage(index + 1)).view[3];
+    return { index, H, top: dest[1]?.name === "XYZ" && dest[3] != null ? H - dest[3] : MARGIN, found: true };
+  }
+  const labels = await d.getPageLabels();
+  const index = labels?.includes(entry.page) ? labels.indexOf(entry.page) : +entry.page - 1;
+  if (!(index >= 0 && index < d.numPages)) return null;
+  const [, number, text] = entry.title.match(/^(?:([A-Z]?[\d.]*\d|[A-Z])\s+)?(.*)$/);
+  const key = norm(text).slice(-20); // the end of the title: its start may be a symbol or macro
+  const pages = [index, index - 1, index + 1, index - 2];
+  for (const i of pages.filter((i) => i >= (from ?? 0) && i < d.numPages)) {
+    const { H, lines } = await textLines(d, i + 1);
+    const line = (key && lines.find((l) => norm(l.str).includes(key))) ||
+                 (number && lines.find((l) => l.str.startsWith(`${number} `)));
+    if (line) return { index: i, H, top: line.top - 10, found: true };
+  }
+  return { index, H: (await d.getPage(index + 1)).view[3], top: 0, found: false };
+}
+
+// Page text, cached per document: items {str, x, top (baseline, points from the page top), w, h}
+// without the submission line numbers in the left margin.
+const textCache = new WeakMap();
+function pageText(d, n) {
+  if (!textCache.has(d)) textCache.set(d, new Map());
+  const cache = textCache.get(d);
+  if (!cache.has(n)) cache.set(n, (async () => {
+    const page = await d.getPage(n);
+    const [, , W, H] = page.view;
+    const { items } = await page.getTextContent();
+    return { W, H, items: items.filter((i) => i.str.trim() && !(/^\d{1,4}$/.test(i.str.trim()) && i.transform[4] < W * 0.15))
+      .map((i) => ({ str: i.str, x: i.transform[4], top: H - i.transform[5], w: i.width,
+                     h: i.height || Math.hypot(i.transform[2], i.transform[3]) })) };
+  })());
+  return cache.get(n);
+}
+
+// Text lines of a page (pieces joined by baseline), without the running header and footer.
+const MARGIN = 72; // ICLR: 1in top and bottom text margins
+async function textLines(d, pageNumber) {
+  const { W, H, items } = await pageText(d, pageNumber);
+  const lines = [];
+  for (const i of [...items].sort((a, b) => a.top - b.top)) {
+    const last = lines.at(-1);
+    if (last && i.top - last.top < 2) last.parts.push(i);
+    else lines.push({ top: i.top, parts: [i] });
+  }
+  for (const l of lines) {
+    l.parts.sort((a, b) => a.x - b.x);
+    l.str = l.parts.map((p) => p.str.trim()).join(" ");
+    l.left = l.parts[0].x;
+    l.right = Math.max(...l.parts.map((p) => p.x + p.w));
+  }
+  return { W, H, lines: lines.filter((l) => l.top > MARGIN && l.top < H - MARGIN + 12) }; // last baseline ~730pt; page number ~761pt
+}
+
+// Page-limit check. Main text runs from the page labeled "1" (a draft ToC may come first) up to
+// the references or an earlier unnumbered statement (AI use, ethics, reproducibility,
+// acknowledgments), which ICLR does not count.
+const UNCOUNTED = /^(ai use|llm usage|use of large language models|ethics statement|reproducibility statement|acknowledge?ments?)\b/i;
+async function checkPages(d, refs, limit) {
+  const labels = await d.getPageLabels();
+  const first = Math.max(0, labels?.indexOf("1") ?? 0) + 1;
+  let end = { page: refs.page, top: refs.y };
+  for (let p = Math.max(first, refs.page - 2); p <= refs.page; p++) {
+    const { lines } = await textLines(d, p);
+    const heading = lines.find((l) => l.str.length < 60 && UNCOUNTED.test(l.str) && (p < refs.page || l.top < refs.y));
+    if (heading) { end = { page: p, top: heading.top - 10 }; break; }
+  }
+  let page = end.page, fill, endTop;
+  const { H } = await textLines(d, page);
+  if (end.top - MARGIN > 15) { // main text ends partway down this page
+    endTop = end.top;
+    fill = (end.top - MARGIN) / (H - 2 * MARGIN);
+  } else { // it ends on the previous page: measure down to its last text line
+    page -= 1;
+    const prev = await textLines(d, page);
+    endTop = Math.max(MARGIN, ...prev.lines.map((l) => l.top)) + 3;
+    fill = (endTop - 3 - MARGIN) / (prev.H - 2 * MARGIN);
+  }
+  fill = Math.min(1, Math.max(0, fill));
+  const used = page - first + 1;
+  const lastAllowed = first + limit - 1;
+  return { first, page, fill, endTop, used, limit, value: used - 1 + fill, lastAllowed, lastAllowedLabel: labels?.[lastAllowed - 1] ?? lastAllowed,
+           cls: used > limit ? "over" : used === limit && fill > 0.9 ? "tight" : "ok",
+           range: `page ${labels?.[first - 1] ?? first} to ${labels?.[page - 1] ?? page} (${Math.round(fill * 100)}% of the last page)` };
+}
+
+// Badge: the notes-free build's count (what would be submitted) when there is one.
+let pageResult = null, cleanResult = null;
+function renderPages() {
+  const badge = $("pages");
+  const main = pageResult, clean = cleanResult;
+  if (!main) return (badge.textContent = "");
+  const shownResult = clean || main;
+  badge.textContent = clean ? `main text ${clean.value.toFixed(1)} / ${clean.limit} pp · ${main.value.toFixed(1)} with notes`
+                            : `main text ${main.value.toFixed(1)} / ${main.limit} pp`;
+  badge.className = shownResult.cls;
+  const shownTag = (v) => (shownVariant === v ? " (as shown)" : "");
+  badge.title = (clean ? `Without the inline notes${shownTag("clean")}: ${clean.range}.\nWith notes${shownTag("notes")}: ${main.range}.`
+                       : `Main text: ${main.range}.`) +
+                "\nEnds at the references or at an unnumbered statement (AI use, ethics, reproducibility, acknowledgments).";
+  if (sideOpen("thumbs")) markThumbLimit();
+}
+// The build that is not on screen is measured from its own copy of the PDF.
+let cleanShown = null, notesShown = null, measuring = false;
+const displayedResult = () => (shownVariant === "clean" ? cleanResult : pageResult);
+function setResult(variant, version, r) {
+  if (variant === "clean") { cleanResult = r; cleanShown = version; } else { pageResult = r; notesShown = version; }
+}
+async function measureVariant(variant, info) {
+  measuring = true;
+  try {
+    const [name, version, refs] = variant === "clean" ? [cleanFile, info.clean.version, info.clean.refs] : [file, info.version, info.refs];
+    const d = await pdfjsLib.getDocument({ url: `pdf/${encodeURIComponent(name)}?v=${version}`, ...assets }).promise;
+    const r = await checkPages(d, refs, info.pageLimit);
+    d.destroy();
+    setResult(variant, version, r);
+    renderPages();
+  } catch (e) {
+    console.warn(e);
+  } finally {
+    measuring = false;
+  }
+}
+
+// Page thumbnails (rendered as they scroll into view), with the page limit marked.
+let thumbsDoc = null, thumbObserver = null;
+async function renderThumbs() {
+  if (thumbsDoc === doc) return markThumbLimit();
+  thumbsDoc = doc;
+  const d = doc, panel = $("thumbs");
+  thumbObserver?.disconnect();
+  thumbObserver = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting || e.target.dataset.done) continue;
+      e.target.dataset.done = "1";
+      drawThumb(d, e.target);
+    }
+  }, { root: panel, rootMargin: "300px" });
+  const labels = await d.getPageLabels();
+  const first = await d.getPage(1);
+  const ratio = first.view[3] / first.view[2];
+  panel.replaceChildren();
+  for (let n = 1; n <= d.numPages; n++) {
+    const img = el("div", { className: "img" });
+    img.style.aspectRatio = `${1 / ratio}`;
+    const thumb = el("div", { className: "thumb", title: `Page ${n}` }, img, el("div", { className: "label", textContent: labels?.[n - 1] ?? n }));
+    thumb.dataset.page = n;
+    thumb.onclick = () => goToPage(n);
+    panel.append(thumb);
+    thumbObserver.observe(thumb);
+  }
+  markCurrentThumb(viewer.currentPageNumber);
+  markThumbLimit();
+}
+async function drawThumb(d, thumb) {
+  const page = await d.getPage(+thumb.dataset.page);
+  const width = thumb.clientWidth * (window.devicePixelRatio || 1);
+  const viewport = page.getViewport({ scale: width / page.view[2] });
+  const canvas = el("canvas", { width: viewport.width, height: viewport.height });
+  await page.render({ canvasContext: canvas.getContext("2d"), viewport, annotationMode: pdfjsLib.AnnotationMode.DISABLE }).promise;
+  thumb.querySelector(".img").prepend(canvas);
+}
+function markCurrentThumb(n) {
+  if (!sideOpen("thumbs")) return;
+  for (const t of document.querySelectorAll(".thumb.current")) t.classList.remove("current");
+  const t = document.querySelector(`.thumb[data-page="${n}"]`);
+  t?.classList.add("current");
+  t?.scrollIntoView({ block: "nearest" });
+}
+// Pages past the limit are shaded red, down to where the main text ends; the last allowed page
+// gets a red underline.
+function markThumbLimit() {
+  for (const t of document.querySelectorAll(".thumb")) {
+    t.classList.remove("last-allowed");
+    t.querySelector(".over")?.remove();
+    t.querySelector(".tag")?.remove();
+  }
+  const r = displayedResult();
+  if (!r) return;
+  const { lastAllowed } = r;
+  document.querySelector(`.thumb[data-page="${lastAllowed}"]`)?.classList.add("last-allowed");
+  for (let p = lastAllowed + 1; p <= r.page; p++) {
+    const t = document.querySelector(`.thumb[data-page="${p}"]`);
+    if (!t) continue;
+    const over = el("div", { className: "over" });
+    over.style.height = p < r.page ? "100%" : `${(MARGIN + r.fill * (792 - 2 * MARGIN)) / 792 * 100}%`;
+    t.querySelector(".img").append(over);
+    t.querySelector(".label").append(el("span", { className: "tag", textContent: " over limit" }));
+  }
+}
+
+// Notes (\todo and per-author note macros) from live.py, in reading order. Click one to see
+// it in the PDF; click its file:line to open it in VS Code.
+const AUTHOR_COLORS = { TODO: "#ef5350", EB: "#26a69a", CH: "#4fc3f7", SX: "#bcaaa4", Hu: "#ce93d8", MR: "#f06292",
+                        JV: "#9575cd", Shengyi: "#f8bbd0", Daniel: "#66bb6a" };
+const authorColor = (a) => AUTHOR_COLORS[a] || `hsl(${[...a].reduce((h, c) => h * 31 + c.charCodeAt(0), 7) % 360} 60% 70%)`;
+const hiddenAuthors = new Set(JSON.parse(localStorage.getItem("latex-live:hiddenAuthors") || "[]"));
+let noteList = [];
+async function loadNotes() {
+  noteList = await (await fetch(`notes/${encodeURIComponent(file)}`)).json();
+  document.querySelector("#tabs [data-tab=notes] .n").textContent = noteList.length || "";
+  renderNotes();
+}
+function renderNotes() {
+  const panel = $("notes");
+  const scroll = panel.scrollTop;
+  const counts = {};
+  for (const n of noteList) counts[n.author] = (counts[n.author] || 0) + 1;
+  const filters = el("div", { className: "filters" });
+  for (const [author, count] of Object.entries(counts)) {
+    const chip = el("span", { className: `chip${hiddenAuthors.has(author) ? " off" : ""}`, textContent: `${author} ${count}`,
+                              title: "Show or hide this author's notes" });
+    chip.style.background = authorColor(author);
+    chip.onclick = () => {
+      hiddenAuthors.has(author) ? hiddenAuthors.delete(author) : hiddenAuthors.add(author);
+      localStorage.setItem("latex-live:hiddenAuthors", JSON.stringify([...hiddenAuthors]));
+      renderNotes();
+      drawAllMargins();
+    };
+    filters.append(chip);
+  }
+  const items = noteList.filter((n) => !hiddenAuthors.has(n.author)).map((n) => {
+    const who = el("span", { className: "chip who", textContent: n.author });
+    who.style.background = authorColor(n.author);
+    const where = el("span", { className: "where", textContent: `${n.file.replace(/^.*\//, "")}:${n.line}`, title: `Open ${n.file}:${n.line} in VS Code` });
+    where.onclick = (e) => { e.stopPropagation(); openSource(n.file, n.line); };
+    const row = el("div", { className: "note", title: "Show in the PDF" }, who, where, el("div", { className: "text", textContent: n.text || "(empty)" }));
+    row.onclick = () => showSource(n.file, n.line);
+    return row;
+  });
+  panel.replaceChildren(...(noteList.length ? [filters, ...items] : [el("div", { className: "empty", textContent: "No inline notes in the source." })]));
+  panel.scrollTop = scroll;
+}
+
+// Margin notes: in the notes-free view, each note as a bubble in a gutter right of its page, wired
+// to a caret where it sits in the text. live.py (/margin) gives, per note, where its source line
+// landed (SyncTeX) and the typeset words around it; those words, found in the page text, put the
+// caret between two words. Hover a bubble or caret to follow the wire; click to open the source.
+const GUTTER = 250;
+let marginOn = localStorage.getItem("latex-live:margin") !== "0";
+let marginAnchors = new Map(); // page -> [{note, x, top}] (points from the page's top-left, baseline)
+// Fitting the page width leaves room for the gutter: PDF.js measures the container's clientWidth.
+const clientWidthOf = Object.getOwnPropertyDescriptor(Element.prototype, "clientWidth").get;
+Object.defineProperty(container, "clientWidth",
+  { get() { return clientWidthOf.call(this) - (this.classList.contains("gutter") ? GUTTER : 0); } });
+function setGutter(on) {
+  if (container.classList.contains("gutter") === on) return;
+  container.classList.toggle("gutter", on);
+  refit();
+}
+function showMarginButton() {
+  const b = $("marginBtn");
+  b.hidden = isDiff || shownVariant !== "clean";
+  b.classList.toggle("on", marginOn);
+  b.title = marginOn ? "Showing the notes as bubbles in the margin; click to hide them"
+                     : "Show the notes as bubbles in the margin, wired to where they sit";
+}
+$("marginBtn").onclick = () => {
+  marginOn = !marginOn;
+  localStorage.setItem("latex-live:margin", marginOn ? "1" : "0");
+  showMarginButton();
+  setGutter(marginOn && marginAnchors.size > 0);
+  drawAllMargins();
+};
+
+async function loadMargin(d) {
+  const notes = await (await fetch(`margin/${encodeURIComponent(cleanFile)}`)).json();
+  const anchors = new Map();
+  for (const n of notes) {
+    const a = await anchorNote(d, n);
+    if (d !== doc) return; // a newer build arrived meanwhile
+    if (!anchors.has(a.page)) anchors.set(a.page, []);
+    anchors.get(a.page).push({ note: n, ...a });
+  }
+  marginAnchors = anchors;
+  setGutter(marginOn && anchors.size > 0);
+  drawAllMargins();
+}
+
+// Where a note's caret goes: right after its preceding words (or before its following ones) in
+// the page text near where SyncTeX put its line, else on the whole page; failing both, at the end
+// (or start) of that line.
+async function anchorNote(d, n) {
+  const pages = [...new Set(n.points.map((p) => p[0]))];
+  if (n.side !== "after") pages.reverse(); // a note after its line's text: the last page it reaches
+  const before = norm(n.before.normalize("NFKC")), after = norm(n.after.normalize("NFKC"));
+  const trailing = n.before.trimEnd().match(/[^\p{L}\p{N}\s]*$/u)[0].length; // the caret goes after "word)." too
+  // Longest context first; shorter keys only near the note's own lines, where a short match is unlikely to be wrong.
+  for (const [len, bands] of [[30, [true, false]], [14, [true]]]) {
+    const b = before.slice(-len), a = after.slice(0, len);
+    for (const band of bands) {
+      // A float's caption can land a page away from where SyncTeX puts a note next to it.
+      const spill = [Math.min(...pages) - 1, Math.max(...pages) + 1].filter((p) => p >= 1 && p <= d.numPages);
+      for (const page of band ? pages : len === 30 ? [...pages, ...spill] : []) {
+        const ys = n.points.filter((p) => p[0] === page).map((p) => p[2]);
+        const { lines } = await textLines(d, page);
+        const near = band ? lines.filter((l) => l.top > Math.min(...ys) - 14 && l.top < Math.max(...ys) + 14) : lines;
+        let text = "";
+        const at = []; // per character of text: [x0, x1, top]
+        for (const l of near) {
+          for (const p of l.parts) {
+            const chars = [...p.str];
+            chars.forEach((c, i) => {
+              const x0 = p.x + p.w * i / chars.length, x1 = p.x + p.w * (i + 1) / chars.length, keys = norm(c.normalize("NFKC"));
+              for (const k of keys) { text += k; at.push([x0, x1, l.top, []]); }
+              if (!keys && c.trim() && at.at(-1)?.[2] === l.top) at.at(-1)[3].push(x1); // punctuation right after it
+            });
+          }
+        }
+        let i;
+        if (b.length >= 6 && (i = text.lastIndexOf(b)) >= 0) {
+          const [, x1, top, punct] = at[i + b.length - 1];
+          return { page, x: (trailing ? punct[trailing - 1] ?? punct.at(-1) ?? x1 : x1) + 1, top };
+        }
+        if (a.length >= 6 && (i = text.indexOf(a)) >= 0) {
+          const [x0, , top] = at[i];
+          return { page, x: x0 - 1.5, top };
+        }
+        if (band || !pages.includes(page)) continue;
+        // The context runs across a page break: the page ends with the start of the text after the note,
+        // or starts with the end of the text before it.
+        for (let k = Math.min(a.length, text.length); k >= 8; k--) {
+          if (text.endsWith(a.slice(0, k))) { const [x0, , top] = at[text.length - k]; return { page, x: x0 - 1.5, top }; }
+        }
+        for (let k = Math.min(b.length, text.length); k >= 8; k--) {
+          if (text.startsWith(b.slice(-k))) { const [, x1, top] = at[k - 1]; return { page, x: x1 + 1, top }; }
+        }
+      }
+    }
+  }
+  const p = n.side === "after" || n.side === "near" ? n.points[0] : n.points.at(-1);
+  const { lines } = await textLines(d, p[0]);
+  const line = lines.find((l) => Math.abs(l.top - p[2]) < 2);
+  const x = !line ? p[1] : n.side === "after" || n.side === "near" ? line.left - 1.5 : n.side === "before" ? line.right + 1 : p[1];
+  return { page: p[0], x, top: p[2] };
+}
+
+const SVG = "http://www.w3.org/2000/svg";
+function drawMargin(pageNumber) {
+  const pageView = viewer.getPageView(pageNumber - 1);
+  if (!pageView?.div || !pageView.pdfPage) return;
+  pageView.div.querySelector(".ll-margin")?.remove();
+  const list = (marginOn && shownVariant === "clean" && marginAnchors.get(pageNumber) || [])
+    .filter((a) => !hiddenAuthors.has(a.note.author));
+  if (!list.length) return;
+  const [vx, vy, vw] = pageView.pdfPage.view;
+  const cw = pageView.div.clientWidth, ch = pageView.div.clientHeight, s = cw / (vw - vx);
+  const layer = el("div", { className: "ll-margin" });
+  const svg = document.createElementNS(SVG, "svg");
+  svg.setAttribute("width", cw + GUTTER);
+  svg.setAttribute("height", ch);
+  layer.append(svg);
+  pageView.div.append(layer);
+  const items = list.map((a) => {
+    const n = a.note, color = authorColor(n.author);
+    const bubble = el("div", { className: "ll-bubble", title: `${n.file}:${n.line}: click to open in VS Code` },
+                      el("div", { className: "text" }, el("b", { textContent: n.author }), n.text || "(empty)"));
+    bubble.style.borderLeftColor = color;
+    bubble.querySelector("b").style.color = color;
+    const caret = el("div", { className: "caret", title: `${n.author}: ${n.text}` });
+    const x = (a.x - vx) * s, y = (a.top - vy) * s;
+    Object.assign(caret.style, { left: `${x}px`, top: `${y - 8.5 * s}px`, height: `${11 * s}px`, background: color });
+    const path = document.createElementNS(SVG, "path");
+    path.setAttribute("stroke", color);
+    svg.append(path);
+    layer.append(caret, bubble);
+    const hot = (on) => { for (const e of [bubble, caret, path]) e.classList.toggle("hot", on); };
+    for (const e of [bubble, caret]) {
+      e.onmouseenter = () => hot(true);
+      e.onmouseleave = () => hot(false);
+      e.onclick = (ev) => { ev.stopPropagation(); openSource(n.file, n.line); };
+    }
+    return { bubble, path, x, y, s };
+  }).sort((a, b) => a.y - b.y || a.x - b.x);
+  // Stack the bubbles in reading order, each as close to its line as the ones above allow; pull
+  // them up from the page bottom if they run past it; then undo any overlap that left.
+  let y = 0;
+  for (const it of items) { it.h = it.bubble.offsetHeight; it.top = Math.max(it.y - 12, y); y = it.top + it.h + 4; }
+  let limit = ch;
+  for (const it of [...items].reverse()) { it.top = Math.max(0, Math.min(it.top, limit - it.h)); limit = it.top - 4; }
+  y = 0;
+  for (const it of items) { it.top = Math.max(it.top, y); y = it.top + it.h + 4; }
+  for (const it of items) {
+    it.bubble.style.top = `${it.top}px`;
+    const base = it.y + 2.5 * it.s, by = it.top + Math.min(12, it.h / 2);
+    it.path.setAttribute("d", `M${it.x},${base} H${cw} C${cw + 10},${base} ${cw + 6},${by} ${cw + 16},${by}`);
+  }
+}
+const drawAllMargins = () => { for (let n = 1; n <= (doc?.numPages || 0); n++) drawMargin(n); };
+
+// Pre-submission check (live.py), plus the page-limit result from this viewer. Re-runs after each
+// rebuild while the tab is open.
+let checksVersion = null, checksRunning = false;
+const ICONS = { ok: "✓", info: "ℹ", warn: "⚠", fail: "✗" };
+async function runChecks() {
+  if (checksRunning) return;
+  checksRunning = true;
+  checksVersion = `${buildVersion}/${shown}`;
+  const panel = $("checks");
+  if (!panel.querySelector(".check")) panel.replaceChildren(el("div", { className: "empty", textContent: "Checking…" }));
+  try {
+    const results = await (await fetch(`check/${encodeURIComponent(file)}`)).json();
+    const r = cleanResult || pageResult;
+    if (r) results.unshift({ title: "Page limit", level: r.cls === "over" ? "fail" : r.cls === "tight" ? "warn" : "ok",
+                             detail: `main text ${r.value.toFixed(1)} of ${r.limit} pages${cleanResult ? " without the notes" : ""}: ${r.range}`,
+                             items: r.cls === "over" ? [{ text: `the main text should end on page ${r.lastAllowedLabel}`, page: r.lastAllowed }] : [] });
+    const shownR = displayedResult();
+    if (shownR) {
+      const spots = await cutSpots(doc, shownR);
+      const lines = spots.reduce((n, s) => n + s.lines, 0);
+      results.splice(r ? 1 : 0, 0, { title: "Space to reclaim", level: spots.length ? "info" : "ok",
+        detail: spots.length ? `≈${lines} line(s) in ${spots.length} spot(s) of the main text (${shownVariant === "clean" ? "notes-free build" : "with notes"}); ✂ in the toolbar marks them`
+                             : "no short last lines or large gaps in the main text",
+        items: spots.map((s) => ({ text: `${s.label}: ${s.text}`, page: s.page, rect: s.rect })) });
+    }
+    renderChecks(results);
+  } catch (e) {
+    panel.replaceChildren(el("div", { className: "empty", textContent: `Check failed: ${e.message || e}` }));
+  } finally {
+    checksRunning = false;
+  }
+}
+function renderChecks(results) {
+  const panel = $("checks");
+  const open = new Set([...panel.querySelectorAll("details[open]")].map((d) => d.dataset.title));
+  const rerun = el("button", { textContent: "Run again" });
+  rerun.onclick = runChecks;
+  const bad = results.filter((r) => r.level === "fail" || r.level === "warn").length;
+  document.querySelector("#tabs [data-tab=checks] .n").textContent = bad || "";
+  const rows = results.map((r) => {
+    const details = el("details", { className: "check" });
+    details.dataset.title = r.title;
+    details.open = open.has(r.title) || (r.level === "fail" && r.items.length > 0 && !open.size);
+    details.append(el("summary", {}, el("span", { className: `icon ${r.level}`, textContent: ICONS[r.level] }),
+                      el("span", { textContent: r.title }), el("span", { className: "detail", textContent: r.detail })));
+    if (r.items.length) {
+      details.append(el("ul", {}, ...r.items.map((it) => {
+        const li = el("li", { textContent: it.text });
+        if (it.page) {
+          li.append(el("span", { className: "where", textContent: `  PDF page ${it.page}` }));
+          li.onclick = () => (it.rect ? reveal(it.page, it.rect) : goToPage(it.page));
+        }
+        if (it.file) {
+          const where = el("span", { className: "where", textContent: `  ${it.file.replace(/^.*\//, "")}:${it.line}`, title: "Open in VS Code" });
+          where.onclick = (e) => { e.stopPropagation(); openSource(it.file, it.line); };
+          li.append(where);
+          li.onclick = () => showSource(it.file, it.line, true);
+        }
+        if (it.open) { // a related file, e.g. the script that makes a figure
+          const script = el("span", { className: "where", textContent: `  ↗ ${it.open}`, title: "Open in VS Code" });
+          script.onclick = (e) => { e.stopPropagation(); openSource(it.open, 1); };
+          li.append(script);
+        }
+        return li;
+      })));
+    }
+    return details;
+  });
+  panel.replaceChildren(el("div", { className: "toolbar" }, rerun, el("span", { className: "when", textContent: `checked ${new Date().toLocaleTimeString()}` })), ...rows);
+}
+
+// What changed since the previous build: a word-level diff of the two PDFs' text (robust to
+// reflow), highlighted in green, with deletions as red bars. Replaced on every rebuild.
+async function docWords(d) {
+  const words = [];
+  for (let n = 1; n <= d.numPages; n++) {
+    const { H, items } = await pageText(d, n);
+    for (const it of items) {
+      if (it.top > H - MARGIN + 10 && /^[\divxlc]+$/i.test(it.str.trim())) continue; // page numbers shift on reflow
+      const len = it.str.length || 1;
+      let off = 0;
+      for (const part of it.str.split(/(\s+)/)) {
+        if (part.trim()) {
+          const x0 = it.x + it.w * off / len, x1 = it.x + it.w * (off + part.length) / len, y = H - it.top;
+          words.push({ s: part, page: n, rect: [x0, y - it.h * 0.25, x1, y + it.h * 0.85] });
+        }
+        off += part.length;
+      }
+    }
+  }
+  return words;
+}
+// Myers diff of string arrays: {inserted: indices into b, deletedAt: indices into b before which
+// words of a were removed}, or null when there are too many changes to show usefully.
+function diffWords(a, b) {
+  let s = 0;
+  while (s < a.length && s < b.length && a[s] === b[s]) s++;
+  let ea = a.length, eb = b.length;
+  while (ea > s && eb > s && a[ea - 1] === b[eb - 1]) { ea--; eb--; }
+  const A = a.slice(s, ea), B = b.slice(s, eb), N = A.length, M = B.length;
+  const inserted = [], deletedAt = [];
+  if (!N || !M) {
+    for (let j = 0; j < M; j++) inserted.push(s + j);
+    if (N) deletedAt.push(s);
+    return { inserted, deletedAt };
+  }
+  const LIMIT = 3000, off = LIMIT + 2, trace = [];
+  const v = new Int32Array(2 * off + 1);
+  let D = -1;
+  outer: for (let d = 0; d <= LIMIT; d++) {
+    trace.push(v.slice(off - d - 1, off + d + 2)); // v[k] for k in [-d-1, d+1], before step d
+    for (let k = -d; k <= d; k += 2) {
+      let x = k === -d || (k !== d && v[off + k - 1] < v[off + k + 1]) ? v[off + k + 1] : v[off + k - 1] + 1;
+      let y = x - k;
+      while (x < N && y < M && A[x] === B[y]) { x++; y++; }
+      v[off + k] = x;
+      if (x >= N && y >= M) { D = d; break outer; }
+    }
+  }
+  if (D < 0) return null;
+  let x = N, y = M;
+  for (let d = D; d > 0; d--) {
+    const t = trace[d], at = (k) => t[k + d + 1];
+    const k = x - y;
+    const prevK = k === -d || (k !== d && at(k - 1) < at(k + 1)) ? k + 1 : k - 1;
+    const prevX = at(prevK), prevY = prevX - prevK;
+    while (x > prevX && y > prevY) { x--; y--; }
+    if (x === prevX) inserted.push(s + prevY); // B[prevY] was inserted
+    else deletedAt.push(s + y);                // A[prevX] was deleted before B[y]
+    x = prevX; y = prevY;
+  }
+  return { inserted: inserted.reverse(), deletedAt: [...new Set(deletedAt)].reverse() };
+}
+let changeList = [], changeIndex = -1;
+function showChanges(oldWords, newWords, figures = []) {
+  marks.changes.clear();
+  changeList = [];
+  changeIndex = -1;
+  const result = oldWords && diffWords(oldWords.map((w) => w.s), newWords.map((w) => w.s));
+  const add = (page, m) => { if (!marks.changes.has(page)) marks.changes.set(page, []); marks.changes.get(page).push(m); };
+  if (result) textChanges(result, newWords, add);
+  const texts = changeList.length;
+  for (const f of figures) {
+    add(f.page, { rect: f.rect, cls: "chg fig", label: "figure updated" });
+    changeList.push({ page: f.page, rect: f.rect });
+  }
+  changeList.sort((a, b) => a.page - b.page || b.rect[3] - a.rect[3]);
+  const many = oldWords && !result;
+  const figs = figures.length ? `${figures.length} figure${figures.length === 1 ? "" : "s"}` : "";
+  $("changes").hidden = !many && !changeList.length;
+  $("changeCount").textContent = [many ? "many changes" : texts ? `${texts} change${texts === 1 ? "" : "s"}` : "", figs].filter(Boolean).join(" · ");
+  drawAllMarks();
+}
+function textChanges(result, newWords, add) {
+  // Group inserted words into runs (small gaps allowed), each run one change; deletions next to a
+  // run belong to it, others are changes of their own.
+  const runs = [];
+  for (const i of result.inserted) {
+    const last = runs.at(-1);
+    if (last && i - last.at(-1) <= 3) last.push(i); else runs.push([i]);
+  }
+  const changes = runs.map((r) => ({ start: r[0], end: r.at(-1), words: r, dels: [] }));
+  for (const at of result.deletedAt) {
+    const c = changes.find((c) => at >= c.start - 1 && at <= c.end + 2);
+    if (c) c.dels.push(at); else changes.push({ start: at, end: at, words: [], dels: [at] });
+  }
+  changes.sort((a, b) => a.start - b.start);
+  for (const c of changes) {
+    const lines = []; // merge each change's word boxes line by line
+    for (const i of c.words) {
+      const w = newWords[i], last = lines.at(-1);
+      if (last && last.page === w.page && Math.abs(last.rect[1] - w.rect[1]) < 2) {
+        last.rect = [Math.min(last.rect[0], w.rect[0]), Math.min(last.rect[1], w.rect[1]), Math.max(last.rect[2], w.rect[2]), Math.max(last.rect[3], w.rect[3])];
+      } else {
+        lines.push({ page: w.page, rect: [...w.rect] });
+      }
+    }
+    for (const l of lines) add(l.page, { rect: l.rect, cls: "chg" });
+    for (const at of c.dels) {
+      if (c.words.includes(at)) continue; // a replacement: the new words already show it
+      const w = newWords[Math.min(at, newWords.length - 1)];
+      if (!w) continue;
+      const x = at < newWords.length ? w.rect[0] - 1.5 : w.rect[2] + 0.5;
+      lines.push({ page: w.page, rect: [x, w.rect[1], x + 2, w.rect[3]] });
+      add(w.page, { rect: [x, w.rect[1], x + 2, w.rect[3]], cls: "del" });
+    }
+    if (lines.length) changeList.push(lines[0]);
+  }
+}
+
+// Regenerated figures: the text diff can't see them, so compare the included graphics files'
+// hashes between builds and outline the changed ones (placed by SyncTeX at their \includegraphics).
+let graphicsHashes = null;
+async function changedFigures(d, variant) {
+  const list = await (await fetch(`graphics/${encodeURIComponent(file)}`)).json();
+  const before = graphicsHashes;
+  graphicsHashes = new Map(list.map((g) => [g.file, g.hash]));
+  if (!before) return [];
+  const found = [];
+  for (const g of list.filter((g) => before.get(g.file) !== g.hash)) {
+    const r = await fetch(`forward?${new URLSearchParams({ file: g.src, line: g.line, ...(variant === "clean" ? { clean: 1 } : {}) })}`);
+    if (!r.ok) continue;
+    const t = await r.json();
+    const [, , W, H] = (await d.getPage(t.page)).view;
+    found.push({ page: t.page, file: g.file, rect: [Math.max(0, t.x), H - t.y - t.h, Math.min(W, t.x + t.w), H - t.y] });
+  }
+  return found;
+}
+function goToChange(step) {
+  if (!changeList.length) return;
+  changeIndex = (changeIndex + step + changeList.length) % changeList.length;
+  const c = changeList[changeIndex];
+  $("changeCount").textContent = `${changeIndex + 1} / ${changeList.length} changes`;
+  reveal(c.page, [c.rect[0] - 2, c.rect[1] - 2, c.rect[2] + 2, c.rect[3] + 2]);
+}
+$("nextChange").onclick = () => goToChange(1);
+$("prevChange").onclick = () => goToChange(-1);
+$("clearChanges").onclick = () => { marks.changes.clear(); changeList = []; $("changes").hidden = true; drawAllMarks(); };
+
+// Where to cut: paragraphs whose last line holds only a word or two, and large empty bands in the
+// text column (around figures and tables, or a page that ends early), in the main text of the PDF
+// as shown. Each spot estimates the lines it would give back.
+let cutOn = !!localStorage.getItem("latex-live:cut"), cutList = [], cutIndex = -1;
+const cutCache = new WeakMap();
+function cutSpots(d, r) {
+  if (!cutCache.has(d)) cutCache.set(d, findCutSpots(d, r));
+  return cutCache.get(d);
+}
+const LEADING = 11; // ICLR: 10pt type on 11pt lines
+async function findCutSpots(d, r) {
+  const spots = [];
+  for (let p = r.first; p <= r.page; p++) {
+    const { H, lines } = await textLines(d, p);
+    const end = p === r.page ? r.endTop : H - MARGIN + 12;
+    const body = lines.filter((l) => l.str.length > 60);
+    if (body.length < 3) continue;
+    const lefts = {};
+    for (const l of body) lefts[Math.round(l.left)] = (lefts[Math.round(l.left)] || 0) + 1;
+    const colLeft = +Object.entries(lefts).sort((a, b) => b[1] - a[1])[0][0];
+    const colRight = Math.max(...body.filter((l) => Math.abs(l.left - colLeft) < 2).map((l) => l.right));
+    for (let i = 1; i < lines.length; i++) {
+      const l = lines[i], prev = lines[i - 1], next = lines[i + 1];
+      if (l.top > end) break;
+      const short = l.str.split(/\s+/).length <= 2 || l.right - l.left < (colRight - colLeft) * 0.12;
+      if (!short || Math.abs(l.left - colLeft) > 1.5 || /^[\d\s.,%()–-]*$/.test(l.str)) continue;
+      // after a full justified line of the same paragraph, and not followed by more of it
+      if (prev.right < colRight - 3 || prev.str.length < 60 || prev.left < colLeft - 1.5 || l.top - prev.top > LEADING + 3) continue;
+      if (next && next.top - l.top < LEADING + 2 && Math.abs(next.left - colLeft) < 1.5) continue;
+      const h = Math.max(...l.parts.map((q) => q.h));
+      spots.push({ page: p, top: l.top, lines: 1, label: "1 line", text: `“${l.str}” alone on a paragraph's last line`,
+                   rect: [l.left - 1, H - l.top - h * 0.3, colRight, H - l.top + h * 0.9] });
+    }
+    // Empty bands: rows of the text column with nothing drawn in them, well beyond a paragraph break.
+    const page = await d.getPage(p);
+    const viewport = page.getViewport({ scale: 1 });
+    const canvas = el("canvas", { width: Math.ceil(viewport.width), height: Math.ceil(viewport.height) });
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    await page.render({ canvasContext: ctx, viewport, annotationMode: pdfjsLib.AnnotationMode.DISABLE }).promise;
+    const x0 = Math.max(0, Math.floor(colLeft - 2)), x1 = Math.min(canvas.width, Math.ceil(colRight + 2));
+    const y0 = Math.floor(MARGIN), y1 = Math.min(canvas.height, Math.ceil(end));
+    if (y1 - y0 < 30) continue;
+    const { data } = ctx.getImageData(x0, y0, x1 - x0, y1 - y0);
+    const w = x1 - x0;
+    let run = null;
+    for (let y = 0; y <= y1 - y0; y++) {
+      let blank = y < y1 - y0;
+      for (let x = 0; blank && x < w; x++) {
+        const k = (y * w + x) * 4;
+        if (data[k + 3] > 0 && (data[k] < 235 || data[k + 1] < 235 || data[k + 2] < 235)) blank = false;
+      }
+      if (blank) { run ??= y; continue; }
+      const gap = run === null ? 0 : y - run;
+      const n = Math.round((gap - 10) / LEADING); // a paragraph break leaves ~10pt
+      if (gap > 28 && n >= 1) {
+        const top = y0 + run, bottom = y0 + y, atEnd = y === y1 - y0 && p < r.page;
+        spots.push({ page: p, top, lines: n, label: `≈${n} line${n === 1 ? "" : "s"}`,
+                     text: `${Math.round(gap)} pt of empty space ${atEnd ? "at the bottom of the page" : "in the text column"}`,
+                     rect: [colLeft, H - bottom, colRight, H - top] });
+      }
+      run = null;
+    }
+  }
+  return spots.sort((a, b) => a.page - b.page || a.top - b.top);
+}
+async function updateCut() {
+  $("cut").classList.toggle("on", cutOn);
+  const d = doc, r = displayedResult();
+  marks.cut.clear();
+  cutList = [];
+  cutIndex = -1;
+  if (cutOn && d && r) {
+    const spots = await cutSpots(d, r);
+    if (d !== doc || !cutOn) return;
+    cutList = spots;
+    for (const s of spots) {
+      if (!marks.cut.has(s.page)) marks.cut.set(s.page, []);
+      marks.cut.get(s.page).push({ rect: s.rect, cls: "cut", label: s.label });
+    }
+    const lines = spots.reduce((n, s) => n + s.lines, 0);
+    $("cutCount").textContent = spots.length ? `${spots.length} spot${spots.length === 1 ? "" : "s"} · ≈${lines} line${lines === 1 ? "" : "s"}` : "nothing to cut";
+  }
+  $("cutNav").hidden = !cutOn || !r;
+  drawAllMarks();
+}
+function goToCut(step) {
+  if (!cutList.length) return;
+  cutIndex = (cutIndex + step + cutList.length) % cutList.length;
+  const s = cutList[cutIndex];
+  $("cutCount").textContent = `${cutIndex + 1} / ${cutList.length}: ${s.label}`;
+  reveal(s.page, s.rect);
+}
+$("cut").onclick = () => { cutOn = !cutOn; localStorage.setItem("latex-live:cut", cutOn ? "1" : ""); updateCut(); };
+$("nextCut").onclick = () => goToCut(1);
+$("prevCut").onclick = () => goToCut(-1);
+$("cut").hidden = isDiff;
+
+// Unresolved references and citations render as "??": outline them in red.
+function showUnresolved(words) {
+  marks.unresolved.clear();
+  for (const w of words) {
+    if (!w.s.includes("??")) continue;
+    if (!marks.unresolved.has(w.page)) marks.unresolved.set(w.page, []);
+    marks.unresolved.get(w.page).push({ rect: [w.rect[0] - 1, w.rect[1] - 1, w.rect[2] + 1, w.rect[3] + 1], cls: "unres" });
+  }
+}
+
+// Hover previews: hovering an internal link (\ref, \cref, a citation) shows the part of the page
+// it points to: a figure or table down to the end of its caption, a bibliography entry, the
+// start of a section, or a few lines at an equation.
+const preview = $("preview");
+let hoverTimer = null, hideTimer = null, hoverLink = null, previewToken = 0;
+container.addEventListener("mouseover", (e) => {
+  const a = e.target.closest?.(".annotationLayer a[href^='#']");
+  if (!a || a === hoverLink) return;
+  hoverLink = a;
+  clearTimeout(hoverTimer);
+  clearTimeout(hideTimer);
+  hoverTimer = setTimeout(() => showPreview(a).catch((err) => console.warn(err)), 250);
+});
+container.addEventListener("mouseout", (e) => {
+  const a = e.target.closest?.(".annotationLayer a");
+  if (!a || (e.relatedTarget && (a.contains(e.relatedTarget) || preview.contains(e.relatedTarget)))) return;
+  hoverLink = null;
+  clearTimeout(hoverTimer);
+  hideTimer = setTimeout(hidePreview, 200);
+});
+preview.addEventListener("mouseenter", () => clearTimeout(hideTimer));
+preview.addEventListener("mouseleave", () => { hideTimer = setTimeout(hidePreview, 200); });
+container.addEventListener("scroll", () => hidePreview(), { passive: true });
+function hidePreview() {
+  previewToken++;
+  hoverLink = null;
+  clearTimeout(hoverTimer);
+  preview.hidden = true;
+}
+async function showPreview(a) {
+  const token = ++previewToken;
+  const hash = unescape(a.getAttribute("href").slice(1)); // PDFLinkService.getDestinationHash escapes
+  let dest = null, name = null;
+  if (hash.startsWith("[")) { try { dest = JSON.parse(hash); } catch { return; } }
+  else { name = hash; dest = await doc.getDestination(hash); }
+  if (!Array.isArray(dest)) return;
+  const index = typeof dest[0] === "object" && dest[0] ? await doc.getPageIndex(dest[0]) : dest[0];
+  if (!(index >= 0)) return;
+  const page = await doc.getPage(index + 1);
+  const [, , W, H] = page.view;
+  const kind = dest[1]?.name;
+  const destY = kind === "XYZ" ? dest[3] : kind === "FitH" || kind === "FitBH" ? dest[2] : null;
+  const top = destY == null ? MARGIN : H - destY;
+  const [t0, t1, x0, x1] = await previewRegion(name?.split(".")[0] || "", index + 1, top, W, H);
+  const scale = Math.min(620 / (x1 - x0), (window.innerWidth - 40) / (x1 - x0), (window.innerHeight * 0.6) / (t1 - t0));
+  const dpr = window.devicePixelRatio || 1;
+  const viewport = page.getViewport({ scale: scale * dpr, offsetX: -x0 * scale * dpr, offsetY: -t0 * scale * dpr });
+  const canvas = el("canvas", { width: Math.ceil((x1 - x0) * scale * dpr), height: Math.ceil((t1 - t0) * scale * dpr) });
+  Object.assign(canvas.style, { width: `${(x1 - x0) * scale}px`, height: `${(t1 - t0) * scale}px` });
+  await page.render({ canvasContext: canvas.getContext("2d"), viewport, annotationMode: pdfjsLib.AnnotationMode.DISABLE }).promise;
+  if (token !== previewToken) return;
+  preview.replaceChildren(canvas, el("div", { className: "hint", textContent: `page ${index + 1} · click to go there` }));
+  preview.onclick = () => linkService.goToDestination(dest);
+  preview.hidden = false;
+  const r = a.getBoundingClientRect(), pw = preview.offsetWidth, ph = preview.offsetHeight;
+  preview.style.left = `${Math.max(8, Math.min(window.innerWidth - pw - 8, r.left - 40))}px`;
+  preview.style.top = `${r.bottom + 6 + ph < window.innerHeight ? r.bottom + 6 : Math.max(40, r.top - ph - 6)}px`;
+}
+// The region to show, [top, bottom, left, right] in points from the page's top-left.
+async function previewRegion(kind, pageNumber, top, W, H) {
+  const { lines } = await textLines(doc, pageNumber);
+  const body = lines.filter((l) => l.str.length > 20);
+  const left = Math.max(0, Math.min(...body.map((l) => l.left), W * 0.2) - 8);
+  const right = Math.min(W, Math.max(...body.map((l) => l.right), W * 0.8) + 8);
+  const below = lines.filter((l) => l.top > top - 2);
+  const paragraphEnd = (i, gap) => { // last line of the block starting at below[i]
+    while (i + 1 < below.length && below[i + 1].top - below[i].top < gap) i++;
+    return below[i].top;
+  };
+  let t0 = top - 4, t1 = top + 140;
+  if (kind === "cite" && below.length) {
+    // One entry: continuation lines are indented (hanging indent) until the next entry starts.
+    const first = below[0];
+    let i = 0;
+    while (i + 1 < below.length && below[i + 1].left > first.left + 2 && below[i + 1].top - below[i].top < 20) i++;
+    t0 = first.top - first.parts[0].h - 3;
+    t1 = below[i].top + 4;
+  } else if (kind === "figure" || kind === "table") {
+    const i = below.findIndex((l) => /^(Figure|Fig\.|Table)\s*[A-Z]?\d+\s*[:.]/.test(l.str));
+    t0 = top - 2;
+    t1 = i >= 0 ? paragraphEnd(i, 16) + 4 : top + H * 0.45;
+    if (kind === "table" && i >= 0 && below[i].top - top < 30) t1 = paragraphEnd(i, 19) + 4; // caption above the table
+  } else if (kind === "equation" || kind === "AMS") {
+    t0 = top - 6; t1 = top + 44;
+  } else if (/section|paragraph|appendix|chapter|part/.test(kind)) {
+    t0 = top - 2; t1 = top + 110;
+  }
+  t1 = Math.min(H, Math.max(t1, t0 + 20), t0 + H * 0.75);
+  return [Math.max(0, t0), t1, left, right];
+}
+
+// Compare: latexdiff against a commit (live.py builds <doc>-diff.pdf), shown in its own tab.
+$("compare").onclick = async () => {
+  const panel = $("comparePanel");
+  if (!panel.hidden) return (panel.hidden = true);
+  const r = $("compare").getBoundingClientRect();
+  panel.style.left = `${Math.min(r.left, window.innerWidth - 450)}px`;
+  panel.replaceChildren(el("div", { className: "head", textContent: "Loading commits…" }));
+  panel.hidden = false;
+  const { dirty, commits } = await (await fetch("commits")).json();
+  const row = (rev, date, text, title) => {
+    const div = el("div", { className: "commit", title }, el("span", { className: "rev", textContent: rev }),
+                   el("span", { className: "date", textContent: date }), el("span", { textContent: text }));
+    div.onclick = () => startDiff(rev);
+    return div;
+  };
+  panel.replaceChildren(el("div", { className: "head", textContent: "Show changes since… (latexdiff of the .tex files against the working tree; opens a new tab)" }),
+    ...(dirty ? [row("HEAD", "", "uncommitted edits only", "the last commit vs. the working tree")] : []),
+    ...commits.map((c) => row(c.rev, c.date, `${c.subject} — ${c.author}`, `${c.rev} ${c.date} ${c.author}: ${c.subject}`)));
+};
+async function startDiff(rev) {
+  $("comparePanel").hidden = true;
+  const r = await fetch(`diff?${new URLSearchParams({ rev })}`);
+  if (!r.ok && r.status !== 409) return setStatus((await r.json()).error, "error");
+  const url = `viewer.html?${new URLSearchParams({ file: docFile.replace(/\.pdf$/, "-diff.pdf") })}`;
+  if (isDiff) return; // this tab already shows the diff; it reloads when the new one is built
+  if (!window.open(url, "latex-live-diff")) location.href = url;
+}
+if (isDiff) {
+  $("compare").textContent = "Compare with…";
+  $("compare").title = "latexdiff against another commit";
+}
+function showDiffInfo(d) {
+  if (!isDiff || !d?.sha) return;
+  const info = $("diffInfo");
+  const again = el("button", { textContent: "Rebuild", title: "Diff the same commit against the current files" });
+  again.onclick = () => startDiff(d.rev);
+  const paper = el("a", { textContent: "↩ paper", href: `viewer.html?${new URLSearchParams({ file: docFile })}` });
+  info.replaceChildren(`changes since ${d.rev} `, again, " ", paper);
+  info.title = `latexdiff of commit ${d.sha} against the working tree`;
+  info.hidden = false;
+}
+
+const assets = {
+  // Absolute URLs: the worker would resolve relative ones against pdfjs/build/.
+  cMapUrl: new URL("pdfjs/cmaps/", location.href).href,
+  cMapPacked: true,
+  standardFontDataUrl: new URL("pdfjs/standard_fonts/", location.href).href,
+};
+let doc = null;
+let shown = null;
+let loading = false;
+let forwardSeq = null;
+let wordsPromise = null;
+let buildVersion = null;
+
+async function load(name, version, variant, info) {
+  // Fetch and parse the new PDF before swapping, so the old one stays visible meanwhile.
+  const next = await pdfjsLib.getDocument({ url: `pdf/${encodeURIComponent(name)}?v=${version}`, ...assets }).promise;
+  // Text changes only within one build (the notes-free one differs from the live one everywhere).
+  const oldWords = variant === shownVariant && wordsPromise && await wordsPromise.catch(() => null);
+  if (doc) restore = { scale: viewer.currentScaleValue, top: container.scrollTop, left: container.scrollLeft };
+  pagesReady = false;
+  marginAnchors = new Map();
+  if (variant !== "clean") setGutter(false);
+  else if (marginOn && !isDiff) setGutter(true); // (dropped again if there are no notes)
+  hidePreview();
+  viewer.setDocument(next);
+  linkService.setDocument(next);
+  doc?.destroy();
+  doc = next;
+  shownVariant = variant;
+  showMarginButton();
+  marks.cut.clear();
+  lastQuery = null; // the find controller starts over with the new document
+  $("findCount").textContent = "";
+  $("count").textContent = next.numPages;
+  setStatus(`updated ${new Date().toLocaleTimeString()}`, "fresh");
+  setTimeout(() => $("status").classList.remove("fresh"), 1500);
+  wordsPromise = docWords(next);
+  const figures = isDiff ? [] : changedFigures(next, variant).catch((e) => { console.warn(e); return []; });
+  Promise.all([wordsPromise, figures]).then(([words, figs]) => { showUnresolved(words); showChanges(oldWords, words, figs); })
+    .catch((e) => console.warn(e));
+  renderOutline().catch(() => {});
+  if (!isDiff) loadNotes().catch(() => {});
+  if (!isDiff && variant === "clean") loadMargin(next).catch((e) => { console.warn(e); setGutter(false); });
+  const refs = variant === "clean" ? info.clean.refs : info.refs;
+  if (refs && info.pageLimit) {
+    checkPages(next, refs, info.pageLimit).then((r) => {
+      setResult(variant, version, r);
+      renderPages(); refreshTab(); fillSectionPages(); updateCut();
+    }).catch((e) => console.warn(e));
+  } else {
+    setResult(variant, version, null);
+    renderPages();
+    refreshTab();
+    updateCut();
+  }
+}
+
+async function poll() {
+  if (loading) return;
+  try {
+    const r = await fetch(`status/${encodeURIComponent(file)}`, { cache: "no-store" });
+    if (r.status === 404) throw new Error("server is older than this viewer: restart the LaTeX build task");
+    if (!r.ok) throw new Error(`status ${r.status}`);
+    const info = await r.json();
+    showBuild(info.building ? null : info.build);
+    showDiffInfo(info.diff);
+    if (info.building) setStatus(isDiff ? "building diff…" : "building…", "busy");
+    else if ($("status").className === "busy") setStatus(info.build?.ok === false ? "build failed" : "", info.build?.ok === false ? "error" : "");
+    if (!info.version) return info.building || setStatus(`waiting for ${file}…`);
+    buildVersion = info.version;
+    $("notesView").hidden = isDiff || !info.clean?.version;
+    const clean = !isDiff && view === "clean" && info.clean?.version ? info.clean : null;
+    const want = clean ? `clean:${clean.version}` : info.version;
+    if (want !== shown) {
+      loading = true;
+      await load(clean ? cleanFile : file, clean ? clean.version : info.version, clean ? "clean" : "notes", info);
+      shown = want;
+    }
+    if (info.pageLimit && !measuring) { // the page count of the build that is not on screen
+      if (shownVariant === "notes" && info.clean?.refs && info.clean.version !== cleanShown) measureVariant("clean", info);
+      else if (shownVariant === "clean" && info.refs && info.version !== notesShown) measureVariant("notes", info);
+    }
+    const fwd = info.forward;
+    if (fwd && fwd.seq !== forwardSeq) {
+      // On first load, only honor a request from the last few seconds (not a stale one).
+      const target = shownVariant === "clean" ? fwd.clean : fwd;
+      if (target && (forwardSeq !== null || Date.now() / 1000 - fwd.seq < 5)) showForward(target);
+      forwardSeq = fwd.seq;
+    } else if (forwardSeq === null) {
+      forwardSeq = 0;
+    }
+  } catch (err) {
+    setStatus(`${err.message || err} (retrying)`, "error");
+  } finally {
+    loading = false;
+  }
+}
+if (localStorage.getItem("latex-live:side")) showSide(true);
+poll();
+setInterval(poll, 500);
+</script>
+</body>
+</html>
