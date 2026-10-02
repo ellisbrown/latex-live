@@ -5,8 +5,8 @@
      notes), search, back/forward, hover previews of references, highlights of what changed in
      the last build (text and regenerated figures), a "where to cut" overlay, a switch to the
      notes-free build (with the notes as bubbles in a margin, wired to where they sit), and a
-     sidebar with the outline (pages per section), page thumbnails, the notes, and a
-     pre-submission check. With file=<doc>-diff.pdf it shows a latexdiff built by
+     sidebar with the numbered outline (pages per section), page thumbnails, the notes, a
+     pre-submission check, and the figures and tables. With file=<doc>-diff.pdf it shows a latexdiff built by
      live.py. -->
 <html>
 <head>
@@ -63,13 +63,13 @@
   #comparePanel .rev { font-family: ui-monospace, monospace; color: #9cf; }
   #comparePanel .date { opacity: 0.6; }
 
-  /* Sidebar: outline, page thumbnails, notes, checks. */
+  /* Sidebar: outline, page thumbnails, notes, checks, figures and tables. */
   #side { position: absolute; top: 32px; left: 0; bottom: 0; width: 290px; display: flex; flex-direction: column;
           background: #2a2d2f; color: #ddd; box-sizing: border-box; }
   #side[hidden] { display: none; }
   #tabs { display: flex; border-bottom: 1px solid #3d4245; flex: none; }
   #tabs button { flex: 1; background: none; color: #bbb; border: 0; border-bottom: 2px solid transparent;
-                 padding: 7px 2px 5px; cursor: pointer; font: inherit; }
+                 padding: 7px 2px 5px; cursor: pointer; font: inherit; white-space: nowrap; }
   #tabs button:hover { color: #fff; }
   #tabs button.on { color: #fff; border-bottom-color: #4a90d9; }
   #tabs button[hidden] { display: none; }
@@ -82,6 +82,7 @@
   #outline > ul { padding-left: 4px; }
   #outline li > span { display: flex; gap: 6px; padding: 3px 8px; border-radius: 3px; cursor: pointer; white-space: nowrap; }
   #outline .t { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  #outline .num { flex: none; opacity: 0.6; font-variant-numeric: tabular-nums; }
   #outline .pp { flex: none; font-size: 11px; opacity: 0.55; font-variant-numeric: tabular-nums; }
   #outline li > span:hover { background: #3d4245; }
   #outline li.minor > span { font-size: 12px; opacity: 0.7; padding-top: 1px; padding-bottom: 1px; }
@@ -94,7 +95,7 @@
   .thumb .over { position: absolute; left: 0; right: 0; top: 0; background: rgba(220, 40, 40, 0.28); }
   .thumb.last-allowed .img { box-shadow: 0 1px 3px #0008, 0 4px 0 -1px #e04040; }
   .thumb .tag { color: #f88; }
-  #notes .filters, #checks .toolbar { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 10px 8px; align-items: center; }
+  #notes .filters, #checks .toolbar, #figures .filters { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 10px 8px; align-items: center; }
   .chip { border-radius: 10px; padding: 1px 8px; font-size: 11px; cursor: pointer; color: #111; font-weight: 600; user-select: none; }
   .chip.off { opacity: 0.3; }
   .note { padding: 6px 10px; cursor: pointer; border-top: 1px solid #33373a; }
@@ -103,6 +104,14 @@
   .note .where, .check .where { font-size: 11px; color: #9cf; cursor: pointer; }
   .note .where:hover, .check .where:hover { text-decoration: underline; }
   .note .who { float: right; }
+  .float { padding: 8px 10px; cursor: pointer; border-top: 1px solid #33373a; }
+  .float:hover { background: #3d4245; }
+  .float .head { display: flex; gap: 6px; font-size: 12px; }
+  .float .head .pg { margin-left: auto; font-size: 11px; opacity: 0.55; }
+  .float .crop { margin-top: 5px; background: #fff; box-shadow: 0 1px 3px #0008; }
+  .float .crop canvas { display: block; width: 100%; }
+  .float .cap { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+                margin-top: 4px; font-size: 11px; opacity: 0.75; }
   #checks button { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 8px; cursor: pointer; }
   #checks .when { font-size: 11px; opacity: 0.6; }
   .check { border-top: 1px solid #33373a; }
@@ -161,7 +170,7 @@
 </head>
 <body>
 <div id="bar">
-  <button id="toggleSide" title="Sidebar: outline, pages, notes, checks">&#9776;</button>
+  <button id="toggleSide" title="Sidebar: outline, pages, notes, checks, figures">&#9776;</button>
   <select id="docPick" title="Main document: build another root .tex file" hidden></select>
   <button id="back" title="Back (Alt+&larr; or Cmd+[)" disabled>&larr;</button>
   <button id="forward" title="Forward (Alt+&rarr; or Cmd+])" disabled>&rarr;</button>
@@ -209,11 +218,13 @@
     <button data-tab="thumbs">Pages</button>
     <button data-tab="notes">Notes <span class="n"></span></button>
     <button data-tab="checks">Checks <span class="n"></span></button>
+    <button data-tab="figures" title="Figures and tables">Figures</button>
   </div>
   <nav id="outline" class="panel" hidden></nav>
   <div id="thumbs" class="panel" hidden></div>
   <div id="notes" class="panel" hidden></div>
   <div id="checks" class="panel" hidden></div>
+  <div id="figures" class="panel" hidden></div>
 </aside>
 <div id="viewerContainer"><div id="viewer" class="pdfViewer"></div></div>
 <div id="preview" hidden></div>
@@ -284,8 +295,8 @@ $("dark").onclick = () => { setToggle("dark", !document.body.classList.contains(
 if (localStorage.getItem("latex-live:dark")) { document.body.classList.add("dark"); $("dark").classList.add("on"); }
 
 let tab = localStorage.getItem("latex-live:tab") || "outline";
-if (isDiff && (tab === "notes" || tab === "checks")) tab = "outline";
-for (const name of ["notes", "checks"]) document.querySelector(`#tabs [data-tab=${name}]`).hidden = isDiff;
+if (isDiff && (tab === "notes" || tab === "checks" || tab === "figures")) tab = "outline";
+for (const name of ["notes", "checks", "figures"]) document.querySelector(`#tabs [data-tab=${name}]`).hidden = isDiff;
 $("toggleSide").onclick = () => showSide($("side").hidden);
 for (const b of document.querySelectorAll("#tabs button")) b.onclick = () => showTab(b.dataset.tab);
 function showSide(on) {
@@ -306,6 +317,7 @@ const sideOpen = (name) => !$("side").hidden && tab === name;
 function refreshTab() {
   if (!doc) return;
   if (sideOpen("thumbs")) renderThumbs();
+  if (sideOpen("figures")) renderFloats().catch((e) => console.warn(e));
   if (sideOpen("checks") && checksVersion !== `${buildVersion}/${shown}`) runChecks();
 }
 
@@ -534,8 +546,9 @@ function showBuild(build) {
   banner.hidden = false;
 }
 
-// Outline, rebuilt on each reload: the PDF's bookmarks (hyperref), or else the .toc entries from
-// live.py (e.g. this ICLR draft, whose restored \addcontentsline skips hyperref).
+// Outline, rebuilt on each reload: the PDF's bookmarks (hyperref), or else the contents entries
+// from live.py (e.g. this ICLR draft, whose restored \addcontentsline skips hyperref). Headings show
+// their numbers from the build (live.py), appendix letters included.
 // Each heading shows how many pages its section takes (up to the end of the main text for the
 // last main-text section).
 let outlineRows = [];
@@ -547,7 +560,8 @@ async function renderOutline() {
       const li = el("li");
       li.classList.toggle("minor", !!item.minor);
       const pp = el("span", { className: "pp" });
-      const span = el("span", { title: item.title }, el("span", { className: "t", textContent: item.title }), pp);
+      const span = el("span", { title: item.title }, ...(item.num ? [el("span", { className: "num", textContent: item.num })] : []),
+                      el("span", { className: "t", textContent: item.title }), pp);
       span.onclick = () => (item.dest ? linkService.goToDestination(item.dest) : goToHeading(item));
       outlineRows.push({ item, depth, pp });
       li.append(span);
@@ -556,8 +570,12 @@ async function renderOutline() {
     }
     return ul;
   };
-  let outline = await doc.getOutline();
-  if (!outline?.length) outline = nest(await (await fetch(`outline/${encodeURIComponent(shownVariant === "clean" ? cleanFile : file)}`)).json());
+  const d = doc;
+  const entries = await (await fetch(`outline/${encodeURIComponent(shownVariant === "clean" ? cleanFile : file)}`)).json().catch(() => []);
+  let outline = await d.getOutline();
+  if (d !== doc) return;
+  if (outline?.length) numberBookmarks(outline, entries);
+  else outline = nest(entries);
   const nav = $("outline");
   const scroll = nav.scrollTop;
   nav.replaceChildren(outline.length ? build(outline, 0) : el("div", { className: "empty", textContent: "No outline: the PDF has no bookmarks and the build no .toc." }));
@@ -592,7 +610,28 @@ async function fillSectionPages() {
   });
 }
 
-// Flat .toc entries ({level, title, page, dest}) to a bookmark-style tree.
+// Bookmarks get their headings' numbers: matched by destination, else by title in reading order
+// (unless the title already starts with it, as with hyperref's bookmarksnumbered).
+function numberBookmarks(items, entries) {
+  const byDest = new Map();
+  for (const e of entries) if (e.dest && !byDest.has(e.dest)) byDest.set(e.dest, e); // (later entries without an anchor of their own reuse the last one)
+  const key = (s) => s.replace(/\s+/g, " ").trim().toLowerCase();
+  let from = 0;
+  const walk = (list) => {
+    for (const item of list) {
+      let e = typeof item.dest === "string" ? byDest.get(item.dest) : null;
+      if (!e) {
+        const i = entries.findIndex((x, k) => k >= from && key(x.title) === key(item.title));
+        if (i >= 0) [e, from] = [entries[i], i + 1];
+      }
+      if (e?.num && !item.title.startsWith(`${e.num} `)) item.num = e.num;
+      walk(item.items || []);
+    }
+  };
+  walk(items);
+}
+
+// Flat contents entries ({level, num, title, page, dest}) to a bookmark-style tree.
 function nest(entries) {
   const root = { level: -1, items: [] }, stack = [root];
   for (const e of entries) {
@@ -623,7 +662,8 @@ async function headingPos(d, entry, from = null) {
   const labels = await d.getPageLabels();
   const index = labels?.includes(entry.page) ? labels.indexOf(entry.page) : +entry.page - 1;
   if (!(index >= 0 && index < d.numPages)) return null;
-  const [, number, text] = entry.title.match(/^(?:([A-Z]?[\d.]*\d|[A-Z])\s+)?(.*)$/);
+  const [, titleNumber, text] = entry.title.match(/^(?:([A-Z]?[\d.]*\d|[A-Z])\s+)?(.*)$/);
+  const number = entry.num || titleNumber;
   const key = norm(text).slice(-20); // the end of the title: its start may be a symbol or macro
   const pages = [index, index - 1, index + 1, index - 2];
   for (const i of pages.filter((i) => i >= (from ?? 0) && i < d.numPages)) {
@@ -851,6 +891,68 @@ function renderNotes() {
   });
   panel.replaceChildren(...(noteList.length ? [filters, ...items] : [el("div", { className: "empty", textContent: "No inline notes in the source." })]));
   panel.scrollTop = scroll;
+}
+
+// Figures and tables (live.py /floats), each cropped from its page as it scrolls into view; click one
+// to go there. The chips show only figures or only tables.
+let floatsKey = null, floatObserver = null, floatKind = localStorage.getItem("latex-live:floatKind") || "all";
+async function renderFloats() {
+  const key = `${docSeq}/${floatKind}`;
+  if (floatsKey === key) return;
+  floatsKey = key;
+  const d = doc, panel = $("figures");
+  const list = await (await fetch(`floats/${encodeURIComponent(shownVariant === "clean" ? cleanFile : file)}`)).json();
+  if (d !== doc || floatsKey !== key) return;
+  floatObserver?.disconnect();
+  floatObserver = new IntersectionObserver((seen) => {
+    for (const e of seen) {
+      if (!e.isIntersecting || e.target.dataset.done) continue;
+      e.target.dataset.done = "1";
+      drawFloat(d, e.target, list[+e.target.dataset.i]).catch((err) => console.warn(err));
+    }
+  }, { root: panel, rootMargin: "400px" });
+  const count = (kind) => list.filter((f) => f.kind === kind).length;
+  const filters = el("div", { className: "filters" });
+  for (const [kind, text, color] of [["all", `All ${list.length}`, "#ccc"], ["figure", `Figures ${count("figure")}`, "#9cf"],
+                                     ["table", `Tables ${count("table")}`, "#fc9"]]) {
+    const chip = el("span", { className: `chip${floatKind === kind ? "" : " off"}`, textContent: text });
+    chip.style.background = color;
+    chip.onclick = () => { floatKind = kind; localStorage.setItem("latex-live:floatKind", kind); renderFloats(); };
+    filters.append(chip);
+  }
+  const scroll = panel.scrollTop;
+  const cards = [];
+  list.forEach((f, i) => {
+    if (floatKind !== "all" && f.kind !== floatKind) return;
+    const name = `${f.kind === "table" ? "Table" : "Figure"} ${f.num ?? "?"}`;
+    const where = el("span", { className: "where", textContent: `${f.file.replace(/^.*\//, "")}:${f.line}`, title: `Open ${f.file}:${f.line} in VS Code` });
+    where.onclick = (e) => { e.stopPropagation(); openSource(f.file, f.line); };
+    const crop = el("div", { className: "crop" });
+    const [x0, y0, x1, y1] = f.box;
+    crop.style.aspectRatio = `${x1 - x0 + 8} / ${y1 - y0 + 8}`;
+    const card = el("div", { className: "float", title: `${name}: show in the PDF` },
+                    el("div", { className: "head" }, el("b", { textContent: name }), where, el("span", { className: "pg", textContent: `p. ${f.label ?? f.page}` })),
+                    crop, el("div", { className: "cap", textContent: f.caption }));
+    card.dataset.i = i;
+    card.onclick = () => {
+      const H = viewer.getPageView(f.page - 1)?.pdfPage?.view[3] ?? area.H;
+      reveal(f.page, [x0 - 2, H - y1 - 2, x1 + 2, H - y0 + 2]);
+    };
+    cards.push(card);
+    floatObserver.observe(card);
+  });
+  panel.replaceChildren(filters, ...(cards.length ? cards : [el("div", { className: "empty", textContent: list.length ? "None of this kind." : "No figures or tables found in the build." })]));
+  panel.scrollTop = scroll;
+}
+async function drawFloat(d, card, f) {
+  const page = await d.getPage(f.page);
+  const [x0, y0, x1, y1] = f.box, pad = 4;
+  const crop = card.querySelector(".crop");
+  const scale = crop.clientWidth * (window.devicePixelRatio || 1) / (x1 - x0 + 2 * pad);
+  const viewport = page.getViewport({ scale, offsetX: -(x0 - pad) * scale, offsetY: -(y0 - pad) * scale });
+  const canvas = el("canvas", { width: Math.ceil((x1 - x0 + 2 * pad) * scale), height: Math.ceil((y1 - y0 + 2 * pad) * scale) });
+  await page.render({ canvasContext: canvas.getContext("2d"), viewport, annotationMode: pdfjsLib.AnnotationMode.DISABLE }).promise;
+  crop.replaceChildren(canvas);
 }
 
 // Margin notes: in the notes-free view, each note as a bubble in a gutter right of its page, wired

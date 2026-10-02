@@ -36,7 +36,10 @@ The plan below makes it a general tool.
   arrows (or `,` and `.`) step through them.
 - **Space hints (✂).** Marks short last lines and large blank gaps.
 - **Sidebar:**
-  - an outline, with pages per section;
+  - an outline, numbered as in the paper (appendix letters too), with pages per
+    section;
+  - every figure and table, cropped from its page, with its caption; click
+    one to go to it;
   - page thumbnails, with over-limit pages shaded;
   - notes grouped by author;
   - pre-submission checks: anonymity, draft switches, undefined references,

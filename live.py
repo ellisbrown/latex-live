@@ -20,12 +20,12 @@ Usage (from a paper root):  live.py [<doc>[.tex]] [--port 44100] [--page-limit N
   source line (SyncTeX inverse search, via `code -g`); forward.py does the
   reverse (source line -> highlighted spot in the viewer). The viewer also shows
   build status (click an error to open it), a page-limit check (also without
-  the inline notes, from a background build), search, an outline, page
-  thumbnails, the notes and a pre-submission check (including stale generated
-  figures and consistency lints) in a sidebar, hover previews of references,
-  highlights of what changed since the last build (text and figures), hints on
-  where to save space, a notes-free view, and a latexdiff against any git
-  commit. On a remote machine, forward the port (e.g. in VS Code's Ports panel)
+  the inline notes, from a background build), search, a numbered outline, page
+  thumbnails, the notes, the figures and tables, and a pre-submission check
+  (including stale generated figures and consistency lints) in a sidebar, hover
+  previews of references, highlights of what changed since the last build (text
+  and figures), hints on where to save space, a notes-free view, and a latexdiff
+  against any git commit. On a remote machine, forward the port (e.g. in VS Code's Ports panel)
   and open the localhost URL; with LATEX_LIVE_HOST set, a direct URL on that host
   is printed too (e.g. a name a tunnel exposes). Anything that reaches the port
   can send requests, so every request needs the token (kept in ./token next to
@@ -125,7 +125,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_response(302)
             self.send_header("Location", f"/viewer.html?file={urllib.parse.quote(self.server.default_pdf)}")
             self.end_headers()
-        elif path.startswith(("/pdf/", "/status/", "/outline/", "/notes/", "/check/", "/graphics/", "/margin/")):
+        elif path.startswith(("/pdf/", "/status/", "/outline/", "/notes/", "/check/", "/graphics/", "/margin/", "/floats/")):
             name = path.split("/", 2)[2]
             if not name.endswith(".pdf") or os.path.basename(name) != name:
                 return self.send_error(404)
@@ -143,6 +143,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 body = json.dumps(graphics(self.server.paper_root, doc_pdf)).encode()
             elif path.startswith("/margin/"):
                 body = json.dumps(margin_notes(self.server.paper_root, doc_pdf)).encode()
+            elif path.startswith("/floats/"):
+                body = json.dumps(floats(self.server.paper_root, doc_pdf, name.endswith("-clean.pdf"))).encode()
             elif os.path.isfile(pdf):
                 with open(pdf, "rb") as f:
                     body = f.read()
@@ -497,31 +499,171 @@ def tex_to_text(tex, macros, depth=0, typeset=False):
     return re.sub(r"\\([a-zA-Z@]+|.)\s*", macro, tex).replace("{", "").replace("}", "")
 
 
-def toc_outline(paper_root, pdf_name, clean=False):
-    """Outline entries [{level, title, page, dest}] from the .toc (of the notes-free build with
-    clean=True, whose pages differ), for PDFs without bookmarks.
-
-    \contentsline{type}{title}{page label}{anchor}: the anchor (a named destination) is
-    empty when hyperref doesn't handle the entry; the viewer then finds the title on the page.
-    """
-    try:
-        with open((clean_file if clean else job_file)(paper_root, pdf_name, ".toc"), errors="replace") as f:
-            text = f.read()
-    except OSError:
-        return []
-    macros = project_macros(paper_root, job_file(paper_root, pdf_name, ".fls"))
-    entries, i = [], 0
+def contents_lines(text):
+    """The \\contentsline{type}{title}{page label}{anchor} entries in text, as argument lists."""
+    found, i = [], 0
     while (i := text.find("\\contentsline", i)) >= 0:
         args, i = [], i + len("\\contentsline")
         while len(args) < 4 and (j := text.find("{", i)) >= 0 and not text[i:j].strip():
             arg, i = brace_group(text, j)
             args.append(arg)
-        if len(args) == 4 and args[0] in TOC_LEVELS:
-            title = tex_to_text(re.sub(r"\\numberline\s*\{([^}]*)\}", r"\1  ", args[1]), macros)
-            title = re.sub(r" ([:;,.?!)])", r"\1", " ".join(title.split()))
-            entries.append({"level": TOC_LEVELS[args[0]], "title": title,
-                            "page": args[2], "dest": args[3] or None})
+        if len(args) == 4:
+            found.append(args)
+    return found
+
+
+WRITTEN_RE = re.compile(r"\\@writefile\{(toc|lof|lot)\}(?=\{)|\\@input\{([^}]+\.aux)\}")
+
+
+def written_contents(aux, ext, depth=0):
+    """The contents lines a build wrote for its .toc, .lof or .lot (ext) through its .aux, and the
+    .aux files that one inputs (\\include). Every build writes them, whether or not the document
+    prints that list."""
+    try:
+        with open(aux, errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return []
+    found = []
+    for m in WRITTEN_RE.finditer(text):
+        if m.group(1) == ext:
+            found += contents_lines(brace_group(text, m.end())[0])
+        elif m.group(2) and depth < 3:
+            found += written_contents(os.path.join(os.path.dirname(aux), m.group(2)), ext, depth + 1)
+    return found
+
+
+def numbered(arg, macros):
+    """(number, text) of a contents-line title: \\numberline{2.1}Title -> ("2.1", "Title")."""
+    m = re.match(r"\s*\\numberline\s*\{([^{}]*)\}", arg)
+    text = tex_to_text(arg[m.end():] if m else arg, macros)
+    return (m.group(1).strip() or None) if m else None, re.sub(r" ([:;,.?!)])", r"\1", " ".join(text.split()))
+
+
+def toc_outline(paper_root, pdf_name, clean=False):
+    """Outline entries [{level, num, title, page, dest}] (of the notes-free build with clean=True,
+    whose pages differ). The viewer numbers the PDF's bookmarks with them, and shows them as the
+    outline of a PDF without bookmarks.
+
+    From the contents lines the build wrote to its .aux, else its .toc. The anchor (a named
+    destination) is empty when hyperref doesn't handle the entry; the viewer then finds the title
+    on the page.
+    """
+    f = clean_file if clean else job_file
+    lines = written_contents(f(paper_root, pdf_name, ".aux"), "toc")
+    if not lines:
+        try:
+            with open(f(paper_root, pdf_name, ".toc"), errors="replace") as fh:
+                lines = contents_lines(fh.read())
+        except OSError:
+            return []
+    macros = project_macros(paper_root, job_file(paper_root, pdf_name, ".fls"))
+    entries = []
+    for kind, title, page, dest in lines:
+        if kind in TOC_LEVELS:
+            num, title = numbered(title, macros)
+            entries.append({"level": TOC_LEVELS[kind], "num": num, "title": title, "page": page, "dest": dest or None})
     return entries
+
+
+SYNCTEX_BOX_RE = re.compile(r"([\[(h])(\d+),(\d+):(-?\d+),(-?\d+):(-?\d+),(-?\d+),(-?\d+)")  # vboxes, hboxes
+
+
+def synctex_boxes(synctex_gz, cache={}):
+    """{(file, line): [(page, left, top, right, bottom)]}: the boxes each source line made (points
+    from the page's top-left), from a build's SyncTeX file."""
+    key = (synctex_gz, mtime(synctex_gz))
+    if key not in cache:
+        inputs, boxes, page = {}, {}, 0
+        pt = 72 / 72.27 / 65536  # scaled points to PDF points
+        with gzip.open(synctex_gz, "rt", errors="replace") as f:
+            for record in f:
+                if record.startswith("Input:"):
+                    tag, _, path = record[6:].rstrip("\n").partition(":")
+                    inputs[tag] = os.path.normpath(path)
+                elif record.startswith("{"):
+                    page = int(record[1:])
+                elif m := SYNCTEX_BOX_RE.match(record):
+                    x, y, w, h, d = (int(v) * pt for v in m.groups()[3:])
+                    boxes.setdefault((inputs.get(m.group(2)), int(m.group(3))), []).append(
+                        (page, round(x, 1), round(y - h, 1), round(x + w, 1), round(y + d, 1)))
+        cache.clear()
+        cache[key] = boxes
+    return cache[key]
+
+
+FLOAT_ENV_RE = re.compile(r"\\(begin|end)\s*\{((?:sideways|wrap)?(?:figure|table))\*?\}")
+CAPTION_RE = re.compile(r"\\caption\s*(?=[\[{])")  # (not \captionof or \subcaption)
+LABEL_RE = re.compile(r"\\label\s*\{([^{}]*)\}")
+NEWLABEL_RE = re.compile(r"\\newlabel\{([^{}]*)\}\{\{([^{}]*)\}")
+
+
+def floats(paper_root, pdf_name, clean=False):
+    """The figures and tables that were typeset, in reading order, for the viewer's Figures tab:
+    [{kind, num, caption, page, label, dest, box}]. page is the PDF page, label its printed
+    number; box is [left, top, right, bottom] in points from the page's top-left.
+
+    The environments come from the source; SyncTeX tells which were typeset and where (the boxes
+    their lines made). Numbers come from their \\label, else the order of their captions; captions
+    and anchors from the list of figures and tables the build wrote to its .aux.
+    """
+    f = clean_file if clean else job_file
+    synctex_gz = f(paper_root, pdf_name, ".synctex.gz")
+    if not os.path.exists(synctex_gz):
+        return []
+    boxes = synctex_boxes(synctex_gz)
+    macros = project_macros(paper_root, job_file(paper_root, pdf_name, ".fls"))
+    area = layout(paper_root, pdf_name) or {"W": 612, "H": 792, "top": 72, "bottom": 720}
+    tall = area["bottom"] - area["top"] - 1  # (no float is as tall as the text block)
+    listed = {}
+    for kind, ext in (("figure", "lof"), ("table", "lot")):
+        listed[kind] = []
+        for typ, title, page, dest in written_contents(f(paper_root, pdf_name, ".aux"), ext):
+            if typ == kind:
+                num, caption = numbered(title, macros)
+                listed[kind].append({"num": num, "caption": caption, "label": page, "dest": dest or None})
+    try:
+        with open(f(paper_root, pdf_name, ".aux"), errors="replace") as fh:
+            label_nums = dict(NEWLABEL_RE.findall(fh.read()))
+    except OSError:
+        label_nums = {}
+    found, taken = [], {"figure": 0, "table": 0}
+    for path in project_tex_files(paper_root, job_file(paper_root, pdf_name, ".fls")):
+        text, open_at = read_tex(path), []
+        for m in FLOAT_ENV_RE.finditer(text):
+            if m.group(1) == "begin":
+                open_at.append(m.start())
+                continue
+            if not open_at:
+                continue
+            start = open_at.pop()
+            if open_at:  # (a float inside another one: part of it)
+                continue
+            first, last = text.count("\n", 0, start) + 1, text.count("\n", 0, m.end()) + 1
+            made = [b for line in range(first, last + 1) for b in boxes.get((path, line), [])
+                    # Not the page, its text block, header and footer (a page shipped out while one of these
+                    # lines was current), nor an unscaled image or an empty box. A float may start low and
+                    # run off the page.
+                    if b[1] >= 1 and b[3] <= area["W"] and area["top"] - 15 <= b[2] <= area["bottom"] + 15
+                    and 0 < b[4] - b[2] < tall and b[3] > b[1]]
+            if not made:  # not typeset (e.g. in an \\iffalse block)
+                continue
+            kind = "table" if m.group(2).endswith("table") else "figure"
+            env = text[start:m.end()]
+            captions = len(CAPTION_RE.findall(env))
+            entry = listed[kind][taken[kind]] if captions and taken[kind] < len(listed[kind]) else {}
+            taken[kind] += captions
+            nums = [label_nums[name] for name in LABEL_RE.findall(env) if name in label_nums]
+            if nums and nums[0] != entry.get("num"):  # the label knows better than the order
+                entry = next((e for e in listed[kind] if e["num"] == nums[0]), {"num": nums[0]})
+            page = collections.Counter(b[0] for b in made).most_common(1)[0][0]
+            on = [b for b in made if b[0] == page]
+            found.append({"kind": kind, "num": entry.get("num"), "caption": entry.get("caption", ""), "page": page,
+                          "label": entry.get("label"), "dest": entry.get("dest"),
+                          "box": [min(b[1] for b in on), min(b[2] for b in on), max(b[3] for b in on),
+                                  min(area["H"], max(b[4] for b in on))],  # (a float can run off the page)
+                          "file": os.path.relpath(path, paper_root), "line": first})
+    return sorted(found, key=lambda x: (x["page"], x["box"][1]))
 
 
 def forward_target(paper_root, src, line, clean=False):
