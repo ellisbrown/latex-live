@@ -112,6 +112,17 @@ def write_status(root, status):
 NOTES_OFF = r"\AtBeginDocument{\ifdefined\todotxt\renewcommand\todotxt[1]{}\fi\ifdefined\showtodosfalse\showtodosfalse\fi}"
 
 
+# Files a run writes for the next one to read. A run killed while writing one leaves it cut off,
+# and every later run stops while reading it, before it can write a good one.
+AUX_EXTS = (".aux", ".out", ".toc", ".lof", ".lot")
+
+
+def damaged_aux(log, root):
+    """Whether the run stopped while reading one of its own AUX_EXTS files."""
+    m = re.search(r"^(?:! |\S+:\d+: |Runaway argument\?)", log, re.M)  # the first error
+    return bool(m) and any(f"{root}{ext}" in log[max(0, m.start() - 300):m.start()] for ext in AUX_EXTS)
+
+
 def has_notes(files):
     """Whether any of the sources defines notes that NOTES_OFF can blank."""
     for path in files:
@@ -197,15 +208,17 @@ def main():
     for path, line, msg in boxes:
         emit(path, line, "info", msg)
 
+    # latexmk can report success for a run that made no PDF, e.g. "Nothing to do" after a failed run.
+    ok = status == "ok" and not errors and os.path.isfile(os.path.join(BUILD, f"{root}.pdf"))
     summary = [{"file": rel(p), "line": int(n), "msg": m.strip()} for p, n, m in errors]
-    if status != "ok" and not summary:  # e.g. a TeX error without file:line, or a bibtex failure
+    if not ok and not summary:  # e.g. a TeX error without file:line, or a bibtex failure
         bang = next((l for l in log.splitlines() if l.startswith("! ")), None)
         summary = [{"file": None, "line": None, "msg": bang[2:] if bang else f"see {BUILD}/{root}.log"}]
-    write_status(root, {"ok": status == "ok", "time": stamp, "errors": summary,
+    write_status(root, {"ok": ok, "time": stamp, "errors": summary,
                         "warnings": len(seen) + len(set(MULTI_RE.findall(flat))), "overfull": len(boxes),
                         "undefined": undefined})
 
-    if status == "ok":
+    if ok:
         # Atomic rename, not an in-place write: vscode-pdf reloads on "created"
         # as well as "changed", and never sees a half-written file.
         tmp = os.path.join(os.path.dirname(dest), f".{os.path.basename(dest)}.tmp")
@@ -218,6 +231,14 @@ def main():
         if not errors:  # no file:line errors parsed; show the tail of the log instead
             print("\n".join(log.splitlines()[-25:]))
         print(f"=== live-reload: BUILD FAILED at {stamp}; kept previous {dest} (full log: {BUILD}/{root}.log)")
+        if damaged_aux(log, root):
+            for ext in AUX_EXTS:
+                try:
+                    os.remove(os.path.join(BUILD, root + ext))
+                except OSError:
+                    pass
+            open(os.path.join(BUILD, f"{root}.retry"), "w").close()  # live.py restarts latexmk
+            print(f"=== live-reload: {BUILD}/{root}.aux was cut off (by an interrupted run?); removed it to rebuild from scratch")
 
 
 if __name__ == "__main__":

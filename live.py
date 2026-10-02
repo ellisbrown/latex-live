@@ -1537,7 +1537,7 @@ def serve(paper_root, default_pdf, port, page_limit):
     server.head, server.head_checked, server.head_lock = {}, 0, threading.Lock()
     server.tex_exec = ""  # main: the tex-exec prefix, as for latexmk
     server.image_checked, server.image_ok = 0, True
-    server.latexmk, server.lock, server.stopping = None, None, False
+    server.latexmk, server.lock, server.stopping, server.retried = None, None, False, -60
     server.requests = queue.Queue()  # document switches, for the main thread (request_switch)
     server.token = load_token()
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -1585,19 +1585,38 @@ def set_doc(server, doc):
 
 
 def start_latexmk(server):
-    """latexmk -pvc for the current document. Main thread only: see request_switch."""
+    """latexmk -pvc for the current document. Main thread only: see request_switch.
+
+    After a failed build, latexmk only reports the old failure until a source changes; -g makes
+    it build again (e.g. after a restart, or once latex_report.py has removed a damaged .aux)."""
     if server.no_build:
         return
     doc = server.default_pdf[:-4]
+    failed = (read_json(job_file(server.paper_root, server.default_pdf, ".status.json")) or {}).get("ok") is False
     env = {**server.env, "LATEX_LIVE_DOC": doc}
     if PUBLISH:
         env["LATEX_LIVE_PUBLISH"] = os.path.join(PUBLISH, server.default_pdf)  # latex_report.py
     # PR_SET_PDEATHSIG: latexmk gets SIGTERM if this process dies, however it dies.
     server.latexmk = subprocess.Popen(
-        ["latexmk", "-r", os.path.join(HERE, "latexmkrc"), "-pvc", f"-jobname={doc}-live", doc],
+        ["latexmk", "-r", os.path.join(HERE, "latexmkrc"), "-pvc", *(["-g"] if failed else []), f"-jobname={doc}-live", doc],
         env=env,
         preexec_fn=lambda: ctypes.CDLL("libc.so.6").prctl(1, signal.SIGTERM),
     )
+
+
+def retry_build(server):
+    """Restart latexmk when latex_report.py asks (build/<doc>-live.retry: it removed a damaged .aux).
+    At most once a minute, in case a source keeps writing one."""
+    retry = job_file(server.paper_root, server.default_pdf, ".retry")
+    if not os.path.exists(retry):
+        return
+    os.remove(retry)
+    if time.monotonic() - server.retried < 60:
+        print("=== latex-live: the .aux was damaged again; not rebuilding by itself (save a file to retry)", flush=True)
+        return
+    server.retried = time.monotonic()
+    stop_latexmk(server)
+    start_latexmk(server)
 
 
 def stop_latexmk(server):
@@ -1728,6 +1747,7 @@ def main():
     signal.signal(signal.SIGHUP, stop)  # VS Code closing the task terminal
     try:  # until stopped, or latexmk exits by itself; meanwhile, switch documents for the viewer
         while not server.stopping and not (server.latexmk and server.latexmk.poll() is not None):
+            retry_build(server)
             try:
                 doc, result, done = server.requests.get(timeout=1)
             except queue.Empty:
