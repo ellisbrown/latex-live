@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """latex-live: LaTeX Workshop-style live preview without the extension.
 
-Usage (from a paper root):  live.py <doc>[.tex] [--port 44100] [--page-limit N] [--build-dir DIR] [--no-build] [--no-open] [--host-tex]
+Usage (from a paper root):  live.py [<doc>[.tex]] [--port 44100] [--page-limit N] [--build-dir DIR] [--no-build] [--no-open] [--host-tex]
 
+- Without <doc>, it builds the root .tex file (one with a \\documentclass) whose sources
+  were edited last; the viewer switches to another root file.
 - `latexmk -pvc` rebuilds into build/ whenever any input file changes (latexmkrc),
   as job <doc>-live so stale <doc>.aux/.bbl from in-place builds are never read.
 - pdflatex/bibtex run in the TeX Live 2024 image (close to Overleaf) via one
@@ -44,6 +46,7 @@ import http.cookies
 import http.server
 import json
 import os
+import queue
 import re
 import secrets
 import shutil
@@ -159,6 +162,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json(200, commits(self.server.paper_root))
         elif path == "/diff":
             self.send_json(*start_diff(self.server, urllib.parse.parse_qs(url.query)))
+        elif path == "/docs":
+            self.send_json(200, {"doc": self.server.default_pdf[:-4], "docs": root_docs(self.server.paper_root)})
+        elif path == "/switch":
+            self.send_json(*request_switch(self.server, urllib.parse.parse_qs(url.query)))
         elif path in STATIC or (path.startswith("/pdfjs/") and ".." not in path and not path.endswith("/")):
             super().do_GET()
         else:
@@ -287,27 +294,120 @@ def mtime(path):
     return os.stat(path).st_mtime_ns if os.path.exists(path) else 0
 
 
+DOCCLASS_RE = re.compile(r"^[^%\n]*\\documentclass\b", re.M)
+
+
+def root_docs(paper_root):
+    """The root documents in the paper root: the .tex files with a \\documentclass that is not commented out."""
+    docs = []
+    for name in sorted(os.listdir(paper_root)):
+        if name.endswith(".tex"):
+            try:
+                with open(os.path.join(paper_root, name), errors="replace") as f:
+                    if DOCCLASS_RE.search(f.read(65536)):
+                        docs.append(name[:-4])
+            except OSError:
+                pass
+    return docs
+
+
+def source_tree(paper_root, doc):
+    """The .tex files that doc reads through \\input and \\include, from the source (no build needed)."""
+    seen, todo = set(), [os.path.join(paper_root, f"{doc}.tex")]
+    while todo:
+        path = todo.pop()
+        if path in seen or not os.path.isfile(path):
+            continue
+        seen.add(path)
+        for m in INPUT_RE.finditer(read_tex(path)):
+            name = m.group(1).strip()
+            todo.append(os.path.join(paper_root, name if name.endswith(".tex") else name + ".tex"))
+    return seen
+
+
+def pick_doc(paper_root, docs):
+    """The root document whose sources were edited last. On a tie (the newest file is shared, e.g.
+    a preamble), the one last built here."""
+    try:
+        with open(os.path.join(paper_root, BUILD, "latex-live-doc")) as f:
+            last = f.read().strip()
+    except OSError:
+        last = None
+
+    def edited(doc):
+        return max((os.path.getmtime(path) for path in source_tree(paper_root, doc)), default=0)
+
+    return max(docs, key=lambda doc: (edited(doc), doc == last))
+
+
+LAYOUT_RE = re.compile(r"^latex-live layout: (.+)$", re.M)
+
+
+def layout(paper_root, pdf_name, cache={}):
+    """The text area of the last build, as latexmkrc's pretex hook printed it to the log, in PDF points
+    from the page's top-left: {W, H, left, top, bottom, leading, columns}. None until a build has
+    printed it. A build that stopped before \\begin{document} keeps the previous value."""
+    log = job_file(paper_root, pdf_name, ".log")
+    stamp = mtime(log)
+    if cache.get(log, (None,))[0] != stamp:
+        try:
+            with open(log, errors="replace") as f:
+                m = LAYOUT_RE.search(f.read())
+        except OSError:
+            m = None
+        value = cache.get(log, (None, None))[1]
+        if m:
+            try:  # TeX points (72.27 per inch) to PDF points (72); glue keeps only its natural size
+                pw, ph, hoff, side, voff, top, head, sep, tw, th, cw, skip = (
+                    float(re.match(r"-?[\d.]+", v.strip()).group()) * 72 / 72.27 for v in m.group(1).split(","))
+                y = 72 + voff + top + head + sep  # TeX's origin is 1in from the top-left corner
+                value = {"W": round(pw, 2), "H": round(ph, 2), "left": round(72 + hoff + side, 2), "top": round(y, 2),
+                         "bottom": round(y + th, 2), "leading": round(skip, 2), "columns": 2 if cw < 0.75 * tw else 1}
+            except (AttributeError, ValueError):
+                pass
+        cache[log] = (stamp, value)
+    return cache[log][1]
+
+
+# Main-text page limits of submission styles, for documents run without --page-limit.
+VENUE_PAGE_LIMITS = {r"iclr\d{4}_conference": 9, r"neurips_\d{4}": 9, r"colm\d{4}_conference": 9}
+USEPACKAGE_RE = re.compile(r"\\usepackage\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}")
+
+
+def page_limit(server, pdf_name):
+    """--page-limit, else the limit of the venue style the document loads, else None."""
+    if server.page_limit:
+        return server.page_limit
+    packages = {p.strip() for m in USEPACKAGE_RE.finditer(read_tex(os.path.join(server.paper_root, pdf_name[:-4] + ".tex")))
+                for p in m.group(1).split(",")}
+    return next((n for pattern, n in VENUE_PAGE_LIMITS.items() if any(re.fullmatch(pattern, p) for p in packages)), None)
+
+
 def status(server, pdf_name):
     """Everything the viewer polls for: PDF version, build state, forward-search target, page limit
-    (and the notes-free build's PDF, to measure it too)."""
+    and layout (and the notes-free build's PDF, to measure it too), and which document the server
+    builds (viewers of another one switch to it)."""
     root = server.paper_root
     pdf = pdf_path(root, pdf_name)
     version = str(mtime(pdf)) if os.path.isfile(pdf) else None
     if pdf_name.endswith("-diff.pdf"):  # a latexdiff PDF (start_diff)
         d = server.diff
         return {"version": version, "building": d.get("state") == "running", "forward": None, "pageLimit": None,
-                "diff": d, "build": d.get("state") == "failed" and {"ok": False, "time": d["time"], "errors": [{"file": None, "line": None, "msg": d["msg"]}]}}
+                "layout": layout(root, pdf_name.replace("-diff.pdf", ".pdf")), "diff": d, "build": d.get("state") == "failed" and {"ok": False, "time": d["time"], "errors": [{"file": None, "line": None, "msg": d["msg"]}]}}
+    limit = page_limit(server, pdf_name)
     info = {
         "version": version,
         "building": mtime(job_file(root, pdf_name, ".building")) > mtime(job_file(root, pdf_name, ".status.json")),
         "build": read_json(job_file(root, pdf_name, ".status.json")),
         "forward": read_json(job_file(root, pdf_name, ".forward.json")),
-        "pageLimit": server.page_limit,
-        "refs": refs_start(root, pdf_name) if server.page_limit else None,
+        "pageLimit": limit,
+        "refs": refs_start(root, pdf_name) if limit else None,
+        "layout": layout(root, pdf_name),
+        "doc": server.default_pdf,
     }
     clean_pdf = pdf_path(root, pdf_name[:-4] + "-clean.pdf")
-    if server.page_limit and os.path.isfile(clean_pdf):
-        info["clean"] = {"version": str(mtime(clean_pdf)), "refs": refs_start(root, pdf_name, clean=True)}
+    if os.path.isfile(clean_pdf):
+        info["clean"] = {"version": str(mtime(clean_pdf)), "refs": refs_start(root, pdf_name, clean=True) if limit else None}
     info["head"] = head_status(server, pdf_name)
     info["texImage"] = image_problem(server)
     return info
@@ -576,11 +676,14 @@ def margin_notes(paper_root, pdf_name):
     macros = project_macros(paper_root, fls)
     use = note_use_re(kinds)
 
+    area = layout(paper_root, pdf_name) or {"left": 72, "top": 72, "bottom": 720}  # (1in margins until a build says)
+
     def at(path, line):
-        """The line's points in the text area (1in margins, as in ICLR and most templates),
-        without columns: the page frame, header, and line numbers are shipped out while some
-        line is current; the left-margin glue repeats on each line of a paragraph."""
-        found = [p for p in points.get((path, line), []) if p[1] >= 72 and 72 <= p[2] <= 792 - 72]  # the text area
+        """The line's points in the text area, without columns: the page frame, header, and
+        line numbers are shipped out while some line is current; the left-margin glue repeats on
+        each line of a paragraph."""
+        found = [p for p in points.get((path, line), [])
+                 if p[1] >= area["left"] - 0.5 and area["top"] - 0.5 <= p[2] <= area["bottom"] + 0.5]
         column = collections.Counter((p[0], p[1]) for p in found)
         return [p for p in found if column[p[0], p[1]] < 5] or None
 
@@ -1065,43 +1168,36 @@ def checks(server, pdf_name):
                 found.append({"text": "…" + flat[max(0, m.start() - 40):m.end() + 40] + "…", "page": n})
         return found
 
-    # Anonymity.
+    # Anonymity, for documents that print an anonymous author block (as blind-review styles do).
     final = re.search(r"^\s*\\iclrfinalcopy\b", root_tex, re.M)
-    author = re.search(r"\\author\s*\{", root_tex)
-    author_text = brace_group(root_tex, author.end() - 1)[0] if author else ""
-    names = set()
-    try:  # people named in the note-macro comments, e.g. "\eb ... % Ellis Brown"
-        with open(os.path.join(root, "preamble.tex"), errors="replace") as fh:
-            names |= {m.strip() for m in re.findall(r"\\todotxt.*%\s*([A-Z][a-z]+(?: [A-Z][a-z]+)+)\s*$", fh.read(), re.M)}
-    except OSError:
-        pass
-    git_name = subprocess.run(["git", "-C", root, "config", "user.name"], capture_output=True, text=True).stdout.strip()
-    if git_name:
-        names.add(git_name)
-    # Affiliations and other terms that identify the authors: LATEX_LIVE_ANON_TERMS, a regular
-    # expression (alternatives separated by |), e.g. r"\bNYU\b|New York University".
-    anon_terms = os.environ.get("LATEX_LIVE_ANON_TERMS", "").strip()
-    ident = [r"\b%s\b" % re.escape(n) for n in sorted(names)] + ([f"(?:{anon_terms})"] if anon_terms else []) + [
-        r"github\.com/\S+", r"huggingface\.co/\S+", r"\bwandb\b"]
-    anon = hits("|".join(ident), skip_bib=True, flags=0)
-    anon += hits(r"\b(?:our|my) (?:prior|previous|earlier|recent) (?:work|paper|study)|\bwe (?:previously|earlier) (?:showed|proposed|introduced|found)")
-    info = subprocess.run(["pdfinfo", pdf], capture_output=True, text=True).stdout
-    meta_author = re.search(r"^Author:[ \t]*(\S.*)$", info, re.M)
-    acks = [h for h in hits(r"\bAcknowledge?ments?\b", flags=0)]
-    problems = []
-    if final:
-        problems.append({"text": "\\iclrfinalcopy is on: author names are printed", "file": f"{doc}.tex",
-                         "line": root_tex.count("\n", 0, final.start()) + 1})
-    if author_text and "anonymous" not in author_text.lower():
-        problems.append({"text": f"\\author is not anonymous: {' '.join(author_text.split())[:80]}", "file": f"{doc}.tex",
-                         "line": root_tex.count("\n", 0, author.start()) + 1})
-    if meta_author:
-        problems.append({"text": f"PDF metadata names an author: {meta_author.group(1).strip()}"})
-    problems += [{**h, "text": "acknowledgments: " + h["text"]} for h in acks]
-    add("Anonymity", "fail" if problems else "warn" if anon else "ok",
-        f"{len(problems)} problem(s), {len(anon)} identifying phrase(s) outside the references" if problems or anon
-        else "anonymous author block; no names, affiliations, or links to identifying pages found",
-        problems + anon)
+    if pages and re.search(r"\banonymous\b", pages[0], re.I):
+        names = set()  # people named in the note-macro comments, e.g. "\eb ... % Ellis Brown"
+        for path in project_tex_files(root, job_file(root, pdf_name, ".fls")):
+            with open(path, errors="replace") as fh:
+                names |= {m.strip() for m in re.findall(r"\\todotxt.*%\s*([A-Z][a-z]+(?: [A-Z][a-z]+)+)\s*$", fh.read(), re.M)}
+        git_name = subprocess.run(["git", "-C", root, "config", "user.name"], capture_output=True, text=True).stdout.strip()
+        if git_name:
+            names.add(git_name)
+        # Affiliations and other terms that identify the authors: LATEX_LIVE_ANON_TERMS, a regular
+        # expression (alternatives separated by |), e.g. r"\bNYU\b|New York University".
+        anon_terms = os.environ.get("LATEX_LIVE_ANON_TERMS", "").strip()
+        ident = [r"\b%s\b" % re.escape(n) for n in sorted(names)] + ([f"(?:{anon_terms})"] if anon_terms else []) + [
+            r"github\.com/\S+", r"huggingface\.co/\S+", r"\bwandb\b"]
+        anon = hits("|".join(ident), skip_bib=True, flags=0)
+        anon += hits(r"\b(?:our|my) (?:prior|previous|earlier|recent) (?:work|paper|study)|\bwe (?:previously|earlier) (?:showed|proposed|introduced|found)")
+        info = subprocess.run(["pdfinfo", pdf], capture_output=True, text=True).stdout
+        meta_author = re.search(r"^Author:[ \t]*(\S.*)$", info, re.M)
+        problems = [{"text": f"PDF metadata names an author: {meta_author.group(1).strip()}"}] if meta_author else []
+        problems += [{**h, "text": "acknowledgments: " + h["text"]} for h in hits(r"\bAcknowledge?ments?\b", flags=0)]
+        add("Anonymity", "fail" if problems else "warn" if anon else "ok",
+            f"{len(problems)} problem(s), {len(anon)} identifying phrase(s) outside the references" if problems or anon
+            else "anonymous author block; no names, affiliations, or links to identifying pages found",
+            problems + anon)
+    else:
+        add("Anonymity", "info", "not checked: page 1 has no anonymous author block"
+            + (" (\\iclrfinalcopy is on)" if final else ""),
+            [{"text": "\\iclrfinalcopy prints the author names", "file": f"{doc}.tex",
+              "line": root_tex.count("\n", 0, final.start()) + 1}] if final else [])
 
     # Notes and draft switches.
     note_list = notes(root, pdf_name)
@@ -1335,8 +1431,11 @@ def build_diff(server, sha):
 def head_status(server, pdf_name):
     """The baseline the viewer diffs against to mark uncommitted changes: PDFs of the committed
     document (build_head), rebuilt whenever HEAD moves. HEAD is checked every few seconds. The
-    versions appear once a build has finished; None outside git."""
+    versions appear once a build has finished; None outside git, and for a document the server
+    is not building."""
     root = server.paper_root
+    if pdf_name != server.default_pdf:
+        return None
     if time.monotonic() - server.head_checked > 3 and server.head_lock.acquire(blocking=False):
         try:
             server.head_checked = time.monotonic()
@@ -1345,13 +1444,14 @@ def head_status(server, pdf_name):
             h = server.head
             if not sha:
                 server.head = {}
-            elif sha != h.get("sha") and h.get("state") != "running" and os.path.isfile(job_file(root, pdf_name, ".aux")):
-                server.head = {**h, "sha": sha, "state": "running", "msg": ""}
-                threading.Thread(target=build_head, args=(server, sha), daemon=True).start()
+            elif ((sha, pdf_name) != (h.get("sha"), h.get("pdf")) and h.get("state") != "running"
+                  and os.path.isfile(job_file(root, pdf_name, ".aux"))):
+                server.head = {"sha": sha, "pdf": pdf_name, "state": "running", "msg": ""}
+                threading.Thread(target=build_head, args=(server, sha, pdf_name), daemon=True).start()
         finally:
             server.head_lock.release()
     h = server.head
-    if not h:
+    if h.get("pdf") != pdf_name:
         return None
     info = {"sha": h["sha"][:9], "state": h["state"], "msg": h.get("msg", "")}
     if h.get("built"):
@@ -1362,18 +1462,19 @@ def head_status(server, pdf_name):
     return info
 
 
-def build_head(server, sha):
+def build_head(server, sha, pdf_name):
     """The document as committed at sha: build/<doc>-head.pdf, plus build/<doc>-head-clean.pdf
-    without notes (with --page-limit, as for the live build).
+    without notes (when the live build has a notes-free PDF).
 
-    Like build_diff, only the .tex files come from git (`git archive` into build/head/src/).
-    Figures, styles and the bibliography resolve to the working tree's through TEXINPUTS, so the
-    diff shows text edits; the viewer marks changed figures itself. The live build's .aux/.bbl
+    Like build_diff, only the .tex files come from git (`git archive` into build/head/<doc>/src/).
+    Figures, styles, fonts and the bibliography resolve to the working tree's (through TEXINPUTS,
+    and links for the top-level entries with no .tex files, such as a class's font directory), so
+    the diff shows text edits; the viewer marks changed figures itself. The live build's .aux/.bbl
     seed the references: two passes with notes, then one without.
     """
     root = server.paper_root
-    doc = server.default_pdf[:-4]
-    out = os.path.join(root, BUILD, "head")
+    doc = pdf_name[:-4]
+    out = os.path.join(root, BUILD, "head", doc)
     src = os.path.join(out, "src")
     job = f"{doc}-head"
     sys.path.insert(0, HERE)
@@ -1393,15 +1494,18 @@ def build_head(server, sha):
         archive.wait()
         if not os.path.isfile(os.path.join(src, f"{doc}.tex")):
             raise RuntimeError(f"{doc}.tex is not in {sha[:9]}")
+        for name in os.listdir(root):  # (fonts are not looked up through TEXINPUTS)
+            if name not in (".git", BUILD.split(os.sep)[0]) and not os.path.lexists(os.path.join(src, name)):
+                os.symlink(os.path.join(root, name), os.path.join(src, name))
         for ext in (".aux", ".bbl"):
-            if os.path.exists(job_file(root, server.default_pdf, ext)):
-                shutil.copyfile(job_file(root, server.default_pdf, ext), os.path.join(out, job + ext))
+            if os.path.exists(job_file(root, pdf_name, ext)):
+                shutil.copyfile(job_file(root, pdf_name, ext), os.path.join(out, job + ext))
         for _ in range(2):
             pdf = tex(job, doc)
         if not os.path.isfile(pdf):
-            raise RuntimeError(f"pdflatex produced no PDF; see {BUILD}/head/{job}.log")
+            raise RuntimeError(f"pdflatex produced no PDF; see {BUILD}/head/{doc}/{job}.log")
         clean_pdf = None
-        if server.page_limit:
+        if os.path.isfile(pdf_path(root, f"{doc}-clean.pdf")):
             for ext in (".aux", ".bbl", ".out", ".toc"):
                 if os.path.exists(os.path.join(out, job + ext)):
                     shutil.copyfile(os.path.join(out, job + ext), os.path.join(out, f"{job}-clean{ext}"))
@@ -1409,9 +1513,11 @@ def build_head(server, sha):
         os.replace(pdf, os.path.join(root, BUILD, f"{job}.pdf"))
         if clean_pdf and os.path.isfile(clean_pdf):
             os.replace(clean_pdf, os.path.join(root, BUILD, f"{job}-clean.pdf"))
-        server.head = {**server.head, "state": "done", "built": sha}
+        state = {"state": "done", "built": sha}
     except Exception as e:  # reported in the viewer's tooltip; the previous baseline stays
-        server.head = {**server.head, "state": "failed", "msg": str(e)[:300]}
+        state = {"state": "failed", "msg": str(e)[:300]}
+    if server.head.get("pdf") == pdf_name:  # (not after a switch to another document)
+        server.head = {**server.head, **state}
 
 
 def serve(paper_root, default_pdf, port, page_limit):
@@ -1431,6 +1537,8 @@ def serve(paper_root, default_pdf, port, page_limit):
     server.head, server.head_checked, server.head_lock = {}, 0, threading.Lock()
     server.tex_exec = ""  # main: the tex-exec prefix, as for latexmk
     server.image_checked, server.image_ok = 0, True
+    server.latexmk, server.lock, server.stopping = None, None, False
+    server.requests = queue.Queue()  # document switches, for the main thread (request_switch)
     server.token = load_token()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
@@ -1444,6 +1552,94 @@ def open_in_editor(pdf):
     while not os.path.isfile(pdf):
         time.sleep(1)
     subprocess.run([code, "-r", pdf], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def take_lock(doc):
+    """The lock on build/<doc>-live.lock (one instance per document), or (None, the holder's port)."""
+    lock = open(os.path.join(BUILD, f"{doc}-live.lock"), "a+")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.seek(0)
+        port = lock.read().strip() or "?"
+        lock.close()
+        return None, port
+    return lock, None
+
+
+def record_port(lock, port):
+    """The viewer port, in the lock file, for later instances."""
+    lock.truncate(0)
+    lock.write(str(port))
+    lock.flush()
+
+
+def set_doc(server, doc):
+    """Serve doc as the document being built, and remember it as the last one (pick_doc)."""
+    server.default_pdf = f"{doc}.pdf"
+    server.head, server.head_checked = {}, 0
+    if server.diff.get("state") != "running":
+        server.diff = {}
+    with open(os.path.join(server.paper_root, BUILD, "latex-live-doc"), "w") as f:
+        f.write(doc)
+
+
+def start_latexmk(server):
+    """latexmk -pvc for the current document. Main thread only: see request_switch."""
+    if server.no_build:
+        return
+    doc = server.default_pdf[:-4]
+    env = {**server.env, "LATEX_LIVE_DOC": doc}
+    if PUBLISH:
+        env["LATEX_LIVE_PUBLISH"] = os.path.join(PUBLISH, server.default_pdf)  # latex_report.py
+    # PR_SET_PDEATHSIG: latexmk gets SIGTERM if this process dies, however it dies.
+    server.latexmk = subprocess.Popen(
+        ["latexmk", "-r", os.path.join(HERE, "latexmkrc"), "-pvc", f"-jobname={doc}-live", doc],
+        env=env,
+        preexec_fn=lambda: ctypes.CDLL("libc.so.6").prctl(1, signal.SIGTERM),
+    )
+
+
+def stop_latexmk(server):
+    proc, server.latexmk = server.latexmk, None
+    if proc:
+        proc.terminate()
+        try:
+            proc.wait(10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+
+def request_switch(server, query):
+    """/switch?doc=NAME: build another root document instead. The main thread switches (switch_doc):
+    latexmk's parent-death signal fires when the thread that started it exits, so a request
+    thread must not start it."""
+    doc = query.get("doc", [""])[0]
+    if doc not in root_docs(server.paper_root):
+        return 404, {"error": f"{doc}.tex is not a root document here"}
+    done, result = threading.Event(), {}
+    server.requests.put((doc, result, done))
+    if not done.wait(30):
+        return 504, {"error": "the switch is taking a while; reload in a moment"}
+    return result["status"], result["body"]
+
+
+def switch_doc(server, doc):
+    """Stop building the current document and build doc. Returns (status, body) for /switch."""
+    if doc == server.default_pdf[:-4]:
+        return 200, {"doc": doc}
+    lock, other = take_lock(doc)
+    if not lock:
+        return 409, {"error": f"{doc}.tex is open in another latex-live instance (port {other})"}
+    stop_latexmk(server)
+    server.lock.close()
+    server.lock = lock
+    record_port(lock, server.server_address[1])
+    set_doc(server, doc)
+    start_latexmk(server)
+    print(f"=== latex-live: now building {doc}.tex", flush=True)
+    return 200, {"doc": doc}
 
 
 def container_argv(paper_root):
@@ -1467,9 +1663,11 @@ def print_urls(port):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("doc", help="root .tex file (with or without extension)")
+    ap.add_argument("doc", nargs="?", help="root .tex file (with or without extension); default: the one whose"
+                    " sources were edited last. The viewer switches between root files.")
     ap.add_argument("--port", type=int, default=44100)
-    ap.add_argument("--page-limit", type=int, help="main-text page limit to check in the viewer (e.g. 9 for ICLR)")
+    ap.add_argument("--page-limit", type=int, help="main-text page limit to check in the viewer (default: the venue's,"
+                    " for ICLR, NeurIPS and COLM styles)")
     ap.add_argument("--build-dir", default="build", help="build directory, relative to the paper root (default: build);"
                     " any other also receives <doc>.pdf, e.g. to run beside the usual instance")
     ap.add_argument("--no-build", action="store_true", help="viewer only; don't run latexmk")
@@ -1480,61 +1678,68 @@ def main():
     BUILD = os.environ["LATEX_LIVE_BUILD"] = os.path.normpath(args.build_dir)
     PUBLISH = "" if BUILD == "build" else BUILD
 
-    doc = args.doc[:-4] if args.doc.endswith(".tex") else args.doc
-    if not os.path.isfile(f"{doc}.tex"):
-        sys.exit(f"latex-live: {doc}.tex not found in {os.getcwd()}")
+    docs = root_docs(os.getcwd())
+    if args.doc:
+        doc = args.doc[:-4] if args.doc.endswith(".tex") else args.doc
+        if not os.path.isfile(f"{doc}.tex"):
+            sys.exit(f"latex-live: {doc}.tex not found in {os.getcwd()}")
+    elif docs:
+        doc = pick_doc(os.getcwd(), docs)
+    else:
+        sys.exit(f"latex-live: no .tex file with a \\documentclass in {os.getcwd()}")
 
     # One instance per document; the lock file records the viewer port for later instances.
     os.makedirs(BUILD, exist_ok=True)
-    lock = open(os.path.join(BUILD, f"{doc}-live.lock"), "a+")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        lock.seek(0)
+    lock, other = take_lock(doc)
+    if not lock:
         print(f"=== latex-live: already running for {doc}.tex (another terminal or window)", flush=True)
-        print_urls(lock.read().strip() or "?")
+        print_urls(other)
         return
     server = serve(os.getcwd(), f"{doc}.pdf", args.port, args.page_limit)
-    port = server.server_address[1]
-    lock.truncate(0)
-    lock.write(str(port))
-    lock.flush()
-    print_urls(port)
+    server.lock = lock
+    record_port(lock, server.server_address[1])
+    set_doc(server, doc)
+    print_urls(server.server_address[1])
+    others = [d for d in docs if d != doc]
+    print(f"=== latex-live: building {doc}.tex" + (f"; the viewer switches to {', '.join(others)}" if others else ""),
+          flush=True)
     if not args.no_open:
         threading.Thread(target=open_in_editor, args=(pdf_path(os.getcwd(), f"{doc}.pdf"),), daemon=True).start()
 
+    server.no_build = args.no_build
+    server.env = {**os.environ, "LATEX_LIVE_HOME": HERE, "max_print_line": "10000"}
     if args.no_build:
-        signal.pause()
-    env = {**os.environ, "LATEX_LIVE_HOME": HERE, "LATEX_LIVE_DOC": doc, "max_print_line": "10000"}
-    if PUBLISH:
-        env["LATEX_LIVE_PUBLISH"] = os.path.join(PUBLISH, f"{doc}.pdf")  # latex_report.py
-    if args.page_limit:
-        env["LATEX_LIVE_NOTES_FREE"] = "1"  # latex_report.py: also build without the notes, to measure
-    if args.host_tex:
+        pass
+    elif args.host_tex:
         print("=== latex-live: TeX from the host", flush=True)
     else:
-        env["LATEX_LIVE_EXEC"] = server.tex_exec = container_exec(os.path.realpath(os.getcwd()))
+        server.env["LATEX_LIVE_EXEC"] = server.tex_exec = container_exec(os.path.realpath(os.getcwd()))
         print("=== latex-live: TeX Live 2024 (podman)" if image_pulled()
               else f"=== latex-live: {IMAGE_MISSING}; until then, the host's TeX runs", flush=True)
-    # PR_SET_PDEATHSIG: latexmk gets SIGTERM if this process dies, however it dies.
-    latexmk = subprocess.Popen(
-        ["latexmk", "-r", os.path.join(HERE, "latexmkrc"), "-pvc", f"-jobname={doc}-live", doc],
-        env=env,
-        preexec_fn=lambda: ctypes.CDLL("libc.so.6").prctl(1, signal.SIGTERM),
-    )
+    start_latexmk(server)
 
-    # Only signal latexmk here; the main thread's wait() reaps it (calling wait()
-    # inside the handler would deadlock on Popen's internal lock).
+    # Only signal latexmk here; the main loop reaps it.
     def stop(*_):
-        latexmk.terminate()
+        server.stopping = True
+        if server.latexmk:
+            server.latexmk.terminate()
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGHUP, stop)  # VS Code closing the task terminal
-    try:
-        latexmk.wait()
+    try:  # until stopped, or latexmk exits by itself; meanwhile, switch documents for the viewer
+        while not server.stopping and not (server.latexmk and server.latexmk.poll() is not None):
+            try:
+                doc, result, done = server.requests.get(timeout=1)
+            except queue.Empty:
+                continue
+            try:
+                result["status"], result["body"] = switch_doc(server, doc)
+            except Exception as e:
+                result["status"], result["body"] = 500, {"error": f"switch failed: {e}"}
+            done.set()
     except KeyboardInterrupt:
-        stop()
-        latexmk.wait()
+        pass
+    stop_latexmk(server)
 
 
 if __name__ == "__main__":

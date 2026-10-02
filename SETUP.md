@@ -52,22 +52,24 @@ is pulled again, latex-live uses it with no restart.
 
 ## 3. First run from a terminal
 
-From the paper's root folder (the one with `<doc>.tex`):
+From the paper's root folder (the one with the main `.tex` file):
 
 ```bash
-python3 ~/.local/share/latex-live/live.py <doc> --page-limit 9 --no-open
+python3 ~/.local/share/latex-live/live.py --no-open
 ```
 
-`<doc>` is the root `.tex` file without the extension, e.g. `iclr2027`.
-`--page-limit` sets the venue limit for the page badge; leave it out if there
-isn't one.
+It builds the root `.tex` file whose sources were edited last; the viewer's
+toolbar switches to another. To start with a given one, name it, e.g.
+`live.py iclr2027 --no-open`. The page badge uses the venue's limit for ICLR,
+NeurIPS and COLM styles; `--page-limit N` sets another.
 
 Expected output, in order:
 
 1. Two `=== latex-live: viewer ...` lines with URLs. The first run creates
    `~/.local/share/latex-live/token`, with mode 0600 and ignored by git.
-2. `=== latex-live: TeX Live 2024 (podman)`
-3. latexmk output, ending with `=== Watching for updated files`. The first build
+2. `=== latex-live: building <doc>.tex`, naming the other root files.
+3. `=== latex-live: TeX Live 2024 (podman)`
+4. latexmk output, ending with `=== Watching for updated files`. The first build
    takes about a minute.
 
 Check it without printing the token:
@@ -89,7 +91,7 @@ Create `<paper>/.vscode/tasks.json` and keep it out of git:
 echo .vscode/tasks.json >> .git/info/exclude
 ```
 
-Contents (replace `<doc>` and the page limit):
+Contents:
 
 ```jsonc
 {
@@ -99,7 +101,7 @@ Contents (replace `<doc>` and the page limit):
     {
       "label": "LaTeX: live preview",
       "type": "shell",
-      "command": "python3 ${env:HOME}/.local/share/latex-live/live.py <doc> --page-limit 9 --no-open",
+      "command": "python3 ${env:HOME}/.local/share/latex-live/live.py --no-open",
       // Optional: affiliations the anonymity check should flag (a regular expression).
       "options": { "env": { "LATEX_LIVE_ANON_TERMS": "\\bNYU\\b|New York University" } },
       "isBackground": true,

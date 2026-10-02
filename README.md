@@ -6,13 +6,17 @@ and zoom. Built on `latexmk -pvc`, SyncTeX, and PDF.js, with no editor extension
 
 ## Status
 
-This is the first implementation, written for one ICLR paper on a remote
-Linux machine used through VS Code. It works day to day, but it still assumes
-that setup and venue (see [Portability gaps](#portability-gaps)). The plan
-below makes it a general tool.
+This is the first implementation, written for an ICLR paper and its arXiv
+version on a remote Linux machine used through VS Code. It reads the page layout
+from LaTeX, so it is not tied to one template, but it still assumes a
+single-column paper and that setup (see [Portability gaps](#portability-gaps)).
+The plan below makes it a general tool.
 
 ## Features
 
+- **Main document.** With no document named, latex-live builds the root
+  `.tex` file whose sources you edited last. A menu in the toolbar switches to
+  another root file, and every open viewer follows.
 - **Live rebuild.** `latexmk -pvc` builds into `build/`. The PDF is published
   atomically, and only after a successful run. Errors appear as a clickable
   banner and as `file:line` diagnostics for the VS Code problem matcher.
@@ -24,7 +28,8 @@ below makes it a general tool.
   bubble, wired to a caret in the text where the note sits. Hover a bubble to
   expand it; click it to open the source.
 - **Page-limit badge.** Main-text pages against the venue limit, measured with
-  and without notes.
+  and without notes. The limit comes from the venue style (ICLR, NeurIPS and
+  COLM: 9 pages) or `--page-limit`.
 - **Change highlights.** A word-level diff of the text against the last
   commit (a PDF of `HEAD`'s `.tex` files, rebuilt when `HEAD` moves) or
   against the previous build, plus outlines on changed figures. The toolbar
@@ -52,8 +57,12 @@ troubleshooting), see [SETUP.md](SETUP.md). It also works as instructions for
 a coding agent. From a paper root:
 
 ```bash
-python3 live.py <doc> [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR]
+python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR]
 ```
+
+- **Document:** a root `.tex` file, with or without the extension. Without one,
+  latex-live picks the root file (one with a `\documentclass`) whose sources
+  were edited last; on a tie, the last one it built. Switch in the viewer.
 
 - **Second instance:** `--build-dir build/next` (or any other directory) keeps
   every output there, including `<doc>.pdf`. A second instance, such as a
@@ -86,10 +95,10 @@ python3 live.py <doc> [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
   - **Linux only:** the child process gets its parent-death signal through
     `libc.so.6` (`prctl`), which fails on macOS.
 - **ICLR and this paper.**
-  - **Page layout:** 1-inch margins (`MARGIN = 72`), the last-baseline bound,
-    and 11 pt line spacing (`LEADING = 11`).
-  - **Venue rules:** the page-limit rules (references and unnumbered
-    statements don't count) and `\iclrfinalcopy`.
+  - **Venue rules:** references and unnumbered statements (ethics,
+    reproducibility, acknowledgments) don't count toward the page limit. Page
+    limits are known for three styles only. The anonymity check runs when page
+    1 says "Anonymous", as blind-review styles print it.
   - **Anonymity terms:** set by hand (`LATEX_LIVE_ANON_TERMS`).
   - **Notes:** note macros are found as one-argument commands that go through
     `\todotxt`, and the notes-free build works by emptying `\todotxt`.
@@ -112,16 +121,16 @@ python3 live.py <doc> [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
    - Use MacTeX on the host when podman isn't set up.
    - Default to the local network mode (below) on a laptop.
 3. **Detect, then configure.** Automatic detection, with an optional
-   `.latex-live.toml` for overrides:
-   - **main document:** found automatically;
+   `.latex-live.toml` for overrides. The main document and the text area are
+   detected already (the text area is printed by LaTeX on each build). Still to
+   do:
    - **TeX:** a recent host TeX Live, else Docker, else podman;
-   - **text area:** measured from SyncTeX, or printed by LaTeX through the same
-     command-line hook the notes-free build uses;
    - **note macros:** detected, with notes-off emptying each one;
    - **column count:** from where text sits across the page;
    - **overrides:** anonymity terms, generated-figure paths, page limit.
-4. **Venue presets.** ICLR, NeurIPS, ICML, CVPR, ACL: page limit, what
-   doesn't count, anonymity switch, number of columns.
+4. **Venue presets.** ICLR, NeurIPS and COLM page limits exist. Still to do:
+   ICML, CVPR, ACL, and per venue what doesn't count and the number of
+   columns.
 5. **Two network modes.**
    - **local** (the laptop default): localhost only, no token, and it opens
      the browser;

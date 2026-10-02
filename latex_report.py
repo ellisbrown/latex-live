@@ -11,9 +11,10 @@ refs/citations, and overfull hboxes (as info) as
 matcher turns into Problems-panel entries. Also writes build/<root>.status.json
 for the browser viewer's build-status banner.
 
-With LATEX_LIVE_NOTES_FREE=1 (live.py --page-limit), a successful run also
-starts a background pass without the inline notes (build/<doc>-clean.pdf), so
-the viewer can show the page count as it would be for submission.
+When the sources have inline notes (macros that go through \todotxt), a
+successful run also starts a background pass without them
+(build/<doc>-clean.pdf), for the viewer's notes-free view and its page count as
+it would be for submission.
 """
 
 import json
@@ -111,6 +112,18 @@ def write_status(root, status):
 NOTES_OFF = r"\AtBeginDocument{\ifdefined\todotxt\renewcommand\todotxt[1]{}\fi\ifdefined\showtodosfalse\showtodosfalse\fi}"
 
 
+def has_notes(files):
+    """Whether any of the sources defines notes that NOTES_OFF can blank."""
+    for path in files:
+        try:
+            with open(path, errors="replace") as f:
+                if "\\todotxt" in f.read():
+                    return True
+        except OSError:
+            pass
+    return False
+
+
 def start_notes_free_build(root, doc):
     """One background pdflatex pass without notes, reusing this run's .aux/.bbl.
 
@@ -199,7 +212,7 @@ def main():
         shutil.copyfile(os.path.join(BUILD, f"{root}.pdf"), tmp)
         os.replace(tmp, dest)
         print(f"=== live-reload: published {dest} at {stamp}")
-        if os.environ.get("LATEX_LIVE_NOTES_FREE"):
+        if has_notes(files):
             start_notes_free_build(root, doc)
     else:
         if not errors:  # no file:line errors parsed; show the tail of the log instead
