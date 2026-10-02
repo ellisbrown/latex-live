@@ -2,6 +2,7 @@
 """Post-build hook for latex-live (see latexmkrc next to this file).
 
 Usage: latex_report.py <root> ok|fail   (run from the paper root)
+       latex_report.py --notes-free <root> <doc>   (the background pass; see start_notes_free_build)
 
 <root> is the latexmk job name (build/<root>.*). On success, atomically
 publishes build/<root>.pdf to ./$LATEX_LIVE_DOC.pdf (default ./<root>.pdf) so
@@ -14,7 +15,8 @@ for the browser viewer's build-status banner.
 When the sources have inline notes (macros that go through \todotxt), a
 successful run also starts a background pass without them
 (build/<doc>-clean.pdf), for the viewer's notes-free view and its page count as
-it would be for submission.
+it would be for submission. That pass records its result in
+build/clean/<doc>-clean.status.json, for the viewer's banner.
 """
 
 import json
@@ -99,9 +101,9 @@ def overfull_boxes(log):
     return boxes
 
 
-def write_status(root, status):
-    """Atomically write build/<root>.status.json (read by live.py's /status endpoint)."""
-    path = os.path.join(BUILD, f"{root}.status.json")
+def write_status(root, status, directory=BUILD):
+    """Atomically write <directory>/<root>.status.json (read by live.py's /status endpoint)."""
+    path = os.path.join(directory, f"{root}.status.json")
     with open(path + ".tmp", "w") as f:
         json.dump(status, f)
     os.replace(path + ".tmp", path)
@@ -123,6 +125,12 @@ def damaged_aux(log, root):
     return bool(m) and any(f"{root}{ext}" in log[max(0, m.start() - 300):m.start()] for ext in AUX_EXTS)
 
 
+def rebuild_from_scratch(root):
+    """Ask live.py to rebuild the main job without its AUX_EXTS files (build/<root>.retry). It removes
+    them once latexmk has stopped, with its other generated files, so latexmk starts as on a first run."""
+    open(os.path.join(BUILD, f"{root}.retry"), "w").close()
+
+
 def has_notes(files):
     """Whether any of the sources defines notes that NOTES_OFF can blank."""
     for path in files:
@@ -136,7 +144,7 @@ def has_notes(files):
 
 
 def start_notes_free_build(root, doc):
-    """One background pdflatex pass without notes, reusing this run's .aux/.bbl.
+    """One background pdflatex pass without notes, reusing this run's .aux/.bbl (notes_free_pass).
 
     Runs as job <doc>-clean in build/clean/ and then moves the PDF to build/<doc>-clean.pdf
     (pdflatex writes its PDF page by page, so the viewer must not see it early). One pass
@@ -148,21 +156,66 @@ def start_notes_free_build(root, doc):
     try:
         with open(os.path.join(out, "pid")) as f:
             pid = int(f.read())
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
-            if job.encode() in f.read():
-                os.killpg(pid, signal.SIGTERM)
+        command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+        if "--notes-free" in command and doc in command:
+            os.killpg(pid, signal.SIGTERM)
     except (OSError, ValueError):
         pass
     for ext in (".aux", ".bbl", ".out", ".toc"):
         if os.path.exists(os.path.join(BUILD, root + ext)):
             shutil.copyfile(os.path.join(BUILD, root + ext), os.path.join(out, job + ext))
-    tex = f"{os.environ.get('LATEX_LIVE_EXEC', '')} pdflatex -interaction=batchmode -halt-on-error -synctex=1"
-    cmd = (f"{tex} -output-directory={out} -jobname={job} '{NOTES_OFF}\\input{{{doc}}}' >/dev/null 2>&1"
-           f" && mv -f {out}/{job}.pdf {BUILD}/{job}.pdf")
-    proc = subprocess.Popen(["sh", "-c", cmd], start_new_session=True,
+    proc = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--notes-free", root, doc], start_new_session=True,
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     with open(os.path.join(out, "pid"), "w") as f:
         f.write(str(proc.pid))
+
+
+def tex_format(log):
+    """The format a log's run used, e.g. "pdflatex 2024.6.15": it tells TeX installations apart."""
+    m = re.search(r"\(preloaded format=([^)]*)\)", log[:2000])
+    return m.group(1) if m else None
+
+
+def notes_free_pass(root, doc):
+    """The notes-free pass (start_notes_free_build): publish build/<doc>-clean.pdf, and record the
+    result, with the first errors on failure, in build/clean/<doc>-clean.status.json.
+
+    The pass reads the main build's .aux. If that came from another TeX installation (e.g. the
+    host's, while the TeX Live image was missing), its package data may not load here: then the
+    main document is rebuilt from scratch.
+    """
+    out = os.path.join(BUILD, "clean")
+    job = f"{doc}-clean"
+    tex = f"{os.environ.get('LATEX_LIVE_EXEC', '')} pdflatex -interaction=batchmode -halt-on-error -file-line-error -synctex=1"
+    cmd = f"{tex} -output-directory={out} -jobname={job} '{NOTES_OFF}\\input{{{doc}}}' >/dev/null 2>&1"
+    ran = subprocess.run(["sh", "-c", cmd]).returncode == 0
+    stamp = time.strftime("%H:%M:%S")
+    if ran and os.path.isfile(os.path.join(out, f"{job}.pdf")):
+        os.replace(os.path.join(out, f"{job}.pdf"), os.path.join(BUILD, f"{job}.pdf"))
+        return write_status(job, {"ok": True, "time": stamp}, out)
+
+    def read(path):
+        try:
+            with open(path, errors="replace") as f:
+                return f.read()
+        except OSError:
+            return ""
+
+    log = read(os.path.join(out, f"{job}.log"))
+    errors = []
+    for line in log.splitlines():
+        m = ERROR_RE.match(line)
+        if m and not m.group(3).lstrip().startswith("==> Fatal error"):
+            errors.append({"file": rel(m.group(1)), "line": int(m.group(2)), "msg": m.group(3).strip()})
+    if not errors:
+        bang = next((l for l in log.splitlines() if l.startswith("! ")), None)
+        errors = [{"file": None, "line": None, "msg": bang[2:] if bang else f"see {out}/{job}.log"}]
+    status = {"ok": False, "time": stamp, "errors": errors[:3]}
+    main_format = tex_format(read(os.path.join(BUILD, f"{root}.log")))
+    if main_format and tex_format(log) and main_format != tex_format(log):
+        rebuild_from_scratch(root)
+        status["msg"] = f"the main build used another TeX installation ({main_format}); rebuilding it"
+    write_status(job, status, out)
 
 
 def rel(path):
@@ -170,6 +223,8 @@ def rel(path):
 
 
 def main():
+    if sys.argv[1] == "--notes-free":
+        return notes_free_pass(sys.argv[2], sys.argv[3])
     root, status = sys.argv[1], sys.argv[2]
     doc = os.environ.get("LATEX_LIVE_DOC") or root
     dest = os.environ.get("LATEX_LIVE_PUBLISH") or f"{doc}.pdf"  # live.py --build-dir: inside that directory
@@ -214,9 +269,15 @@ def main():
     if not ok and not summary:  # e.g. a TeX error without file:line, or a bibtex failure
         bang = next((l for l in log.splitlines() if l.startswith("! ")), None)
         summary = [{"file": None, "line": None, "msg": bang[2:] if bang else f"see {BUILD}/{root}.log"}]
+    previous = {}
+    try:
+        with open(os.path.join(BUILD, f"{root}.status.json")) as f:
+            previous = json.load(f)
+    except (OSError, ValueError):
+        pass
     write_status(root, {"ok": ok, "time": stamp, "errors": summary,
                         "warnings": len(seen) + len(set(MULTI_RE.findall(flat))), "overfull": len(boxes),
-                        "undefined": undefined})
+                        "undefined": undefined, "tex": tex_format(log)})
 
     if ok:
         # Atomic rename, not an in-place write: vscode-pdf reloads on "created"
@@ -231,14 +292,14 @@ def main():
         if not errors:  # no file:line errors parsed; show the tail of the log instead
             print("\n".join(log.splitlines()[-25:]))
         print(f"=== live-reload: BUILD FAILED at {stamp}; kept previous {dest} (full log: {BUILD}/{root}.log)")
-        if damaged_aux(log, root):
-            for ext in AUX_EXTS:
-                try:
-                    os.remove(os.path.join(BUILD, root + ext))
-                except OSError:
-                    pass
-            open(os.path.join(BUILD, f"{root}.retry"), "w").close()  # live.py restarts latexmk
-            print(f"=== live-reload: {BUILD}/{root}.aux was cut off (by an interrupted run?); removed it to rebuild from scratch")
+        # The .aux this run read may be unreadable: cut off by an interrupted run, or written by
+        # another TeX installation, whose packages store their data differently (e.g. the host's
+        # TeX, while the TeX Live image was missing).
+        other = previous.get("tex") and tex_format(log) and previous["tex"] != tex_format(log)
+        if damaged_aux(log, root) or other:
+            rebuild_from_scratch(root)
+            why = f"was written by another TeX installation ({previous['tex']})" if other else "was cut off (by an interrupted run?)"
+            print(f"=== live-reload: {BUILD}/{root}.aux {why}; rebuilding from scratch")
 
 
 if __name__ == "__main__":

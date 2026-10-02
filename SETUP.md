@@ -1,8 +1,8 @@
 # Setting up latex-live
 
-This guide covers a Linux machine, either the one you work on or a remote one
-you edit through VS Code Remote-SSH (a lab server or workstation, say). macOS
-isn't supported yet. It is written for a person or a coding agent. An agent
+This guide covers Linux and macOS, either the machine you work on or a remote
+one you edit through VS Code Remote-SSH (a lab server or workstation, say). It
+is written for a person or a coding agent. An agent
 can do steps 1–4 and 6 on its own. Step 5 (VS Code) needs the person.
 
 ## Rules for an agent
@@ -23,22 +23,25 @@ can do steps 1–4 and 6 on its own. Step 5 (VS Code) needs the person.
 python3 --version             # 3.9 or newer; standard library only
 latexmk -v | sed -n 2p         # latexmk and perl on the host
 pdftotext -v 2>&1 | head -1    # poppler-utils: pdftotext, pdfinfo, pdffonts, pdfimages
-podman --version               # rootless podman runs the TeX tools
+podman --version               # Linux: rootless podman runs the TeX tools
+pdflatex --version | head -1   # macOS: TeX on the host instead
 git --version
 ```
 
-Install anything missing with your package manager, e.g.
-`sudo apt install latexmk poppler-utils podman git` or the same with `dnf`.
-Without root, ask the machine's admin for these.
-
-Linux only for now. On macOS, the call that stops latexmk together with the
-server fails.
+- **Linux:** install anything missing with your package manager, e.g.
+  `sudo apt install latexmk poppler-utils podman git` or the same with `dnf`.
+  Without root, ask the machine's admin for these.
+- **macOS:** `xcode-select --install` (python3 and git),
+  `brew install --cask mactex-no-gui` (TeX Live with latexmk and synctex), and
+  `brew install poppler`. Skip podman: without it, latex-live uses the host's
+  TeX. macOS support is new and not yet tried on a Mac; please report
+  problems.
 
 ## 2. Get the code and the TeX image
 
 ```bash
 gh repo clone ellisbrown/latex-live ~/.local/share/latex-live   # or git clone over HTTPS
-podman pull docker.io/minidocks/texlive:2024-full                # about 4.6 GB, once
+podman pull docker.io/minidocks/texlive:2024-full                # Linux: about 4.6 GB, once
 ```
 
 The path `~/.local/share/latex-live` matches the task file in step 4. Any
@@ -68,7 +71,8 @@ Expected output, in order:
 1. Two `=== latex-live: viewer ...` lines with URLs. The first run creates
    `~/.local/share/latex-live/token`, with mode 0600 and ignored by git.
 2. `=== latex-live: building <doc>.tex`, naming the other root files.
-3. `=== latex-live: TeX Live 2024 (podman)`
+3. `=== latex-live: TeX Live 2024 (podman)`, or on macOS
+   `=== latex-live: TeX from the host (no podman)`
 4. latexmk output, ending with `=== Watching for updated files`. The first build
    takes about a minute.
 

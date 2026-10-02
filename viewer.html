@@ -522,15 +522,19 @@ function setStatus(text, cls = "") {
   $("status").className = cls;
 }
 
-// Build-status banner: shows the first errors of a failed build; click one to open it in VS Code.
+// Build-status banner: shows the first errors of a failed build, or else of a failed notes-free
+// pass (the notes-free view and its page count are then out of date); click one to open it in VS Code.
 let dismissed = null;
-function showBuild(build) {
+function showBuild(build, notesFree) {
   const banner = $("banner");
+  if (!(build && !build.ok) && !isDiff && notesFree && !notesFree.ok) build = { ...notesFree, notesFree: true };
   if (!build || build.ok || dismissed === build.time) return (banner.hidden = true);
   banner.replaceChildren();
   const close = el("span", { className: "close", textContent: "✕" });
   close.onclick = () => { dismissed = build.time; banner.hidden = true; };
-  banner.append(close, isDiff ? `Diff failed at ${build.time}.` : `Build failed at ${build.time}; showing the last good PDF.`);
+  banner.append(close, isDiff ? `Diff failed at ${build.time}.`
+    : build.notesFree ? `The notes-free build failed at ${build.time}${build.msg ? ` (${build.msg})` : ""}; the notes-free view and its page count are out of date.`
+    : `Build failed at ${build.time}; showing the last good PDF.`);
   for (const err of build.errors.slice(0, 3)) {
     const line = el("div");
     if (err.file) {
@@ -1728,10 +1732,11 @@ async function poll() {
     const info = await r.json();
     if (!isDiff && info.doc && info.doc !== docFile) return openDoc(info.doc); // the server builds another document now
     if (info.layout) area = info.layout;
-    showBuild(info.building ? null : info.build);
+    showBuild(info.building ? null : info.build, info.building ? null : info.cleanBuild);
     showDiffInfo(info.diff);
     $("texImage").hidden = !info.texImage; // builds fall back to the host's TeX; SyncTeX may not work
     $("texImage").title = info.texImage || "";
+    $("texImage").textContent = info.texImage?.startsWith("no synctex") ? "⚠ no SyncTeX" : "⚠ TeX image missing";
     if (info.building) setStatus(isDiff ? "building diff…" : "building…", "busy");
     else if ($("status").className === "busy") setStatus(info.build?.ok === false ? "build failed" : "", info.build?.ok === false ? "error" : "");
     if (!info.version) return info.building || setStatus(`waiting for ${file}…`);

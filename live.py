@@ -197,33 +197,40 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 
 def image_pulled():
-    """Whether the TeX Live image is present (~30 ms). Checked per use, not once: it can be removed
+    """Whether podman has the TeX Live image (~30 ms). Checked per use, not once: it can be removed
     (e.g. by a cleanup job) or pulled while the server runs."""
-    return subprocess.run(["podman", "image", "exists", TEXLIVE_IMAGE]).returncode == 0
+    return bool(shutil.which("podman")) and subprocess.run(["podman", "image", "exists", TEXLIVE_IMAGE]).returncode == 0
 
 
 def synctex_unavailable():
-    """IMAGE_MISSING when SyncTeX needs the image (no host synctex) and it is missing, else None."""
-    return None if shutil.which("synctex") or image_pulled() else IMAGE_MISSING
+    """Why SyncTeX can't run (no host synctex, and no TeX Live image to run it in), else None."""
+    if shutil.which("synctex") or image_pulled():
+        return None
+    return IMAGE_MISSING if shutil.which("podman") else "no synctex: install TeX Live (MacTeX on macOS)"
 
 
 def image_problem(server):
-    """IMAGE_MISSING for the viewer while builds or SyncTeX need the image and it is missing, else
-    None; checked at most every 5 s (the viewer polls twice a second)."""
+    """For the viewer: IMAGE_MISSING while builds or SyncTeX need the image and it is missing, or why
+    SyncTeX can't run on a host-TeX setup; else None. Checked at most every 5 s (the viewer polls
+    twice a second)."""
     if not server.tex_exec and shutil.which("synctex"):
         return None
     if time.time() - server.image_checked > 5:
-        server.image_checked, server.image_ok = time.time(), image_pulled()
-    return None if server.image_ok else IMAGE_MISSING
+        server.image_checked = time.time()
+        server.image_note = synctex_unavailable() if not server.tex_exec else None if image_pulled() else IMAGE_MISSING
+    return server.image_note
 
 
 def run_synctex(paper_root, *args):
     """Run `synctex <args>` and return its result records (dicts of the Key:value lines).
 
-    The host has no synctex binary, so it runs in the TeX Live image (~0.2 s).
+    Without a synctex on the host, it runs in the TeX Live image (~0.2 s); with neither, there are
+    no records (synctex_unavailable says why).
     """
     cmd = ["synctex", *args]
     if not shutil.which("synctex"):
+        if not shutil.which("podman"):
+            return []
         cmd = ["podman", "run", "--rm", "--pull=never", "--network=none", "--security-opt", "label=disable",
                "-v", f"{paper_root}:{paper_root}", "-w", paper_root, TEXLIVE_IMAGE, *cmd]
     out = subprocess.run(cmd, capture_output=True, text=True).stdout
@@ -409,6 +416,7 @@ def status(server, pdf_name):
         "layout": layout(root, pdf_name),
         "doc": server.default_pdf,
     }
+    info["cleanBuild"] = read_json(clean_file(root, pdf_name, ".status.json"))  # (the notes-free pass)
     clean_pdf = pdf_path(root, pdf_name[:-4] + "-clean.pdf")
     if os.path.isfile(clean_pdf):
         info["clean"] = {"version": str(mtime(clean_pdf)), "refs": refs_start(root, pdf_name, clean=True) if limit else None}
@@ -1680,7 +1688,7 @@ def serve(paper_root, default_pdf, port, page_limit):
     server.diff = {}
     server.head, server.head_checked, server.head_lock = {}, 0, threading.Lock()
     server.tex_exec = ""  # main: the tex-exec prefix, as for latexmk
-    server.image_checked, server.image_ok = 0, True
+    server.image_checked, server.image_note = 0, None
     server.latexmk, server.lock, server.stopping, server.retried = None, None, False, -60
     server.requests = queue.Queue()  # document switches, for the main thread (request_switch)
     server.token = load_token()
@@ -1728,39 +1736,50 @@ def set_doc(server, doc):
         f.write(doc)
 
 
-def start_latexmk(server):
+def start_latexmk(server, force=False):
     """latexmk -pvc for the current document. Main thread only: see request_switch.
 
-    After a failed build, latexmk only reports the old failure until a source changes; -g makes
-    it build again (e.g. after a restart, or once latex_report.py has removed a damaged .aux)."""
+    After a failed build, latexmk only reports the old failure until a source changes; -g (also
+    with force) makes it build again, e.g. after a restart, or once latex_report.py has removed a
+    damaged .aux."""
     if server.no_build:
         return
     doc = server.default_pdf[:-4]
-    failed = (read_json(job_file(server.paper_root, server.default_pdf, ".status.json")) or {}).get("ok") is False
+    force = force or (read_json(job_file(server.paper_root, server.default_pdf, ".status.json")) or {}).get("ok") is False
     env = {**server.env, "LATEX_LIVE_DOC": doc}
     if PUBLISH:
         env["LATEX_LIVE_PUBLISH"] = os.path.join(PUBLISH, server.default_pdf)  # latex_report.py
-    # PR_SET_PDEATHSIG: latexmk gets SIGTERM if this process dies, however it dies.
+    # On Linux, PR_SET_PDEATHSIG: latexmk gets SIGTERM if this process dies, however it dies.
+    # Elsewhere (macOS), main's signal handlers stop it.
     server.latexmk = subprocess.Popen(
-        ["latexmk", "-r", os.path.join(HERE, "latexmkrc"), "-pvc", *(["-g"] if failed else []), f"-jobname={doc}-live", doc],
+        ["latexmk", "-r", os.path.join(HERE, "latexmkrc"), "-pvc", *(["-g"] if force else []), f"-jobname={doc}-live", doc],
         env=env,
-        preexec_fn=lambda: ctypes.CDLL("libc.so.6").prctl(1, signal.SIGTERM),
+        preexec_fn=(lambda: ctypes.CDLL("libc.so.6").prctl(1, signal.SIGTERM)) if sys.platform.startswith("linux") else None,
     )
 
 
 def retry_build(server):
-    """Restart latexmk when latex_report.py asks (build/<doc>-live.retry: it removed a damaged .aux).
-    At most once a minute, in case a source keeps writing one."""
+    """Rebuild from scratch when latex_report.py asks (build/<doc>-live.retry): the .aux was cut off,
+    or came from another TeX installation. Removes the job's generated files (latexmk would rebuild
+    its rules from an old .log or .fls), so latexmk starts as on a first run. At most once a minute, in case a source keeps causing it."""
     retry = job_file(server.paper_root, server.default_pdf, ".retry")
     if not os.path.exists(retry):
         return
     os.remove(retry)
     if time.monotonic() - server.retried < 60:
-        print("=== latex-live: the .aux was damaged again; not rebuilding by itself (save a file to retry)", flush=True)
+        print("=== latex-live: asked to rebuild again within a minute; not rebuilding by itself (save a file to retry)",
+              flush=True)
         return
     server.retried = time.monotonic()
     stop_latexmk(server)
-    start_latexmk(server)
+    sys.path.insert(0, HERE)
+    import latex_report
+    for ext in (*latex_report.AUX_EXTS, ".fdb_latexmk", ".fls", ".log", ".bbl", ".blg"):
+        try:
+            os.remove(job_file(server.paper_root, server.default_pdf, ext))
+        except OSError:
+            pass
+    start_latexmk(server, force=True)
 
 
 def stop_latexmk(server):
@@ -1873,8 +1892,10 @@ def main():
     server.env = {**os.environ, "LATEX_LIVE_HOME": HERE, "max_print_line": "10000"}
     if args.no_build:
         pass
-    elif args.host_tex:
-        print("=== latex-live: TeX from the host", flush=True)
+    elif args.host_tex or not shutil.which("podman"):
+        print("=== latex-live: TeX from the host" + ("" if args.host_tex else " (no podman)")
+              + ("" if shutil.which("pdflatex") else "; but there is no pdflatex: install TeX Live (MacTeX on macOS)"),
+              flush=True)
     else:
         server.env["LATEX_LIVE_EXEC"] = server.tex_exec = container_exec(os.path.realpath(os.getcwd()))
         print("=== latex-live: TeX Live 2024 (podman)" if image_pulled()

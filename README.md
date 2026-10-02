@@ -7,9 +7,10 @@ and zoom. Built on `latexmk -pvc`, SyncTeX, and PDF.js, with no editor extension
 ## Status
 
 This is the first implementation, written for an ICLR paper and its arXiv
-version on a remote Linux machine used through VS Code. It reads the page layout
-from LaTeX, so it is not tied to one template, but it still assumes a
-single-column paper and that setup (see [Portability gaps](#portability-gaps)).
+version on a remote Linux machine used through VS Code. It also runs on macOS
+with MacTeX (not yet tried on a Mac). It reads the page layout from LaTeX, so
+it is not tied to one template, but it still assumes a single-column paper and
+that setup (see [Portability gaps](#portability-gaps)).
 The plan below makes it a general tool.
 
 ## Features
@@ -90,13 +91,15 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
 
 ## Portability gaps
 
-- **Remote Linux machine.**
+- **Remote machine.**
   - **Networking:** the token is always required, even on a laptop where only
     localhost can reach the port.
-  - **TeX:** podman is assumed; `--host-tex` uses whatever TeX is on `PATH`,
-    whose version may differ from Overleaf's.
-  - **Linux only:** the child process gets its parent-death signal through
-    `libc.so.6` (`prctl`), which fails on macOS.
+  - **TeX:** the TeX Live 2024 image through podman, else (`--host-tex`, or no
+    podman) whatever TeX is on `PATH`, whose version may differ from
+    Overleaf's.
+  - **Stopping:** on Linux, latexmk stops when the server dies, however it
+    dies. On macOS it stops with the server's signal handlers, so a killed
+    (`kill -9`) server leaves it running.
 - **ICLR and this paper.**
   - **Venue rules:** references and unnumbered statements (ethics,
     reproducibility, acknowledgments) don't count toward the page limit. Page
@@ -119,10 +122,9 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
    - `latex-live forward FILE LINE` for forward search;
    - `latex-live init` to write the editor task and keybinding into ignored
      files.
-2. **macOS (TODO).**
-   - Replace the Linux-only parent-death call (`prctl` through `libc.so.6`).
-   - Use MacTeX on the host when podman isn't set up.
-   - Default to the local network mode (below) on a laptop.
+2. **macOS.** Runs with MacTeX on the host when there is no podman; not yet
+   tried on a Mac. Still to do: default to the local network mode (below) on a
+   laptop.
 3. **Detect, then configure.** Automatic detection, with an optional
    `.latex-live.toml` for overrides. The main document and the text area are
    detected already (the text area is printed by LaTeX on each build). Still to
