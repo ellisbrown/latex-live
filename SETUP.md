@@ -180,10 +180,38 @@ open a pull request rather than pushing to `main`.
 
 | Symptom | Fix |
 | --- | --- |
-| ⚠ TeX image missing in the viewer, `is not pulled` in the task output, or double-click does nothing | Pull the image (step 2). No restart is needed. If it disappears again, a cleanup job on the machine may be pruning podman images. |
+| ⚠ TeX image missing in the viewer, `is not pulled` in the task output, or double-click does nothing | Pull the image (step 2). No restart is needed. If it keeps disappearing, a cleanup job is probably pruning unused podman images (`podman system prune -a`). See [Keeping the image](#keeping-the-image). |
 | `already running for <doc>.tex` | Another instance holds the lock, e.g. another VS Code window. It prints that instance's URL. |
 | 403 in the browser | Open the full URL with `?t=` once. The token is in `~/.local/share/latex-live/token`. |
 | Stopping the task leaves latexmk running | Your `python3` may be a wrapper that doesn't pass signals on. Use the interpreter itself, e.g. `/usr/bin/python3`. |
 | Double-click does nothing | The task must run in a VS Code terminal so that `code` is on `PATH`. |
 | `no free port in 44100-44109` | Stop old instances (`pgrep -af latex-live/live.py`), or start elsewhere with `--port`. |
 | Viewer shows an old PDF with a red banner | The last build failed and the previous PDF was kept. Click the error to open it. |
+
+### Keeping the image
+
+Some shared machines run a daily `podman system prune -a`, which removes every
+image no container is using. A container that only sleeps keeps the TeX Live
+image in use. With systemd and lingering on (`loginctl show-user $USER -p
+Linger`), put this in `~/.config/containers/systemd/latex-live-texlive.container`:
+
+```ini
+[Container]
+Image=docker.io/minidocks/texlive:2024-full
+ContainerName=latex-live-texlive
+Exec=sleep infinity
+Network=none
+RunInit=true
+Pull=missing
+
+[Service]
+Restart=always
+RestartSec=60
+
+[Install]
+WantedBy=default.target
+```
+
+Then run `systemctl --user daemon-reload && systemctl --user start
+latex-live-texlive`. It starts again at boot and pulls the image if it is
+missing.
