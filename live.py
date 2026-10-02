@@ -112,6 +112,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         if getattr(self, "set_cookie", False):
             self.send_header("Set-Cookie", f"latex_live={self.server.token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000")
+        if self.path.startswith("/viewer.html"):  # revalidate, so an update shows on the next reload
+            self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
     def do_GET(self):
