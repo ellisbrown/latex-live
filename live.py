@@ -1490,13 +1490,21 @@ def checks(server, pdf_name):
     return results
 
 
+def editor_cli():
+    """The editor's command-line tool: LATEX_LIVE_EDITOR (e.g. cursor), else `code` in a VS Code terminal, else None."""
+    if editor := os.environ.get("LATEX_LIVE_EDITOR"):
+        return shutil.which(editor)
+    return shutil.which("code") if "VSCODE_IPC_HOOK_CLI" in os.environ else None
+
+
 def open_in_vscode(src, line, paper_root):
-    """Open src at line in VS Code. `code` reaches the editor only from a VS Code terminal (the
-    task's); from anywhere else, say so rather than fail quietly."""
+    """Open src at line in the editor (editor_cli). Without one, say so rather than fail quietly."""
     where = f"{os.path.relpath(src, paper_root)}:{line}"
-    code = shutil.which("code")
-    if not (code and "VSCODE_IPC_HOOK_CLI" in os.environ):
-        return 409, f"{where}, not opened: latex-live is not running in a VS Code terminal (start it with the VS Code task)"
+    code, editor = editor_cli(), os.environ.get("LATEX_LIVE_EDITOR")
+    if not code:
+        why = (f"LATEX_LIVE_EDITOR ({editor}) is not a command here" if editor else
+               "latex-live is not running in a VS Code terminal (start it with the VS Code task), and LATEX_LIVE_EDITOR is not set")
+        return 409, f"{where}, not opened: {why}"
     subprocess.Popen([code, "-g", f"{src}:{line}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return 200, where
 
@@ -1726,9 +1734,9 @@ def serve(paper_root, default_pdf, port, page_limit):
 
 def open_in_editor(pdf):
     """Open the PDF in a VS Code tab once it exists (the first build may still be running)."""
-    code = shutil.which("code")
-    if not code or "VSCODE_IPC_HOOK_CLI" not in os.environ:
-        return print("=== latex-live: not in a VS Code terminal; skipping editor tab", flush=True)
+    code = editor_cli()
+    if not code:
+        return print("=== latex-live: not in a VS Code terminal and no LATEX_LIVE_EDITOR; skipping editor tab", flush=True)
     while not os.path.isfile(pdf):
         time.sleep(1)
     subprocess.run([code, "-r", pdf], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
