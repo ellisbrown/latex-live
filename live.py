@@ -1466,9 +1466,15 @@ def checks(server, pdf_name):
     return results
 
 
+def editor_cli():
+    """The editor's command-line tool: LATEX_LIVE_EDITOR (e.g. cursor), else `code` in a VS Code terminal, else None."""
+    if editor := os.environ.get("LATEX_LIVE_EDITOR"):
+        return shutil.which(editor)
+    return shutil.which("code") if "VSCODE_IPC_HOOK_CLI" in os.environ else None
+
+
 def open_in_vscode(src, line, paper_root):
-    code = shutil.which("code")
-    if code and "VSCODE_IPC_HOOK_CLI" in os.environ:
+    if code := editor_cli():
         subprocess.Popen([code, "-g", f"{src}:{line}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return 200, f"{os.path.relpath(src, paper_root)}:{line}"
 
@@ -1698,9 +1704,9 @@ def serve(paper_root, default_pdf, port, page_limit):
 
 def open_in_editor(pdf):
     """Open the PDF in a VS Code tab once it exists (the first build may still be running)."""
-    code = shutil.which("code")
-    if not code or "VSCODE_IPC_HOOK_CLI" not in os.environ:
-        return print("=== latex-live: not in a VS Code terminal; skipping editor tab", flush=True)
+    code = editor_cli()
+    if not code:
+        return print("=== latex-live: not in a VS Code terminal and no LATEX_LIVE_EDITOR; skipping editor tab", flush=True)
     while not os.path.isfile(pdf):
         time.sleep(1)
     subprocess.run([code, "-r", pdf], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
