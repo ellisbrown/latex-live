@@ -86,6 +86,12 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
     (git `user.name` and the note-macro comments).
   - `LATEX_LIVE_HOST`: also print a direct viewer URL on this hostname, e.g.
     the name a tunnel exposes.
+  - `LATEX_LIVE_EDITOR`: the editor command that double-click opens the
+    source in (`<editor> -g FILE:LINE`), e.g. `cursor`. Without it, latex-live
+    uses `code`, and only from a VS Code terminal. On a Mac, Cursor's local
+    terminals don't have the variable VS Code terminals set, so set this to
+    the `cursor` symlink to the app (`/usr/local/bin/cursor`); Cursor's bundled
+    `code` script doesn't reach the open window.
 - **PDF.js:** vendored in `pdfjs/` (4.10.38 legacy build, Apache-2.0; see
   `pdfjs/LICENSE`).
 
