@@ -430,14 +430,14 @@ def status(server, pdf_name):
         "build": read_json(job_file(root, pdf_name, ".status.json")),
         "forward": read_json(job_file(root, pdf_name, ".forward.json")),
         "pageLimit": limit,
-        "refs": refs_start(root, pdf_name) if limit else None,
+        "refs": refs_start(root, pdf_name),  # where the main text ends (page badge, space hints)
         "layout": layout(root, pdf_name),
         "doc": server.default_pdf,
     }
     info["cleanBuild"] = read_json(clean_file(root, pdf_name, ".status.json"))  # (the notes-free pass)
     clean_pdf = pdf_path(root, pdf_name[:-4] + "-clean.pdf")
     if os.path.isfile(clean_pdf):
-        info["clean"] = {"version": str(mtime(clean_pdf)), "refs": refs_start(root, pdf_name, clean=True) if limit else None}
+        info["clean"] = {"version": str(mtime(clean_pdf)), "refs": refs_start(root, pdf_name, clean=True)}
     info["head"] = head_status(server, pdf_name)
     info["texImage"] = image_problem(server)
     return info
