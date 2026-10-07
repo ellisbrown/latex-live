@@ -132,6 +132,12 @@ Contents:
 }
 ```
 
+For a folder with several papers (say, a notes repository with each paper in a
+subfolder), add a copy of the first task whose command passes the current file,
+`live.py "${file}" --no-open`, with a label such as `LaTeX: live preview
+(current file)` and without `runOn`. It previews the paper of the file in front
+of you, beside any other instance.
+
 The problem matcher sends LaTeX errors and warnings to the Problems panel.
 Author names for the anonymity check come from git's `user.name` and the
 note-macro comments. Affiliations don't, so list them in

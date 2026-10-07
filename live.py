@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """latex-live: LaTeX Workshop-style live preview without the extension.
 
-Usage (from a paper root):  live.py [<doc>[.tex]] [--port 44100] [--page-limit N] [--build-dir DIR] [--no-build] [--no-open] [--host-tex]
+Usage (from a paper root):  live.py [<doc>[.tex] | PATH] [--port 44100] [--page-limit N] [--build-dir DIR] [--no-build] [--no-open] [--host-tex]
 
 - Without <doc>, it builds the root .tex file (one with a \\documentclass) whose sources
   were edited last; the viewer switches to another root file.
@@ -311,7 +311,7 @@ DOCCLASS_RE = re.compile(r"^[^%\n]*\\documentclass\b", re.M)
 def root_docs(paper_root):
     """The root documents in the paper root: the .tex files with a \\documentclass that is not commented out."""
     docs = []
-    for name in sorted(os.listdir(paper_root)):
+    for name in sorted(os.listdir(paper_root)) if os.path.isdir(paper_root) else ():
         if name.endswith(".tex"):
             try:
                 with open(os.path.join(paper_root, name), errors="replace") as f:
@@ -320,6 +320,24 @@ def root_docs(paper_root):
             except OSError:
                 pass
     return docs
+
+
+def paper_root_of(path):
+    """The paper root for a file, e.g. the editor's current one: its folder if that holds a root
+    document, else the nearest folder above that does (not past the top of its git checkout, or
+    outside one, more than three folders up)."""
+    folder = os.path.dirname(os.path.abspath(path))
+    while not os.path.isdir(folder):
+        folder = os.path.dirname(folder)
+    r = subprocess.run(["git", "-C", folder, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    top = os.path.realpath(r.stdout.strip()) if r.returncode == 0 else None
+    for _ in range(100 if top else 4):
+        if root_docs(folder):
+            return folder
+        if os.path.realpath(folder) == top or folder == os.path.dirname(folder):
+            break
+        folder = os.path.dirname(folder)
+    return None
 
 
 def source_tree(paper_root, doc):
@@ -1846,7 +1864,8 @@ def print_urls(port):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("doc", nargs="?", help="root .tex file (with or without extension); default: the one whose"
-                    " sources were edited last. The viewer switches between root files.")
+                    " sources were edited last. The viewer switches between root files. A path (e.g. the editor's"
+                    " current file) runs in that file's paper: it builds the file if it is a root one.")
     ap.add_argument("--port", type=int, default=44100)
     ap.add_argument("--page-limit", type=int, help="main-text page limit to check in the viewer (default: the venue's,"
                     " for ICLR, NeurIPS and COLM styles)")
@@ -1859,6 +1878,15 @@ def main():
     global BUILD, PUBLISH
     BUILD = os.environ["LATEX_LIVE_BUILD"] = os.path.normpath(args.build_dir)
     PUBLISH = "" if BUILD == "build" else BUILD
+
+    if args.doc and os.path.dirname(args.doc):  # a path: run in its paper
+        path = os.path.abspath(args.doc)
+        root = paper_root_of(path)
+        if not root:
+            sys.exit(f"latex-live: no root .tex file in or above {os.path.dirname(path)}")
+        os.chdir(root)
+        name = os.path.basename(path)
+        args.doc = name if os.path.dirname(path) == root and name[:-4] in root_docs(root) else None
 
     docs = root_docs(os.getcwd())
     if args.doc:

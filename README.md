@@ -67,6 +67,9 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
 - **Document:** a root `.tex` file, with or without the extension. Without one,
   latex-live picks the root file (one with a `\documentclass`) whose sources
   were edited last; on a tie, the last one it built. Switch in the viewer.
+  Given a path instead, e.g. the editor's current file, it runs in that file's
+  paper (its folder, or the nearest one above with a root file) and builds the
+  file if it is a root one, so one editor task serves several papers.
 
 - **Second instance:** `--build-dir build/next` (or any other directory) keeps
   every output there, including `<doc>.pdf`. A second instance, such as a
