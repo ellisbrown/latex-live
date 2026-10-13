@@ -515,7 +515,10 @@ async function showSource(file, line, openIfMissing = false) {
   if (openIfMissing) return openSource(file, line);
   setStatus(body.error, "error");
 }
-const openSource = (file, line) => fetch(`open?${new URLSearchParams({ file, line })}`);
+async function openSource(file, line) {
+  const r = await fetch(`open?${new URLSearchParams({ file, line })}`);
+  if (!r.ok) setStatus(await r.text(), "error"); // e.g. latex-live is not running in a VS Code terminal
+}
 
 function setStatus(text, cls = "") {
   $("status").textContent = text;
@@ -523,17 +526,20 @@ function setStatus(text, cls = "") {
 }
 
 // Build-status banner: shows the first errors of a failed build, or else of a failed notes-free
-// pass (the notes-free view and its page count are then out of date); click one to open it in VS Code.
+// pass (the notes-free view and its page count are then out of date); click one to open it in VS
+// Code. Failing those, it says when another build (e.g. make) replaced the published PDF.
 let dismissed = null;
-function showBuild(build, notesFree) {
+function showBuild(build, notesFree, overwritten) {
   const banner = $("banner");
   if (!(build && !build.ok) && !isDiff && notesFree && !notesFree.ok) build = { ...notesFree, notesFree: true };
+  if (!(build && !build.ok) && !isDiff && overwritten) build = { ok: false, time: overwritten, errors: [], overwritten: true };
   if (!build || build.ok || dismissed === build.time) return (banner.hidden = true);
   banner.replaceChildren();
   const close = el("span", { className: "close", textContent: "✕" });
   close.onclick = () => { dismissed = build.time; banner.hidden = true; };
   banner.append(close, isDiff ? `Diff failed at ${build.time}.`
     : build.notesFree ? `The notes-free build failed at ${build.time}${build.msg ? ` (${build.msg})` : ""}; the notes-free view and its page count are out of date.`
+    : build.overwritten ? `Another build (e.g. make) replaced ${docFile} at ${build.time}: the view with notes shows that PDF, and double-click may land on the wrong line. Save a source file to rebuild it.`
     : `Build failed at ${build.time}; showing the last good PDF.`);
   for (const err of build.errors.slice(0, 3)) {
     const line = el("div");
@@ -1739,7 +1745,7 @@ async function poll() {
     const info = await r.json();
     if (!isDiff && info.doc && info.doc !== docFile) return openDoc(info.doc); // the server builds another document now
     if (info.layout) area = info.layout;
-    showBuild(info.building ? null : info.build, info.building ? null : info.cleanBuild);
+    showBuild(info.building ? null : info.build, info.building ? null : info.cleanBuild, info.building ? null : info.overwritten);
     showDiffInfo(info.diff);
     $("texImage").hidden = !info.texImage; // builds fall back to the host's TeX; SyncTeX may not work
     $("texImage").title = info.texImage || "";

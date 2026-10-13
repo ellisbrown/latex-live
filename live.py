@@ -435,6 +435,11 @@ def status(server, pdf_name):
         "doc": server.default_pdf,
     }
     info["cleanBuild"] = read_json(clean_file(root, pdf_name, ".status.json"))  # (the notes-free pass)
+    published = read_json(job_file(root, pdf_name, ".published.json"))  # what latex_report.py last published
+    if published and os.path.isfile(pdf):
+        st = os.stat(pdf)
+        if [st.st_mtime_ns, st.st_size] != [published.get("mtime"), published.get("size")]:
+            info["overwritten"] = time.strftime("%H:%M:%S", time.localtime(st.st_mtime))
     clean_pdf = pdf_path(root, pdf_name[:-4] + "-clean.pdf")
     if os.path.isfile(clean_pdf):
         info["clean"] = {"version": str(mtime(clean_pdf)), "refs": refs_start(root, pdf_name, clean=True)}
@@ -1485,10 +1490,14 @@ def checks(server, pdf_name):
 
 
 def open_in_vscode(src, line, paper_root):
+    """Open src at line in VS Code. `code` reaches the editor only from a VS Code terminal (the
+    task's); from anywhere else, say so rather than fail quietly."""
+    where = f"{os.path.relpath(src, paper_root)}:{line}"
     code = shutil.which("code")
-    if code and "VSCODE_IPC_HOOK_CLI" in os.environ:
-        subprocess.Popen([code, "-g", f"{src}:{line}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return 200, f"{os.path.relpath(src, paper_root)}:{line}"
+    if not (code and "VSCODE_IPC_HOOK_CLI" in os.environ):
+        return 409, f"{where}, not opened: latex-live is not running in a VS Code terminal (start it with the VS Code task)"
+    subprocess.Popen([code, "-g", f"{src}:{line}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return 200, where
 
 
 def synctex_edit(paper_root, query):

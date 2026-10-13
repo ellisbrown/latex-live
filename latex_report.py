@@ -101,12 +101,16 @@ def overfull_boxes(log):
     return boxes
 
 
-def write_status(root, status, directory=BUILD):
-    """Atomically write <directory>/<root>.status.json (read by live.py's /status endpoint)."""
-    path = os.path.join(directory, f"{root}.status.json")
+def write_json(path, value):
+    """Atomically write value to path (read by live.py's /status endpoint)."""
     with open(path + ".tmp", "w") as f:
-        json.dump(status, f)
+        json.dump(value, f)
     os.replace(path + ".tmp", path)
+
+
+def write_status(root, status, directory=BUILD):
+    """Atomically write <directory>/<root>.status.json."""
+    write_json(os.path.join(directory, f"{root}.status.json"), status)
 
 
 # Blank the inline notes: this paper's preamble routes \todo and the per-author note macros
@@ -285,6 +289,8 @@ def main():
         tmp = os.path.join(os.path.dirname(dest), f".{os.path.basename(dest)}.tmp")
         shutil.copyfile(os.path.join(BUILD, f"{root}.pdf"), tmp)
         os.replace(tmp, dest)
+        st = os.stat(dest)  # so live.py can tell when another build (e.g. make) replaces it
+        write_json(os.path.join(BUILD, f"{root}.published.json"), {"mtime": st.st_mtime_ns, "size": st.st_size})
         print(f"=== live-reload: published {dest} at {stamp}")
         if has_notes(files):
             start_notes_free_build(root, doc)
