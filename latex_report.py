@@ -165,7 +165,7 @@ def start_notes_free_build(root, doc):
             os.killpg(pid, signal.SIGTERM)
     except (OSError, ValueError):
         pass
-    for ext in (".aux", ".bbl", ".out", ".toc"):
+    for ext in (".aux", ".bbl", ".brf", ".out", ".toc"):  # (.brf: hyperref's back-references)
         if os.path.exists(os.path.join(BUILD, root + ext)):
             shutil.copyfile(os.path.join(BUILD, root + ext), os.path.join(out, job + ext))
     proc = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--notes-free", root, doc], start_new_session=True,

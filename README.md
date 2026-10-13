@@ -30,7 +30,11 @@ The plan below makes it a general tool.
   expand it; click it to open the source.
 - **Page-limit badge.** Main-text pages against the venue limit, measured with
   and without notes. The limit comes from the venue style (ICLR, NeurIPS and
-  COLM: 9 pages) or `--page-limit`.
+  COLM: 9 pages; CVPR and ICCV: 8) or `--page-limit`.
+- **One or two columns.** LaTeX reports the column layout on each build. With
+  two columns, the viewer reads the text column by column, ignores review line
+  numbers beside either column, and measures page fill, space hints and note
+  anchors per column.
 - **Change highlights.** A word-level diff of the text against the last
   commit (a PDF of `HEAD`'s `.tex` files, rebuilt when `HEAD` moves) or
   against the previous build, plus outlines on changed figures. The toolbar
@@ -113,10 +117,9 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
     `\todotxt`, and the notes-free build works by emptying `\todotxt`.
   - **Generated figures:** the staleness check assumes they come from
     `raw/*.py`.
-- **Single column only.** The viewer groups text into lines by baseline across
-  the whole page. In two-column templates (ICML, CVPR, ACL), both columns merge
-  into one line. That breaks the change highlights, space hints, margin-note
-  anchors and page-fill measure.
+- **Two columns: rough edges.** Hover previews of a reference span both
+  columns, and every note bubble sits in the right-hand gutter, so the wire from
+  a left-column note crosses the right column.
 
 ## Plan
 
@@ -136,9 +139,8 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
    - **note macros:** detected, with notes-off emptying each one;
    - **column count:** from where text sits across the page;
    - **overrides:** anonymity terms, generated-figure paths, page limit.
-4. **Venue presets.** ICLR, NeurIPS and COLM page limits exist. Still to do:
-   ICML, CVPR, ACL, and per venue what doesn't count and the number of
-   columns.
+4. **Venue presets.** ICLR, NeurIPS, COLM, CVPR and ICCV page limits exist.
+   Still to do: ICML, ACL, and per venue what doesn't count.
 5. **Two network modes.**
    - **local** (the laptop default): localhost only, no token, and it opens
      the browser;
@@ -146,7 +148,8 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
      forward only a few ports.
 
    Editor links for VS Code, Cursor, or a custom command.
-6. **Two-column support** throughout the viewer.
+6. **Two-column polish:** hover previews within a column, and note bubbles in
+   the gutter beside their column.
 7. **Test papers.** Plain article, ICLR, NeurIPS, and a two-column template,
    to keep the layout heuristics honest.
 8. **Static review snapshot** (optional). One self-contained HTML file (PDF,

@@ -601,7 +601,7 @@ async function fillSectionPages() {
     if (item.minor) { pos.push(null); continue; } // (run-in paragraph titles: too generic to find reliably)
     const p = await headingPos(d, item, from).catch(() => null);
     if (p?.found) from = p.index;
-    pos.push(p?.found ? p.index + Math.min(1, Math.max(0, (p.top - area.top) / (area.bottom - area.top))) : null);
+    pos.push(p?.found ? p.index + areaFraction(p.top, p.x) : null);
   }
   if (d !== doc || rows !== outlineRows) return;
   const mainEnd = r.page - 1 + r.fill;
@@ -667,7 +667,8 @@ async function headingPos(d, entry, from = null) {
     if (!Array.isArray(dest)) return null;
     const index = typeof dest[0] === "object" && dest[0] ? await d.getPageIndex(dest[0]) : dest[0];
     const H = (await d.getPage(index + 1)).view[3];
-    return { index, H, top: dest[1]?.name === "XYZ" && dest[3] != null ? H - dest[3] : area.top, found: true };
+    const xyz = dest[1]?.name === "XYZ";
+    return { index, H, top: xyz && dest[3] != null ? H - dest[3] : area.top, x: xyz ? dest[2] : null, found: true };
   }
   const labels = await d.getPageLabels();
   const index = labels?.includes(entry.page) ? labels.indexOf(entry.page) : +entry.page - 1;
@@ -680,13 +681,13 @@ async function headingPos(d, entry, from = null) {
     const { H, lines } = await textLines(d, i + 1);
     const line = (key && lines.find((l) => norm(l.str).includes(key))) ||
                  (number && lines.find((l) => l.str.startsWith(`${number} `)));
-    if (line) return { index: i, H, top: line.top - 10, found: true };
+    if (line) return { index: i, H, top: line.top - 10, x: line.left, found: true };
   }
   return { index, H: (await d.getPage(index + 1)).view[3], top: 0, found: false };
 }
 
 // Page text, cached per document: items {str, x, top (baseline, points from the page top), w, h}
-// without the submission line numbers in the left margin.
+// without the submission line numbers (in the left margin, or beside both columns).
 const textCache = new WeakMap();
 function pageText(d, n) {
   if (!textCache.has(d)) textCache.set(d, new Map());
@@ -695,9 +696,10 @@ function pageText(d, n) {
     const page = await d.getPage(n);
     const [, , W, H] = page.view;
     const { items } = await page.getTextContent();
-    return { W, H, items: items.filter((i) => i.str.trim() && !(/^\d{1,4}$/.test(i.str.trim()) && i.transform[4] < W * 0.15))
+    return { W, H, items: items.filter((i) => i.str.trim())
       .map((i) => ({ str: i.str, x: i.transform[4], top: H - i.transform[5], w: i.width,
-                     h: i.height || Math.hypot(i.transform[2], i.transform[3]) })) };
+                     h: i.height || Math.hypot(i.transform[2], i.transform[3]) }))
+      .filter((i) => !lineNumber(i, W)) };
   })());
   return cache.get(n);
 }
@@ -705,15 +707,41 @@ function pageText(d, n) {
 // The page's text area, in points from the top, and its line spacing: from the build's log (live.py).
 // Until a build reports it, 1in margins on US letter with 11pt lines.
 let area = { top: 72, bottom: 720, leading: 11, H: 792 };
+// The text columns, [left, right] in points (one, or two with columns = 2); null until a build reports them.
+function columnBoxes() {
+  if (!area.width) return null;
+  const { left, width, colwidth } = area;
+  return area.columns === 2 ? [[left, left + colwidth], [left + width - colwidth, left + width]] : [[left, left + width]];
+}
+const columnMid = () => (area.columns === 2 ? area.left + area.width / 2 : null);
+const columnAt = (x) => (columnMid() === null || x < columnMid() ? 1 : 2);
+// A submission line number: a bare number outside the text columns (before a build reports them,
+// in the left margin, as in ICLR's template).
+function lineNumber(i, W) {
+  if (!/^\d{1,4}$/.test(i.str.trim())) return false;
+  const boxes = columnBoxes();
+  return boxes ? !boxes.some(([l, r]) => i.x >= l - 2 && i.x + i.w <= r + 2) : i.x < W * 0.15;
+}
+// How far into a page's text a point is, from 0 to 1: by height, and with two columns, the left one first.
+function areaFraction(top, x) {
+  const f = Math.min(1, Math.max(0, (top - area.top) / (area.bottom - area.top)));
+  return columnMid() === null || x == null ? f : columnAt(x) === 1 ? f / 2 : 0.5 + f / 2;
+}
 
-// Text lines of a page (pieces joined by baseline), without the running header and footer.
+// Text lines of a page (pieces joined by baseline), without the running header and footer, in
+// reading order. Each line's col is 1 (or 2: the right column, with two columns), or 0 for a line
+// across both columns (a title, a figure* caption); lines go column by column between those.
 async function textLines(d, pageNumber) {
   const { W, H, items } = await pageText(d, pageNumber);
+  const mid = columnMid();
+  const colOf = (i) => (mid === null ? 1 : i.x < mid - 2 && i.x + i.w > mid + 2 ? 0 : i.x + i.w / 2 < mid ? 1 : 2);
   const lines = [];
-  for (const i of [...items].sort((a, b) => a.top - b.top)) {
-    const last = lines.at(-1);
-    if (last && i.top - last.top < 2) last.parts.push(i);
-    else lines.push({ top: i.top, parts: [i] });
+  for (const col of mid === null ? [1] : [0, 1, 2]) {
+    let last = null;
+    for (const i of items.filter((i) => colOf(i) === col).sort((a, b) => a.top - b.top)) {
+      if (last && i.top - last.top < 2) last.parts.push(i);
+      else lines.push((last = { top: i.top, col, parts: [i] }));
+    }
   }
   for (const l of lines) {
     l.parts.sort((a, b) => a.x - b.x);
@@ -721,7 +749,16 @@ async function textLines(d, pageNumber) {
     l.left = l.parts[0].x;
     l.right = Math.max(...l.parts.map((p) => p.x + p.w));
   }
-  return { W, H, lines: lines.filter((l) => l.top > area.top - 3 && l.top < area.bottom + 12) }; // (the page number sits lower)
+  const kept = lines.filter((l) => l.top > area.top - 3 && l.top < area.bottom + 12).sort((a, b) => a.top - b.top); // (the page number sits lower)
+  if (mid === null) return { W, H, lines: kept };
+  const ordered = [], left = kept.filter((l) => l.col === 1), right = kept.filter((l) => l.col === 2);
+  for (const across of [...kept.filter((l) => l.col === 0), null]) {
+    const until = across ? across.top : Infinity;
+    while (left.length && left[0].top < until) ordered.push(left.shift());
+    while (right.length && right[0].top < until) ordered.push(right.shift());
+    if (across) ordered.push(across);
+  }
+  return { W, H, lines: ordered };
 }
 
 // Main-text length, against the page limit when there is one. Main text runs from the page labeled
@@ -732,26 +769,28 @@ const UNCOUNTED = /^(ai use|llm usage|use of large language models|ethics statem
 async function checkPages(d, refs, limit) {
   const labels = await d.getPageLabels();
   const first = Math.max(0, labels?.indexOf("1") ?? 0) + 1;
-  let end = refs ? { page: refs.page, top: refs.y } : { page: d.numPages + 1, top: area.top }; // (then: to the last line)
+  let end = refs ? { page: refs.page, top: refs.y, x: refs.x } : { page: d.numPages + 1, top: area.top }; // (then: to the last line)
   for (let p = Math.max(first, end.page - 2); refs && p <= refs.page; p++) {
     const { lines } = await textLines(d, p);
     const heading = lines.find((l) => l.str.length < 60 && UNCOUNTED.test(l.str) && (p < refs.page || l.top < refs.y));
-    if (heading) { end = { page: p, top: heading.top - 10 }; break; }
+    if (heading) { end = { page: p, top: heading.top - 10, x: heading.left }; break; }
   }
-  let page = end.page, fill, endTop;
-  if (end.top - area.top > 15) { // main text ends partway down this page
-    endTop = end.top;
-    fill = (end.top - area.top) / (area.bottom - area.top);
-  } else { // it ends on the previous page: measure down to its last text line
+  let page = end.page, fill, endTop, endCol;
+  if (areaFraction(end.top, end.x) * (area.bottom - area.top) > 15) { // main text ends partway into this page
+    [endTop, endCol] = [end.top, columnAt(end.x)];
+    fill = areaFraction(end.top, end.x);
+  } else { // it ends on the previous page: measure down to its last text line (in its last column)
     page -= 1;
-    const prev = await textLines(d, page);
-    endTop = Math.max(area.top, ...prev.lines.map((l) => l.top)) + 3;
-    fill = (endTop - 3 - area.top) / (area.bottom - area.top);
+    const { lines } = await textLines(d, page);
+    endCol = Math.max(1, ...lines.map((l) => l.col));
+    const last = lines.filter((l) => (l.col || 1) === endCol);
+    endTop = Math.max(area.top, ...last.map((l) => l.top)) + 3;
+    fill = areaFraction(endTop - 3, last[0]?.left);
   }
   fill = Math.min(1, Math.max(0, fill));
   const used = page - first + 1;
   const lastAllowed = limit ? first + limit - 1 : null;
-  return { first, page, fill, endTop, used, limit, value: used - 1 + fill, lastAllowed, lastAllowedLabel: labels?.[lastAllowed - 1] ?? lastAllowed,
+  return { first, page, fill, endTop, endCol, used, limit, value: used - 1 + fill, lastAllowed, lastAllowedLabel: labels?.[lastAllowed - 1] ?? lastAllowed,
            cls: !limit ? "" : used > limit ? "over" : used === limit && fill > 0.9 ? "tight" : "ok",
            range: `page ${labels?.[first - 1] ?? first} to ${labels?.[page - 1] ?? page} (${Math.round(fill * 100)}% of the last page)` };
 }
@@ -1028,7 +1067,9 @@ async function anchorNote(d, n) {
       const spill = [Math.min(...pages) - 1, Math.max(...pages) + 1].filter((p) => p >= 1 && p <= d.numPages);
       for (const page of band ? pages : len === 30 ? [...pages, ...spill] : []) {
         const ys = n.points.filter((p) => p[0] === page).map((p) => p[2]);
-        const { lines } = await textLines(d, page);
+        const col = columnAt((n.points.find((p) => p[0] === page) || n.points[0])[1]);
+        const { lines: all } = await textLines(d, page);
+        const lines = all.filter((l) => !l.col || l.col === col || !band); // (with two columns: the note's own)
         const near = band ? lines.filter((l) => l.top > Math.min(...ys) - 14 && l.top < Math.max(...ys) + 14) : lines;
         let text = "";
         const at = []; // per character of text: [x0, x1, top]
@@ -1065,7 +1106,7 @@ async function anchorNote(d, n) {
   }
   const p = n.side === "after" || n.side === "near" ? n.points[0] : n.points.at(-1);
   const { lines } = await textLines(d, p[0]);
-  const line = lines.find((l) => Math.abs(l.top - p[2]) < 2);
+  const line = lines.find((l) => Math.abs(l.top - p[2]) < 2 && (!l.col || l.col === columnAt(p[1])));
   const x = !line ? p[1] : n.side === "after" || n.side === "near" ? line.left - 1.5 : n.side === "before" ? line.right + 1 : p[1];
   return { page: p[0], x, top: p[2] };
 }
@@ -1445,62 +1486,73 @@ function cutSpots(d, r) {
 async function findCutSpots(d, r) {
   const spots = [];
   for (let p = r.first; p <= r.page; p++) {
-    const { H, lines } = await textLines(d, p);
-    const end = p === r.page ? r.endTop : area.bottom + 12;
-    const body = lines.filter((l) => l.str.length > 60);
-    if (body.length < 3) continue;
-    const lefts = {};
-    for (const l of body) lefts[Math.round(l.left)] = (lefts[Math.round(l.left)] || 0) + 1;
-    const colLeft = +Object.entries(lefts).sort((a, b) => b[1] - a[1])[0][0];
-    const aligned = body.filter((l) => Math.abs(l.left - colLeft) < 2);
-    const colRight = Math.max(...aligned.map((l) => l.right));
-    for (let i = 1; i < lines.length; i++) {
-      const l = lines[i], prev = lines[i - 1], next = lines[i + 1];
-      if (l.top > end) break;
-      const short = l.str.split(/\s+/).length <= 2 || l.right - l.left < (colRight - colLeft) * 0.12;
-      if (!short || Math.abs(l.left - colLeft) > 1.5 || /^[\d\s.,%()–-]*$/.test(l.str)) continue;
-      // after a full justified line of the same paragraph, and not followed by more of it
-      if (prev.right < colRight - 3 || prev.str.length < 60 || prev.left < colLeft - 1.5 || l.top - prev.top > area.leading + 3) continue;
-      if (next && next.top - l.top < area.leading + 2 && Math.abs(next.left - colLeft) < 1.5) continue;
-      const h = Math.max(...l.parts.map((q) => q.h));
-      spots.push({ page: p, top: l.top, lines: 1, label: "1 line", text: `“${l.str}” alone on a paragraph's last line`,
-                   rect: [l.left - 1, H - l.top - h * 0.3, colRight, H - l.top + h * 0.9] });
-    }
-    // Empty bands: rows of the text column with nothing drawn in them, well beyond a paragraph break.
-    const page = await d.getPage(p);
-    const viewport = page.getViewport({ scale: 1 });
-    const canvas = el("canvas", { width: Math.ceil(viewport.width), height: Math.ceil(viewport.height) });
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    await page.render({ canvasContext: ctx, viewport, annotationMode: pdfjsLib.AnnotationMode.DISABLE }).promise;
-    const x0 = Math.max(0, Math.floor(colLeft - 2)), x1 = Math.min(canvas.width, Math.ceil(colRight + 2));
-    // (On the first page, only between its first and last full lines: the spacing of a title block,
-    // and of a title page that ends after the abstract, is by design.)
-    const start = p === r.first ? Math.max(area.top, body[0].top - 12) : area.top;
-    const stop = p === r.first ? Math.min(end, aligned.at(-1).top + area.leading) : end;
-    const y0 = Math.floor(start), y1 = Math.min(canvas.height, Math.ceil(stop));
-    if (y1 - y0 < 30) continue;
-    const { data } = ctx.getImageData(x0, y0, x1 - x0, y1 - y0);
-    const w = x1 - x0;
-    let run = null;
-    for (let y = 0; y <= y1 - y0; y++) {
-      let blank = y < y1 - y0;
-      for (let x = 0; blank && x < w; x++) {
-        const k = (y * w + x) * 4;
-        if (data[k + 3] > 0 && (data[k] < 235 || data[k + 1] < 235 || data[k + 2] < 235)) blank = false;
+    const { H, lines: all } = await textLines(d, p);
+    let ctx = null, canvas = null; // the rendered page, for the empty-band scan (once per page)
+    for (const col of columnMid() === null ? [1] : [1, 2]) { // each text column on its own
+      if (p === r.page && col > (r.endCol || 1)) break;
+      const end = p === r.page && col === (r.endCol || 1) ? r.endTop : area.bottom + 12;
+      const lines = all.filter((l) => l.col === col);
+      // A full line of body text spans most of the column in body-size type, unlike a title (before a
+      // build reports the column's width: over 60 characters).
+      const full = (l) => (area.colwidth ? l.right - l.left > area.colwidth * 0.85 && Math.max(...l.parts.map((q) => q.h)) <= area.leading
+                                         : l.str.length > 60);
+      const body = lines.filter(full);
+      if (body.length < 3) continue;
+      const lefts = {};
+      for (const l of body) lefts[Math.round(l.left)] = (lefts[Math.round(l.left)] || 0) + 1;
+      const colLeft = +Object.entries(lefts).sort((a, b) => b[1] - a[1])[0][0];
+      const aligned = body.filter((l) => Math.abs(l.left - colLeft) < 2);
+      const colRight = Math.max(...aligned.map((l) => l.right));
+      for (let i = 1; i < lines.length; i++) {
+        const l = lines[i], prev = lines[i - 1], next = lines[i + 1];
+        if (l.top > end) break;
+        const short = l.str.split(/\s+/).length <= 2 || l.right - l.left < (colRight - colLeft) * 0.12;
+        if (!short || Math.abs(l.left - colLeft) > 1.5 || /^[\d\s.,%()–-]*$/.test(l.str)) continue;
+        // after a full justified line of the same paragraph, and not followed by more of it
+        if (prev.right < colRight - 3 || !full(prev) || prev.left < colLeft - 1.5 || l.top - prev.top > area.leading + 3) continue;
+        if (next && next.top - l.top < area.leading + 2 && Math.abs(next.left - colLeft) < 1.5) continue;
+        const h = Math.max(...l.parts.map((q) => q.h));
+        spots.push({ page: p, col, top: l.top, lines: 1, label: "1 line", text: `“${l.str}” alone on a paragraph's last line`,
+                     rect: [l.left - 1, H - l.top - h * 0.3, colRight, H - l.top + h * 0.9] });
       }
-      if (blank) { run ??= y; continue; }
-      const gap = run === null ? 0 : y - run;
-      const n = Math.round((gap - 10) / area.leading); // a paragraph break leaves ~10pt
-      if (gap > 28 && n >= 1) {
-        const top = y0 + run, bottom = y0 + y, atEnd = y === y1 - y0 && p < r.page;
-        spots.push({ page: p, top, lines: n, label: `≈${n} line${n === 1 ? "" : "s"}`,
-                     text: `${Math.round(gap)} pt of empty space ${atEnd ? "at the bottom of the page" : "in the text column"}`,
-                     rect: [colLeft, H - bottom, colRight, H - top] });
+      // Empty bands: rows of the text column with nothing drawn in them, well beyond a paragraph break.
+      if (!ctx) {
+        const page = await d.getPage(p);
+        const viewport = page.getViewport({ scale: 1 });
+        canvas = el("canvas", { width: Math.ceil(viewport.width), height: Math.ceil(viewport.height) });
+        ctx = canvas.getContext("2d", { willReadFrequently: true });
+        await page.render({ canvasContext: ctx, viewport, annotationMode: pdfjsLib.AnnotationMode.DISABLE }).promise;
       }
-      run = null;
+      const x0 = Math.max(0, Math.floor(colLeft - 2)), x1 = Math.min(canvas.width, Math.ceil(colRight + 2));
+      // (On the first page, only between its first and last full lines: the spacing of a title block,
+      // and of a title page that ends after the abstract, is by design.)
+      const start = p === r.first ? Math.max(area.top, body[0].top - 12) : area.top;
+      const stop = p === r.first ? Math.min(end, aligned.at(-1).top + area.leading) : end;
+      const y0 = Math.floor(start), y1 = Math.min(canvas.height, Math.ceil(stop));
+      if (y1 - y0 < 30) continue;
+      const { data } = ctx.getImageData(x0, y0, x1 - x0, y1 - y0);
+      const w = x1 - x0;
+      let run = null;
+      for (let y = 0; y <= y1 - y0; y++) {
+        let blank = y < y1 - y0;
+        for (let x = 0; blank && x < w; x++) {
+          const k = (y * w + x) * 4;
+          if (data[k + 3] > 0 && (data[k] < 235 || data[k + 1] < 235 || data[k + 2] < 235)) blank = false;
+        }
+        if (blank) { run ??= y; continue; }
+        const gap = run === null ? 0 : y - run;
+        const n = Math.round((gap - 10) / area.leading); // a paragraph break leaves ~10pt
+        if (gap > 28 && n >= 1) {
+          const top = y0 + run, bottom = y0 + y, atEnd = y === y1 - y0 && p < r.page;
+          spots.push({ page: p, col, top, lines: n, label: `≈${n} line${n === 1 ? "" : "s"}`,
+                       text: `${Math.round(gap)} pt of empty space ${atEnd ? "at the bottom of the column" : "in the text column"}`,
+                       rect: [colLeft, H - bottom, colRight, H - top] });
+        }
+        run = null;
+      }
     }
   }
-  return spots.sort((a, b) => a.page - b.page || a.top - b.top);
+  return spots.sort((a, b) => a.page - b.page || (a.col || 1) - (b.col || 1) || a.top - b.top);
 }
 async function updateCut() {
   $("cut").classList.toggle("on", cutOn);
@@ -1604,7 +1656,7 @@ async function showPreview(a) {
 }
 // The region to show, [top, bottom, left, right] in points from the page's top-left.
 async function previewRegion(kind, pageNumber, top, W, H) {
-  const { lines } = await textLines(doc, pageNumber);
+  const lines = (await textLines(doc, pageNumber)).lines.slice().sort((a, b) => a.top - b.top);
   const body = lines.filter((l) => l.str.length > 20);
   const left = Math.max(0, Math.min(...body.map((l) => l.left), W * 0.2) - 8);
   const right = Math.min(W, Math.max(...body.map((l) => l.right), W * 0.8) + 8);

@@ -277,7 +277,7 @@ def bib_span(paper_root, files, cache={}):
     if cache.get(synctex_gz, (None,))[0] != mtime:
         def where(line):
             rec = next((r for r in run_synctex(paper_root, "view", "-i", f"{line}:0:{bbl}", "-o", pdf) if "Page" in r), None)
-            return rec and {"page": int(rec["Page"]), "y": float(rec["v"]) - float(rec["H"])}
+            return rec and {"page": int(rec["Page"]), "x": float(rec["h"]), "y": float(rec["v"]) - float(rec["H"])}
         start = where(1)
         # The last lines (\end{thebibliography}, blank ones) may have no boxes: walk back to one that does.
         end = next(filter(None, (where(line) for line in range(last, max(1, last - 8), -1))), None) if start else None
@@ -374,7 +374,7 @@ LAYOUT_RE = re.compile(r"^latex-live layout: (.+)$", re.M)
 
 def layout(paper_root, pdf_name, cache={}):
     """The text area of the last build, as latexmkrc's pretex hook printed it to the log, in PDF points
-    from the page's top-left: {W, H, left, top, bottom, leading, columns}. None until a build has
+    from the page's top-left: {W, H, left, top, bottom, width, colwidth, leading, columns}. None until a build has
     printed it. A build that stopped before \\begin{document} keeps the previous value."""
     log = job_file(paper_root, pdf_name, ".log")
     stamp = mtime(log)
@@ -391,7 +391,8 @@ def layout(paper_root, pdf_name, cache={}):
                     float(re.match(r"-?[\d.]+", v.strip()).group()) * 72 / 72.27 for v in m.group(1).split(","))
                 y = 72 + voff + top + head + sep  # TeX's origin is 1in from the top-left corner
                 value = {"W": round(pw, 2), "H": round(ph, 2), "left": round(72 + hoff + side, 2), "top": round(y, 2),
-                         "bottom": round(y + th, 2), "leading": round(skip, 2), "columns": 2 if cw < 0.75 * tw else 1}
+                         "bottom": round(y + th, 2), "width": round(tw, 2), "colwidth": round(cw, 2), "leading": round(skip, 2),
+                         "columns": 2 if cw < 0.75 * tw else 1}
             except (AttributeError, ValueError):
                 pass
         cache[log] = (stamp, value)
@@ -399,7 +400,7 @@ def layout(paper_root, pdf_name, cache={}):
 
 
 # Main-text page limits of submission styles, for documents run without --page-limit.
-VENUE_PAGE_LIMITS = {r"iclr\d{4}_conference": 9, r"neurips_\d{4}": 9, r"colm\d{4}_conference": 9}
+VENUE_PAGE_LIMITS = {r"iclr\d{4}_conference": 9, r"neurips_\d{4}": 9, r"colm\d{4}_conference": 9, r"cvpr": 8, r"iccv": 8}
 USEPACKAGE_RE = re.compile(r"\\usepackage\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}")
 
 
@@ -1590,7 +1591,7 @@ def build_diff(server, sha):
             raise RuntimeError("latexdiff failed: " + (r.stderr.strip().splitlines() or ["no output"])[-1])
         with open(os.path.join(out, f"{job}.tex"), "w") as fh:
             fh.write(r.stdout)
-        for ext in (".aux", ".bbl"):  # current references, so the diff needs no bibtex run
+        for ext in (".aux", ".bbl", ".brf"):  # current references, so the diff needs no bibtex run
             if os.path.exists(job_file(root, server.default_pdf, ext)):
                 shutil.copyfile(job_file(root, server.default_pdf, ext), os.path.join(out, job + ext))
         tex = [*exec_, "pdflatex", "-interaction=nonstopmode", f"-output-directory={out}", f"-jobname={job}",
@@ -1676,7 +1677,7 @@ def build_head(server, sha, pdf_name):
         for name in os.listdir(root):  # (fonts are not looked up through TEXINPUTS)
             if name not in (".git", BUILD.split(os.sep)[0]) and not os.path.lexists(os.path.join(src, name)):
                 os.symlink(os.path.join(root, name), os.path.join(src, name))
-        for ext in (".aux", ".bbl"):
+        for ext in (".aux", ".bbl", ".brf"):  # (.brf: hyperref's back-references)
             if os.path.exists(job_file(root, pdf_name, ext)):
                 shutil.copyfile(job_file(root, pdf_name, ext), os.path.join(out, job + ext))
         for _ in range(2):
@@ -1685,7 +1686,7 @@ def build_head(server, sha, pdf_name):
             raise RuntimeError(f"pdflatex produced no PDF; see {BUILD}/head/{doc}/{job}.log")
         clean_pdf = None
         if os.path.isfile(pdf_path(root, f"{doc}-clean.pdf")):
-            for ext in (".aux", ".bbl", ".out", ".toc"):
+            for ext in (".aux", ".bbl", ".brf", ".out", ".toc"):
                 if os.path.exists(os.path.join(out, job + ext)):
                     shutil.copyfile(os.path.join(out, job + ext), os.path.join(out, f"{job}-clean{ext}"))
             clean_pdf = tex(f"{job}-clean", f"{latex_report.NOTES_OFF}\\input{{{doc}}}")
@@ -1877,7 +1878,7 @@ def main():
                     " current file) runs in that file's paper: it builds the file if it is a root one.")
     ap.add_argument("--port", type=int, default=44100)
     ap.add_argument("--page-limit", type=int, help="main-text page limit to check in the viewer (default: the venue's,"
-                    " for ICLR, NeurIPS and COLM styles)")
+                    " for ICLR, NeurIPS, COLM, CVPR and ICCV styles)")
     ap.add_argument("--build-dir", default="build", help="build directory, relative to the paper root (default: build);"
                     " any other also receives <doc>.pdf, e.g. to run beside the usual instance")
     ap.add_argument("--no-build", action="store_true", help="viewer only; don't run latexmk")
