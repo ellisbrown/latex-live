@@ -28,6 +28,13 @@ The plan below makes it a general tool.
   The notes-free view is the default. It puts each inline note in a margin
   bubble, wired to a caret in the text where the note sits. Hover a bubble to
   expand it; click it to open the source.
+- **Comments from the viewer.** Pick who you are in the toolbar (one of the
+  paper's note macros, e.g. `\ch`), select text in the PDF, and press 💬 (or
+  C): your note goes into the source right after the selected words, and the
+  rebuild shows it. Typed text is escaped, so `%`, `&` and `_` are safe. Your
+  own notes get ✎ and ✕ (edit, delete) in their bubbles and in the sidebar.
+  A note never lands inside a heading, another note, or text marked as
+  protected (`LATEX_LIVE_PROTECTED`).
 - **Page-limit badge.** Main-text pages against the venue limit, measured with
   and without notes. The limit comes from the venue style (ICLR, NeurIPS and
   COLM: 9 pages; ICML, CVPR and ICCV: 8) or `--page-limit`.
@@ -99,6 +106,11 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
     terminals don't have the variable VS Code terminals set, so set this to
     the `cursor` symlink to the app (`/usr/local/bin/cursor`); Cursor's bundled
     `code` script doesn't reach the open window.
+  - `LATEX_LIVE_PROTECTED`: a regular expression for a marker of text that must
+    stay as written, e.g. `\\ch\{human-written\}` at the end of a paragraph
+    or inside a caption. Notes written from the viewer go after the paragraph
+    or caption it marks, and the marker itself can't be edited or deleted
+    there.
 - **PDF.js:** vendored in `pdfjs/` (4.10.38 legacy build, Apache-2.0; see
   `pdfjs/LICENSE`).
 
@@ -120,7 +132,10 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
     1 says "Anonymous", as blind-review styles print it.
   - **Anonymity terms:** set by hand (`LATEX_LIVE_ANON_TERMS`).
   - **Notes:** note macros are found as one-argument commands that go through
-    `\todotxt`, and the notes-free build works by emptying `\todotxt`.
+    `\todotxt`, and the notes-free build works by emptying `\todotxt`. Notes
+    written from the viewer go after the token where the selection ends, found
+    by matching the selected words near SyncTeX's line; words it can't find in
+    the source (math, references) are dropped from the end of the selection.
   - **Generated figures:** the staleness check assumes they come from
     `raw/*.py`.
 - **Two columns: rough edges.** Hover previews of a reference span both

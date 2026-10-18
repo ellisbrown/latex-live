@@ -10,9 +10,10 @@ can do steps 1–4 and 6 on its own. Step 5 (VS Code) needs the person.
 - **Never print the token** or a URL containing `?t=`. It grants access to the
   viewer. When a command's output may contain it, redact it first, e.g.
   `sed -E 's/t=[A-Za-z0-9_-]{8,}/t=REDACTED/g'`.
-- **Don't modify the paper's sources.** latex-live only reads them and writes
-  into `build/` plus the published `<doc>.pdf`. Only the `.vscode/tasks.json`
-  added in step 4 goes in the paper checkout, and it stays out of git.
+- **Don't modify the paper's sources.** latex-live writes into `build/` plus
+  the published `<doc>.pdf`, and into the sources only when the person adds,
+  edits, or deletes a note from the viewer. Only the `.vscode/tasks.json` added
+  in step 4 goes in the paper checkout, and it stays out of git.
 - **Stop any instance you start for testing** before handing over. Only one
   instance runs per document. A leftover one makes the person's VS Code task
   exit, reporting "already running".
