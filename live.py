@@ -400,7 +400,8 @@ def layout(paper_root, pdf_name, cache={}):
 
 
 # Main-text page limits of submission styles, for documents run without --page-limit.
-VENUE_PAGE_LIMITS = {r"iclr\d{4}_conference": 9, r"neurips_\d{4}": 9, r"colm\d{4}_conference": 9, r"cvpr": 8, r"iccv": 8}
+VENUE_PAGE_LIMITS = {r"iclr\d{4}_conference": 9, r"neurips_\d{4}": 9, r"colm\d{4}_conference": 9, r"icml\d{4}": 8,
+                     r"cvpr": 8, r"iccv": 8}
 USEPACKAGE_RE = re.compile(r"\\usepackage\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}")
 
 
@@ -1345,7 +1346,8 @@ def checks(server, pdf_name):
         return found
 
     # Anonymity, for documents that print an anonymous author block (as blind-review styles do).
-    final = re.search(r"^\s*\\iclrfinalcopy\b", root_tex, re.M)
+    final = re.search(r"^[ \t]*(?:\\iclrfinalcopy\b|\\usepackage\s*\[[^\]]*\b(?:accepted|preprint)\b[^\]]*\]\s*\{icml\d{4}\})",
+                      root_tex, re.M)
     if pages and re.search(r"\banonymous\b", pages[0], re.I):
         names = set()  # people named in the note-macro comments, e.g. "\eb ... % Ellis Brown"
         for path in project_tex_files(root, job_file(root, pdf_name, ".fls")):
@@ -1362,7 +1364,8 @@ def checks(server, pdf_name):
         anon = hits("|".join(ident), skip_bib=True, flags=0)
         anon += hits(r"\b(?:our|my) (?:prior|previous|earlier|recent) (?:work|paper|study)|\bwe (?:previously|earlier) (?:showed|proposed|introduced|found)")
         info = subprocess.run(["pdfinfo", pdf], capture_output=True, text=True).stdout
-        meta_author = re.search(r"^Author:[ \t]*(\S.*)$", info, re.M)
+        # (ICML's submission style sets the metadata author to "Anonymous Authors".)
+        meta_author = re.search(r"^Author:[ \t]*(?!anonymous\b)(\S.*)$", info, re.M | re.I)
         problems = [{"text": f"PDF metadata names an author: {meta_author.group(1).strip()}"}] if meta_author else []
         problems += [{**h, "text": "acknowledgments: " + h["text"]} for h in hits(r"\bAcknowledge?ments?\b", flags=0)]
         add("Anonymity", "fail" if problems else "warn" if anon else "ok",
@@ -1371,8 +1374,8 @@ def checks(server, pdf_name):
             problems + anon)
     else:
         add("Anonymity", "info", "not checked: page 1 has no anonymous author block"
-            + (" (\\iclrfinalcopy is on)" if final else ""),
-            [{"text": "\\iclrfinalcopy prints the author names", "file": f"{doc}.tex",
+            + (f" ({final.group(0).strip()} is on)" if final else ""),
+            [{"text": f"{final.group(0).strip()} prints the author names", "file": f"{doc}.tex",
               "line": root_tex.count("\n", 0, final.start()) + 1}] if final else [])
 
     # Notes and draft switches.
@@ -1878,7 +1881,7 @@ def main():
                     " current file) runs in that file's paper: it builds the file if it is a root one.")
     ap.add_argument("--port", type=int, default=44100)
     ap.add_argument("--page-limit", type=int, help="main-text page limit to check in the viewer (default: the venue's,"
-                    " for ICLR, NeurIPS, COLM, CVPR and ICCV styles)")
+                    " for ICLR, NeurIPS, COLM, ICML, CVPR and ICCV styles)")
     ap.add_argument("--build-dir", default="build", help="build directory, relative to the paper root (default: build);"
                     " any other also receives <doc>.pdf, e.g. to run beside the usual instance")
     ap.add_argument("--no-build", action="store_true", help="viewer only; don't run latexmk")
