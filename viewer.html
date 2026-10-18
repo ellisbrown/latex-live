@@ -6,8 +6,9 @@
      the last build (text and regenerated figures), a "where to cut" overlay, a switch to the
      notes-free build (with the notes as bubbles in a margin, wired to where they sit), and a
      sidebar with the numbered outline (pages per section), page thumbnails, the notes, a
-     pre-submission check, and the figures and tables. With file=<doc>-diff.pdf it shows a latexdiff built by
-     live.py. -->
+     pre-submission check, and the figures and tables. Select text and press 💬 (or C) to write a note
+     of the author picked in the toolbar into the source; your own notes can be edited and deleted.
+     With file=<doc>-diff.pdf it shows a latexdiff built by live.py. -->
 <html>
 <head>
 <meta charset="utf-8">
@@ -160,6 +161,29 @@
   .ll-bubble.hot .text { -webkit-line-clamp: 30; }
   body.dark .ll-bubble { background: #2e3134; color: #ddd; }
   #marginBtn[hidden] { display: none; }
+  /* Comments: who you are (toolbar), a button by the selection, and a box to write or edit a note in. */
+  #whoPick { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 4px; cursor: pointer; }
+  #whoPick[hidden], #commentBtn[hidden], #notePop[hidden], #notePop .latex[hidden] { display: none; }
+  #commentBtn { position: fixed; z-index: 12; padding: 3px 9px; border: 0; border-radius: 3px; background: #2f6fb0;
+                color: #fff; font: 12px system-ui, sans-serif; cursor: pointer; box-shadow: 0 2px 6px #0008; }
+  #notePop { position: fixed; z-index: 13; width: 340px; padding: 8px; background: #2a2d2f; color: #ddd;
+             border-radius: 6px; box-shadow: 0 4px 14px #000a; font: 13px system-ui, sans-serif; }
+  #notePop .head { font-size: 12px; opacity: 0.8; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #notePop textarea { width: 100%; box-sizing: border-box; min-height: 64px; resize: vertical; padding: 4px 6px;
+                      background: #1e1f21; color: #eee; border: 1px solid #555; border-radius: 3px; font: inherit; }
+  #notePop .row { display: flex; gap: 6px; align-items: center; margin-top: 6px; font-size: 11px; }
+  #notePop .hint { opacity: 0.6; margin-right: auto; }
+  #notePop .latex { color: #fd6; }
+  #notePop button { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 10px; cursor: pointer; }
+  #notePop button.primary { background: #2f6fb0; }
+  #notePop button:disabled { opacity: 0.5; cursor: default; }
+  #notePop .error { color: #f88; font-size: 12px; margin-top: 4px; }
+  #notePop .error:empty { display: none; }
+  .tools { float: right; display: none; margin-left: 4px; }
+  .ll-bubble .tools { position: absolute; top: 1px; right: 2px; background: inherit; border-radius: 3px; } /* (no reflow on hover) */
+  .ll-bubble:hover .tools, .ll-bubble.hot .tools, .note:hover .tools { display: inline-flex; }
+  .tools button { border: 0; background: transparent; color: inherit; cursor: pointer; padding: 0 3px; font-size: 12px; opacity: 0.65; }
+  .tools button:hover { opacity: 1; }
   #preview { position: fixed; z-index: 20; background: #fff; border-radius: 4px; box-shadow: 0 4px 18px #000b;
              padding: 6px; cursor: pointer; }
   #preview[hidden] { display: none; }
@@ -190,6 +214,7 @@
   <button id="dark" title="Dark mode (inverts the PDF)">&#9680;</button>
   <button id="notesView" hidden>Notes</button>
   <button id="marginBtn" hidden>&#128172;</button>
+  <select id="whoPick" title="Who you are, for comments: select text in the PDF, then 💬 (or C) adds your note to the source" hidden></select>
   <button id="cut" title="Where to cut: short last lines of paragraphs and large empty gaps in the main text">&#9986;</button>
   <span id="cutNav" class="navgroup" hidden title="Space to reclaim in the main text of the PDF as shown">
     <span id="cutCount"></span>
@@ -212,6 +237,15 @@
 </div>
 <div id="banner" hidden></div>
 <div id="comparePanel" hidden></div>
+<button id="commentBtn" hidden></button>
+<div id="notePop" hidden>
+  <div class="head"></div>
+  <textarea placeholder="Your comment"></textarea>
+  <div class="error"></div>
+  <div class="row"><span class="hint">Enter to save &middot; Shift+Enter for a new line &middot; Esc to cancel</span>
+    <span class="latex" title="This note has LaTeX in it, so it is edited as LaTeX" hidden>LaTeX</span>
+    <button class="cancel">Cancel</button><button class="primary">Save</button></div>
+</div>
 <aside id="side" hidden>
   <div id="tabs">
     <button data-tab="outline">Outline</button>
@@ -405,7 +439,8 @@ window.addEventListener("keydown", (e) => {
   else if (e.target.tagName === "INPUT") return; // keep word-wise cursor keys in the text boxes
   else if ((e.altKey && e.key === "ArrowLeft") || (e.metaKey && e.key === "[")) { e.preventDefault(); travel(back, ahead); }
   else if ((e.altKey && e.key === "ArrowRight") || (e.metaKey && e.key === "]")) { e.preventDefault(); travel(ahead, back); }
-  else if (e.key === "Escape") { hidePreview(); $("comparePanel").hidden = true; }
+  else if (e.key === "Escape") { hidePreview(); $("comparePanel").hidden = true; closeNotePop(); }
+  else if (!mod && !e.altKey && e.key === "c" && !$("commentBtn").hidden) { e.preventDefault(); startComment(); }
   else if (!mod && !e.altKey && (e.key === "." || e.key === ",")) { e.preventDefault(); goToChange(e.key === "." ? 1 : -1); }
 });
 
@@ -937,6 +972,8 @@ function renderNotes() {
     const where = el("span", { className: "where", textContent: `${n.file.replace(/^.*\//, "")}:${n.line}`, title: `Open ${n.file}:${n.line} in VS Code` });
     where.onclick = (e) => { e.stopPropagation(); openSource(n.file, n.line); };
     const row = el("div", { className: "note", title: "Show in the PDF" }, who, where, el("div", { className: "text", textContent: n.text || "(empty)" }));
+    const tools = noteTools(n);
+    if (tools) who.after(tools);
     row.onclick = () => showSource(n.file, n.line);
     return row;
   });
@@ -1133,6 +1170,8 @@ function drawMargin(pageNumber) {
                       el("div", { className: "text" }, el("b", { textContent: n.author }), n.text || "(empty)"));
     bubble.style.borderLeftColor = color;
     bubble.querySelector("b").style.color = color;
+    const tools = noteTools(n);
+    if (tools) bubble.prepend(tools);
     const caret = el("div", { className: "caret", title: `${n.author}: ${n.text}` });
     const x = (a.x - vx) * s, y = (a.top - vy) * s;
     Object.assign(caret.style, { left: `${x}px`, top: `${y - 8.5 * s}px`, height: `${11 * s}px`, background: color });
@@ -1163,6 +1202,151 @@ function drawMargin(pageNumber) {
   }
 }
 const drawAllMargins = () => { for (let n = 1; n <= (doc?.numPages || 0); n++) drawMargin(n); };
+
+// Comments: select text in the PDF, then 💬 (or press C), and a note of the author picked in the
+// toolbar goes into the source right after the selected words (live.py /note); latexmk rebuilds
+// and the note appears. Your own notes get ✎ (edit) and ✕ (delete), in the margin and the sidebar.
+let who = localStorage.getItem("latex-live:who") || "", authors = [];
+const authorOf = (macro) => authors.find((a) => a.macro === macro)?.author || macro;
+async function loadAuthors() {
+  authors = await (await fetch(`authors/${encodeURIComponent(docFile)}`)).json();
+  const pick = $("whoPick");
+  pick.replaceChildren(el("option", { value: "", textContent: "💬 Comment as…" }),
+                       ...authors.map((a) => el("option", { value: a.macro, textContent: `💬 ${a.author}`, selected: a.macro === who })));
+  pick.hidden = isDiff || !authors.length;
+}
+$("whoPick").onchange = (e) => {
+  who = e.target.value;
+  localStorage.setItem("latex-live:who", who);
+  renderNotes();
+  drawAllMargins();
+};
+
+// The selection's end, for a new note: {page, x, y (PDF points from the page's top-left), text, rect}.
+let selectionTarget = null;
+function selectionInfo() {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || sel.isCollapsed) return null;
+  const range = sel.getRangeAt(0);
+  const inText = (node) => (node.nodeType === Node.TEXT_NODE ? node.parentElement : node)?.closest?.(".textLayer");
+  const text = sel.toString().replace(/\s+/g, " ").trim();
+  // Its text's rectangles, in reading order; not a box much taller than a line (a container the
+  // selection runs into, such as PDF.js's end-of-content block).
+  let rects = [...range.getClientRects()].filter((r) => r.width > 0 && r.height > 0);
+  const lineHeight = rects.map((r) => r.height).sort((a, b) => a - b)[rects.length >> 1];
+  rects = rects.filter((r) => r.height <= 3 * lineHeight);
+  if (!text || !rects.length || !inText(range.startContainer) || !inText(range.endContainer)) return null;
+  const rect = rects.at(-1), cx = rect.right - 1, cy = (rect.top + rect.bottom) / 2;
+  const pageDiv = [...document.querySelectorAll("#viewer .page")].find((p) => {
+    const b = p.getBoundingClientRect();
+    return cx >= b.left && cx <= b.right && cy >= b.top && cy <= b.bottom;
+  });
+  const pageView = pageDiv && viewer.getPageView(+pageDiv.dataset.pageNumber - 1);
+  if (!pageView?.pdfPage) return null;
+  const box = pageDiv.getBoundingClientRect();
+  const [x, y] = pageView.viewport.convertToPdfPoint(cx - box.left - pageDiv.clientLeft, cy - box.top - pageDiv.clientTop);
+  return { page: pageView.id, x, y: pageView.pdfPage.view[3] - y, text, rect };
+}
+function showCommentButton() {
+  selectionTarget = isDiff || $("whoPick").hidden ? null : selectionInfo();
+  const b = $("commentBtn");
+  b.hidden = !selectionTarget || !$("notePop").hidden;
+  if (b.hidden) return;
+  const r = selectionTarget.rect;
+  b.textContent = who ? `💬 ${authorOf(who)}` : "💬 Comment";
+  b.title = who ? "Add your note after the selected text (C)" : "Pick who you are in the toolbar first";
+  Object.assign(b.style, { left: `${Math.min(r.right + 4, innerWidth - b.offsetWidth - 8)}px`, top: `${r.bottom + 4}px` });
+}
+container.addEventListener("mouseup", (e) => { if (e.button === 0) setTimeout(showCommentButton, 250); }); // (after a double-click's own handling)
+container.addEventListener("scroll", () => { if (!$("commentBtn").hidden) showCommentButton(); }, { passive: true });
+document.addEventListener("selectionchange", () => { if (window.getSelection().isCollapsed) $("commentBtn").hidden = true; });
+$("commentBtn").onmousedown = (e) => e.preventDefault(); // keep the selection
+$("commentBtn").onclick = () => startComment();
+function startComment() {
+  const t = selectionTarget;
+  if (!t) return;
+  if (!who) {
+    setStatus("pick who you are in the toolbar (💬 Comment as…) first", "error");
+    return $("whoPick").focus();
+  }
+  $("commentBtn").hidden = true;
+  const quote = t.text.length > 50 ? `…${t.text.slice(-50)}` : t.text;
+  openNotePop({ head: `${authorOf(who)}, after “${quote}”`, initial: "", rect: t.rect,
+                save: (text) => postNote({ action: "add", pdf: docFile, macro: who, page: t.page, x: t.x, y: t.y,
+                                           clean: shownVariant === "clean", selection: t.text, text }) });
+}
+
+// The box to write a note in: save(text) returns an error message, or nothing once it is written.
+let popSave = null;
+function openNotePop({ head, initial, rect, save, latex = false }) {
+  const pop = $("notePop"), area = pop.querySelector("textarea");
+  pop.querySelector(".head").textContent = head;
+  pop.querySelector(".error").textContent = "";
+  pop.querySelector(".latex").hidden = !latex;
+  area.value = initial;
+  popSave = save;
+  pop.hidden = false;
+  const below = rect.bottom + 6 + pop.offsetHeight <= innerHeight;
+  Object.assign(pop.style, { left: `${Math.max(8, Math.min(rect.left, innerWidth - pop.offsetWidth - 8))}px`,
+                             top: `${below ? rect.bottom + 6 : Math.max(40, rect.top - pop.offsetHeight - 6)}px` });
+  area.focus();
+  area.setSelectionRange(area.value.length, area.value.length);
+}
+function closeNotePop() { $("notePop").hidden = true; popSave = null; }
+async function submitNotePop() {
+  const pop = $("notePop"), text = pop.querySelector("textarea").value, button = pop.querySelector(".primary");
+  if (!text.trim() || !popSave || button.disabled) return;
+  button.disabled = true;
+  const error = await popSave(text);
+  button.disabled = false;
+  if (error) pop.querySelector(".error").textContent = error;
+  else closeNotePop();
+}
+$("notePop").querySelector("textarea").addEventListener("keydown", (e) => {
+  e.stopPropagation(); // (not the viewer's shortcuts)
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); submitNotePop(); }
+  else if (e.key === "Escape") { e.preventDefault(); closeNotePop(); }
+});
+$("notePop").querySelector(".primary").onclick = submitNotePop;
+$("notePop").querySelector(".cancel").onclick = closeNotePop;
+
+// Write a note change (live.py /note); returns an error message, or nothing.
+async function postNote(body) {
+  try {
+    const r = await fetch("note", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const res = await r.json().catch(() => ({ error: `failed (${r.status})` }));
+    if (!r.ok) return res.error || `failed (${r.status})`;
+    const verb = { add: "added", edit: "updated", delete: "deleted" }[body.action];
+    setStatus(`note ${verb} in ${res.source.replace(/^.*\//, "")}:${res.line}${res.protected ? ", after the protected text" : ""}`
+              + "; rebuilding…", "fresh");
+    if (body.action === "add") window.getSelection().removeAllRanges();
+    return null;
+  } catch (err) {
+    return `${err.message || err}`;
+  }
+}
+
+// ✎ and ✕ on your own notes (not on a marker of protected text).
+function noteTools(n) {
+  if (isDiff || !who || n.macro !== who || n.protected) return null;
+  const edit = el("button", { textContent: "✎", title: "Edit this note" });
+  const del = el("button", { textContent: "✕", title: "Delete this note" });
+  const target = { pdf: docFile, source: n.file, line: n.line, macro: n.macro, tex: n.tex };
+  edit.onclick = (e) => {
+    e.stopPropagation();
+    const latex = n.plain == null; // (TeX beyond escaped characters: edited as LaTeX)
+    openNotePop({ head: `Edit ${n.author} note (${n.file.replace(/^.*\//, "")}:${n.line})`, initial: latex ? n.tex : n.plain,
+                  latex, rect: e.target.getBoundingClientRect(),
+                  save: (text) => postNote({ action: "edit", ...target, ...(latex ? { latex: text } : { text }) }) });
+  };
+  del.onclick = async (e) => {
+    e.stopPropagation();
+    if (!confirm(`Delete this ${n.author} note?\n\n${n.text}`)) return;
+    const error = await postNote({ action: "delete", ...target });
+    if (error) setStatus(error, "error");
+  };
+  return el("span", { className: "tools" }, edit, del);
+}
 
 // Pre-submission check (live.py), plus the page-limit result from this viewer. Re-runs after each
 // rebuild while the tab is open.
@@ -1773,6 +1957,7 @@ async function load(name, version, variant, info) {
   updateChanges();
   renderOutline().catch(() => {});
   if (!isDiff) loadNotes().catch(() => {});
+  if (!isDiff) loadAuthors().catch(() => {});
   if (!isDiff && variant === "clean") loadMargin(next).catch((e) => { console.warn(e); setGutter(false); });
   const refs = variant === "clean" ? info.clean.refs : info.refs;
   if (!isDiff) { // (the main text's extent: the page badge, space hints and section lengths)
@@ -1855,6 +2040,7 @@ $("docPick").onchange = async (e) => {
   setStatus(body.error, "error");
 };
 loadDocs().catch(() => {});
+if (!isDiff) loadAuthors().catch(() => {});
 
 poll();
 setInterval(poll, 500);
