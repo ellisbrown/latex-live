@@ -763,9 +763,9 @@ async function textLines(d, pageNumber) {
 
 // Main-text length, against the page limit when there is one. Main text runs from the page labeled
 // "1" (a draft ToC may come first) up to the references or an earlier unnumbered statement (AI
-// use, ethics, reproducibility, acknowledgments), which venues such as ICLR do not count; without
-// references (refs null), to the end of the document.
-const UNCOUNTED = /^(ai use|llm usage|use of large language models|ethics statement|reproducibility statement|acknowledge?ments?)\b/i;
+// use, ethics, reproducibility, impact, acknowledgments), which venues such as ICLR and ICML do not
+// count; without references (refs null), to the end of the document.
+const UNCOUNTED = /^(ai use|llm usage|use of large language models|ethics statement|reproducibility statement|impact statement|acknowledge?ments?)\b/i;
 async function checkPages(d, refs, limit) {
   const labels = await d.getPageLabels();
   const first = Math.max(0, labels?.indexOf("1") ?? 0) + 1;
@@ -809,7 +809,7 @@ function renderPages() {
   const shownTag = (v) => (shownVariant === v ? " (as shown)" : "");
   badge.title = (clean ? `Without the inline notes${shownTag("clean")}: ${clean.range}.\nWith notes${shownTag("notes")}: ${main.range}.`
                        : `Main text: ${main.range}.`) +
-                "\nEnds at the references or at an unnumbered statement (AI use, ethics, reproducibility, acknowledgments).";
+                "\nEnds at the references or at an unnumbered statement (AI use, ethics, reproducibility, impact, acknowledgments).";
   if (sideOpen("thumbs")) markThumbLimit();
 }
 // The build that is not on screen is measured from its own copy of the PDF.

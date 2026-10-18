@@ -30,7 +30,7 @@ The plan below makes it a general tool.
   expand it; click it to open the source.
 - **Page-limit badge.** Main-text pages against the venue limit, measured with
   and without notes. The limit comes from the venue style (ICLR, NeurIPS and
-  COLM: 9 pages; CVPR and ICCV: 8) or `--page-limit`.
+  COLM: 9 pages; ICML, CVPR and ICCV: 8) or `--page-limit`.
 - **One or two columns.** LaTeX reports the column layout on each build. With
   two columns, the viewer reads the text column by column, ignores review line
   numbers beside either column, and measures page fill, space hints and note
@@ -116,7 +116,7 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
 - **ICLR and this paper.**
   - **Venue rules:** references and unnumbered statements (ethics,
     reproducibility, acknowledgments) don't count toward the page limit. Page
-    limits are known for three styles only. The anonymity check runs when page
+    limits are known for six styles only. The anonymity check runs when page
     1 says "Anonymous", as blind-review styles print it.
   - **Anonymity terms:** set by hand (`LATEX_LIVE_ANON_TERMS`).
   - **Notes:** note macros are found as one-argument commands that go through
@@ -145,8 +145,9 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
    - **note macros:** detected, with notes-off emptying each one;
    - **column count:** from where text sits across the page;
    - **overrides:** anonymity terms, generated-figure paths, page limit.
-4. **Venue presets.** ICLR, NeurIPS, COLM, CVPR and ICCV page limits exist.
-   Still to do: ICML, ACL, and per venue what doesn't count.
+4. **Venue presets.** ICLR, NeurIPS, COLM, ICML, CVPR and ICCV page limits
+   exist (submission limits; pass `--page-limit` for a camera-ready extra
+   page). Still to do: ACL, and per venue what doesn't count.
 5. **Two network modes.**
    - **local** (the laptop default): localhost only, no token, and it opens
      the browser;

@@ -64,7 +64,7 @@ python3 ~/.local/share/latex-live/live.py --no-open
 It builds the root `.tex` file whose sources were edited last; the viewer's
 toolbar switches to another. To start with a given one, name it, e.g.
 `live.py iclr2027 --no-open`. The page badge uses the venue's limit for ICLR,
-NeurIPS, COLM, CVPR and ICCV styles; `--page-limit N` sets another.
+NeurIPS, COLM, ICML, CVPR and ICCV styles; `--page-limit N` sets another.
 
 Expected output, in order:
 
