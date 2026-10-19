@@ -7,7 +7,8 @@
      notes-free build (with the notes as bubbles in a margin, wired to where they sit), and a
      sidebar with the numbered outline (pages per section), page thumbnails, the notes, a
      pre-submission check, and the figures and tables. Select text and press 💬 (or C) to write a note
-     of the author picked in the toolbar into the source; your own notes can be edited and deleted.
+     of the author picked in the toolbar into the source; notes can be resolved (commented out with a
+     reason), others' notes replied to, your own edited, and the ones written here deleted again.
      With file=<doc>-diff.pdf it shows a latexdiff built by live.py. -->
 <html>
 <head>
@@ -1205,8 +1206,16 @@ const drawAllMargins = () => { for (let n = 1; n <= (doc?.numPages || 0); n++) d
 
 // Comments: select text in the PDF, then 💬 (or press C), and a note of the author picked in the
 // toolbar goes into the source right after the selected words (live.py /note); latexmk rebuilds
-// and the note appears. Your own notes get ✎ (edit) and ✕ (delete), in the margin and the sidebar.
+// and the note appears. In the margin and the sidebar, notes get ✓ (resolve: commented out under a
+// "% RESOLVED <date> (<initials>): <reason>" line), others' notes ↩ (reply), your own ✎ (edit), and
+// the ones written from this tab ✕ (delete, as an undo; this tab remembers them by file, macro, and text).
 let who = localStorage.getItem("latex-live:who") || "", authors = [];
+const written = new Set(JSON.parse(sessionStorage.getItem("latex-live:written") || "[]"));
+const writtenKey = (file, macro, tex) => JSON.stringify([file, macro, tex]);
+function markWritten(key, on) {
+  on ? written.add(key) : written.delete(key);
+  sessionStorage.setItem("latex-live:written", JSON.stringify([...written]));
+}
 const authorOf = (macro) => authors.find((a) => a.macro === macro)?.author || macro;
 async function loadAuthors() {
   authors = await (await fetch(`authors/${encodeURIComponent(docFile)}`)).json();
@@ -1278,9 +1287,10 @@ function startComment() {
 
 // The box to write a note in: save(text) returns an error message, or nothing once it is written.
 let popSave = null;
-function openNotePop({ head, initial, rect, save, latex = false }) {
+function openNotePop({ head, initial, rect, save, latex = false, placeholder = "Your comment" }) {
   const pop = $("notePop"), field = pop.querySelector("textarea");
   pop.querySelector(".head").textContent = head;
+  field.placeholder = placeholder;
   pop.querySelector(".error").textContent = "";
   pop.querySelector(".latex").hidden = !latex;
   field.value = initial;
@@ -1316,9 +1326,16 @@ async function postNote(body) {
     const r = await fetch("note", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const res = await r.json().catch(() => ({ error: `failed (${r.status})` }));
     if (!r.ok) return res.error || `failed (${r.status})`;
-    const verb = { add: "added", edit: "updated", delete: "deleted" }[body.action];
+    const old = writtenKey(body.source, body.macro, body.tex);
+    if (body.action === "add" || body.action === "reply") markWritten(writtenKey(res.source, res.macro, res.tex), true);
+    else if (written.has(old)) {
+      markWritten(old, false);
+      if (body.action === "edit") markWritten(writtenKey(res.source, body.macro, res.tex), true);
+    }
+    const verb = { add: "note added", reply: "reply added", edit: "note updated", resolve: "note resolved",
+                   delete: "note deleted" }[body.action];
     const dropped = res.dropped ? `, before the last ${res.dropped} selected word${res.dropped === 1 ? "" : "s"} (not in the source)` : "";
-    setStatus(`note ${verb} in ${res.source.replace(/^.*\//, "")}:${res.line}${res.protected ? ", after the protected text" : ""}`
+    setStatus(`${verb} in ${res.source.replace(/^.*\//, "")}:${res.line}${res.protected ? ", after the protected text" : ""}`
               + `${dropped}; rebuilding…`, "fresh");
     if (body.action === "add") window.getSelection().removeAllRanges();
     return null;
@@ -1327,26 +1344,37 @@ async function postNote(body) {
   }
 }
 
-// ✎ and ✕ on your own notes (not on a marker of protected text).
+// ✓ on every note, ↩ on others', ✎ on your own, ✕ on the ones written from this tab (none on a
+// marker of protected text).
 function noteTools(n) {
-  if (isDiff || !who || n.macro !== who || n.protected) return null;
-  const edit = el("button", { textContent: "✎", title: "Edit this note" });
-  const del = el("button", { textContent: "✕", title: "Delete this note" });
+  if (isDiff || !who || n.protected) return null;
   const target = { pdf: docFile, source: n.file, line: n.line, macro: n.macro, tex: n.tex };
-  edit.onclick = (e) => {
-    e.stopPropagation();
-    const latex = n.plain == null; // (TeX beyond escaped characters: edited as LaTeX)
-    openNotePop({ head: `Edit ${n.author} note (${n.file.replace(/^.*\//, "")}:${n.line})`, initial: latex ? n.tex : n.plain,
-                  latex, rect: e.target.getBoundingClientRect(),
-                  save: (text) => postNote({ action: "edit", ...target, ...(latex ? { latex: text } : { text }) }) });
+  const where = `${n.file.replace(/^.*\//, "")}:${n.line}`, buttons = [];
+  const button = (textContent, title, onclick) => {
+    const b = el("button", { textContent, title });
+    b.onclick = (e) => { e.stopPropagation(); onclick(e.target.getBoundingClientRect()); };
+    buttons.push(b);
   };
-  del.onclick = async (e) => {
-    e.stopPropagation();
-    if (!confirm(`Delete this ${n.author} note?\n\n${n.text}`)) return;
-    const error = await postNote({ action: "delete", ...target });
-    if (error) setStatus(error, "error");
-  };
-  return el("span", { className: "tools" }, edit, del);
+  if (n.macro !== who)
+    button("↩", "Reply to this note", (rect) => openNotePop({
+      head: `${authorOf(who)}, replying to ${n.author} (${where})`, initial: "", rect, placeholder: "Your reply",
+      save: (text) => postNote({ action: "reply", ...target, who, text }) }));
+  else
+    button("✎", "Edit this note", (rect) => {
+      const latex = n.plain == null; // (TeX beyond escaped characters: edited as LaTeX)
+      openNotePop({ head: `Edit ${n.author} note (${where})`, initial: latex ? n.tex : n.plain, latex, rect,
+                    save: (text) => postNote({ action: "edit", ...target, ...(latex ? { latex: text } : { text }) }) });
+    });
+  button("✓", "Resolve: comment it out under a RESOLVED line with your reason", (rect) => openNotePop({
+    head: `Resolve ${n.author} note (${where}) as ${authorOf(who)}: why?`, initial: "", rect,
+    placeholder: "What addressed it (one line)", save: (text) => postNote({ action: "resolve", ...target, who, text }) }));
+  if (written.has(writtenKey(n.file, n.macro, n.tex)))
+    button("✕", "Delete this note (written from this tab)", async () => {
+      if (!confirm(`Delete this ${n.author} note?\n\n${n.text}`)) return;
+      const error = await postNote({ action: "delete", ...target });
+      if (error) setStatus(error, "error");
+    });
+  return el("span", { className: "tools" }, ...buttons);
 }
 
 // Pre-submission check (live.py), plus the page-limit result from this viewer. Re-runs after each

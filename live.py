@@ -27,7 +27,7 @@ Usage (from a paper root):  live.py [<doc>[.tex] | PATH] [--port 44100] [--page-
   and figures), hints on where to save space, a notes-free view, and a latexdiff
   against any git commit. Notes can be written from the viewer too: select text,
   and the note macro of the author picked in the toolbar goes into the source
-  after it (also edit and delete). On a remote machine, forward the port (e.g. in VS Code's Ports panel)
+  after it (also edit, resolve, reply, and delete). On a remote machine, forward the port (e.g. in VS Code's Ports panel)
   and open the localhost URL; with LATEX_LIVE_HOST set, a direct URL on that host
   is printed too (e.g. a name a tunnel exposes). Anything that reaches the port
   can send requests, so every request needs the token (kept in ./token next to
@@ -959,9 +959,10 @@ def open_source(paper_root, query):
 
 # Notes written from the viewer (POST /note): select text in the PDF, and a note macro of the
 # author picked in the toolbar goes into the source right after the selected words; the viewer also
-# edits and deletes notes. LATEX_LIVE_PROTECTED, a regular expression, marks text that must stay as
+# edits, resolves (comments out, under a "% RESOLVED <date> (<initials>): <reason>" line), replies to,
+# and deletes notes. LATEX_LIVE_PROTECTED, a regular expression, marks text that must stay as
 # written, e.g. r"\\ch\{human-written\}" at the end of a paragraph or inside a caption: a new note
-# goes after the paragraph or caption it marks, and the marker itself can't be edited or deleted here.
+# goes after the paragraph or caption it marks, and the marker itself can't be changed here.
 try:
     PROTECTED_RE = re.compile(os.environ["LATEX_LIVE_PROTECTED"]) if os.environ.get("LATEX_LIVE_PROTECTED") else None
 except re.error as e:  # (warn, not exit: forward.py imports this module too)
@@ -1188,13 +1189,16 @@ def write_source(path, old, new):
 
 
 def note_request(server, req):
-    """POST /note: add a note at a selection in the PDF, or edit or delete one. Returns (status, JSON).
+    """POST /note: add a note at a selection in the PDF, or edit, resolve, reply to, or delete one.
+    Returns (status, JSON).
 
     Every request names pdf (the published PDF), whose last build lists the paper's .tex files.
     add: page, x, y (PDF points from the page's top-left, at the selection's end), clean (the
     notes-free PDF), selection (its text), macro, and text (plain; escaped here).
-    edit / delete: source (a .tex path in the paper), line, macro, and tex (the note's argument as
-    /notes and /margin gave it); edit also text (plain) or latex (written as is).
+    edit / resolve / reply / delete: source (a .tex path in the paper), line, macro, and tex (the
+    note's argument as /notes and /margin gave it); edit also text (plain) or latex (written as is);
+    resolve also who (the resolver's note macro, for the initials) and text (the reason); reply also
+    who (the replier's note macro) and text (plain).
     """
     root = server.paper_root
     try:
@@ -1211,8 +1215,10 @@ def note_request(server, req):
             if isinstance(found[0], int):
                 return found[0], {"error": found[1]}
             src, line = found
-        elif action in ("edit", "delete"):
+        elif action in ("edit", "resolve", "reply", "delete"):
             src, line = os.path.join(root, req["source"]), int(req["line"])
+            if action in ("resolve", "reply") and req["who"] not in kinds:
+                return 400, {"error": f"\\{req['who']} is not a note macro of this paper"}
         else:
             return 400, {"error": f"unknown action {action}"}
         src = os.path.realpath(src)
@@ -1223,7 +1229,7 @@ def note_request(server, req):
             raw = read_source(src)
             if action == "add":
                 return add_note(src, rel, raw, line, macro, kinds[macro], req, list(kinds))
-            return change_note(src, rel, raw, line, macro, action, req)
+            return change_note(src, rel, raw, line, macro, action, req, kinds)
     except (KeyError, TypeError, ValueError) as e:
         return 400, {"error": f"bad request ({type(e).__name__}: {e})"}
     except UnicodeDecodeError:
@@ -1246,11 +1252,25 @@ def add_note(src, rel, raw, line, macro, author, req, note_macros):
     site, protected = safe_site(raw, pos, note_macros)
     write_source(src, raw, raw[:site] + f" \\{macro}{{{text}}}" + raw[site:])
     return 200, {"source": rel, "line": raw.count("\n", 0, site) + 1, "author": author, "protected": protected,
-                 "dropped": dropped}
+                 "dropped": dropped, "macro": macro, "tex": text}
 
 
-def change_note(src, rel, raw, line, macro, action, req):
-    """Edit or delete the \\<macro>{tex} use nearest line of raw (the text of src)."""
+def cut_note(raw, start, end):
+    """(new, after): raw without the note at raw[start:end], and the index in new where the line
+    after the note's begins. A note alone on its line(s) takes the line with it; otherwise the
+    space before it goes too, as add_note wrote it."""
+    bol, eol = raw.rfind("\n", 0, start) + 1, raw.find("\n", end)
+    eol = len(raw) if eol < 0 else eol
+    if not raw[bol:start].strip() and not raw[end:eol].strip():  # the note's own line: remove the line
+        return (raw[:bol] + raw[eol + 1:], bol) if eol < len(raw) else (raw[:max(0, bol - 1)], max(0, bol - 1))
+    spaced = start > 0 and raw[start - 1] in " \t" and (end == len(raw) or raw[end].isspace())
+    new = raw[:start - spaced] + raw[end:]
+    return new, new.find("\n", start - spaced) + 1 or len(new)
+
+
+def change_note(src, rel, raw, line, macro, action, req, kinds):
+    """Edit, resolve, reply to, or delete the \\<macro>{tex} use nearest line of raw (the text of src);
+    kinds is {note macro: author label}."""
     text = re.sub(r"(?<!\\)%.*", lambda m: " " * len(m.group()), raw)  # (notes in comments don't count)
     want = " ".join(str(req["tex"]).split())
     uses = []
@@ -1263,15 +1283,10 @@ def change_note(src, rel, raw, line, macro, action, req):
     _, start, brace, end = min(uses)  # the one nearest its line (lines move as the file is edited)
     if PROTECTED_RE and PROTECTED_RE.search(raw[start:end]):
         return 403, {"error": "this note marks protected text; edit it in the source if you mean to"}
+    out = {"source": rel, "line": raw.count("\n", 0, start) + 1}
     if action == "delete":
-        bol, eol = raw.rfind("\n", 0, start) + 1, raw.find("\n", end)
-        eol = len(raw) if eol < 0 else eol
-        if not raw[bol:start].strip() and not raw[end:eol].strip():  # the note's own line: remove the line
-            new = raw[:bol] + raw[eol + 1:] if eol < len(raw) else raw[:max(0, bol - 1)]
-        else:  # and the space before it, as add_note wrote it
-            spaced = start > 0 and raw[start - 1] in " \t" and (end == len(raw) or raw[end].isspace())
-            new = raw[:start - spaced] + raw[end:]
-    else:
+        new = cut_note(raw, start, end)[0]
+    elif action == "edit":
         typed = unicodedata.normalize("NFC", str(req["latex"] if "latex" in req else req["text"]))
         if error := untypesettable(typed):
             return 400, {"error": error}
@@ -1281,8 +1296,29 @@ def change_note(src, rel, raw, line, macro, action, req):
         if brace_group("{" + body + "}", 0)[1] != len(body) + 2 or re.search(r"(?<!\\)%|\n[ \t]*\n", body):
             return 400, {"error": "unbalanced braces, a % comment, or a blank line in the note's LaTeX"}
         new = raw[:brace + 1] + body + raw[end - 1:]
+        out["tex"] = " ".join(body.split())
+    else:  # resolve, reply: typed text, on one line
+        typed = " ".join(unicodedata.normalize("NFC", str(req["text"])).split())
+        if error := untypesettable(typed):
+            return 400, {"error": error}
+        if not typed:
+            return 400, {"error": "say why it is resolved" if action == "resolve" else "empty reply"}
+        who = req["who"]
+        if action == "reply":  # right after the note (or after the protected text it sits in)
+            site, out["protected"] = safe_site(raw, end, list(kinds))
+            out.update(line=raw.count("\n", 0, site) + 1, author=kinds[who], macro=who, tex=escape_note(typed))
+            new = raw[:site] + f" \\{who}{{{out['tex']}}}" + raw[site:]
+        else:  # commented out on its own lines after the note's line, every line with %, with the
+            # line's indentation; a comment-only line doesn't end a paragraph
+            bol = raw.rfind("\n", 0, start) + 1
+            indent = re.match(r"[ \t]*", raw[bol:]).group()
+            nl = "\r\n" if "\r\n" in raw[bol:raw.find("\n", end) + 1 or len(raw)] else "\n"
+            lines = [f"RESOLVED {time.strftime('%Y-%m-%d')} ({kinds[who]}): {typed}"] + raw[start:end].split("\n")
+            block = "".join(f"{indent}% {row.strip()}".rstrip() + nl for row in lines)
+            new, after = cut_note(raw, start, end)
+            new = new[:after] + ("" if after == 0 or new[after - 1] == "\n" else nl) + block + new[after:]
     write_source(src, raw, new)
-    return 200, {"source": rel, "line": raw.count("\n", 0, start) + 1}
+    return 200, out
 
 
 def pdf_pages_text(pdf):

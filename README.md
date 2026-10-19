@@ -31,12 +31,21 @@ The plan below makes it a general tool.
 - **Comments from the viewer.** Pick who you are in the toolbar (one of the
   paper's note macros, e.g. `\ch`), select text in the PDF, and press 💬 (or
   C): your note goes into the source right after the selected words, and the
-  rebuild shows it. Typed text is escaped, so `%`, `&` and `_` are safe. Your
-  own notes get ✎ and ✕ (edit, delete) in their bubbles and in the sidebar.
+  rebuild shows it. Typed text is escaped, so `%`, `&` and `_` are safe. In
+  their bubbles and in the sidebar, notes get ✓ (resolve), others' notes ↩
+  (reply: your note goes right after theirs), and your own ✎ (edit). Resolving
+  asks why and comments the note out instead of deleting it, on its own lines
+  after the line that held it (a comment line doesn't break the paragraph):
+  ```
+  % RESOLVED 2026-10-19 (EB): defined the control in App. D.2.
+  % \ch{The control is never defined ...}
+  ```
+  ✕ (delete) appears only on notes written from the same tab, as an undo.
   A note never lands inside a heading, another note, or text marked as
-  protected (`LATEX_LIVE_PROTECTED`). Characters pdflatex can't set (✓, →,
-  emoji) are refused. If the file is open with unsaved changes in your editor,
-  save it first: otherwise, saving later offers to overwrite the note.
+  protected (`LATEX_LIVE_PROTECTED`), and a protected marker can't be changed
+  from the viewer. Characters pdflatex can't set (✓, →, emoji) are refused.
+  If the file is open with unsaved changes in your editor, save it first:
+  otherwise, saving later offers to overwrite the note.
 - **Page-limit badge.** Main-text pages against the venue limit, measured with
   and without notes. The limit comes from the venue style (ICLR, NeurIPS and
   COLM: 9 pages; ICML, CVPR and ICCV: 8) or `--page-limit`.
@@ -110,9 +119,9 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
     `code` script doesn't reach the open window.
   - `LATEX_LIVE_PROTECTED`: a regular expression for a marker of text that must
     stay as written, e.g. `\\ch\{human-written\}` at the end of a paragraph
-    or inside a caption. Notes written from the viewer go after the paragraph
-    or caption it marks, and the marker itself can't be edited or deleted
-    there.
+    or inside a caption. Notes written from the viewer (replies too) go after
+    the paragraph or caption it marks, and the marker itself can't be edited,
+    resolved, or deleted there.
 - **PDF.js:** vendored in `pdfjs/` (4.10.38 legacy build, Apache-2.0; see
   `pdfjs/LICENSE`).
 
