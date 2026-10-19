@@ -142,9 +142,11 @@
                                   transform: translateY(-50%); padding: 0 5px; border-radius: 2px; white-space: nowrap;
                                   font: 10px/15px system-ui, sans-serif; color: #fff; background: rgba(200, 110, 10, 0.95); }
   .ll-marks .chg.fig[data-label]::after { left: -2px; top: -20px; margin: 0; transform: none; background: rgba(40, 170, 90, 0.95); }
-  /* Margin notes (notes-free view): bubbles in a gutter right of each page, wired to a caret
-     where the note sits in the text. Sized in screen pixels, so they stay readable at any zoom. */
+  /* Margin notes (notes-free view): bubbles in a gutter right of each page (with two columns, the
+     left column's left of it), wired to a caret where the note sits in the text. Sized in screen
+     pixels, so they stay readable at any zoom. */
   #viewerContainer.gutter .pdfViewer { padding-right: 250px; }
+  #viewerContainer.gutter-left .pdfViewer { padding-left: 250px; }
   .ll-margin { position: absolute; inset: 0; z-index: 6; pointer-events: none; }
   .ll-margin svg { position: absolute; left: 0; top: 0; overflow: visible; }
   .ll-margin path { fill: none; stroke-width: 1.2; stroke-dasharray: 2 2; opacity: 0.7; }
@@ -156,6 +158,7 @@
   .ll-bubble { position: absolute; left: calc(100% + 16px); width: 214px; box-sizing: border-box; padding: 3px 7px 4px;
                border-radius: 5px; border-left: 4px solid; background: #fcfcf7; color: #222; box-shadow: 0 1px 3px #0007;
                font: 11px/1.35 system-ui, sans-serif; pointer-events: auto; cursor: pointer; }
+  .ll-bubble.left { left: auto; right: calc(100% + 16px); border-left: 0; border-right: 4px solid; }
   .ll-bubble .text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
   .ll-bubble b { margin-right: 4px; }
   .ll-bubble.hot { z-index: 2; box-shadow: 0 3px 12px #000b; outline: 2px solid rgba(255, 200, 0, 0.8); }
@@ -1044,21 +1047,30 @@ async function drawFloat(d, card, f) {
   crop.replaceChildren(canvas);
 }
 
-// Margin notes: in the notes-free view, each note as a bubble in a gutter right of its page, wired
-// to a caret where it sits in the text. live.py (/margin) gives, per note, where its source line
-// landed (SyncTeX) and the typeset words around it; those words, found in the page text, put the
-// caret between two words. Hover a bubble or caret to follow the wire; click to open the source.
+// Margin notes: in the notes-free view, each note as a bubble in a gutter right of its page (with
+// two columns, a left-column note's in a gutter left of it), wired to a caret where it sits in the
+// text. live.py (/margin) gives, per note, where its source line landed (SyncTeX) and the typeset
+// words around it; those words, found in the page text, put the caret between two words. Hover a
+// bubble or caret to follow the wire; click to open the source.
 const GUTTER = 250;
 let marginOn = localStorage.getItem("latex-live:margin") !== "0";
 let marginAnchors = new Map(); // page -> [{note, x, top}] (points from the page's top-left, baseline)
-// Fitting the page width leaves room for the gutter: PDF.js measures the container's clientWidth.
+const leftOfPage = (a) => columnMid() !== null && columnAt(a.x) === 1; // a note in the left column
+// Fitting the page width leaves room for the gutters: PDF.js measures the container's clientWidth.
 const clientWidthOf = Object.getOwnPropertyDescriptor(Element.prototype, "clientWidth").get;
-Object.defineProperty(container, "clientWidth",
-  { get() { return clientWidthOf.call(this) - (this.classList.contains("gutter") ? GUTTER : 0); } });
-function setGutter(on) {
-  if (container.classList.contains("gutter") === on) return;
+Object.defineProperty(container, "clientWidth", { get() {
+  return clientWidthOf.call(this) - (this.classList.contains("gutter") ? GUTTER : 0) - (this.classList.contains("gutter-left") ? GUTTER : 0);
+} });
+function setGutter(on, left = false) {
+  if (container.classList.contains("gutter") === on && container.classList.contains("gutter-left") === left) return;
   container.classList.toggle("gutter", on);
+  container.classList.toggle("gutter-left", left);
   refit();
+}
+// The gutters the notes need: right, and left too for notes in a left column.
+function fitGutters() {
+  const all = [...marginAnchors.values()].flat();
+  setGutter(marginOn && all.some((a) => !leftOfPage(a)), marginOn && all.some(leftOfPage));
 }
 function showMarginButton() {
   const b = $("marginBtn");
@@ -1071,7 +1083,7 @@ $("marginBtn").onclick = () => {
   marginOn = !marginOn;
   localStorage.setItem("latex-live:margin", marginOn ? "1" : "0");
   showMarginButton();
-  setGutter(marginOn && marginAnchors.size > 0);
+  fitGutters();
   drawAllMargins();
 };
 
@@ -1085,7 +1097,7 @@ async function loadMargin(d) {
     anchors.get(a.page).push({ note: n, ...a });
   }
   marginAnchors = anchors;
-  setGutter(marginOn && anchors.size > 0);
+  fitGutters();
   drawAllMargins();
 }
 
@@ -1160,16 +1172,16 @@ function drawMargin(pageNumber) {
   const [vx, vy, vw] = pageView.pdfPage.view;
   const cw = pageView.div.clientWidth, ch = pageView.div.clientHeight, s = cw / (vw - vx);
   const layer = el("div", { className: "ll-margin" });
-  const svg = document.createElementNS(SVG, "svg");
+  const svg = document.createElementNS(SVG, "svg"); // (wires to a left gutter overflow it)
   svg.setAttribute("width", cw + GUTTER);
   svg.setAttribute("height", ch);
   layer.append(svg);
   pageView.div.append(layer);
   const items = list.map((a) => {
-    const n = a.note, color = authorColor(n.author);
-    const bubble = el("div", { className: "ll-bubble", title: `${n.file}:${n.line}: click to open in VS Code` },
+    const n = a.note, color = authorColor(n.author), left = leftOfPage(a);
+    const bubble = el("div", { className: `ll-bubble${left ? " left" : ""}`, title: `${n.file}:${n.line}: click to open in VS Code` },
                       el("div", { className: "text" }, el("b", { textContent: n.author }), n.text || "(empty)"));
-    bubble.style.borderLeftColor = color;
+    bubble.style[left ? "borderRightColor" : "borderLeftColor"] = color;
     bubble.querySelector("b").style.color = color;
     const tools = noteTools(n);
     if (tools) bubble.prepend(tools);
@@ -1186,20 +1198,23 @@ function drawMargin(pageNumber) {
       e.onmouseleave = () => hot(false);
       e.onclick = (ev) => { ev.stopPropagation(); openSource(n.file, n.line); };
     }
-    return { bubble, path, x, y, s };
+    return { bubble, path, x, y, s, left };
   }).sort((a, b) => a.y - b.y || a.x - b.x);
-  // Stack the bubbles in reading order, each as close to its line as the ones above allow; pull
-  // them up from the page bottom if they run past it; then undo any overlap that left.
-  let y = 0;
-  for (const it of items) { it.h = it.bubble.offsetHeight; it.top = Math.max(it.y - 12, y); y = it.top + it.h + 4; }
-  let limit = ch;
-  for (const it of [...items].reverse()) { it.top = Math.max(0, Math.min(it.top, limit - it.h)); limit = it.top - 4; }
-  y = 0;
-  for (const it of items) { it.top = Math.max(it.top, y); y = it.top + it.h + 4; }
+  // In each gutter, stack the bubbles in reading order, each as close to its line as the ones
+  // above allow; pull them up from the page bottom if they run past it; then undo any overlap that left.
+  for (const side of [items.filter((it) => !it.left), items.filter((it) => it.left)]) {
+    let y = 0;
+    for (const it of side) { it.h = it.bubble.offsetHeight; it.top = Math.max(it.y - 12, y); y = it.top + it.h + 4; }
+    let limit = ch;
+    for (const it of [...side].reverse()) { it.top = Math.max(0, Math.min(it.top, limit - it.h)); limit = it.top - 4; }
+    y = 0;
+    for (const it of side) { it.top = Math.max(it.top, y); y = it.top + it.h + 4; }
+  }
   for (const it of items) {
     it.bubble.style.top = `${it.top}px`;
     const base = it.y + 2.5 * it.s, by = it.top + Math.min(12, it.h / 2);
-    it.path.setAttribute("d", `M${it.x},${base} H${cw} C${cw + 10},${base} ${cw + 6},${by} ${cw + 16},${by}`);
+    it.path.setAttribute("d", it.left ? `M${it.x},${base} H0 C-10,${base} -6,${by} -16,${by}`
+                                      : `M${it.x},${base} H${cw} C${cw + 10},${base} ${cw + 6},${by} ${cw + 16},${by}`);
   }
 }
 const drawAllMargins = () => { for (let n = 1; n <= (doc?.numPages || 0); n++) drawMargin(n); };
@@ -1852,8 +1867,9 @@ async function showPreview(a) {
   const kind = dest[1]?.name;
   const destY = kind === "XYZ" ? dest[3] : kind === "FitH" || kind === "FitBH" ? dest[2] : null;
   const top = destY == null ? area.top : H - destY;
-  const [t0, t1, x0, x1] = await previewRegion(name?.split(".")[0] || "", index + 1, top, W, H);
-  const scale = Math.min(620 / (x1 - x0), (window.innerWidth - 40) / (x1 - x0), (window.innerHeight * 0.6) / (t1 - t0));
+  const [t0, t1, x0, x1] = await previewRegion(name?.split(".")[0] || "", index + 1, top, kind === "XYZ" ? dest[2] : null, W, H);
+  const span = columnMid() === null ? x1 - x0 : Math.max(x1 - x0, area.width + 16); // (a column at the scale of a full-width preview)
+  const scale = Math.min(620 / span, (window.innerWidth - 40) / (x1 - x0), (window.innerHeight * 0.6) / (t1 - t0));
   const dpr = window.devicePixelRatio || 1;
   const viewport = page.getViewport({ scale: scale * dpr, offsetX: -x0 * scale * dpr, offsetY: -t0 * scale * dpr });
   const canvas = el("canvas", { width: Math.ceil((x1 - x0) * scale * dpr), height: Math.ceil((t1 - t0) * scale * dpr) });
@@ -1867,12 +1883,27 @@ async function showPreview(a) {
   preview.style.left = `${Math.max(8, Math.min(window.innerWidth - pw - 8, r.left - 40))}px`;
   preview.style.top = `${r.bottom + 6 + ph < window.innerHeight ? r.bottom + 6 : Math.max(40, r.top - ph - 6)}px`;
 }
-// The region to show, [top, bottom, left, right] in points from the page's top-left.
-async function previewRegion(kind, pageNumber, top, W, H) {
-  const lines = (await textLines(doc, pageNumber)).lines.slice().sort((a, b) => a.top - b.top);
-  const body = lines.filter((l) => l.str.length > 20);
-  const left = Math.max(0, Math.min(...body.map((l) => l.left), W * 0.2) - 8);
-  const right = Math.min(W, Math.max(...body.map((l) => l.right), W * 0.8) + 8);
+// The region to show, [top, bottom, left, right] in points from the page's top-left. With two
+// columns, a target in a column (by its destination's x) shows that column, measured by its lines
+// alone; a full-width one (a figure* or table*, or a line across both columns) the whole width.
+const CAPTION = /^(Figure|Fig\.|Table)\s*[A-Z]?\d+\s*[:.]/;
+async function previewRegion(kind, pageNumber, top, x, W, H) {
+  const all = (await textLines(doc, pageNumber)).lines.slice().sort((a, b) => a.top - b.top);
+  const body = all.filter((l) => l.str.length > 20);
+  let left = Math.max(0, Math.min(...body.map((l) => l.left), W * 0.2) - 8);
+  let right = Math.min(W, Math.max(...body.map((l) => l.right), W * 0.8) + 8);
+  let col = columnMid() === null || x == null ? null : columnAt(x); // null: the whole page, as with one column
+  const across = (l) => l && (l.col === 0 || all.some((m) => m.col === 0 && Math.abs(m.top - l.top) < 2));
+  const at = all.find((l) => l.top > top - 2); // the target's line
+  if (col && at && at.top - top < 20 && at.col === 0) col = 0;
+  if (col && (kind === "figure" || kind === "table")) {
+    // A float anchors at its top left, so a figure* is in the left column by x: its caption (the
+    // first below, in that column or across both) runs across both columns.
+    if (across(all.find((l) => l.top > top - 2 && (l.col === col || l.col === 0) && CAPTION.test(l.str)))) col = 0;
+  }
+  if (col) [left, right] = [columnBoxes()[col - 1][0] - 8, columnBoxes()[col - 1][1] + 8];
+  // (A full-width caption's short last line sits in the left column.)
+  const lines = col === null ? all : col ? all.filter((l) => l.col === col) : all.filter((l) => l.col !== 2);
   const below = lines.filter((l) => l.top > top - 2);
   const paragraphEnd = (i, gap) => { // last line of the block starting at below[i]
     while (i + 1 < below.length && below[i + 1].top - below[i].top < gap) i++;
@@ -1880,14 +1911,15 @@ async function previewRegion(kind, pageNumber, top, W, H) {
   };
   let t0 = top - 4, t1 = top + 140;
   if (kind === "cite" && below.length) {
-    // One entry: continuation lines are indented (hanging indent) until the next entry starts.
-    const first = below[0];
-    let i = 0;
+    // One entry: continuation lines are indented (hanging indent) until the next entry starts. (The
+    // anchor sits about a line above the entry: level with the end of the one before, at tight spacing.)
+    let i = Math.max(0, below.findIndex((l) => l.top > top + 2));
+    const first = below[i];
     while (i + 1 < below.length && below[i + 1].left > first.left + 2 && below[i + 1].top - below[i].top < 20) i++;
     t0 = first.top - first.parts[0].h - 3;
     t1 = below[i].top + 4;
   } else if (kind === "figure" || kind === "table") {
-    const i = below.findIndex((l) => /^(Figure|Fig\.|Table)\s*[A-Z]?\d+\s*[:.]/.test(l.str));
+    const i = below.findIndex((l) => CAPTION.test(l.str));
     t0 = top - 2;
     t1 = i >= 0 ? paragraphEnd(i, 16) + 4 : top + H * 0.45;
     if (kind === "table" && i >= 0 && below[i].top - top < 30) t1 = paragraphEnd(i, 19) + 4; // caption above the table
@@ -1896,6 +1928,8 @@ async function previewRegion(kind, pageNumber, top, W, H) {
   } else if (/section|paragraph|appendix|chapter|part/.test(kind)) {
     t0 = top - 2; t1 = top + 110;
   }
+  const band = col ? all.find((l) => l.col === 0 && l.top > top + 2) : null; // (a column ends above a full-width float)
+  if (band) t1 = Math.min(t1, band.top - band.parts[0].h - 2);
   t1 = Math.min(H, Math.max(t1, t0 + 20), t0 + H * 0.75);
   return [Math.max(0, t0), t1, left, right];
 }
@@ -1964,7 +1998,7 @@ async function load(name, version, variant, info) {
   pagesReady = false;
   marginAnchors = new Map();
   if (variant !== "clean") setGutter(false);
-  else if (marginOn && !isDiff) setGutter(true); // (dropped again if there are no notes)
+  else if (marginOn && !isDiff) setGutter(true, area.columns === 2); // (dropped again if no notes need them)
   hidePreview();
   viewer.setDocument(next);
   linkService.setDocument(next);

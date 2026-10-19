@@ -9,8 +9,8 @@ and zoom. Built on `latexmk -pvc`, SyncTeX, and PDF.js, with no editor extension
 This is the first implementation, written for an ICLR paper and its arXiv
 version on a remote Linux machine used through VS Code. It also runs on macOS
 with MacTeX (not yet tried on a Mac). It reads the page layout from LaTeX, so
-it is not tied to one template, but it still assumes a single-column paper and
-that setup (see [Portability gaps](#portability-gaps)).
+it is not tied to one template, but it still assumes that setup (see
+[Portability gaps](#portability-gaps)).
 The plan below makes it a general tool.
 
 ## Features
@@ -52,7 +52,9 @@ The plan below makes it a general tool.
 - **One or two columns.** LaTeX reports the column layout on each build. With
   two columns, the viewer reads the text column by column, ignores review line
   numbers beside either column, and measures page fill, space hints and note
-  anchors per column.
+  anchors per column. A hover preview shows the target's column (all of a
+  `figure*`), and a note's bubble sits in a gutter beside its column, left of
+  the page for the left column.
 - **Change highlights.** A word-level diff of the text against the last
   commit (a PDF of `HEAD`'s `.tex` files, rebuilt when `HEAD` moves) or
   against the previous build, plus outlines on changed figures. The toolbar
@@ -149,9 +151,6 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
     the source (math, references) are dropped from the end of the selection.
   - **Generated figures:** the staleness check assumes they come from
     `raw/*.py`.
-- **Two columns: rough edges.** Hover previews of a reference span both
-  columns, and every note bubble sits in the right-hand gutter, so the wire from
-  a left-column note crosses the right column.
 
 ## Plan
 
@@ -181,9 +180,7 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
      forward only a few ports.
 
    Editor links for VS Code, Cursor, or a custom command.
-6. **Two-column polish:** hover previews within a column, and note bubbles in
-   the gutter beside their column.
-7. **Test papers.** Plain article, ICLR, NeurIPS, and a two-column template,
+6. **Test papers.** Plain article, ICLR, NeurIPS, and a two-column template,
    to keep the layout heuristics honest.
-8. **Static review snapshot** (optional). One self-contained HTML file (PDF,
+7. **Static review snapshot** (optional). One self-contained HTML file (PDF,
    note bubbles, checks) for coauthors who only use Overleaf.
