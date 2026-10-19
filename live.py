@@ -964,10 +964,14 @@ def open_source(paper_root, query):
 # goes after the paragraph or caption it marks, and the marker itself can't be edited or deleted here.
 try:
     PROTECTED_RE = re.compile(os.environ["LATEX_LIVE_PROTECTED"]) if os.environ.get("LATEX_LIVE_PROTECTED") else None
-except re.error as e:
-    sys.exit(f"latex-live: LATEX_LIVE_PROTECTED is not a regular expression ({e})")
+except re.error as e:  # (warn, not exit: forward.py imports this module too)
+    print(f"=== latex-live: ignoring LATEX_LIVE_PROTECTED, not a regular expression ({e})", file=sys.stderr, flush=True)
+    PROTECTED_RE = None
 NOTE_ESCAPES = {"\\": r"\textbackslash{}", "{": r"\{", "}": r"\}", "%": r"\%", "&": r"\&", "#": r"\#", "_": r"\_",
                 "$": r"\$", "~": r"\textasciitilde{}", "^": r"\textasciicircum{}"}
+# Characters pdflatex sets from UTF-8 without extra packages: ASCII, Latin-1, and the usual
+# typographic ones. Others (✓, →, emoji) would stop the build, so notes refuse them.
+TYPESETTABLE = set(map(chr, range(0x20, 0x7F))) | set(map(chr, range(0xA0, 0x100))) | set("‘’“”–—…•€")
 NOTE_LOCK = threading.Lock()  # one read-modify-write of a source file at a time
 CMD_RE = re.compile(r"\\([a-zA-Z@]+)\*?|\\.?", re.S)
 # Commands whose (first) argument is not typeset as written: references, citations, labels,
@@ -980,6 +984,12 @@ PARAGRAPH_BREAK_RE = re.compile(r"\n[ \t]*\n")
 
 class SourceChanged(Exception):
     """The source file changed between reading it and writing it back."""
+
+
+def untypesettable(text):
+    """An error message for the first character of text that pdflatex can't set, or None."""
+    c = next((c for c in text if c not in TYPESETTABLE and not c.isspace()), None)
+    return c and f"pdflatex can't set “{c}” (U+{ord(c):04X}); write it out in words"
 
 
 def escape_note(text):
@@ -1224,7 +1234,10 @@ def note_request(server, req):
 
 def add_note(src, rel, raw, line, macro, author, req, note_macros):
     """Write \\<macro>{text} after the selected words near line of raw (the text of src)."""
-    text = escape_note(str(req["text"]))
+    typed = unicodedata.normalize("NFC", str(req["text"]))
+    if error := untypesettable(typed):
+        return 400, {"error": error}
+    text = escape_note(typed)
     if not text:
         return 400, {"error": "empty note"}
     pos, dropped = note_site(raw, line, str(req.get("selection", "")))
@@ -1259,7 +1272,10 @@ def change_note(src, rel, raw, line, macro, action, req):
             spaced = start > 0 and raw[start - 1] in " \t" and (end == len(raw) or raw[end].isspace())
             new = raw[:start - spaced] + raw[end:]
     else:
-        body = str(req["latex"]) if "latex" in req else escape_note(str(req["text"]))
+        typed = unicodedata.normalize("NFC", str(req["latex"] if "latex" in req else req["text"]))
+        if error := untypesettable(typed):
+            return 400, {"error": error}
+        body = typed if "latex" in req else escape_note(typed)
         if not body.strip():
             return 400, {"error": "empty note (delete it instead)"}
         if brace_group("{" + body + "}", 0)[1] != len(body) + 2 or re.search(r"(?<!\\)%|\n[ \t]*\n", body):
