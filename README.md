@@ -34,7 +34,9 @@ The plan below makes it a general tool.
   rebuild shows it. Typed text is escaped, so `%`, `&` and `_` are safe. Your
   own notes get ✎ and ✕ (edit, delete) in their bubbles and in the sidebar.
   A note never lands inside a heading, another note, or text marked as
-  protected (`LATEX_LIVE_PROTECTED`).
+  protected (`LATEX_LIVE_PROTECTED`). Characters pdflatex can't set (✓, →,
+  emoji) are refused. If the file is open with unsaved changes in your editor,
+  save it first: otherwise, saving later offers to overwrite the note.
 - **Page-limit badge.** Main-text pages against the venue limit, measured with
   and without notes. The limit comes from the venue style (ICLR, NeurIPS and
   COLM: 9 pages; ICML, CVPR and ICCV: 8) or `--page-limit`.

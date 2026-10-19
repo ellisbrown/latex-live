@@ -1279,18 +1279,18 @@ function startComment() {
 // The box to write a note in: save(text) returns an error message, or nothing once it is written.
 let popSave = null;
 function openNotePop({ head, initial, rect, save, latex = false }) {
-  const pop = $("notePop"), area = pop.querySelector("textarea");
+  const pop = $("notePop"), field = pop.querySelector("textarea");
   pop.querySelector(".head").textContent = head;
   pop.querySelector(".error").textContent = "";
   pop.querySelector(".latex").hidden = !latex;
-  area.value = initial;
+  field.value = initial;
   popSave = save;
   pop.hidden = false;
   const below = rect.bottom + 6 + pop.offsetHeight <= innerHeight;
   Object.assign(pop.style, { left: `${Math.max(8, Math.min(rect.left, innerWidth - pop.offsetWidth - 8))}px`,
                              top: `${below ? rect.bottom + 6 : Math.max(40, rect.top - pop.offsetHeight - 6)}px` });
-  area.focus();
-  area.setSelectionRange(area.value.length, area.value.length);
+  field.focus();
+  field.setSelectionRange(field.value.length, field.value.length);
 }
 function closeNotePop() { $("notePop").hidden = true; popSave = null; }
 async function submitNotePop() {
@@ -1317,8 +1317,9 @@ async function postNote(body) {
     const res = await r.json().catch(() => ({ error: `failed (${r.status})` }));
     if (!r.ok) return res.error || `failed (${r.status})`;
     const verb = { add: "added", edit: "updated", delete: "deleted" }[body.action];
+    const dropped = res.dropped ? `, before the last ${res.dropped} selected word${res.dropped === 1 ? "" : "s"} (not in the source)` : "";
     setStatus(`note ${verb} in ${res.source.replace(/^.*\//, "")}:${res.line}${res.protected ? ", after the protected text" : ""}`
-              + "; rebuilding…", "fresh");
+              + `${dropped}; rebuilding…`, "fresh");
     if (body.action === "add") window.getSelection().removeAllRanges();
     return null;
   } catch (err) {
