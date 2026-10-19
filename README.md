@@ -69,7 +69,8 @@ The plan below makes it a general tool.
   - notes grouped by author;
   - pre-submission checks: anonymity, draft switches, undefined references,
     placeholders, Type 3 fonts, image resolution, stale generated figures,
-    term consistency, typos, and bib duplicates.
+    figure and table placement (off the text area, pages from their first
+    reference, never referenced), term consistency, typos, and bib duplicates.
 - **Compare.** latexdiff of the working tree against any git commit.
 - **Viewer comforts:**
   - search;
@@ -151,6 +152,11 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
     the source (math, references) are dropped from the end of the selection.
   - **Generated figures:** the staleness check assumes they come from
     `raw/*.py`.
+  - **Figure placement:** references are the commands ending in `ref`
+    (`\ref`, `\cref`, `\autoref`, macros like `\figref`) and `\hyperref[...]`.
+    Pages that hold only floats don't count toward a float's distance from its
+    first reference, and floats in the back matter count only references from
+    there. Rotated (`sideways`) floats aren't checked against the text area.
 
 ## Plan
 

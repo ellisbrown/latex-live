@@ -658,10 +658,33 @@ LABEL_RE = re.compile(r"\\label\s*\{([^{}]*)\}")
 NEWLABEL_RE = re.compile(r"\\newlabel\{([^{}]*)\}\{\{([^{}]*)\}")
 
 
+SCALED_RE = re.compile(r"\\(?:resizebox|scalebox|rotatebox|reflectbox|adjustbox)\b|\\begin\{adjustbox\}")
+ARG_RE = re.compile(r"\s*([\[{])")
+
+
+def scaled_lines(env, first):
+    """Lines of a float's environment (env, from line first) that end content drawn scaled or rotated
+    (\\resizebox, \\scalebox, adjustbox...), whose SyncTeX boxes have its size before scaling."""
+    lines = set()
+    for m in SCALED_RE.finditer(env):
+        i = m.end()
+        if m.group().startswith("\\begin"):
+            i = max(env.find("\\end{adjustbox}", i), i)
+        else:  # to the end of its arguments
+            while a := ARG_RE.match(env, i):
+                i = brace_group(env, a.end(1) - 1)[1] if a.group(1) == "{" else (env.find("]", a.end()) + 1 or len(env))
+        lines.update(range(first + env.count("\n", 0, m.start()), first + env.count("\n", 0, i) + 1))
+    return lines
+
+
 def floats(paper_root, pdf_name, clean=False):
-    """The figures and tables that were typeset, in reading order, for the viewer's Figures tab:
-    [{kind, num, caption, page, label, dest, box}]. page is the PDF page, label its printed
-    number; box is [left, top, right, bottom] in points from the page's top-left.
+    """The figures and tables that were typeset, in reading order, for the viewer's Figures tab and
+    the placement check:
+    [{kind, num, caption, page, label, dest, box, extent, keys, file, line, last}]. page is the PDF
+    page, label its printed number; box is [left, top, right, bottom] in points from the page's
+    top-left, cut at the page's bottom edge; extent is the box as typeset (not cut, nor widened by
+    content drawn scaled), if known; keys are its \\label names; line and last are the lines of
+    its environment in file.
 
     The environments come from the source; SyncTeX tells which were typeset and where (the boxes
     their lines made). Numbers come from their \\label, else the order of their captions; captions
@@ -718,11 +741,16 @@ def floats(paper_root, pdf_name, clean=False):
                 entry = next((e for e in listed[kind] if e["num"] == nums[0]), {"num": nums[0]})
             page = collections.Counter(b[0] for b in made).most_common(1)[0][0]
             on = [b for b in made if b[0] == page]
+            skip = scaled_lines(env, first)
+            sized = [] if m.group(2).startswith("sideways") else [  # (rotated: SyncTeX has the boxes unrotated)
+                b for line in range(first, last + 1) if line not in skip for b in boxes.get((path, line), []) if b in on]
             found.append({"kind": kind, "num": entry.get("num"), "caption": entry.get("caption", ""), "page": page,
                           "label": entry.get("label"), "dest": entry.get("dest"),
                           "box": [min(b[1] for b in on), min(b[2] for b in on), max(b[3] for b in on),
                                   min(area["H"], max(b[4] for b in on))],  # (a float can run off the page)
-                          "file": os.path.relpath(path, paper_root), "line": first})
+                          "extent": sized and [min(b[1] for b in sized), min(b[2] for b in sized), max(b[3] for b in sized),
+                                               max(b[4] for b in sized)] or None, "keys": LABEL_RE.findall(env),
+                          "file": os.path.relpath(path, paper_root), "line": first, "last": last})
     return sorted(found, key=lambda x: (x["page"], x["box"][1]))
 
 
@@ -802,6 +830,14 @@ def note_kinds(texts):
 
 def note_use_re(kinds):
     return re.compile(r"\\(%s)\s*(?=\{)" % "|".join(sorted(kinds, key=len, reverse=True)))
+
+
+def blank_notes(text, kinds):
+    """text with its notes (uses of the note macros in kinds) blanked (line numbers kept)."""
+    for m in reversed(list(note_use_re(kinds).finditer(text)) if kinds else []):
+        end = brace_group(text, m.end())[1]
+        text = text[:m.start()] + re.sub(r"[^\n]", " ", text[m.start():end]) + text[end:]
+    return text
 
 
 def notes(paper_root, pdf_name):
@@ -1614,9 +1650,7 @@ def prose_lines(paper_root, pdf_name):
         begin = text.find("\\begin{document}")
         if begin > 0:
             text = "\n" * text.count("\n", 0, begin) + text[begin:]
-        for m in reversed(list(note_use_re(kinds).finditer(text)) if kinds else []):
-            end = brace_group(text, m.end())[1]
-            text = text[:m.start()] + blank(re.match(r"[\s\S]*", text[m.start():end])) + text[end:]
+        text = blank_notes(text, kinds)
         text = re.sub(r"\\(?:[a-zA-Z]*ref|label|cite[a-z]*|include\w*|input|url|href|begin|end|usepackage|graphicspath|"
                       r"hypersetup|bibliography\w*|newcommand|renewcommand|def|vspace|hspace|setlength|addtolength)\*?"
                       r"\s*(?:\[[^\]]*\]\s*)*\{[^{}]*\}", blank, text)
@@ -1704,6 +1738,101 @@ def lint(paper_root, pdf_name, pages, in_bib):
             typos.append({"text": f"\"{m.group(1)} \\{m.group(3)}\": use ~ so the number can't wrap to the next line",
                           "file": rel, "line": text.count("\n", 0, m.start()) + 1})
     return terms, refs, typos
+
+
+# References to labels: \ref, \cref, \Cref, \autoref, \pageref, project macros like \figref, ranges, \hyperref[...].
+REF_RE = re.compile(r"\\[a-zA-Z]*ref\*?\s*\{([^{}]*)\}|\\[a-zA-Z]*refrange\*?\s*\{([^{}]*)\}\s*\{([^{}]*)\}|\\hyperref\s*\[([^\]]*)\]")
+BACK_MATTER_RE = re.compile(r"\\(?:appendix|bibliography|printbibliography)\b|\\begin\{thebibliography\}")
+
+
+def float_placement(paper_root, pdf_name, clean=False):
+    """Figures and tables placed or referenced badly: (off, far, unreferenced, unlabeled) check items.
+
+    off: it runs past the text area by more than 3 pt (perhaps off the page). far: a page of text
+    (not only floats) lies between it and the first page that references one of its labels from
+    outside it. unreferenced: none of its labels is referenced. unlabeled: it has a number but no
+    label. A float in the back matter (after the bibliography or \\appendix) only counts references
+    there: one referenced only from the main text is a pointer to the appendix, wherever it is.
+    """
+    found = floats(paper_root, pdf_name, clean)
+    f = clean_file if clean else job_file
+    fls = job_file(paper_root, pdf_name, ".fls")
+    points = synctex_points(f(paper_root, pdf_name, ".synctex.gz"))
+    area = layout(paper_root, pdf_name) or {"H": 792, "left": 72, "width": 468, "top": 72, "bottom": 720}
+    texts = {path: read_tex(path) for path in project_tex_files(paper_root, fls)}
+    kinds = note_kinds(texts.values())
+    sites = include_sites(paper_root, pdf_name)
+
+    def at(path, line):
+        """Reading-order key of a source line: the lines of the \\input chain down to it."""
+        rel, chain = os.path.relpath(path, paper_root), (line,)
+        while rel in sites and len(chain) < 10:
+            rel, n = sites[rel]
+            chain = (n, *chain)
+        return chain
+
+    def placed(p):
+        """Whether a SyncTeX point is in the text area (not the header, footer, or line numbers)."""
+        return area["left"] - 0.5 <= p[1] <= area["left"] + area["width"] + 0.5 and area["top"] - 0.5 <= p[2] <= area["bottom"] + 0.5
+
+    def page_of(path, line):
+        """The page a source line was typeset on: its float's, else where its words (or the next
+        lines', e.g. a reference at the end of a line) landed."""
+        x = next((x for x in found if x["path"] == path and x["line"] <= line <= x["last"]), None)
+        if x:
+            return x["page"]
+        return next((p[0] for n in (line, line + 1, line + 2, line - 1) for p in points.get((path, n), []) if placed(p)), None)
+
+    by_page = {}
+    for x in found:
+        x["path"] = os.path.join(paper_root, x["file"])
+        by_page.setdefault(x["page"], []).append(x["box"])
+    # Pages with text outside their floats (a line's worth of words and spaces; a page of floats has a
+    # few points of glue): only those put distance between a float and its reference.
+    outside = collections.Counter(p[0] for pts in points.values() for p in pts if placed(p) and not any(
+        l - 2 <= p[1] <= r + 2 and t - 2 <= p[2] <= b + 2 for l, t, r, b in by_page.get(p[0], ())))
+    text_pages = {page for page, n in outside.items() if n >= 10}
+    refs, ends = {}, []  # {label: [(reading-order key, path, line)]}; where the main text may end
+    begin = None
+    for path, text in texts.items():
+        # (notes and \iffalse blocks are not in the submitted PDF)
+        text = blank_notes(re.sub(r"\\iffalse\b.*?\\fi\b", lambda m: re.sub(r"[^\n]", " ", m.group()), text, flags=re.S), kinds)
+        line_at = lambda i: text.count("\n", 0, i) + 1
+        if begin is None and "\\begin{document}" in text:
+            begin = at(path, line_at(text.find("\\begin{document}")))
+        ends += [at(path, line_at(m.start())) for m in BACK_MATTER_RE.finditer(text)]
+        for m in REF_RE.finditer(text):
+            line = line_at(m.start())
+            for label in ",".join(filter(None, m.groups())).split(","):
+                refs.setdefault(label.strip(), []).append((at(path, line), path, line))
+    back = min((key for key in ends if begin and key > begin), default=None)  # (not definitions in the preamble)
+    off, far, unreferenced, unlabeled = [], [], [], []
+    for x in found:
+        name = f"{x['kind'].title()} {x['num']}" if x["num"] else f"Unnumbered {x['kind']}"
+        item = {"file": x["file"], "line": x["line"], "page": x["page"]}
+        if x["extent"]:
+            left, top, right, bottom = x["extent"]
+            past = [f"{d:.0f} pt {where}" for where, d in (
+                ("above the text area", area["top"] - top), ("below the text area", bottom - area["bottom"]),
+                ("into the left margin", area["left"] - left), ("into the right margin", right - area["left"] - area["width"]))
+                if d > 3]
+            if past:
+                off.append({"text": f"{name} runs {', '.join(past)}" + (", off the page" if bottom > area["H"] else ""), **item})
+        if not x["keys"]:
+            if x["num"]:
+                unlabeled.append({"text": f"{name} has no \\label, so the text can't reference it", **item})
+            continue
+        cited = [r for k in x["keys"] for r in refs.get(k, []) if not (r[1] == x["path"] and x["line"] <= r[2] <= x["last"])]
+        if not cited:
+            unreferenced.append({"text": f"{name} ({', '.join(x['keys'])}) is never referenced", **item})
+            continue
+        if back and at(x["path"], x["line"]) > back:
+            cited = [r for r in cited if r[0] > back]
+        first = min(filter(None, (page_of(r[1], r[2]) for r in cited)), default=None)
+        if first and any(p in text_pages for p in range(min(x["page"], first) + 1, max(x["page"], first))):
+            far.append({"text": f"{name} is {abs(x['page'] - first)} pages {'after' if x['page'] > first else 'before'} "
+                                f"its first reference (page {first})", **item})
+    return off, far, unreferenced, unlabeled
 
 
 def checks(server, pdf_name):
@@ -1853,6 +1982,15 @@ def checks(server, pdf_name):
                   + (" (uncommitted)" if x["dirty"] else "")
                   + (f"; rerun {run} {x['source']}" if x["source"].endswith(".py") else ""),
           "file": x["site"][0], "line": x["site"][1], "open": x["source"]} for x in stale])
+
+    # Where figures and tables landed, and whether the text references them.
+    off, far, unreferenced, unlabeled = float_placement(root, pdf_name, clean)
+    counts = [(off, "off the text area"), (unreferenced, "never referenced"),
+              (far, "pages away from their first reference"), (unlabeled, "without a \\label")]
+    add("Figure and table placement", "warn" if off or unreferenced else "info" if far or unlabeled else "ok",
+        "; ".join(f"{len(xs)} {what}" for xs, what in counts if xs)
+        or "all inside the text area, referenced, and near their first reference",
+        off + unreferenced + far + unlabeled)
 
     # Consistency lints.
     terms, refs, typos = lint(root, pdf_name, pages, in_bib)

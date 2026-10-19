@@ -1441,8 +1441,10 @@ function renderChecks(results) {
       details.append(el("ul", {}, ...r.items.map((it) => {
         const li = el("li", { textContent: it.text });
         if (it.page) {
-          li.append(el("span", { className: "where", textContent: `  PDF page ${it.page}` }));
-          li.onclick = () => (it.rect ? reveal(it.page, it.rect) : goToPage(it.page));
+          const page = el("span", { className: "where", textContent: `  PDF page ${it.page}`, title: "Go to the page" });
+          page.onclick = (e) => { e.stopPropagation(); it.rect ? reveal(it.page, it.rect) : goToPage(it.page); };
+          li.append(page);
+          li.onclick = page.onclick;
         }
         if (it.file) {
           const where = el("span", { className: "where", textContent: `  ${it.file.replace(/^.*\//, "")}:${it.line}`, title: "Open in VS Code" });
