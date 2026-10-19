@@ -107,8 +107,9 @@ Contents:
       "label": "LaTeX: live preview",
       "type": "shell",
       "command": "python3 ${env:HOME}/.local/share/latex-live/live.py --no-open",
-      // Optional: affiliations the anonymity check should flag (a regular expression).
-      "options": { "env": { "LATEX_LIVE_ANON_TERMS": "\\bNYU\\b|New York University" } },
+      // Optional (regular expressions): affiliations the anonymity check should flag, and
+      // codenames that must never reach the arXiv source.
+      "options": { "env": { "LATEX_LIVE_ANON_TERMS": "\\bNYU\\b|New York University", "LATEX_LIVE_PRIVATE_TERMS": "(?i)projectx" } },
       "isBackground": true,
       "group": { "kind": "build", "isDefault": true },
       "runOptions": { "runOn": "folderOpen" },
@@ -142,7 +143,9 @@ of you, beside any other instance.
 The problem matcher sends LaTeX errors and warnings to the Problems panel.
 Author names for the anonymity check come from git's `user.name` and the
 note-macro comments. Affiliations don't, so list them in
-`LATEX_LIVE_ANON_TERMS`, or delete that `options` line.
+`LATEX_LIVE_ANON_TERMS`. The arXiv source check flags the codenames and other
+internal names in `LATEX_LIVE_PRIVATE_TERMS`. Delete either variable (or the
+whole `options` line) if you don't need it.
 
 ## 5. In VS Code (the person)
 

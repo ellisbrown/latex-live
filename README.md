@@ -68,9 +68,24 @@ The plan below makes it a general tool.
   - page thumbnails, with over-limit pages shaded;
   - notes grouped by author;
   - pre-submission checks: anonymity, draft switches, undefined references,
-    placeholders, Type 3 fonts, image resolution, stale generated figures,
-    figure and table placement (off the text area, pages from their first
-    reference, never referenced), term consistency, typos, and bib duplicates.
+    placeholders, Type 3 fonts, image resolution, figure and table placement
+    (off the text area, pages from their first reference, never referenced),
+    what the arXiv source would expose, stale generated figures, term
+    consistency, typos, and bib duplicates.
+- **arXiv source check.** arXiv publishes the source, so the checks also read
+  the paper root's arXiv package (the newest `.tar.gz`, `.tgz` or `.zip` file,
+  or folder with a root `.tex`, with `arxiv` in its name) and list what it
+  would expose: `%` comments in `.tex` files, notes (hidden ones too),
+  `\iffalse` blocks and `comment` environments, private terms
+  (`LATEX_LIVE_PRIVATE_TERMS`), personal paths (also in figure PDFs), files
+  the build doesn't read, files over 10 MB, leftover build files, and a
+  missing `.bbl`. Private terms, personal paths and a missing `.bbl` fail the
+  check; the rest warn. It says when the package is older than the sources.
+  Without a package it reads the files the build reads, i.e. what uploading
+  the sources as they are would expose, and only informs (private terms and
+  paths warn). A finding in a package file opens the project source when that
+  file is the same, or its line is found there (e.g. in a package that inlines
+  every `\input`).
 - **Compare.** latexdiff of the working tree against any git commit.
 - **Viewer comforts:**
   - search;
@@ -112,6 +127,9 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
     terms that identify the authors, for the anonymity check, e.g.
     `\bNYU\b|New York University`. Author names are found automatically
     (git `user.name` and the note-macro comments).
+  - `LATEX_LIVE_PRIVATE_TERMS`: a regular expression of codenames and other
+    internal names that must never appear in the arXiv source, e.g.
+    `(?i)projectx|cluster-a`, for the arXiv source check.
   - `LATEX_LIVE_HOST`: also print a direct viewer URL on this hostname, e.g.
     the name a tunnel exposes.
   - `LATEX_LIVE_EDITOR`: the editor command that double-click opens the
