@@ -1306,6 +1306,8 @@ function openNotePop({ head, initial, rect, save, latex = false, placeholder = "
   const pop = $("notePop"), field = pop.querySelector("textarea");
   pop.querySelector(".head").textContent = head;
   field.placeholder = placeholder;
+  // (Plain-text notes are written on one line; only LaTeX keeps line breaks.)
+  pop.querySelector(".hint").textContent = `Enter to save · ${latex ? "Shift+Enter for a new line · " : ""}Esc to cancel`;
   pop.querySelector(".error").textContent = "";
   pop.querySelector(".latex").hidden = !latex;
   field.value = initial;
