@@ -236,6 +236,7 @@
   </span>
   <span id="spacer"></span>
   <span id="texImage" hidden>&#9888; TeX image missing</span>
+  <button id="rebuild" title="Rebuild: run latexmk again from the top (e.g. after another build replaced the PDF)">&#8635;</button>
   <span id="pages"></span>
   <span id="status">loading&hellip;</span>
 </div>
@@ -578,7 +579,7 @@ function showBuild(build, notesFree, overwritten) {
   close.onclick = () => { dismissed = build.time; banner.hidden = true; };
   banner.append(close, isDiff ? `Diff failed at ${build.time}.`
     : build.notesFree ? `The notes-free build failed at ${build.time}${build.msg ? ` (${build.msg})` : ""}; the notes-free view and its page count are out of date.`
-    : build.overwritten ? `Another build (e.g. make) replaced ${docFile} at ${build.time}: the view with notes shows that PDF, and double-click may land on the wrong line. Save a source file to rebuild it.`
+    : build.overwritten ? `Another build (e.g. make) replaced ${docFile} at ${build.time}: the view with notes shows that PDF, and double-click may land on the wrong line.`
     : `Build failed at ${build.time}; showing the last good PDF.`);
   for (const err of build.errors.slice(0, 3)) {
     const line = el("div");
@@ -592,8 +593,21 @@ function showBuild(build, notesFree, overwritten) {
     banner.append(line);
   }
   if (build.errors.length > 3) banner.append(`(+${build.errors.length - 3} more in the Problems panel)`);
+  if (build.overwritten) banner.append(" ", el("a", { textContent: "Rebuild now", onclick: rebuild }));
   banner.hidden = false;
 }
+
+// Rebuild (live.py /rebuild): latexmk again from the top, e.g. when another build replaced the PDF
+// and with it the match to SyncTeX, so double-click and forward search work again.
+let rebuildAt = 0; // (poll leaves "rebuilding…" up until latexmk reports the build)
+async function rebuild() {
+  rebuildAt = Date.now();
+  setStatus("rebuilding…", "busy");
+  const r = await fetch("rebuild", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null);
+  if (!r?.ok) setStatus((await r?.json().catch(() => null))?.error || `rebuild failed${r ? ` (${r.status})` : ""}`, "error");
+}
+$("rebuild").onclick = rebuild;
+$("rebuild").hidden = isDiff;
 
 // Outline, rebuilt on each reload: the PDF's bookmarks (hyperref), or else the contents entries
 // from live.py (e.g. this ICLR draft, whose restored \addcontentsline skips hyperref). Headings show
@@ -2055,7 +2069,7 @@ async function poll() {
     $("texImage").title = info.texImage || "";
     $("texImage").textContent = info.texImage?.startsWith("no synctex") ? "⚠ no SyncTeX" : "⚠ TeX image missing";
     if (info.building) setStatus(isDiff ? "building diff…" : "building…", "busy");
-    else if ($("status").className === "busy") setStatus(info.build?.ok === false ? "build failed" : "", info.build?.ok === false ? "error" : "");
+    else if ($("status").className === "busy" && Date.now() - rebuildAt > 4000) setStatus(info.build?.ok === false ? "build failed" : "", info.build?.ok === false ? "error" : "");
     if (!info.version) return info.building || setStatus(`waiting for ${file}…`);
     buildVersion = info.version;
     headInfo = info.head || null;

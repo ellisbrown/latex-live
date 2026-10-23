@@ -187,8 +187,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
-        """Writes (POST /note). Only with the cookie, which SameSite=Strict keeps off other sites'
-        requests, and a JSON body, which other sites can't send without asking first."""
+        """Actions (POST /note, /rebuild). Only with the cookie, which SameSite=Strict keeps off other
+        sites' requests, and a JSON body, which other sites can't send without asking first."""
         path = urllib.parse.urlsplit(self.path).path
         if not self.authorize({}):
             return self.send_error(403, "open the viewer URL with ?t=<token> first")
@@ -203,6 +203,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_error(400, "bad JSON")
         if path == "/note" and isinstance(req, dict):
             self.send_json(*note_request(self.server, req))
+        elif path == "/rebuild":
+            self.send_json(*on_main_thread(self.server, rebuild_doc))
         else:
             self.send_error(404)
 
@@ -2536,7 +2538,7 @@ def serve(paper_root, default_pdf, port, page_limit):
     server.tex_exec = ""  # main: the tex-exec prefix, as for latexmk
     server.image_checked, server.image_note = 0, None
     server.latexmk, server.lock, server.stopping, server.retried = None, None, False, -60
-    server.requests = queue.Queue()  # document switches, for the main thread (request_switch)
+    server.requests = queue.Queue()  # document switches and rebuilds, for the main thread (on_main_thread)
     server.token = load_token()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
@@ -2639,18 +2641,23 @@ def stop_latexmk(server):
             proc.wait()
 
 
+def on_main_thread(server, job):
+    """Run job(server) -> (status, body) on the main thread and return its result. Jobs that
+    (re)start latexmk must run there: its parent-death signal fires when the thread that started
+    it exits, so a request thread must not start it."""
+    done, result = threading.Event(), {}
+    server.requests.put((job, result, done))
+    if not done.wait(30):
+        return 504, {"error": "this is taking a while; reload in a moment"}
+    return result["status"], result["body"]
+
+
 def request_switch(server, query):
-    """/switch?doc=NAME: build another root document instead. The main thread switches (switch_doc):
-    latexmk's parent-death signal fires when the thread that started it exits, so a request
-    thread must not start it."""
+    """/switch?doc=NAME: build another root document instead (switch_doc)."""
     doc = query.get("doc", [""])[0]
     if doc not in root_docs(server.paper_root):
         return 404, {"error": f"{doc}.tex is not a root document here"}
-    done, result = threading.Event(), {}
-    server.requests.put((doc, result, done))
-    if not done.wait(30):
-        return 504, {"error": "the switch is taking a while; reload in a moment"}
-    return result["status"], result["body"]
+    return on_main_thread(server, lambda server: switch_doc(server, doc))
 
 
 def switch_doc(server, doc):
@@ -2668,6 +2675,17 @@ def switch_doc(server, doc):
     start_latexmk(server)
     print(f"=== latex-live: now building {doc}.tex", flush=True)
     return 200, {"doc": doc}
+
+
+def rebuild_doc(server):
+    """POST /rebuild: build the document again from the top (latexmk -g), e.g. after another build
+    replaced its PDF, which then no longer matches the SyncTeX data. Returns (status, body)."""
+    if server.no_build:
+        return 409, {"error": "this instance only serves the viewer (--no-build)"}
+    stop_latexmk(server)
+    start_latexmk(server, force=True)
+    print(f"=== latex-live: rebuilding {server.default_pdf[:-4]}.tex (from the viewer)", flush=True)
+    return 202, {"doc": server.default_pdf[:-4]}
 
 
 def container_argv(paper_root):
@@ -2766,17 +2784,17 @@ def main():
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGHUP, stop)  # VS Code closing the task terminal
-    try:  # until stopped, or latexmk exits by itself; meanwhile, switch documents for the viewer
+    try:  # until stopped, or latexmk exits by itself; meanwhile, switch documents and rebuild for the viewer
         while not server.stopping and not (server.latexmk and server.latexmk.poll() is not None):
             retry_build(server)
             try:
-                doc, result, done = server.requests.get(timeout=1)
+                job, result, done = server.requests.get(timeout=1)
             except queue.Empty:
                 continue
             try:
-                result["status"], result["body"] = switch_doc(server, doc)
+                result["status"], result["body"] = job(server)
             except Exception as e:
-                result["status"], result["body"] = 500, {"error": f"switch failed: {e}"}
+                result["status"], result["body"] = 500, {"error": f"failed: {e}"}
             done.set()
     except KeyboardInterrupt:
         pass
