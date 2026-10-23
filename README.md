@@ -18,11 +18,11 @@ The plan below makes it a general tool.
 - **Main document.** With no document named, latex-live builds the root
   `.tex` file whose sources you edited last. A menu in the toolbar switches to
   another root file, and every open viewer follows.
-- **Live rebuild.** `latexmk -pvc` builds into `build/`; ↻ in the toolbar runs it again
-  from the top, e.g. after another build (`make`) replaced the PDF and SyncTeX
-  no longer matched it. The PDF is published
+- **Live rebuild.** `latexmk -pvc` builds into `build/`. The PDF is published
   atomically, and only after a successful run. Errors appear as a clickable
-  banner and as `file:line` diagnostics for the VS Code problem matcher.
+  banner and as `file:line` diagnostics for the VS Code problem matcher. ↻ in
+  the toolbar runs latexmk again from the top, e.g. after another build
+  (`make`) replaced the PDF and SyncTeX no longer matched it.
 - **SyncTeX both ways.** Double-click the PDF to open the source line in VS
   Code (`code -g`). `forward.py FILE LINE` scrolls the viewer to a source line
   and highlights it.
