@@ -226,6 +226,7 @@
     <button id="nextCut" title="Next spot">&rsaquo;</button>
   </span>
   <button id="compare" title="latexdiff against a git commit (opens in a new tab)">Compare&hellip;</button>
+  <button id="changesBtn" title="Highlight changes against the last commit or the previous build (off by default)">&Delta;</button>
   <span id="diffInfo" hidden></span>
   <span id="changes" class="navgroup" hidden title="What changed, against the last commit or the previous build: text in green (red bars mark deletions), changed figures outlined">
     <span id="changeCount"></span>
@@ -1603,6 +1604,9 @@ function showChanges(oldWords, newWords, figures, againstHead) {
 // built by the server whenever HEAD moves) or the previous build ("build"). Until the HEAD
 // baseline exists (or outside git), the previous build.
 let changeBase = localStorage.getItem("latex-live:changeBase") === "build" ? "build" : "head";
+// Change highlights are off unless turned on with the toolbar's Delta button (remembered).
+let changesOn = localStorage.getItem("latex-live:changesOn") === "1";
+$("changesBtn").classList.toggle("on", changesOn);
 let headInfo = null;       // status().head
 let prevBuildWords = null; // words of the build shown before this one (same variant)
 let figuresPromise = null; // {build, head}: changed figures of the shown PDF
@@ -1622,6 +1626,12 @@ function baseWords(head) {
 }
 async function updateChanges() {
   if (isDiff || !wordsPromise) return;
+  if (!changesOn) {
+    changesKey = null;
+    if (marks.changes.size || changeList.length) { marks.changes.clear(); changeList = []; changeIndex = -1; drawAllMarks(); }
+    $("changes").hidden = true;
+    return;
+  }
   const head = headBase();
   const key = `${head ? head.key : "build"}|${docSeq}`;
   showBase(head);
@@ -1647,6 +1657,12 @@ function showBase(head) {
                : `Changes since the last commit (${headInfo.sha}).`)
     : "Changes since the previous build.") + " Click to switch.";
 }
+$("changesBtn").onclick = () => {
+  changesOn = !changesOn;
+  localStorage.setItem("latex-live:changesOn", changesOn ? "1" : "");
+  $("changesBtn").classList.toggle("on", changesOn);
+  updateChanges();
+};
 $("changeBase").onclick = () => {
   changeBase = changeBase === "head" ? "build" : "head";
   localStorage.setItem("latex-live:changeBase", changeBase);
