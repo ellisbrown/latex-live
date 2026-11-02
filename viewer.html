@@ -226,9 +226,9 @@
     <button id="nextCut" title="Next spot">&rsaquo;</button>
   </span>
   <button id="compare" title="latexdiff against a git commit (opens in a new tab)">Compare&hellip;</button>
-  <button id="changesBtn" title="Highlight changes against the last commit or the previous build (off by default)">&Delta;</button>
+  <button id="changesBtn" title="Highlight changes against the last commit, the last push, or the previous build (off by default)">&Delta;</button>
   <span id="diffInfo" hidden></span>
-  <span id="changes" class="navgroup" hidden title="What changed, against the last commit or the previous build: text in green (red bars mark deletions), changed figures outlined">
+  <span id="changes" class="navgroup" hidden title="What changed, against the last commit, the last push, or the previous build: text in green (red bars mark deletions), changed figures outlined">
     <span id="changeCount"></span>
     <button id="changeBase"></button>
     <button id="prevChange" title="Previous change (,)">&lsaquo;</button>
@@ -1580,7 +1580,7 @@ function myers(A, B) {
   return { inserted: inserted.reverse(), deletedAt: [...new Set(deletedAt)].reverse() };
 }
 let changeList = [], changeIndex = -1;
-function showChanges(oldWords, newWords, figures, againstHead) {
+function showChanges(oldWords, newWords, figures, against) {
   marks.changes.clear();
   changeList = [];
   changeIndex = -1;
@@ -1589,7 +1589,8 @@ function showChanges(oldWords, newWords, figures, againstHead) {
   if (result) textChanges(result, newWords, add);
   const texts = changeList.length;
   for (const f of figures) {
-    add(f.page, { rect: f.rect, cls: "chg fig", label: againstHead ? "figure changed since the commit" : "figure updated" });
+    const label = { head: "figure changed since the commit", push: "figure changed since the push" }[against] || "figure updated";
+    add(f.page, { rect: f.rect, cls: "chg fig", label });
     changeList.push({ page: f.page, rect: f.rect });
   }
   changeList.sort((a, b) => a.page - b.page || b.rect[3] - a.rect[3]);
@@ -1601,25 +1602,29 @@ function showChanges(oldWords, newWords, figures, againstHead) {
 }
 
 // The baseline for the change highlights: the last commit ("head": build/<doc>-head[-clean].pdf,
-// built by the server whenever HEAD moves) or the previous build ("build"). Until the HEAD
-// baseline exists (or outside git), the previous build.
-let changeBase = localStorage.getItem("latex-live:changeBase") === "build" ? "build" : "head";
+// built by the server whenever HEAD moves), the last push ("push": build/<doc>-push[-clean].pdf,
+// the commit the branch's remote branch is at, built once a viewer asks for it in poll), or the
+// previous build ("build"). Until the commit's baseline exists (or outside git), the previous build.
+const BASES = ["head", "push", "build"];
+let changeBase = BASES.find((b) => b === localStorage.getItem("latex-live:changeBase")) || "head";
 // Change highlights are off unless turned on with the toolbar's Delta button (remembered).
 let changesOn = localStorage.getItem("latex-live:changesOn") === "1";
 $("changesBtn").classList.toggle("on", changesOn);
 let headInfo = null;       // status().head
+let pushInfo = null;       // status().push: null without a remote-tracking branch to compare with (or from an older server)
 let prevBuildWords = null; // words of the build shown before this one (same variant)
-let figuresPromise = null; // {build, head}: changed figures of the shown PDF
+let figuresPromise = null; // {build, head, push}: changed figures of the shown PDF
 let docSeq = 0, changesKey = null, baseCache = null;
-function headBase() {
-  const version = shownVariant === "clean" ? headInfo?.clean : headInfo?.version;
-  if (changeBase !== "head" || !version) return null;
-  const name = docFile.replace(/\.pdf$/, shownVariant === "clean" ? "-head-clean.pdf" : "-head.pdf");
-  return { key: `head:${name}:${version}`, name, version };
+function commitBase() {
+  const info = { head: headInfo, push: pushInfo }[changeBase];
+  const version = shownVariant === "clean" ? info?.clean : info?.version;
+  if (!version) return null;
+  const name = docFile.replace(/\.pdf$/, `-${changeBase}${shownVariant === "clean" ? "-clean" : ""}.pdf`);
+  return { key: `${changeBase}:${name}:${version}`, kind: changeBase, name, version };
 }
-function baseWords(head) {
-  if (baseCache?.key !== head.key) {
-    baseCache = { key: head.key, promise: pdfjsLib.getDocument({ url: `pdf/${encodeURIComponent(head.name)}?v=${head.version}`, ...assets }).promise
+function baseWords(commit) {
+  if (baseCache?.key !== commit.key) {
+    baseCache = { key: commit.key, promise: pdfjsLib.getDocument({ url: `pdf/${encodeURIComponent(commit.name)}?v=${commit.version}`, ...assets }).promise
       .then(async (d) => { try { return await docWords(d); } finally { d.destroy(); } }) };
   }
   return baseCache.promise;
@@ -1632,29 +1637,35 @@ async function updateChanges() {
     $("changes").hidden = true;
     return;
   }
-  const head = headBase();
-  const key = `${head ? head.key : "build"}|${docSeq}`;
-  showBase(head);
+  const commit = commitBase();
+  const key = `${commit ? commit.key : "build"}|${docSeq}`;
+  showBase(commit);
   if (key === changesKey) return;
   changesKey = key;
   try {
-    const [words, figs, base] = await Promise.all([wordsPromise, figuresPromise, head ? baseWords(head) : prevBuildWords]);
-    if (key === changesKey) showChanges(base, words, head ? figs.head : figs.build, !!head);
+    const [words, figs, base] = await Promise.all([wordsPromise, figuresPromise, commit ? baseWords(commit) : prevBuildWords]);
+    if (key === changesKey) showChanges(base, words, figs[commit ? commit.kind : "build"], commit?.kind);
   } catch (e) {
     console.warn(e);
     if (key === changesKey) changesKey = null; // try again on the next poll
   }
 }
-function showBase(head) {
+function showBase(commit) {
   const b = $("changeBase");
   b.hidden = !headInfo;
   if (!headInfo) return;
-  const pending = changeBase === "head" && !head;
-  b.textContent = changeBase === "head" ? (pending ? "vs HEAD…" : "vs HEAD") : "vs last build";
+  const pending = changeBase !== "build" && !commit;
+  b.textContent = { head: "vs HEAD", push: "vs last push", build: "vs last build" }[changeBase] + (pending ? "…" : "");
+  const fallback = "showing changes since the last build";
   b.title = (changeBase === "head"
-    ? (pending ? (headInfo.state === "failed" ? `The HEAD build failed (${headInfo.msg}); showing changes since the last build.`
-                                              : `Building the HEAD (${headInfo.sha}) baseline; showing changes since the last build meanwhile.`)
+    ? (pending ? (headInfo.state === "failed" ? `The HEAD build failed (${headInfo.msg}); ${fallback}.`
+                                              : `Building the HEAD (${headInfo.sha}) baseline; ${fallback} meanwhile.`)
                : `Changes since the last commit (${headInfo.sha}).`)
+    : changeBase === "push"
+    ? (!pushInfo ? `No pushed commit to compare with (no remote-tracking branch); ${fallback}.`
+       : pending ? (pushInfo.state === "failed" ? `The last-push build failed (${pushInfo.msg}); ${fallback}.`
+                                                : `Building the last-push (${pushInfo.sha}, ${pushInfo.ref}) baseline; ${fallback} meanwhile.`)
+       : `Changes since the last push (${pushInfo.sha}, ${pushInfo.ref}), committed or not.`)
     : "Changes since the previous build.") + " Click to switch.";
 }
 $("changesBtn").onclick = () => {
@@ -1663,8 +1674,9 @@ $("changesBtn").onclick = () => {
   $("changesBtn").classList.toggle("on", changesOn);
   updateChanges();
 };
-$("changeBase").onclick = () => {
-  changeBase = changeBase === "head" ? "build" : "head";
+$("changeBase").onclick = () => { // head, push (when there is a pushed commit), build
+  do changeBase = BASES[(BASES.indexOf(changeBase) + 1) % BASES.length];
+  while (changeBase === "push" && !pushInfo);
   localStorage.setItem("latex-live:changeBase", changeBase);
   updateChanges();
 };
@@ -1706,16 +1718,17 @@ function textChanges(result, newWords, add) {
 }
 
 // Changed figures: the text diff can't see them, so compare the included graphics files' hashes
-// between builds, and ask git which differ from HEAD. Outlined, placed by SyncTeX at their
-// \includegraphics: {build, head}, one list per baseline.
+// between builds, and ask git which differ from HEAD and from the last push. Outlined, placed by
+// SyncTeX at their \includegraphics: {build, head, push}, one list per baseline.
 let graphicsHashes = null;
 async function changedFigures(d, variant) {
   const list = await (await fetch(`graphics/${encodeURIComponent(file)}`)).json();
   const before = graphicsHashes;
   graphicsHashes = new Map(list.map((g) => [g.file, g.hash]));
-  const build = before ? list.filter((g) => before.get(g.file) !== g.hash) : [], head = list.filter((g) => g.dirty);
+  const build = before ? list.filter((g) => before.get(g.file) !== g.hash) : [];
+  const head = list.filter((g) => g.dirty), push = list.filter((g) => g.unpushed);
   const found = new Map();
-  for (const g of new Set([...build, ...head])) {
+  for (const g of new Set([...build, ...head, ...push])) {
     const r = await fetch(`forward?${new URLSearchParams({ file: g.src, line: g.line, ...(variant === "clean" ? { clean: 1 } : {}) })}`);
     if (!r.ok) continue;
     const t = await r.json();
@@ -1723,7 +1736,7 @@ async function changedFigures(d, variant) {
     found.set(g, { page: t.page, file: g.file, rect: [Math.max(0, t.x), H - t.y - t.h, Math.min(W, t.x + t.w), H - t.y] });
   }
   const placed = (gs) => gs.map((g) => found.get(g)).filter(Boolean);
-  return { build: placed(build), head: placed(head) };
+  return { build: placed(build), head: placed(head), push: placed(push) };
 }
 function goToChange(step) {
   if (!changeList.length) return;
@@ -2048,7 +2061,7 @@ async function load(name, version, variant, info) {
   setTimeout(() => $("status").classList.remove("fresh"), 1500);
   prevBuildWords = oldWords || null;
   wordsPromise = docWords(next);
-  figuresPromise = isDiff ? null : changedFigures(next, variant).catch((e) => { console.warn(e); return { build: [], head: [] }; });
+  figuresPromise = isDiff ? null : changedFigures(next, variant).catch((e) => { console.warn(e); return { build: [], head: [], push: [] }; });
   docSeq++;
   wordsPromise.then(showUnresolved).catch((e) => console.warn(e));
   updateChanges();
@@ -2073,7 +2086,8 @@ async function load(name, version, variant, info) {
 async function poll() {
   if (loading) return;
   try {
-    const r = await fetch(`status/${encodeURIComponent(file)}`, { cache: "no-store" });
+    const base = changesOn && changeBase === "push" ? "?base=push" : ""; // (the server builds that baseline only then)
+    const r = await fetch(`status/${encodeURIComponent(file)}${base}`, { cache: "no-store" });
     if (r.status === 404) throw new Error("server is older than this viewer: restart the LaTeX build task");
     if (!r.ok) throw new Error(`status ${r.status}`);
     const info = await r.json();
@@ -2089,6 +2103,7 @@ async function poll() {
     if (!info.version) return info.building || setStatus(`waiting for ${file}…`);
     buildVersion = info.version;
     headInfo = info.head || null;
+    pushInfo = info.push || null;
     $("notesView").hidden = isDiff || !info.clean?.version;
     const clean = !isDiff && view === "clean" && info.clean?.version ? info.clean : null;
     const want = clean ? `clean:${clean.version}` : info.version;

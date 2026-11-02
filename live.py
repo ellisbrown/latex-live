@@ -139,9 +139,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not name.endswith(".pdf") or os.path.basename(name) != name:
                 return self.send_error(404)
             pdf = pdf_path(self.server.paper_root, name)
-            doc_pdf = re.sub(r"(-head)?-(clean|diff|head)\.pdf$", ".pdf", name)  # the document a derived PDF belongs to
-            if path.startswith("/status/"):
-                body = json.dumps(status(self.server, name)).encode()
+            doc_pdf = re.sub(r"(-head|-push)?-(clean|diff|head|push)\.pdf$", ".pdf", name)  # the document a derived PDF belongs to
+            if path.startswith("/status/"):  # (?base=push: a viewer shows changes since the last push)
+                body = json.dumps(status(self.server, name, urllib.parse.parse_qs(url.query).get("base") == ["push"])).encode()
             elif path.startswith("/outline/"):
                 body = json.dumps(toc_outline(self.server.paper_root, doc_pdf, name.endswith("-clean.pdf"))).encode()
             elif path.startswith("/notes/"):
@@ -289,8 +289,8 @@ def clean_file(paper_root, pdf_name, ext):
 
 def pdf_path(paper_root, name):
     """Published <doc>.pdf in the paper root; derived <doc>-clean.pdf / -diff.pdf / -head.pdf /
-    -head-clean.pdf in build/."""
-    if re.search(r"-(clean|diff|head)\.pdf$", name):
+    -head-clean.pdf / -push.pdf / -push-clean.pdf in build/."""
+    if re.search(r"-(clean|diff|head|push)\.pdf$", name):
         return os.path.join(paper_root, BUILD, name)
     return os.path.join(paper_root, PUBLISH, name)
 
@@ -447,10 +447,11 @@ def page_limit(server, pdf_name):
     return next((n for pattern, n in VENUE_PAGE_LIMITS.items() if any(re.fullmatch(pattern, p) for p in packages)), None)
 
 
-def status(server, pdf_name):
+def status(server, pdf_name, push=False):
     """Everything the viewer polls for: PDF version, build state, forward-search target, page limit
-    and layout (and the notes-free build's PDF, to measure it too), and which document the server
-    builds (viewers of another one switch to it)."""
+    and layout (and the notes-free build's PDF, to measure it too), which document the server
+    builds (viewers of another one switch to it), and the change baselines (push: a viewer shows
+    changes since the last push, so that baseline gets built)."""
     root = server.paper_root
     pdf = pdf_path(root, pdf_name)
     version = str(mtime(pdf)) if os.path.isfile(pdf) else None
@@ -478,7 +479,8 @@ def status(server, pdf_name):
     clean_pdf = pdf_path(root, pdf_name[:-4] + "-clean.pdf")
     if os.path.isfile(clean_pdf):
         info["clean"] = {"version": str(mtime(clean_pdf)), "refs": refs_start(root, pdf_name, clean=True)}
-    info["head"] = head_status(server, pdf_name)
+    info["head"] = base_status(server, pdf_name, "head")
+    info["push"] = base_status(server, pdf_name, "push", build=push)
     info["texImage"] = image_problem(server)
     return info
 
@@ -1440,18 +1442,22 @@ def file_hash(path, cache={}):
 
 
 def graphics(paper_root, pdf_name):
-    """The graphics the build included: [{file, hash, dirty, src, line}] (src:line is the
-    \\includegraphics; dirty: changed since HEAD, or untracked). The viewer compares hashes across
-    rebuilds to mark figures whose files changed, or marks the dirty ones against HEAD."""
+    """The graphics the build included: [{file, hash, dirty, unpushed, src, line}] (src:line is the
+    \\includegraphics; dirty: changed since HEAD, or untracked; unpushed: likewise since the last
+    push). The viewer compares hashes across rebuilds to mark figures whose files changed, or marks
+    the dirty (unpushed) ones against HEAD (the last push)."""
     git = ["git", "-C", paper_root]
-    dirty = set(subprocess.run(git + ["diff", "--name-only", "--relative", "HEAD"], capture_output=True, text=True).stdout.splitlines())
-    dirty |= set(subprocess.run(git + ["ls-files", "-o", "--exclude-standard"], capture_output=True, text=True).stdout.splitlines())
+    changed = lambda rev: set(subprocess.run(git + ["diff", "--name-only", "--relative", rev], capture_output=True, text=True).stdout.splitlines())
+    untracked = set(subprocess.run(git + ["ls-files", "-o", "--exclude-standard"], capture_output=True, text=True).stdout.splitlines())
+    dirty = changed("HEAD") | untracked
+    pushed = pushed_commit(paper_root)[0]
+    unpushed = changed(pushed) | untracked if pushed else set()
     found = []
     for path, (src, line) in include_sites(paper_root, pdf_name).items():
         if path.lower().endswith(GRAPHIC_EXTS):
             try:
                 found.append({"file": path, "hash": file_hash(os.path.join(paper_root, path)), "dirty": path in dirty,
-                              "src": src, "line": line})
+                              "unpushed": path in unpushed, "src": src, "line": line})
             except OSError:
                 pass
     return found
@@ -2428,45 +2434,80 @@ def build_diff(server, sha):
         server.diff = {**server.diff, "state": "failed", "time": time.strftime("%H:%M:%S"), "msg": str(e)[:300]}
 
 
-def head_status(server, pdf_name):
-    """The baseline the viewer diffs against to mark uncommitted changes: PDFs of the committed
-    document (build_head), rebuilt whenever HEAD moves. HEAD is checked every few seconds. The
-    versions appear once a build has finished; None outside git, and for a document the server
+def pushed_commit(paper_root):
+    """The last pushed commit that HEAD builds on, and the remote branch it went to: (sha, ref),
+    else (None, None). The candidates are the branch's push and upstream branches and every
+    remote's branch of the same name (for a branch never pushed, or a detached HEAD, each remote's
+    default branch); the one whose merge base with HEAD is nearest to HEAD wins. The merge base,
+    not the remote branch itself, so that others' work fetched since doesn't show as deletions.
+    Remote-tracking branches move on push and fetch, so this needs no network."""
+    def git(*args):
+        r = subprocess.run(["git", "-C", paper_root, *args], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else ""
+
+    branch = git("symbolic-ref", "-q", "--short", "HEAD")
+    remotes = git("remote").split()
+    refs = [ref for spec in ("@{push}", "@{upstream}") if (ref := git("rev-parse", "--abbrev-ref", spec))]
+    refs += [f"{remote}/{branch}" for remote in remotes
+             if branch and git("rev-parse", "-q", "--verify", f"refs/remotes/{remote}/{branch}")]
+    if not refs:
+        refs = [ref for remote in remotes if (ref := git("symbolic-ref", "-q", "--short", f"refs/remotes/{remote}/HEAD"))]
+    best = None
+    for ref in dict.fromkeys(refs):
+        base = git("merge-base", "HEAD", ref)
+        if base:
+            ahead = int(git("rev-list", "--count", f"{base}..HEAD"))
+            if best is None or ahead < best[0]:
+                best = (ahead, base, ref)
+    return (best[1], best[2]) if best else (None, None)
+
+
+def base_status(server, pdf_name, kind, build=True):
+    """A baseline the viewer diffs against to mark changes: PDFs of the document as committed at
+    HEAD ("head") or at the last push ("push", pushed_commit), rebuilt whenever that commit moves
+    (build_base); with build=False, only the commit is reported (the push baseline is built only
+    once a viewer shows it). The commit is checked every few seconds. The versions appear once a
+    build has finished; None outside git (or with nothing pushed), and for a document the server
     is not building."""
     root = server.paper_root
     if pdf_name != server.default_pdf:
         return None
-    if time.monotonic() - server.head_checked > 3 and server.head_lock.acquire(blocking=False):
+    lock = server.base_locks[kind]
+    if time.monotonic() - server.base_checked[kind] > 3 and lock.acquire(blocking=False):
         try:
-            server.head_checked = time.monotonic()
-            r = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True)
-            sha = r.stdout.strip() if r.returncode == 0 else None
-            h = server.head
+            server.base_checked[kind] = time.monotonic()
+            if kind == "head":
+                r = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True)
+                sha, ref = r.stdout.strip() if r.returncode == 0 else None, None
+            else:
+                sha, ref = pushed_commit(root)
+            b = server.bases[kind]
             if not sha:
-                server.head = {}
-            elif ((sha, pdf_name) != (h.get("sha"), h.get("pdf")) and h.get("state") != "running"
-                  and os.path.isfile(job_file(root, pdf_name, ".aux"))):
-                server.head = {"sha": sha, "pdf": pdf_name, "state": "running", "msg": ""}
-                threading.Thread(target=build_head, args=(server, sha, pdf_name), daemon=True).start()
+                server.bases[kind] = b = {}
+            elif (sha, pdf_name) != (b.get("sha"), b.get("pdf")) and b.get("state") != "running":
+                server.bases[kind] = b = {"sha": sha, "ref": ref, "pdf": pdf_name, "state": "waiting", "msg": ""}
+            if b.get("state") == "waiting" and build and os.path.isfile(job_file(root, pdf_name, ".aux")):
+                b["state"] = "running"
+                threading.Thread(target=build_base, args=(server, kind, sha, pdf_name), daemon=True).start()
         finally:
-            server.head_lock.release()
-    h = server.head
-    if h.get("pdf") != pdf_name:
+            lock.release()
+    b = server.bases[kind]
+    if b.get("pdf") != pdf_name:
         return None
-    info = {"sha": h["sha"][:9], "state": h["state"], "msg": h.get("msg", "")}
-    if h.get("built"):
-        for key, name in (("version", "-head.pdf"), ("clean", "-head-clean.pdf")):
+    info = {"sha": b["sha"][:9], "ref": b["ref"], "state": b["state"], "msg": b.get("msg", "")}
+    if b.get("built"):
+        for key, name in (("version", f"-{kind}.pdf"), ("clean", f"-{kind}-clean.pdf")):
             path = pdf_path(root, pdf_name[:-4] + name)
             if os.path.isfile(path):
                 info[key] = str(mtime(path))
     return info
 
 
-def build_head(server, sha, pdf_name):
-    """The document as committed at sha: build/<doc>-head.pdf, plus build/<doc>-head-clean.pdf
-    without notes (when the live build has a notes-free PDF).
+def build_base(server, kind, sha, pdf_name):
+    """The document as committed at sha, for the kind of baseline (base_status): build/<doc>-<kind>.pdf,
+    plus build/<doc>-<kind>-clean.pdf without notes (when the live build has a notes-free PDF).
 
-    Like build_diff, only the .tex files come from git (`git archive` into build/head/<doc>/src/).
+    Like build_diff, only the .tex files come from git (`git archive` into build/<kind>/<doc>/src/).
     Figures, styles, fonts and the bibliography resolve to the working tree's (through TEXINPUTS,
     and links for the top-level entries with no .tex files, such as a class's font directory), so
     the diff shows text edits; the viewer marks changed figures itself. The live build's .aux/.bbl
@@ -2474,9 +2515,9 @@ def build_head(server, sha, pdf_name):
     """
     root = server.paper_root
     doc = pdf_name[:-4]
-    out = os.path.join(root, BUILD, "head", doc)
+    out = os.path.join(root, BUILD, kind, doc)
     src = os.path.join(out, "src")
-    job = f"{doc}-head"
+    job = f"{doc}-{kind}"
     sys.path.insert(0, HERE)
     import latex_report
 
@@ -2503,7 +2544,7 @@ def build_head(server, sha, pdf_name):
         for _ in range(2):
             pdf = tex(job, doc)
         if not os.path.isfile(pdf):
-            raise RuntimeError(f"pdflatex produced no PDF; see {BUILD}/head/{doc}/{job}.log")
+            raise RuntimeError(f"pdflatex produced no PDF; see {BUILD}/{kind}/{doc}/{job}.log")
         clean_pdf = None
         if os.path.isfile(pdf_path(root, f"{doc}-clean.pdf")):
             for ext in (".aux", ".bbl", ".brf", ".out", ".toc"):
@@ -2516,8 +2557,8 @@ def build_head(server, sha, pdf_name):
         state = {"state": "done", "built": sha}
     except Exception as e:  # reported in the viewer's tooltip; the previous baseline stays
         state = {"state": "failed", "msg": str(e)[:300]}
-    if server.head.get("pdf") == pdf_name:  # (not after a switch to another document)
-        server.head = {**server.head, **state}
+    if server.bases[kind].get("pdf") == pdf_name:  # (not after a switch to another document)
+        server.bases[kind] = {**server.bases[kind], **state}
 
 
 def serve(paper_root, default_pdf, port, page_limit):
@@ -2534,7 +2575,8 @@ def serve(paper_root, default_pdf, port, page_limit):
     server.default_pdf = default_pdf
     server.page_limit = page_limit
     server.diff = {}
-    server.head, server.head_checked, server.head_lock = {}, 0, threading.Lock()
+    server.bases, server.base_checked = {"head": {}, "push": {}}, {"head": 0, "push": 0}  # (base_status)
+    server.base_locks = {"head": threading.Lock(), "push": threading.Lock()}
     server.tex_exec = ""  # main: the tex-exec prefix, as for latexmk
     server.image_checked, server.image_note = 0, None
     server.latexmk, server.lock, server.stopping, server.retried = None, None, False, -60
@@ -2577,7 +2619,7 @@ def record_port(lock, port):
 def set_doc(server, doc):
     """Serve doc as the document being built, and remember it as the last one (pick_doc)."""
     server.default_pdf = f"{doc}.pdf"
-    server.head, server.head_checked = {}, 0
+    server.bases, server.base_checked = {"head": {}, "push": {}}, {"head": 0, "push": 0}
     if server.diff.get("state") != "running":
         server.diff = {}
     with open(os.path.join(server.paper_root, BUILD, "latex-live-doc"), "w") as f:
