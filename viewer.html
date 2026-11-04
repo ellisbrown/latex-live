@@ -226,7 +226,7 @@
     <button id="nextCut" title="Next spot">&rsaquo;</button>
   </span>
   <button id="compare" title="latexdiff against a git commit (opens in a new tab)">Compare&hellip;</button>
-  <button id="changesBtn" title="Highlight changes against the last commit, the last push, or the previous build (off by default)">&Delta;</button>
+  <button id="changesBtn" title="Highlight changes against the last commit, the last push, or the previous build (d; off by default)">&Delta;</button>
   <span id="diffInfo" hidden></span>
   <span id="changes" class="navgroup" hidden title="What changed, against the last commit, the last push, or the previous build: text in green (red bars mark deletions), changed figures outlined">
     <span id="changeCount"></span>
@@ -447,6 +447,7 @@ window.addEventListener("keydown", (e) => {
   else if ((e.altKey && e.key === "ArrowRight") || (e.metaKey && e.key === "]")) { e.preventDefault(); travel(ahead, back); }
   else if (e.key === "Escape") { hidePreview(); $("comparePanel").hidden = true; closeNotePop(); }
   else if (!mod && !e.altKey && e.key === "c" && !$("commentBtn").hidden) { e.preventDefault(); startComment(); }
+  else if (!mod && !e.altKey && e.key === "d") { e.preventDefault(); toggleChanges(); }
   else if (!mod && !e.altKey && (e.key === "." || e.key === ",")) { e.preventDefault(); goToChange(e.key === "." ? 1 : -1); }
 });
 
@@ -1668,12 +1669,13 @@ function showBase(commit) {
        : `Changes since the last push (${pushInfo.sha}, ${pushInfo.ref}), committed or not.`)
     : "Changes since the previous build.") + " Click to switch.";
 }
-$("changesBtn").onclick = () => {
+function toggleChanges() {
   changesOn = !changesOn;
   localStorage.setItem("latex-live:changesOn", changesOn ? "1" : "");
   $("changesBtn").classList.toggle("on", changesOn);
   updateChanges();
-};
+}
+$("changesBtn").onclick = toggleChanges;
 $("changeBase").onclick = () => { // head, push (when there is a pushed commit), build
   do changeBase = BASES[(BASES.indexOf(changeBase) + 1) % BASES.length];
   while (changeBase === "push" && !pushInfo);
