@@ -329,12 +329,14 @@ def live_checks(tmp):
         if exported["state"] != "done":
             fail(f"the build without notes failed: {exported.get('msg')}")
         pdf = get("/pdf/main-export.pdf", token)
-        log = open(os.path.join(build, "export", "main-export.log"), errors="replace").read()
+        log = open(os.path.join(build, "export", "main", "main-export.log"), errors="replace").read()
         if not pdf.startswith(b"%PDF") or re.search(r"Rerun to get|may have changed\. Rerun", log):
             fail("the PDF without notes is missing, or its references had not settled")
         if get("/export", token).get("version") != exported["version"]:
             fail("asking again rebuilt the PDF without notes, though the document had not changed")
-        ok("the download without notes is an exact build, made once per build")
+        if ln_records(os.path.join(build, "export", "main", "main-export.aux")) != ln_records(os.path.join(build, "clean", "main-clean.aux")):
+            fail("the download without notes has its line numbers in other places than the notes-free view")
+        ok("the download without notes is an exact build (line numbers too), made once per build")
 
         procs.append(start(paper, "appendix"))  # (a second document of the same paper, in its own process)
         wait_for("appendix.pdf through the hub", lambda: _quiet(lambda: get("/status/appendix.pdf", token, "appendix")["version"]))
