@@ -57,12 +57,12 @@ The plan below makes it a general tool.
   anchors per column. A hover preview shows the target's column (all of a
   `figure*`), and a note's bubble sits in a gutter beside its column, left of
   the page for the left column.
-- **Change highlights (Δ).** A word-level diff of the text against the last
-  commit (a PDF of `HEAD`'s `.tex` files, rebuilt when `HEAD` moves), the
-  last push (the same for the commit the branch's remote branch is at, from
-  the remote-tracking branches, so no network), or the previous build, plus
-  outlines on changed figures. The "vs" button switches the baseline; the
-  toolbar arrows (or `,` and `.`) step through the changes.
+- **Change highlights (Δ, or `d`; off by default).** A word-level diff of the
+  text against the last commit (a PDF of `HEAD`'s `.tex` files, rebuilt when
+  `HEAD` moves), the last push (the same for the commit the branch's remote
+  branch is at, from the remote-tracking branches, so no network), or the
+  previous build, plus outlines on changed figures. The "vs" button switches
+  the baseline; the toolbar arrows (or `,` and `.`) step through the changes.
 - **Space hints (✂).** Marks short last lines and large blank gaps.
 - **Sidebar:**
   - an outline, numbered as in the paper (appendix letters too), with pages per
