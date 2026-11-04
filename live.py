@@ -3044,18 +3044,23 @@ def match_records(notes, records):
     its file whose text it holds (the longest such text, then the nearest note), else to a note in
     another file whose text it holds (one in a macro used here), preferring notes whose macro typesets
     exactly that (so two authors' notes with the same text don't swap); records of one line and text
-    go in order."""
+    go in order. A note whose typeset text is recorded somewhere takes no record of another text,
+    which is another macro's: a protected marker's, say (no note), whose text may hold the note's."""
     by_file, taken, found = {}, set(), {}
     for n in notes:
         by_file.setdefault(n["file"], []).append(n)
     keyed = {}
     for r in records:
         keyed.setdefault((r[1], r[2], squeeze(r[-1])), []).append(r)
+    recorded = {tex for _, _, tex in keyed}
+
+    def holds(n, tex):
+        return squeeze(note_source(n["body"])) in tex and (n.get("typeset") == tex or n.get("typeset") not in recorded)
+
     for (path, line, tex), group in keyed.items():
-        candidates = [n for n in (by_file.get(path, []) if path else notes)
-                      if n["last"] <= line and squeeze(note_source(n["body"])) in tex]
+        candidates = [n for n in (by_file.get(path, []) if path else notes) if n["last"] <= line and holds(n, tex)]
         if not candidates:  # (a note in a macro defined in another file, recorded where the macro is used)
-            candidates = [n for n in notes if n["file"] != path and squeeze(note_source(n["body"])) in tex]
+            candidates = [n for n in notes if n["file"] != path and holds(n, tex)]
         candidates = [n for n in candidates if n.get("typeset") == tex] or candidates  # (its own author's)
         free = [n for n in candidates if n["id"] not in taken] or candidates
         chosen = sorted(free, key=lambda n: (len(squeeze(note_source(n["body"]))), n["last"], n["id"]))[-len(group):]
