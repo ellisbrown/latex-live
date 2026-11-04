@@ -90,12 +90,15 @@ The plan below makes it a general tool.
   paths warn). A finding in a package file opens the project source when that
   file is the same, or its line is found there (e.g. in a package that inlines
   every `\input`).
-- **Compare.** latexdiff of the working tree against any git commit.
+- **Compare.** latexdiff of the working tree against any git commit (in the
+  ⋯ menu).
 - **Viewer comforts:**
+  - a one-row toolbar: on a narrow window, the controls that don't fit move
+    into the ⋯ menu, least used first;
   - search;
   - back/forward through links;
   - hover previews of reference targets;
-  - dark mode;
+  - dark mode (in the ⋯ menu);
   - trackpad pinch zoom that zooms the PDF, not the page.
 
 ## Usage (current)

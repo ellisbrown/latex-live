@@ -19,31 +19,45 @@
   body { margin: 0; background: #525659; font: 13px system-ui, sans-serif; }
   body.dark { background: #1e1e1e; }
   body.dark #viewer .canvasWrapper, body.dark #preview canvas, body.dark .thumb canvas { filter: invert(0.88) hue-rotate(180deg); }
-  #bar { position: fixed; top: 0; left: 0; right: 0; height: 32px; z-index: 10; display: flex; gap: 6px;
+  /* One row: what doesn't fit moves into the ⋯ menu (fitBar). */
+  #bar { position: fixed; top: 0; left: 0; right: 0; height: 32px; z-index: 10; display: flex; gap: 8px; overflow: hidden;
          align-items: center; padding: 0 10px; background: #323639; color: #eee; white-space: nowrap; }
-  #bar button { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 8px; cursor: pointer; }
-  #bar button:hover:not(:disabled) { background: #5b6164; }
-  #bar button:disabled { opacity: 0.35; cursor: default; }
-  #bar button.on { background: #2f6fb0; }
-  #bar input { background: #202124; color: #eee; border: 1px solid #555; }
-  #docPick { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 4px; cursor: pointer; }
+  #bar > *, .grp > * { flex-shrink: 0; }
+  .grp { display: flex; gap: 4px; align-items: center; }
+  .grp:not(:has(> :not([hidden]))) { display: none; }
+  :is(#bar, #moreMenu) button { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 8px; cursor: pointer; }
+  :is(#bar, #moreMenu) button:hover:not(:disabled) { background: #5b6164; }
+  :is(#bar, #moreMenu) button:disabled { opacity: 0.35; cursor: default; }
+  :is(#bar, #moreMenu) button.on { background: #2f6fb0; }
+  :is(#bar, #moreMenu) input { background: #202124; color: #eee; border: 1px solid #555; }
+  #docPick, #zoomPick { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 4px; cursor: pointer; }
   #docPick[hidden] { display: none; }
-  #bar a { color: #9cf; }
+  :is(#bar, #moreMenu) a { color: #9cf; }
   #page { width: 3em; text-align: right; }
-  #zoom { min-width: 3.5em; text-align: center; }
+  #findGroup, #find { flex-shrink: 1; min-width: 6em; } /* (only once nothing else can move: fitBar measures unshrunk) */
+  #bar.measuring * { flex-shrink: 0 !important; }
+  #bar.measuring #spacer { margin-left: 0; }
   #find { width: 11em; padding: 2px 4px; }
   #findCount { min-width: 4em; opacity: 0.8; }
+  #findCount:empty { display: none; }
   #findCount.none { color: #f88; opacity: 1; }
-  .gap { width: 10px; }
   .navgroup { display: flex; gap: 3px; align-items: center; padding: 1px 3px 1px 7px; border-radius: 3px; }
   #changes { background: #2c4a36; } #cutNav { background: #5a4220; }
-  #changes[hidden], #cutNav[hidden], #diffInfo[hidden], #compare[hidden], #notesView[hidden] { display: none; }
+  #changes[hidden], #cutNav[hidden], #diffInfo[hidden], #compare[hidden], #notesView[hidden], #rebuild[hidden] { display: none; }
   .navgroup button { padding: 1px 6px; }
   #spacer { margin-left: auto; }
   #pages { padding: 2px 6px; border-radius: 3px; }
   #pages:empty { display: none; }
   #pages.ok { background: #2d4a2d; } #pages.tight { background: #5a4a1a; } #pages.over { background: #6a2424; }
-  #status { opacity: 0.8; transition: color 0.3s; }
+  #status { opacity: 0.8; transition: color 0.3s; flex-shrink: 1; min-width: 6em; max-width: 24em; overflow: hidden; text-overflow: ellipsis; }
+  #moreMenu { position: fixed; top: 32px; right: 8px; z-index: 11; display: flex; flex-direction: column; gap: 6px;
+              min-width: 180px; padding: 8px; background: #2a2d2f; color: #eee; border-radius: 0 0 6px 6px; box-shadow: 0 4px 12px #000a; }
+  #moreMenu[hidden] { display: none; }
+  #moreFixed, #moreItems { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+  #moreItems { border-top: 1px solid #444; padding-top: 8px; }
+  #moreItems:not(:has(> :not([hidden]))) { display: none; }
+  #moreMenu [data-label]:not(.grp)::after { content: " " attr(data-label); }
+  #moreMenu .grp[data-label]::before { content: attr(data-label); min-width: 3em; opacity: 0.7; }
   #status.fresh { color: #8f8; opacity: 1; }
   #status.busy { color: #fd6; opacity: 1; }
   #status.error { color: #f88; opacity: 1; }
@@ -199,47 +213,71 @@
 <body>
 <div id="bar">
   <button id="toggleSide" title="Sidebar: outline, pages, notes, checks, figures">&#9776;</button>
-  <select id="docPick" title="Main document: build another root .tex file" hidden></select>
-  <button id="back" title="Back (Alt+&larr; or Cmd+[)" disabled>&larr;</button>
-  <button id="forward" title="Forward (Alt+&rarr; or Cmd+])" disabled>&rarr;</button>
-  <span class="gap"></span>
-  <button id="prev" title="Previous page">&lsaquo;</button>
-  <input id="page" value="1"> / <span id="count">&ndash;</span>
-  <button id="next" title="Next page">&rsaquo;</button>
-  <span class="gap"></span>
-  <button id="zoomOut" title="Zoom out (Ctrl -)">&minus;</button>
-  <span id="zoom"></span>
-  <button id="zoomIn" title="Zoom in (Ctrl +)">+</button>
-  <button id="fitWidth">Fit width</button>
-  <button id="fitPage">Fit page</button>
-  <span class="gap"></span>
-  <input id="find" placeholder="Search (Cmd+F)" title="Enter: next match, Shift+Enter: previous, Esc: clear">
-  <span id="findCount"></span>
-  <button id="dark" title="Dark mode (inverts the PDF)">&#9680;</button>
-  <button id="notesView" hidden>Notes</button>
-  <button id="marginBtn" hidden>&#128172;</button>
-  <select id="whoPick" title="Who you are, for comments: select text in the PDF, then 💬 (or C) adds your note to the source" hidden></select>
-  <button id="cut" title="Where to cut: short last lines of paragraphs and large empty gaps in the main text">&#9986;</button>
-  <span id="cutNav" class="navgroup" hidden title="Space to reclaim in the main text of the PDF as shown">
-    <span id="cutCount"></span>
-    <button id="prevCut" title="Previous spot">&lsaquo;</button>
-    <button id="nextCut" title="Next spot">&rsaquo;</button>
+  <select id="docPick" data-priority="4" title="Main document: build another root .tex file" hidden></select>
+  <span id="historyNav" class="grp" data-priority="3" data-label="History">
+    <button id="back" title="Back (Alt+&larr; or Cmd+[)" disabled>&larr;</button>
+    <button id="forward" title="Forward (Alt+&rarr; or Cmd+])" disabled>&rarr;</button>
   </span>
-  <button id="compare" title="latexdiff against a git commit (opens in a new tab)">Compare&hellip;</button>
-  <button id="changesBtn" title="Highlight changes against the last commit, the last push, or the previous build (d; off by default)">&Delta;</button>
-  <span id="diffInfo" hidden></span>
-  <span id="changes" class="navgroup" hidden title="What changed, against the last commit, the last push, or the previous build: text in green (red bars mark deletions), changed figures outlined">
-    <span id="changeCount"></span>
-    <button id="changeBase"></button>
-    <button id="prevChange" title="Previous change (,)">&lsaquo;</button>
-    <button id="nextChange" title="Next change (.)">&rsaquo;</button>
-    <button id="clearChanges" title="Clear the highlights">&#10005;</button>
+  <span id="pageNav" class="grp" data-priority="10" data-label="Page">
+    <button id="prev" title="Previous page">&lsaquo;</button>
+    <input id="page" value="1"> / <span id="count">&ndash;</span>
+    <button id="next" title="Next page">&rsaquo;</button>
+  </span>
+  <span id="zoomGroup" class="grp" data-priority="7" data-label="Zoom">
+    <button id="zoomOut" title="Zoom out (Ctrl -)">&minus;</button>
+    <select id="zoomPick" title="Zoom (Ctrl 0: fit width)">
+      <option value="page-width">Fit width</option>
+      <option value="page-fit">Fit page</option>
+      <option value="0.5">50%</option>
+      <option value="0.75">75%</option>
+      <option value="1">100%</option>
+      <option value="1.25">125%</option>
+      <option value="1.5">150%</option>
+      <option value="2">200%</option>
+      <option value="3">300%</option>
+      <option value="custom" hidden></option>
+    </select>
+    <button id="zoomIn" title="Zoom in (Ctrl +)">+</button>
+  </span>
+  <span id="findGroup" class="grp" data-priority="8">
+    <input id="find" placeholder="Search (Cmd+F)" title="Enter: next match, Shift+Enter: previous, Esc: clear">
+    <span id="findCount"></span>
+  </span>
+  <button id="notesView" data-priority="5" hidden>Notes</button>
+  <button id="marginBtn" data-priority="2" data-label="Margin bubbles" hidden>&#128172;</button>
+  <select id="whoPick" data-priority="1" title="Who you are, for comments: select text in the PDF, then 💬 (or C) adds your note to the source" hidden></select>
+  <span id="cutGroup" class="grp" data-priority="6">
+    <button id="cut" data-label="Space hints" title="Where to cut: short last lines of paragraphs and large empty gaps in the main text">&#9986;</button>
+    <span id="cutNav" class="navgroup" hidden title="Space to reclaim in the main text of the PDF as shown">
+      <span id="cutCount"></span>
+      <button id="prevCut" title="Previous spot">&lsaquo;</button>
+      <button id="nextCut" title="Next spot">&rsaquo;</button>
+    </span>
+  </span>
+  <span id="changesGroup" class="grp" data-priority="9">
+    <button id="changesBtn" data-label="Change highlights" title="Highlight changes against the last commit, the last push, or the previous build (d; off by default)">&Delta;</button>
+    <span id="diffInfo" hidden></span>
+    <span id="changes" class="navgroup" hidden title="What changed, against the last commit, the last push, or the previous build: text in green (red bars mark deletions), changed figures outlined">
+      <span id="changeCount"></span>
+      <button id="changeBase"></button>
+      <button id="prevChange" title="Previous change (,)">&lsaquo;</button>
+      <button id="nextChange" title="Next change (.)">&rsaquo;</button>
+      <button id="clearChanges" title="Clear the highlights">&#10005;</button>
+    </span>
   </span>
   <span id="spacer"></span>
   <span id="texImage" hidden>&#9888; TeX image missing</span>
+  <button id="more" title="More: dark mode, compare with a commit, and what doesn't fit in the toolbar">&#8943;</button>
   <button id="rebuild" title="Rebuild: run latexmk again from the top (e.g. after another build replaced the PDF)">&#8635;</button>
   <span id="pages"></span>
   <span id="status">loading&hellip;</span>
+</div>
+<div id="moreMenu" hidden>
+  <div id="moreFixed">
+    <button id="dark" title="Dark mode (inverts the PDF)">&#9680; Dark mode</button>
+    <button id="compare" data-priority="11" title="latexdiff against a git commit (opens in a new tab)">Compare with a commit&hellip;</button>
+  </div>
+  <div id="moreItems"></div>
 </div>
 <div id="banner" hidden></div>
 <div id="comparePanel" hidden></div>
@@ -310,7 +348,18 @@ eventBus.on("pagesinit", () => {
   pendingForward = null;
 });
 eventBus.on("pagechanging", (e) => { $("page").value = e.pageNumber; markCurrentThumb(e.pageNumber); });
-eventBus.on("scalechanging", (e) => { $("zoom").textContent = `${Math.round(e.scale * 100)}%`; saveView(); });
+eventBus.on("scalechanging", (e) => { showZoom(e); saveView(); });
+
+// The zoom menu shows the fit in use with its percentage, a listed percentage, or the zoom as it is.
+const ZOOM_FITS = { "page-width": "Fit width", "page-fit": "Fit page" };
+function showZoom({ scale, presetValue }) {
+  const options = [...$("zoomPick").options], pct = `${Math.round(scale * 100)}%`;
+  for (const o of options) if (ZOOM_FITS[o.value]) o.textContent = ZOOM_FITS[o.value];
+  const shown = options.find((o) => ZOOM_FITS[o.value] && o.value === presetValue) || options.find((o) => Math.abs(o.value - scale) < 1e-3);
+  if (shown && ZOOM_FITS[shown.value]) shown.textContent = `${ZOOM_FITS[shown.value]} (${pct})`;
+  options.at(-1).textContent = pct;
+  $("zoomPick").value = shown ? shown.value : "custom";
+}
 
 const refit = () => {
   const v = viewer.currentScaleValue;
@@ -322,9 +371,56 @@ $("next").onclick = () => { viewer.currentPageNumber = Math.min(viewer.pagesCoun
 $("page").onchange = (e) => { viewer.currentPageNumber = Math.min(viewer.pagesCount, Math.max(1, +e.target.value || 1)); };
 $("zoomIn").onclick = () => viewer.increaseScale();
 $("zoomOut").onclick = () => viewer.decreaseScale();
-$("fitWidth").onclick = () => { viewer.currentScaleValue = "page-width"; };
-$("fitPage").onclick = () => { viewer.currentScaleValue = "page-fit"; };
+$("zoomPick").onchange = (e) => { viewer.currentScaleValue = e.target.value; e.target.blur(); };
 window.addEventListener("resize", refit);
+
+// The ⋯ menu: dark mode and Compare, plus the toolbar's controls that don't fit (fitBar).
+function showMore(open) {
+  $("moreMenu").hidden = !open;
+  $("more").classList.toggle("on", open);
+}
+const revealControl = (node) => { if ($("moreMenu").contains(node)) showMore(true); }; // (before focusing a control there)
+$("more").onclick = () => showMore($("moreMenu").hidden);
+document.addEventListener("mousedown", (e) => {
+  if (!$("moreMenu").hidden && !$("moreMenu").contains(e.target) && !$("more").contains(e.target)) showMore(false);
+});
+
+// The toolbar keeps to one row: when it overflows, its controls move into the ⋯ menu, lowest
+// data-priority first, and come back once there is room again. It refits when the window
+// resizes, when a control appears or disappears, and when the status changes.
+const barItems = [...document.querySelectorAll("[data-priority]")]; // (in toolbar order)
+function placeItem(item, inBar) {
+  const where = inBar ? $("bar") : $("moreItems");
+  const next = barItems.slice(barItems.indexOf(item) + 1).find((i) => i.parentElement === where);
+  where.insertBefore(item, next || (inBar ? $("spacer") : null));
+}
+function fitBar() {
+  const bar = $("bar"), overflows = () => bar.scrollWidth > bar.clientWidth + 1;
+  bar.classList.add("measuring"); // (everything at full width, packed to the left)
+  const room = () => bar.getBoundingClientRect().left + bar.clientWidth - parseFloat(getComputedStyle(bar).paddingRight) -
+    Math.max(...[...bar.children].filter((c) => c.offsetWidth).map((c) => c.getBoundingClientRect().right));
+  const toMenu = (item) => { item.dataset.width = item.offsetWidth; placeItem(item, false); };
+  const byPriority = (a, b) => b.dataset.priority - a.dataset.priority;
+  for (const item of barItems.filter((i) => i.parentElement === $("moreItems")).sort(byPriority)) {
+    if (+item.dataset.width + 8 > room()) break; // (no moving back and forth while it can't fit)
+    placeItem(item, true);
+    if (overflows()) { toMenu(item); break; }
+  }
+  for (const item of barItems.filter((i) => i.parentElement === bar).sort(byPriority).reverse()) {
+    if (!overflows()) break;
+    toMenu(item);
+  }
+  bar.classList.remove("measuring");
+}
+new ResizeObserver(fitBar).observe($("bar"));
+const shownChanged = new MutationObserver((records) => {
+  if (records.some((r) => r.target !== $("moreMenu") && (r.oldValue === null) !== !r.target.hasAttribute("hidden"))) fitBar();
+});
+for (const node of [$("bar"), $("moreMenu")]) {
+  shownChanged.observe(node, { subtree: true, attributes: true, attributeFilter: ["hidden"], attributeOldValue: true });
+}
+new MutationObserver(fitBar).observe($("status"), { childList: true, characterData: true, subtree: true });
+document.fonts?.ready.then(fitBar);
 
 // Dark mode, the sidebar, and its tab are remembered across sessions.
 function setToggle(name, on) {
@@ -440,12 +536,12 @@ window.addEventListener("keydown", (e) => {
   if (mod && (e.key === "=" || e.key === "+")) { e.preventDefault(); viewer.increaseScale(); }
   else if (mod && e.key === "-") { e.preventDefault(); viewer.decreaseScale(); }
   else if (mod && e.key === "0") { e.preventDefault(); viewer.currentScaleValue = "page-width"; }
-  else if (mod && e.key === "f") { e.preventDefault(); $("find").focus(); $("find").select(); }
+  else if (mod && e.key === "f") { e.preventDefault(); revealControl($("find")); $("find").focus(); $("find").select(); }
   else if (mod && e.key === "g") { e.preventDefault(); find(e.shiftKey); }
   else if (e.target.tagName === "INPUT") return; // keep word-wise cursor keys in the text boxes
   else if ((e.altKey && e.key === "ArrowLeft") || (e.metaKey && e.key === "[")) { e.preventDefault(); travel(back, ahead); }
   else if ((e.altKey && e.key === "ArrowRight") || (e.metaKey && e.key === "]")) { e.preventDefault(); travel(ahead, back); }
-  else if (e.key === "Escape") { hidePreview(); $("comparePanel").hidden = true; closeNotePop(); }
+  else if (e.key === "Escape") { hidePreview(); $("comparePanel").hidden = true; closeNotePop(); showMore(false); }
   else if (!mod && !e.altKey && e.key === "c" && !$("commentBtn").hidden) { e.preventDefault(); startComment(); }
   else if (!mod && !e.altKey && e.key === "d") { e.preventDefault(); toggleChanges(); }
   else if (!mod && !e.altKey && (e.key === "." || e.key === ",")) { e.preventDefault(); goToChange(e.key === "." ? 1 : -1); }
@@ -563,7 +659,7 @@ async function openSource(file, line) {
 }
 
 function setStatus(text, cls = "") {
-  $("status").textContent = text;
+  $("status").textContent = $("status").title = text; // (the title: the whole text when it is cut off)
   $("status").className = cls;
 }
 
@@ -1307,7 +1403,7 @@ function startComment() {
   if (!t) return;
   if (!who) {
     setStatus("pick who you are in the toolbar (💬 Comment as…) first", "error");
-    return $("whoPick").focus();
+    return revealControl($("whoPick")), $("whoPick").focus();
   }
   $("commentBtn").hidden = true;
   const quote = t.text.length > 50 ? `…${t.text.slice(-50)}` : t.text;
@@ -1987,7 +2083,8 @@ async function previewRegion(kind, pageNumber, top, x, W, H) {
 $("compare").onclick = async () => {
   const panel = $("comparePanel");
   if (!panel.hidden) return (panel.hidden = true);
-  const r = $("compare").getBoundingClientRect();
+  const r = ($("moreMenu").contains($("compare")) ? $("more") : $("compare")).getBoundingClientRect();
+  showMore(false);
   panel.style.left = `${Math.min(r.left, window.innerWidth - 450)}px`;
   panel.replaceChildren(el("div", { className: "head", textContent: "Loading commits…" }));
   panel.hidden = false;
@@ -2010,7 +2107,8 @@ async function startDiff(rev) {
   if (isDiff) return; // this tab already shows the diff; it reloads when the new one is built
   if (!window.open(url, "latex-live-diff")) location.href = url;
 }
-if (isDiff) {
+if (isDiff) { // (the diff tab's main control, so in the toolbar)
+  placeItem($("compare"), true);
   $("compare").textContent = "Compare with…";
   $("compare").title = "latexdiff against another commit";
 }
