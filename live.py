@@ -55,7 +55,9 @@ import html
 import http.client
 import http.cookies
 import http.server
+import itertools
 import json
+import math
 import os
 import queue
 import re
@@ -210,7 +212,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not name.endswith(".pdf") or os.path.basename(name) != name:
                 return self.send_error(404)
             pdf = pdf_path(self.server.paper_root, name)
-            doc_pdf = re.sub(r"(-head|-push)?-(clean|diff|head|push|export)\.pdf$", ".pdf", name)  # the document a derived PDF belongs to
+            doc_pdf = re.sub(r"(-head|-push)?-(clean|diff|head|push|export|review)\.pdf$", ".pdf", name)  # the document a derived PDF belongs to
             if path.startswith("/status/"):  # (?base=push: a viewer shows changes since the last push)
                 body = json.dumps(status(self.server, name, urllib.parse.parse_qs(url.query).get("base") == ["push"])).encode()
             elif path.startswith("/outline/"):
@@ -248,6 +250,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json(200, commits(self.server.paper_root))
         elif path == "/export":
             self.send_json(*start_export(self.server))
+        elif path == "/review":
+            self.send_json(*start_review(self.server))
         elif path == "/diff":
             self.send_json(*start_diff(self.server, urllib.parse.parse_qs(url.query)))
         elif path == "/instances":
@@ -377,8 +381,8 @@ def clean_file(paper_root, pdf_name, ext):
 
 def pdf_path(paper_root, name):
     """Published <doc>.pdf in the paper root; derived <doc>-clean.pdf / -diff.pdf / -head.pdf /
-    -head-clean.pdf / -push.pdf / -push-clean.pdf / -export.pdf in build/."""
-    if re.search(r"-(clean|diff|head|push|export)\.pdf$", name):
+    -head-clean.pdf / -push.pdf / -push-clean.pdf / -export.pdf / -review.pdf in build/."""
+    if re.search(r"-(clean|diff|head|push|export|review)\.pdf$", name):
         return os.path.join(paper_root, BUILD, name)
     return os.path.join(paper_root, PUBLISH, name)
 
@@ -2482,11 +2486,27 @@ def start_export(server):
 
 
 def build_export(server, pdf, source):
+    """The /export thread: the exact build without notes (exact_export), its state for the viewer."""
+    try:
+        exact_export(server, pdf)
+        state = {"state": "done", "version": str(mtime(os.path.join(server.paper_root, BUILD, f"{pdf[:-4]}-export.pdf")))}
+    except Exception as e:  # (shown in the viewer)
+        state = {"state": "failed", "msg": str(e)[:300]}
+    if server.export.get("pdf") == pdf and server.export.get("source") == source:
+        server.export = {**server.export, **state}
+
+
+def exact_export(server, pdf, keep=None):
     """build/<doc>-export.pdf: the document without notes, as it would be submitted. Unlike the
     quick notes-free pass (latex_report.notes_free_pass), which reuses the cross-references of the
     build with notes, this one runs bibtex for its own citations (a \\cite only in a note drops out
     of the bibliography) and pdflatex until the references settle, so page numbers in the contents,
-    references and back-references are exact."""
+    references and back-references are exact.
+
+    Built in build/export/<doc>/ once per build of the document (the published PDF's mtime), one
+    export at a time; with SyncTeX, and with the files its last pass read kept in inputs/, so that
+    build_review can repeat that pass. keep(out), if given, runs before another export can replace
+    this one (to copy what it needs). Raises RuntimeError when it fails."""
     root, doc = server.paper_root, pdf[:-4]
     out = os.path.join(root, BUILD, "export", doc)  # (per document: another instance may export another)
     job = f"{doc}-export"
@@ -2500,35 +2520,700 @@ def build_export(server, pdf, source):
     def log():
         return read_text(os.path.join(out, f"{job}.log")) or ""
 
-    try:
-        shutil.rmtree(out, ignore_errors=True)
-        os.makedirs(out)
-        for ext in (".aux", ".bbl", ".brf", ".out", ".toc"):  # (a head start; bibtex and the passes correct them)
-            if os.path.exists(job_file(root, pdf, ext)):
-                shutil.copyfile(job_file(root, pdf, ext), os.path.join(out, job + ext))
-        tex = (f"pdflatex -interaction=batchmode -halt-on-error -file-line-error -output-directory='{out}'"
-               f" -jobname={job} '{latex_report.NOTES_OFF}\\input{{{doc}}}'")
-        for passes in range(1, 7):
-            if not run(tex, root):
-                first = next((l for l in log().splitlines() if l.startswith("! ") or re.match(r"^\S+:\d+: ", l)), "")
-                raise RuntimeError(first or f"pdflatex failed; see {BUILD}/export/{doc}/{job}.log")
-            if passes == 1 and "\\bibdata" in (read_text(os.path.join(out, f"{job}.aux")) or ""):
-                if not run(f"bibtex {job}", out, {"BIBINPUTS": f"{root}:", "BSTINPUTS": f"{root}:"}):
-                    raise RuntimeError(f"bibtex failed; see {BUILD}/export/{doc}/{job}.blg")
+    with server.export_lock:
+        source = str(mtime(pdf_path(root, pdf)))  # (the build it reflects)
+        if server.exported.get(pdf) != source or not os.path.isfile(os.path.join(root, BUILD, f"{job}.pdf")):
+            server.exported.pop(pdf, None)
+            shutil.rmtree(out, ignore_errors=True)
+            os.makedirs(out)
+            for ext in (".aux", ".bbl", ".brf", ".out", ".toc"):  # (a head start; bibtex and the passes correct them)
+                if os.path.exists(job_file(root, pdf, ext)):
+                    shutil.copyfile(job_file(root, pdf, ext), os.path.join(out, job + ext))
+            tex = (f"pdflatex -interaction=batchmode -halt-on-error -file-line-error -synctex=1 -output-directory='{out}'"
+                   f" -jobname={job} '{latex_report.NOTES_OFF}\\input{{{doc}}}'")
+            for passes in range(1, 7):
+                keep_inputs(out)
+                if not run(tex, root):
+                    first = next((l for l in log().splitlines() if l.startswith("! ") or re.match(r"^\S+:\d+: ", l)), "")
+                    raise RuntimeError(first or f"pdflatex failed; see {BUILD}/export/{doc}/{job}.log")
+                if passes == 1 and "\\bibdata" in (read_text(os.path.join(out, f"{job}.aux")) or ""):
+                    if not run(f"bibtex {job}", out, {"BIBINPUTS": f"{root}:", "BSTINPUTS": f"{root}:"}):
+                        raise RuntimeError(f"bibtex failed; see {BUILD}/export/{doc}/{job}.blg")
+                    continue
+                settled = not re.search(r"Rerun to get|may have changed\. Rerun|Please rerun|rerunfilecheck Warning", log())
+                # (lineno places its numbers from the previous pass's .aux without asking for a rerun, so
+                # a first pass seeded with the build-with-notes .aux needs a second: latex_report.uses_lineno)
+                if settled and (passes >= 2 or not latex_report.uses_lineno(os.path.join(out, f"{job}.aux"))):
+                    break
+            else:  # (not exact, so not published)
+                raise RuntimeError(f"the references had not settled after {passes} passes; see {BUILD}/export/{doc}/{job}.log")
+            os.replace(os.path.join(out, f"{job}.pdf"), os.path.join(root, BUILD, f"{job}.pdf"))
+            server.exported[pdf] = source
+            e = server.export  # (built for the review copy: the download without notes needs no second build)
+            if not (e.get("pdf") == pdf and (e.get("state") == "running" or e.get("source") == source)):
+                server.export = {"pdf": pdf, "source": source, "state": "done", "time": time.strftime("%H:%M:%S"), "msg": "",
+                                 "version": str(mtime(os.path.join(root, BUILD, f"{job}.pdf")))}
+        if keep:
+            keep(out)
+    return out
+
+
+AUX_SKIP = (".pdf", ".log", ".synctex.gz", ".blg", ".fls")  # (what a pass writes but doesn't read)
+
+
+def keep_inputs(out):
+    """Copy the files the next pass in out will read (.aux, .bbl, .toc..., an \\include's .aux) into
+    out/inputs/."""
+    inputs = os.path.join(out, "inputs")
+    shutil.rmtree(inputs, ignore_errors=True)
+    shutil.copytree(out, inputs, ignore=lambda folder, names: [n for n in names if n.endswith(AUX_SKIP)
+                                                                or (folder == out and n == "inputs")])
+
+
+# The review copy (/review): the exact build without notes, its pages unchanged on wider pages, with
+# each note typeset in a gutter beside its column (left of the page for a left column), numbered at
+# its spot in the text and wired to it. For co-authors who don't run latex-live.
+#
+# Where the notes go comes from a probe: the last pass of the export again, with the same inputs,
+# where \todotxt records the spot of each note it typesets (\pdfsavepos, written at shipout) instead
+# of nothing. So that TeX finds the same line breaks, glue and margin kerning, the spaces, kerns and
+# penalties before a note in a paragraph come off and go back after the record (in math, a record
+# changes no spacing). A record counts only where its line (the innermost hbox) is typeset exactly as
+# in the export, by their SyncTeX; other notes, and notes between paragraphs, are placed from the
+# export's SyncTeX by source line instead. After the last page, the probe also typesets every note as
+# the paper shows it (its macros, colors, references), at two sizes, each on a page of its own, which
+# the review copy places in the gutters as they are.
+REVIEW_PROBE = r"""% latex-live: the review copy's probe (build_review in live.py), read before the document.
+\ifdefined\ReadonlyShipoutCounter\else\endinput\fi
+\makeatletter
+\def\latexlive@log#1{\immediate\write-1{latex-live|#1}}
+\def\latexlive@here{\ifdefined\CurrentFile\CurrentFilePath/\CurrentFile\fi|\the\inputlineno}
+\def\latexlive@strip{\let\latexlive@next\relax
+  \ifnum\lastnodetype=11 \edef\latexlive@tail{\hskip\the\lastskip\relax\unexpanded\expandafter{\latexlive@tail}}%
+    \unskip\let\latexlive@next\latexlive@strip\fi
+  \ifnum\lastnodetype=12 \edef\latexlive@tail{\kern\the\lastkern\relax\unexpanded\expandafter{\latexlive@tail}}%
+    \unkern\let\latexlive@next\latexlive@strip\fi
+  \ifnum\lastnodetype=13 \edef\latexlive@tail{\penalty\the\lastpenalty\relax\unexpanded\expandafter{\latexlive@tail}}%
+    \unpenalty\let\latexlive@next\latexlive@strip\fi
+  \latexlive@next}
+\protected\long\def\latexlive@mark#1{\begingroup\def\latexlive@tail{}\ifmmode\else\latexlive@strip\fi\pdfsavepos
+  \edef\latexlive@record{\write-1{latex-live|pos|\latexlive@here|\noexpand\the\ReadonlyShipoutCounter
+    |\noexpand\the\pdflastxpos|\noexpand\the\pdflastypos|\detokenize{#1}}}%
+  \latexlive@record\latexlive@tail\endgroup}
+\protected\long\def\latexlive@seen#1{\latexlive@log{seen|\latexlive@here|\detokenize{#1}}}
+% Typesetting, not writing to a file or a mark; and not where an alignment looks ahead for \omit or
+% \noalign (an empty cell, or between rows), where anything but expansion would show.
+\long\def\latexlive@todotxt#1{\ifx\protect\@typeset@protect
+  \ifvmode\ifnum\currentgrouptype=6 \else\latexlive@seen{#1}\fi
+  \else\ifnum\ifnum\currentgrouptype=6 \lastnodetype\else0\fi<0 \else\latexlive@mark{#1}\fi\fi\fi}
+\ifcsname tex_shipout:D\endcsname\expandafter\let\expandafter\latexlive@shipout\csname tex_shipout:D\endcsname
+\else\let\latexlive@shipout\shipout\fi
+\newbox\latexlive@box \newdimen\latexlive@wide \newcount\latexlive@page
+\def\latexlive@lines{\let\latexlive@next\relax
+  \ifnum\lastnodetype=11 \unskip\let\latexlive@next\latexlive@lines\fi
+  \ifnum\lastnodetype=12 \unkern\let\latexlive@next\latexlive@lines\fi
+  \ifnum\lastnodetype=13 \unpenalty\let\latexlive@next\latexlive@lines\fi
+  \ifx\latexlive@next\relax\setbox\tw@\lastbox\ifvoid\tw@\else
+    \ifhbox\tw@\setbox\tw@\hbox{\unhbox\tw@}\fi
+    \ifdim\wd\tw@>\latexlive@wide\global\latexlive@wide\wd\tw@\fi\let\latexlive@next\latexlive@lines\fi\fi
+  \latexlive@next}
+\long\def\latexlive@size#1#2#3#4{%
+  \setbox\latexlive@box\vtop{\hsize=<WIDTH>bp\relax\linewidth\hsize\columnwidth\hsize\textwidth\hsize
+    \normalfont#3\relax\raggedright\parindent\z@\parskip\z@\leftskip\z@\everypar{}%
+    \ifdefined\nolinenumbers\nolinenumbers\fi\leavevmode#4\par}%
+  \global\latexlive@wide\z@\setbox\z@\vbox{\unvcopy\latexlive@box\latexlive@lines}%
+  \global\advance\latexlive@page\@ne
+  \latexlive@log{snippet|#1|#2|\the\latexlive@page|\the\latexlive@wide|\the\ht\latexlive@box|\the\dp\latexlive@box}%
+  \ifdim\latexlive@wide<\wd\latexlive@box\global\latexlive@wide\wd\latexlive@box\fi
+  \begingroup\pdfpagewidth\latexlive@wide\pdfpageheight\dimexpr\ht\latexlive@box+\dp\latexlive@box+1sp\relax
+  \pdfhorigin\z@\pdfvorigin\z@\latexlive@shipout\box\latexlive@box\endgroup}
+\long\def\latexlive@snippet#1#2{\latexlive@size{#1}0\footnotesize{#2}\latexlive@size{#1}1\scriptsize{#2}}
+\def\latexlive@color#1#2#3{\ifdefined\convertcolorspec\begingroup
+  \ifx\relax#2\relax\extractcolorspecs{#3}\latexlive@m\latexlive@s\else\def\latexlive@m{#2}\def\latexlive@s{#3}\fi
+  \convertcolorspec\latexlive@m\latexlive@s{rgb}\latexlive@rgb\latexlive@log{color|#1|\latexlive@rgb}\endgroup\fi}
+\def\latexlive@notes{\begingroup
+  \latexlive@log{pages|\the\ReadonlyShipoutCounter}\global\latexlive@page\ReadonlyShipoutCounter
+  \long\def\todotxt##1{##1}\ifdefined\showtodostrue\showtodostrue\fi
+  \let\latexlivesnippet\latexlive@snippet\let\latexlivecolor\latexlive@color
+  \input{<NOTES>}\endgroup}
+\AddToHook{enddocument/afterlastpage}{\latexlive@notes}
+\AtBeginDocument{\ifdefined\todotxt\let\todotxt\latexlive@todotxt\fi\ifdefined\showtodosfalse\showtodosfalse\fi
+  \ifdefined\xspaceaddexceptions\xspaceaddexceptions{\latexlive@mark}\fi}% (\xspace looks past a note it expands to nothing)
+\makeatother
+"""
+REVIEW_HEAD = r"""\documentclass{article}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{graphicx}
+\usepackage{tikz}
+\pagestyle{empty}
+\tikzset{x=1bp, y=1bp, latexlive tag/.style={rounded corners=1.3bp, inner sep=.9bp, minimum height=6.6bp,
+  minimum width=6.6bp, text=white, font=\sffamily\bfseries\fontsize{5.2}{5.2}\selectfont},
+  latexlive mark/.style={latexlive tag, rounded corners=1bp, inner sep=.5bp, minimum height=5.2bp, minimum width=5.2bp,
+  font=\sffamily\bfseries\fontsize{4.3}{4.3}\selectfont}}
+% \latexlivepage{width}{height}{x}{page}{drawing}: a page of the review copy, with a page of the paper
+% (or nothing) placed at x points from its left edge on its bottom edge, by TeX itself so that it lands
+% exactly there (TikZ's coordinates are a little off), and the drawing over it (TikZ, in points from
+% the bottom left)
+\newcommand\latexlivepage[5]{\pdfpagewidth=#1bp\relax\pdfpageheight=#2bp\relax\pdfhorigin=0pt\pdfvorigin=0pt
+  \shipout\vbox to\pdfpageheight{\vss\hbox{\begin{tikzpicture}[overlay]#5\end{tikzpicture}\kern#3bp\relax#4}}}
+\begin{document}
+"""
+REVIEW_INNER, REVIEW_TAG, REVIEW_OUTER = 7, 13, 9  # a gutter, from the page edge out: space, the number, the note, space
+REVIEW_MARGIN, REVIEW_GAP = 24, 5  # (top and bottom of a gutter; between notes)
+BP = 72 / 72.27  # TeX points to PDF points
+
+
+def start_review(server):
+    """/review: the review copy of the current build (build_review), for downloading as
+    build/<doc>-review.pdf. Built once per build of the document; until then, its state."""
+    pdf = server.default_pdf
+    if not os.path.isfile(pdf_path(server.paper_root, pdf)):
+        return 409, {"state": "failed", "msg": f"{pdf} has not built yet"}
+    source = str(mtime(pdf_path(server.paper_root, pdf)))
+    r = server.review
+    if r.get("pdf") == pdf and (r.get("state") == "running" or r.get("source") == source):  # (a failure too, until the next build)
+        return 200, r
+    server.review = {"pdf": pdf, "source": source, "state": "running", "step": "the exact build without notes",
+                     "time": time.strftime("%H:%M:%S"), "msg": ""}
+    threading.Thread(target=build_review, args=(server, pdf, source), daemon=True).start()
+    return 200, server.review
+
+
+def build_review(server, pdf, source):
+    """build/<doc>-review.pdf (see REVIEW_PROBE), built in build/review/<doc>/: the exact export,
+    the probe (one pdflatex pass), the layout of the gutters, and a document that places the
+    export's pages and the typeset notes with TikZ (one more pass). The layout also goes to
+    <doc>-review.json there. Published whole or not at all."""
+    root, doc = server.paper_root, pdf[:-4]
+    out = os.path.join(root, BUILD, "review", doc)
+    job = f"{doc}-export"  # (the probe repeats the export's last pass, \jobname included)
+
+    def step(text):
+        if server.review.get("pdf") == pdf and server.review.get("source") == source:
+            server.review = {**server.review, "step": text}
+
+    def keep(export):  # the export's PDF and SyncTeX, and the inputs of its last pass, for the probe
+        shutil.copyfile(os.path.join(root, BUILD, f"{job}.pdf"), os.path.join(out, "export.pdf"))
+        shutil.copyfile(os.path.join(export, f"{job}.synctex.gz"), os.path.join(out, "export.synctex.gz"))
+        shutil.copytree(os.path.join(export, "inputs"), out, dirs_exist_ok=True)
+
+    with server.review_lock:  # (one at a time: they share build/review/<doc>/)
+        try:
+            notes = review_notes(root, pdf)
+            if not notes:
+                raise RuntimeError("the paper has no notes to show (resolved ones and protected markers don't count)")
+            shutil.rmtree(out, ignore_errors=True)
+            os.makedirs(out)
+            exact_export(server, pdf, keep)
+            step("placing the notes")
+            area = layout(root, pdf) or {"W": 612, "H": 792, "left": 72, "top": 72, "bottom": 720, "width": 468, "columns": 1}
+            geo = review_geometry(area)
+            probe = run_probe(server, out, job, doc, notes, geo)
+            placed = review_anchors(root, out, notes, probe, area)
+            if not placed:
+                raise RuntimeError("none of the notes is typeset (are they all in parts the document leaves out?)")
+            pages = len(synctex_pages(os.path.join(out, "export.synctex.gz")))
+            plan = review_layout(placed, probe, geo, pages)
+            step("typesetting the review copy")
+            with open(os.path.join(out, f"{doc}-review.tex"), "w", encoding="utf-8") as f:
+                f.write(review_tex(plan, geo, probe.get("colors", {}), notes))
+            with open(os.path.join(out, f"{doc}-review.json"), "w") as f:
+                json.dump(plan, f, indent=1)
+            r = subprocess.run(["sh", "-c", f"{server.tex_exec} pdflatex -interaction=batchmode -halt-on-error"
+                                            f" {doc}-review.tex >/dev/null 2>&1"], cwd=out, timeout=600)
+            log = read_text(os.path.join(out, f"{doc}-review.log")) or ""
+            written = re.search(r"Output written on .*?\((\d+) pages?", log.replace("\n", ""))
+            if r.returncode != 0 or not written or int(written.group(1)) != plan["pages"]:
+                first = next((l for l in log.splitlines() if l.startswith("! ")), "")
+                raise RuntimeError(f"the review copy didn't build ({first or 'see ' + os.path.join(BUILD, 'review', doc, doc + '-review.log')})")
+            os.replace(os.path.join(out, f"{doc}-review.pdf"), os.path.join(root, BUILD, f"{doc}-review.pdf"))
+            state = {"state": "done", "version": str(mtime(os.path.join(root, BUILD, f"{doc}-review.pdf"))),
+                     "notes": len(plan["notes"]), "approximate": sum(n["how"] != "exact" for n in plan["notes"]),
+                     "continued": sum(n["top"] is None for n in plan["notes"])}
+        except Exception as e:  # (shown in the viewer)
+            state = {"state": "failed", "msg": str(e)[:300]}
+    if server.review.get("pdf") == pdf and server.review.get("source") == source:
+        server.review = {**server.review, **state}
+
+
+def review_notes(paper_root, pdf_name):
+    """The notes the review copy shows, in source order: [{id, macro, author, file, line, col, last,
+    call, body}]: not resolved notes (commented out), notes in \\iffalse blocks, notes inside another
+    note (they show in it), or LATEX_LIVE_PROTECTED markers. call is the note as written and body its
+    argument, as Latin-1 (the file's bytes as they are)."""
+    files = project_tex_files(paper_root, job_file(paper_root, pdf_name, ".fls"))
+    kinds = note_kinds(read_tex(p) for p in files)
+    if not kinds:
+        return []
+    use, found = note_use_re(kinds), []
+    for path in files:
+        try:
+            with open(path, "rb") as f:
+                raw = f.read().decode("latin-1")
+        except OSError:
+            continue
+        text = blank_comments(raw)
+        for start, end in false_blocks(text):
+            text = text[:start] + re.sub(r"[^\n]", " ", text[start:end]) + text[end:]
+        inside = 0
+        for m in use.finditer(text):
+            if m.start() < inside:
                 continue
-            settled = not re.search(r"Rerun to get|may have changed\. Rerun|Please rerun|rerunfilecheck Warning", log())
-            # (lineno places its numbers from the previous pass's .aux without asking for a rerun, so
-            # a first pass seeded with the build-with-notes .aux needs a second: latex_report.uses_lineno)
-            if settled and (passes >= 2 or not latex_report.uses_lineno(os.path.join(out, f"{job}.aux"))):
+            inside = end = brace_group(text, m.end())[1]
+            if PROTECTED_RE and PROTECTED_RE.search(text[m.start():end]):
+                continue
+            found.append({"id": len(found) + 1, "macro": m.group(1), "author": kinds[m.group(1)],
+                          "file": os.path.relpath(path, paper_root), "line": text.count("\n", 0, m.start()) + 1,
+                          "col": m.start() - text.rfind("\n", 0, m.start()) - 1, "last": text.count("\n", 0, end) + 1,
+                          "call": raw[m.start():end], "body": raw[m.end() + 1:end - 1]})
+    return found
+
+
+def review_geometry(area):
+    """The review copy's page: the export's (W x H, in points) with a gutter right of it, and with two
+    columns one left of it too; snippet is the width the notes are typeset at."""
+    two = area.get("columns") == 2
+    gutter = round(area["W"] * (0.31 if two else 0.38))
+    return {"W": area["W"], "H": area["H"], "two": two, "gutter": gutter, "left": gutter if two else 0,
+            "width": area["W"] + gutter * (2 if two else 1), "snippet": gutter - REVIEW_INNER - REVIEW_TAG - REVIEW_OUTER}
+
+
+def run_probe(server, out, job, doc, notes, geo):
+    """The probe pass (REVIEW_PROBE) in out/, from the inputs of the export's last pass. Returns what
+    its log records: {pages, pos: [[file, line, page, x, y, tex]], seen: [[file, line, tex]],
+    snippets: {id: {size: [page, width, height, depth]}}, colors: {macro: [r, g, b]}}, with x, y in
+    points from the page's top left, and sizes in points (width: of the widest line, which may be less
+    than the page's, or more than the width set); {} if it didn't get as far as the notes."""
+    rel = os.path.relpath(out, server.paper_root)
+    with open(os.path.join(out, "probe.tex"), "w") as f:
+        f.write(REVIEW_PROBE.replace("<WIDTH>", f"{geo['snippet']:.2f}").replace("<NOTES>", f"{rel}/notes"))
+    with open(os.path.join(out, "notes.tex"), "w", encoding="latin-1") as f:
+        for macro, (model, spec) in note_colors(server.paper_root, f"{doc}.pdf", {n["macro"] for n in notes}).items():
+            f.write(f"\\latexlivecolor{{{macro}}}{{{model}}}{{{spec}}}\n")
+        for n in notes:
+            f.write(f"\\latexlivesnippet{{{n['id']}}}{{{n['call']}}}\n")
+    try:
+        subprocess.run(["sh", "-c", f"{server.tex_exec} pdflatex -interaction=batchmode -file-line-error -synctex=1"
+                                    f" -output-directory='{out}' -jobname={job} '\\input{{{rel}/probe}}\\input{{{doc}}}' >/dev/null 2>&1"],
+                       cwd=server.paper_root, timeout=600, env={**os.environ, "max_print_line": "1000000"})
+    except subprocess.TimeoutExpired:
+        return {}
+    probe = {"pos": [], "seen": [], "snippets": {}, "colors": {}, "synctex": os.path.join(out, f"{job}.synctex.gz")}
+    try:
+        with open(os.path.join(out, f"{job}.log"), "rb") as f:
+            log = f.read().decode("latin-1")
+    except OSError:
+        return {}
+    for line in log.split("\n"):
+        if not line.startswith("latex-live|"):
+            continue
+        kind, *fields = line[len("latex-live|"):].rstrip("\r").split("|")
+        try:
+            if kind == "pos":
+                path, ln, page, x, y = fields[:5]
+                probe["pos"].append([os.path.normpath(path.lstrip("/")), int(ln), int(page), int(x) / 65536 * BP,
+                                     geo["H"] - int(y) / 65536 * BP, "|".join(fields[5:])])
+            elif kind == "seen":
+                probe["seen"].append([os.path.normpath(fields[0].lstrip("/")), int(fields[1]), "|".join(fields[2:])])
+            elif kind == "snippet":
+                size = [float(v[:-2]) * BP for v in fields[3:6]]
+                probe["snippets"].setdefault(int(fields[0]), {})[int(fields[1])] = [int(fields[2]), *size]
+            elif kind == "color":
+                probe["colors"][fields[0]] = [round(float(v), 4) for v in fields[1].split(",")]
+            elif kind == "pages":
+                probe["pages"] = int(fields[0])
+        except (ValueError, IndexError):
+            continue
+    if "pages" not in probe:  # (it stopped before the notes: nothing it recorded can be trusted to be complete)
+        return {}
+    written = re.search(r"Output written on .*?\((\d+) pages?", log.replace("\n", ""))
+    probe["pdf"] = os.path.isfile(os.path.join(out, f"{job}.pdf")) and bool(written) and int(written.group(1)) == (
+        probe["pages"] + sum(len(s) for s in probe["snippets"].values()))
+    if probe["pdf"]:
+        os.replace(os.path.join(out, f"{job}.pdf"), os.path.join(out, "probe.pdf"))
+    return probe
+
+
+def note_colors(paper_root, pdf_name, macros):
+    """{note macro: (model, color)}: the first color its definition sets (\\color or \\textcolor),
+    e.g. ("", "Emerald") or ("rgb", "0.1,0.5,0.2"), for its number and wire."""
+    found = {}
+    for path in project_tex_files(paper_root, job_file(paper_root, pdf_name, ".fls")):
+        text = read_tex(path)
+        for m in NOTE_DEF_RE.finditer(text):
+            color = re.search(r"\\(?:text)?color\s*(?:\[([^\]]*)\])?\s*\{([^{}]*)\}", brace_group(text, m.end())[0])
+            if m.group(1) in macros and m.group(1) not in found and color:
+                found[m.group(1)] = (color.group(1) or "", color.group(2))
+    return found
+
+
+def synctex_pages(synctex_gz):
+    """{page: [(kind, file, line, x, y, width, box)]}: a build's SyncTeX records in document order, in
+    points from the page's top left. box is the hbox (a line) a record is directly in, as [left,
+    baseline, right, start, contents] (start: after an indent box; contents: its records but the x
+    ones, for comparing two builds), or None."""
+    inputs, pages, page, stack = {}, {}, 0, []
+    with gzip.open(synctex_gz, "rt", errors="replace") as f:
+        for record in f:
+            c = record[:1]
+            if record.startswith("Input:"):
+                tag, _, path = record[6:].rstrip("\n").partition(":")
+                inputs[tag] = os.path.normpath(path)
+            elif c == "{":
+                page, stack = int(record[1:]), []
+                pages[page] = []
+            elif c in ")]":
+                stack = stack[:-1]
+            elif (m := SYNCTEX_ANY_RE.match(record)) and page in pages:
+                kind, tag, line, h, v, w = m.group(1), m.group(2), int(m.group(3)), int(m.group(4)), int(m.group(5)), m.group(6)
+                x, y, w = h / 65536 * BP, v / 65536 * BP, int(w or 0) / 65536 * BP
+                box = stack[-1] if stack else None
+                if kind == "h" and box and abs(x - box[0]) < 0.01 and box[3] == box[0]:
+                    box[3] = x + w  # (a paragraph's indent)
+                pages[page].append((kind, inputs.get(tag), line, x, y, w, box))
+                if box is not None and kind != "x":
+                    box[4].append((kind, round(x, 2), round(y, 2), round(w, 2)))
+                if kind in "([":
+                    stack.append([x, y, x + w, x, []] if kind == "(" else None)
+    return pages
+
+
+SYNCTEX_ANY_RE = re.compile(r"([\[(hvxkg$])(\d+),(\d+):(-?\d+),(-?\d+)(?::(-?\d+))?")
+
+
+def synctex_same(a, b):
+    """The pages two builds (synctex_pages) typeset the same way: the same records at the same
+    places, whatever lines they are tagged with; b may have extra x records (one marks where text
+    stopped, and the probe's records add some)."""
+    def key(r):
+        return r[0], round(r[3], 2), round(r[4], 2), round(r[5], 2)
+    same = set()
+    for page, recs in a.items():
+        other, j = b.get(page, []), 0
+        for r in recs:
+            while j < len(other) and key(other[j]) != key(r) and other[j][0] == "x":
+                j += 1
+            if j >= len(other) or key(other[j]) != key(r):
                 break
-        else:  # (not exact, so not published)
-            raise RuntimeError(f"the references had not settled after {passes} passes; see {BUILD}/export/{doc}/{job}.log")
-        os.replace(os.path.join(out, f"{job}.pdf"), os.path.join(root, BUILD, f"{job}.pdf"))
-        state = {"state": "done", "version": str(mtime(os.path.join(root, BUILD, f"{job}.pdf")))}
-    except Exception as e:  # (shown in the viewer)
-        state = {"state": "failed", "msg": str(e)[:300]}
-    if server.export.get("pdf") == pdf and server.export.get("source") == source:
-        server.export = {**server.export, **state}
+            j += 1
+        else:
+            if all(r[0] == "x" for r in other[j:]):
+                same.add(page)
+    return same
+
+
+def same_line(export, probe):
+    """A test of the probe's spots: same_line(page, x, y) says whether the line (innermost hbox)
+    at that spot of the probe is typeset as in the export: at the same place, with the same records
+    (whole pages typeset the same pass at once). A note's spot depends only on its line."""
+    whole, lines = synctex_same(export, probe), {}
+    for page, recs in export.items():
+        for r in recs:
+            if r[6] is not None:
+                lines[(page, round(r[6][0], 2), round(r[6][1], 2), round(r[6][2], 2))] = r[6][4]
+
+    def test(page, x, y):
+        if page in whole:
+            return True
+        boxes = [r[6] for r in probe.get(page, []) if r[6] is not None and abs(r[6][1] - y) < 0.05
+                 and r[6][0] - 0.5 <= x <= r[6][2] + 0.5]
+        box = min(boxes, key=lambda b: b[2] - b[0], default=None)
+        return bool(box) and lines.get((page, round(box[0], 2), round(box[1], 2), round(box[2], 2))) == box[4]
+    return test
+
+
+def squeeze(tex):
+    """tex without its spaces, for comparing a note's source with the probe's \\detokenize of it."""
+    tex = re.sub(r"\^\^([0-9a-f]{2})", lambda m: chr(int(m.group(1), 16)), tex)
+    return re.sub(r"\s+", "", tex.replace("##", "#"))
+
+
+def review_anchors(paper_root, out, notes, probe, area):
+    """The notes that are typeset, each with its spot in the export: [{**note, page, x, y, how}],
+    x, y in points from the page's top left (y at the baseline). how is "exact" (the probe's
+    record) or "line" (the export's SyncTeX, by source line)."""
+    export = synctex_pages(os.path.join(out, "export.synctex.gz"))
+    trusted = same_line(export, synctex_pages(probe["synctex"])) if probe and os.path.isfile(probe["synctex"]) else None
+    records = [("pos", *r) for r in probe.get("pos", [])] + [("seen", r[0], r[1], None, None, None, r[2]) for r in probe.get("seen", [])]
+    matched = match_records(notes, records)
+    lines = {}
+    for page, recs in export.items():
+        for r in recs:
+            if r[0] in "hvxkg$" and r[1] and area["top"] - 15 <= r[4] <= area["bottom"] + 15 and 0 <= r[3] <= area["W"]:
+                lines.setdefault((os.path.relpath(r[1], paper_root), r[2]), []).append((page, *r))
+    placed = []
+    for n in notes:
+        recs = matched.get(n["id"], [])
+        exact = [r for r in recs if r[0] == "pos" and trusted and trusted(r[3], r[4], r[5])]
+        if exact:
+            inside = [r for r in exact if area["top"] - 15 <= r[5] <= area["bottom"] + 15]
+            r = (inside or exact)[0]
+            placed.append({**n, "page": r[3], "x": round(r[4], 2), "y": round(r[5], 2), "how": "exact"})
+            continue
+        near = any((n["file"], ln) in lines for ln in range(n["line"] - 3, n["last"] + 4))
+        if not recs and not near:  # (not typeset: the probe never met it, and nothing near it is in the PDF)
+            continue
+        spot = line_anchor(paper_root, n, lines, vertical=any(r[0] == "seen" for r in recs))
+        if spot:
+            placed.append({**n, "page": spot[0], "x": round(spot[1], 2), "y": round(spot[2], 2), "how": "line"})
+    return placed
+
+
+def match_records(notes, records):
+    """{note id: [record]}: which note each of the probe's records (kind, file, line, ..., tex) is
+    about. A note is recorded when TeX typesets it, at the line TeX is reading then: its own last
+    line, or later in an argument read whole (a caption). So a record goes to the note above it in
+    its file whose text it holds (the longest such text, then the nearest note); records of one
+    line and text go in order."""
+    by_file, taken, found = {}, set(), {}
+    for n in notes:
+        by_file.setdefault(n["file"], []).append(n)
+    keyed = {}
+    for r in records:
+        keyed.setdefault((r[1], r[2], squeeze(r[-1])), []).append(r)
+    for (path, line, tex), group in keyed.items():
+        candidates = [n for n in (by_file.get(path, []) if path else notes)
+                      if n["last"] <= line and squeeze(note_source(n["body"])) in tex]
+        free = [n for n in candidates if n["id"] not in taken] or candidates
+        chosen = sorted(free, key=lambda n: (len(squeeze(note_source(n["body"]))), n["last"], n["id"]))[-len(group):]
+        for i, r in enumerate(group):
+            if chosen:
+                n = chosen[min(i, len(chosen) - 1)]
+                taken.add(n["id"])
+                found.setdefault(n["id"], []).append(r)
+    return found
+
+
+def note_source(body):
+    """A note's argument as TeX reads it: without comments, blank lines as \\par."""
+    body = re.sub(r"(?<!\\)%[^\n]*\n?[ \t]*", "", body)
+    return re.sub(r"\n[ \t]*\n\s*", r"\\par ", body)
+
+
+def line_anchor(paper_root, n, lines, vertical):
+    """A note's spot from the export's SyncTeX, by source line, when the probe has none: after the
+    words before it on its line (a note in a paragraph), else at the start of the next typeset line
+    (a note before a paragraph or between two; in a file \\input there, if that comes first), else
+    after the last typeset words before it; not in a float the note isn't in (floats move). (page, x,
+    y) or None; lines is {(file, line): [(page, kind, file, line, x, y, width, box)]}."""
+    path = os.path.join(paper_root, n["file"])
+    if not vertical:
+        with open(path, "rb") as f:
+            raw = f.read().decode("latin-1").split("\n")
+        before = re.sub(r"(?<!\\)%.*", "", raw[n["line"] - 1][:n["col"]] if n["line"] <= len(raw) else "")
+        while m := re.search(r"\\(?:footnote|footnotetext|marginpar)\s*(?=\{)", before):  # (typeset elsewhere)
+            before = before[:m.start()] + before[brace_group(before, m.end())[1]:]
+        words = len(tex_to_text(re.sub(r"\$[^$]*(\$|$)", " ", before), {}).split())
+        ends = [r for r in lines.get((n["file"], n["line"]), []) if r[1] == "x"]
+        if words and len(ends) >= words:
+            r = ends[words - 1]
+            return r[0], r[4], r[5]
+    text, floats = read_tex(path), []
+    for m in FLOAT_ENV_RE.finditer(text):
+        line = text.count("\n", 0, m.start()) + 1
+        if m.group(1) == "begin":
+            floats.append([line, line])
+        elif floats:
+            floats[-1][1] = line
+    moved = {ln for a, b in floats if not a <= n["line"] <= b for ln in range(a, b + 1)}
+    source = text.split("\n")
+    for ln in range(n["last"], n["last"] + 40):
+        recs = None if ln in moved else lines.get((n["file"], ln))
+        for m in INPUT_RE.finditer(source[ln - 1] if not recs and ln <= len(source) else ""):
+            name = os.path.normpath(m.group(1).strip())
+            child = next((f for f in (name, name + ".tex") if any(k[0] == f for k in lines)), None)
+            if child:
+                recs = lines[min(k for k in lines if k[0] == child)]
+                break
+        if recs:
+            page, _, _, _, x, y, _, box = recs[0]
+            return (page, box[3], box[1]) if box else (page, x, y)
+    for ln in range(n["line"], max(0, n["line"] - 40), -1):
+        if ln not in moved and (recs := lines.get((n["file"], ln))):
+            return recs[-1][0], recs[-1][4], recs[-1][5]
+    return None
+
+
+def place_notes(want, heights, lo, hi, gap):
+    """Tops for boxes of these heights, in this order, without overlap (gap between them), within
+    lo..hi, each as near its wanted top as the others allow (least squares). Needs them to fit."""
+    offsets, total = [], 0
+    for h in heights:
+        offsets.append(total)
+        total += h + gap
+    upper = hi - (total - gap)  # (where the first box's top can go, at most, with all below it)
+    blocks = []  # (pooled adjacent violators: a block's boxes move together)
+    for target in (w - o for w, o in zip(want, offsets)):
+        blocks.append([target, 1])
+        while len(blocks) > 1 and blocks[-2][0] * blocks[-1][1] > blocks[-1][0] * blocks[-2][1]:
+            s, c = blocks.pop()
+            blocks[-1][0] += s
+            blocks[-1][1] += c
+    shifts = [min(max(s / c, lo), upper) for s, c in blocks for _ in range(c)]
+    return [s + o for s, o in zip(shifts, offsets)]
+
+
+def review_layout(placed, probe, geo, pages):
+    """Where everything goes on the review copy's pages: {pages, paper, width, height, left, W (the
+    paper's page width), notes} (points from the top left), each note with its text, its number n,
+    side, size (0 or 1: the smaller type),
+    top (in its gutter), or continued (the page it continues on). Notes are numbered in reading order
+    (page, column, top to bottom), and in each gutter they keep that order, each as near its spot as
+    the others allow. When they don't fit, they are set smaller; when they still don't, the first
+    ones that fit stay, and the rest continue on pages after the paper (continuation_pages), with a
+    line in the gutter saying where."""
+    W, H, snippet = geo["W"], geo["H"], geo["snippet"]
+    for n in placed:
+        n["side"] = "left" if geo["two"] and n["x"] < W / 2 else "right"
+    placed.sort(key=lambda n: (n["page"], n["side"] == "right", n["y"], n["x"], n["id"]))
+    snippets = probe.get("snippets", {}) if probe.get("pdf") else {}
+    for number, n in enumerate(placed, 1):
+        n["n"], sizes = number, snippets.get(n["id"], {})
+        if 0 in sizes and 1 in sizes:
+            n["sizes"] = []
+            for page, text, ht, dp in (sizes[0], sizes[1]):
+                w = max(text, snippet)  # (the page the probe shipped it on)
+                scale = min(1, snippet / w)  # (a long word or URL sticks out: shrink it to fit)
+                n["sizes"].append({"page": page, "w": round(w * scale, 2), "text": round(text * scale, 2),
+                                   "ht": round(ht * scale, 2), "h": round((ht + dp) * scale, 2)})
+        else:  # (the probe didn't typeset it: its text, roughly sized)
+            lines = math.ceil((len(review_text(n)) + len(n["author"]) + 2) / (snippet / 3.7))
+            n["sizes"] = [{"page": None, "w": snippet, "text": snippet, "ht": 6.0, "h": 8.6 * lines + 2} for _ in range(2)]
+    lo, hi = REVIEW_MARGIN, H - REVIEW_MARGIN
+    for _, group in itertools.groupby(placed, key=lambda n: (n["page"], n["side"])):
+        group = list(group)
+        for size in (0, 1):
+            heights = [n["sizes"][size]["h"] for n in group]
+            if sum(heights) + REVIEW_GAP * (len(group) - 1) <= hi - lo:
+                keep = len(group)
+                break
+        else:  # (smaller type isn't enough: as many as fit, then a line saying where the rest are)
+            keep = 0
+            while keep < len(group) and sum(heights[:keep + 1]) + REVIEW_GAP * keep <= hi - lo - 12:
+                keep += 1
+        tops = place_notes([n["y"] - n["sizes"][size]["ht"] for n in group[:keep]], heights[:keep], lo,
+                           hi - (12 if keep < len(group) else 0), REVIEW_GAP)
+        for i, n in enumerate(group):
+            n["size"], n["top"], n["continued"] = size, round(tops[i], 2) if i < keep else None, None
+    extra = continuation_pages(placed, geo)
+    for i, page in enumerate(extra):
+        for n, *_ in page:
+            n["continued"] = pages + 1 + i
+    return {"pages": pages + len(extra), "paper": pages, "width": geo["width"], "height": H, "left": geo["left"], "W": W,
+            "notes": [{**{k: v for k, v in n.items() if k not in ("call", "body")}, "text": review_text(n)} for n in placed]}
+
+
+def continuation_pages(notes, geo):
+    """The notes that don't fit in their gutter (top None), on pages after the paper, in number order:
+    [[(note, x, top, scale, heading)]], in columns as wide as a gutter's notes, top to bottom, under
+    the number of the page they belong to (heading: whether it goes above this note); a note taller
+    than a page is scaled to fit."""
+    width = REVIEW_TAG + geo["snippet"]
+    columns = max(1, int((geo["width"] - 2 * 36 + 18) // (width + 18)))
+    top, bottom = 50, geo["H"] - 36
+    pages, page, column, y, last = [], [], 0, top, None
+    for n in sorted((n for n in notes if n["top"] is None), key=lambda n: n["n"]):
+        heading = n["page"] != last or y == top
+        h = (12 if heading else 0) + n["sizes"][0]["h"]
+        scale = min(1, (bottom - top) / h)
+        if y + h * scale > bottom and y > top:
+            column, y = column + 1, top
+            if column == columns:
+                pages.append(page)
+                page, column = [], 0
+            if not heading:
+                heading, h = True, h + 12
+                scale = min(1, (bottom - top) / h)
+        page.append((n, 36 + column * (width + 18), y, scale, heading))
+        y, last = y + h * scale + 2 * REVIEW_GAP, n["page"]
+    return pages + ([page] if page else [])
+
+
+def review_text(n):
+    """A note as plain text, for when the probe couldn't typeset it."""
+    body = n["body"].encode("latin-1").decode("utf-8", errors="replace")
+    return " ".join(tex_to_text(note_source(body), {}).split())
+
+
+def review_tex(plan, geo, colors, notes):
+    """The LaTeX source of the review copy (plan: review_layout; notes: the same notes, with their
+    text, for any the probe couldn't typeset)."""
+    W, H, left = geo["W"], geo["H"], geo["left"]
+    text = {n["id"]: n for n in notes}
+    out = [REVIEW_HEAD]
+    for macro in sorted({n["macro"] for n in plan["notes"]}):
+        r, g, b = colors.get(macro, (0.35, 0.35, 0.35))
+        out.append(f"\\definecolor{{latexlive{macro}}}{{rgb}}{{{r},{g},{b}}}\n")
+
+    def f(v):
+        return f"{v:.2f}".rstrip("0").rstrip(".")
+
+    def note(n, x, top, size, scale=1.0, tag_right=False):
+        """The note with its top left at (x, top), and its number left of its first line (or right of
+        its widest line, in a left gutter). Returns the TikZ code, and the number's center."""
+        s, color = n["sizes"][size], f"latexlive{n['macro']}"
+        w, ht = s["w"] * scale, s["ht"] * scale
+        tag = (x + s["text"] * scale + REVIEW_TAG / 2 if tag_right else x - REVIEW_TAG / 2, H - top - ht + 2.4)
+        if s["page"]:
+            body = f"\\includegraphics[page={s['page']},width={f(w)}bp]{{probe.pdf}}"
+        else:
+            body = (f"\\parbox[t]{{{f(w)}bp}}{{\\raggedright\\sffamily\\fontsize{{7}}{{8.6}}\\selectfont\\textcolor{{{color}}}"
+                    f"{{\\textbf{{{escape_note(n['author'])}:}}}} {escape_note(review_text(text[n['id']]))}}}")
+        return (f"\\node[anchor=north west,inner sep=0pt,outer sep=0pt] at ({f(x)},{f(H - top)}) {{{body}}};\n"
+                f"\\node[latexlive tag,fill={color}] at ({f(tag[0])},{f(tag[1])}) {{{n['n']}}};\n"), tag
+
+    by_page = {}
+    for n in plan["notes"]:
+        by_page.setdefault(n["page"], []).append(n)
+    for p in range(1, plan["paper"] + 1):
+        wires, marks, boxes = [], [], []
+        here = by_page.get(p, [])
+        spread, run = {}, []  # (notes at one spot: their numbers side by side)
+        for n in sorted(here, key=lambda n: (n["y"], n["x"], n["n"])) + [None]:
+            if run and (n is None or abs(n["y"] - run[0]["y"]) > 1.5 or abs(n["x"] - run[0]["x"]) > 3):
+                for i, m in enumerate(run):
+                    spread[m["n"]] = (i - (len(run) - 1) / 2) * 6
+                run = []
+            run.append(n)
+        for n in here:
+            color, right = f"latexlive{n['macro']}", n["side"] == "right"
+            ax, base = left + n["x"], H - n["y"]
+            marks.append(f"\\draw[{color},line width=.7bp] ({f(ax)},{f(base - 2.2)}) -- ({f(ax)},{f(base + 6.4)});\n"
+                         f"\\node[latexlive mark,fill={color}] at ({f(ax + spread[n['n']])},{f(base + 9.2)}) {{{n['n']}}};\n")
+            if n["top"] is None:
+                continue
+            edge = left + W if right else left
+            s = n["sizes"][n["size"]]
+            x = edge + REVIEW_INNER + REVIEW_TAG if right else edge - REVIEW_INNER - REVIEW_TAG - s["text"]
+            code, (tx, ty) = note(n, x, n["top"], n["size"], tag_right=not right)
+            boxes.append(code)
+            end = tx - 3.6 if right else tx + 3.6
+            bend = max(ax, edge - 10) if right else min(ax, edge + 10)  # (the bend starts in the page's own margin)
+            mid, y = (bend + end) / 2, base - 2.2
+            wires.append(f"\\draw[{color},line width=.4bp,dash pattern=on 1.2bp off 1.1bp] ({f(ax)},{f(y)}) -- ({f(bend)},{f(y)});\n"
+                         f"\\draw[{color},line width=.4bp] ({f(bend)},{f(y)}) .. controls ({f(mid)},{f(y)}) and ({f(mid)},{f(ty)})"
+                         f" .. ({f(end)},{f(ty)});\n")
+        for side in ("left", "right"):
+            rest = [n for n in here if n["side"] == side and n["top"] is None]
+            if rest:
+                where = f"{rest[0]['n']}" + (f"--{rest[-1]['n']}" if len(rest) > 1 else "")
+                x = left + W + REVIEW_INNER if side == "right" else REVIEW_OUTER
+                boxes.append(f"\\node[anchor=south west,inner sep=0pt,font=\\sffamily\\itshape\\fontsize{{6.5}}{{8}}\\selectfont,"
+                             f"text=black!65] at ({f(x)},{f(REVIEW_MARGIN)}) {{Notes {where} continue on page {rest[0]['continued']}.}};\n")
+        out.append(f"\\latexlivepage{{{f(plan['width'])}}}{{{f(H)}}}{{{f(left)}}}{{\\includegraphics[page={p}]{{export.pdf}}}}"
+                   f"{{%\n{''.join(wires + marks + boxes)}}}\n")
+    for i, page in enumerate(continuation_pages(plan["notes"], geo)):
+        draw = [f"\\node[anchor=north west,inner sep=0pt,font=\\sffamily\\bfseries\\fontsize{{9}}{{11}}\\selectfont] at (36,{f(H - 24)})"
+                f" {{Notes that didn't fit in the margin{' (continued)' if i else ''}}};\n"]
+        for n, x, top, scale, heading in page:
+            if heading:
+                draw.append(f"\\node[anchor=north west,inner sep=0pt,font=\\sffamily\\bfseries\\fontsize{{6.5}}{{8}}\\selectfont,"
+                            f"text=black!65] at ({f(x)},{f(H - top)}) {{Page {n['page']}}};\n")
+            draw.append(note(n, x + REVIEW_TAG, top + (12 if heading else 0) * scale, 0, scale)[0])
+        out.append(f"\\latexlivepage{{{f(plan['width'])}}}{{{f(H)}}}{{0}}{{}}{{%\n{''.join(draw)}}}\n")
+    out.append("\\end{document}\n")
+    return "".join(out)
 
 
 def start_diff(server, query):
@@ -2770,7 +3455,9 @@ def serve(paper_root, default_pdf, port, page_limit):
     server.default_pdf = default_pdf
     server.page_limit = page_limit
     server.diff = {}
-    server.export = {}  # (start_export)
+    server.export, server.review = {}, {}  # (start_export, start_review)
+    server.review_lock = threading.Lock()  # (build_review)
+    server.export_lock, server.exported = threading.Lock(), {}  # (exact_export)
     server.bases, server.base_checked = {"head": {}, "push": {}}, {"head": 0, "push": 0}  # (base_status)
     server.base_locks = {"head": threading.Lock(), "push": threading.Lock()}
     server.tex_exec = ""  # main: the tex-exec prefix, as for latexmk

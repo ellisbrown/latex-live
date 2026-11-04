@@ -95,10 +95,23 @@ The plan below makes it a general tool.
   every `\input`).
 - **Compare.** latexdiff of the working tree against any git commit (in the
   ⋯ menu).
-- **Download** (the toolbar's download button; its menu opens on hover or click): the PDF as built, notes included, or without notes.
-  The version without notes is an exact build, as you would submit it: its own
-  bibtex run (a citation only in a note drops out) and as many passes as the
-  references need, made once per build of the document.
+- **Download** (the toolbar's download button; its menu opens on hover or click): the PDF as built, notes included; without notes; or
+  with notes in the margin. The version without notes is an exact build, as
+  you would submit it: its own bibtex run (a citation only in a note drops out)
+  and as many passes as the references need, made once per build of the
+  document.
+- **Notes in the margin, for co-authors** (the download menu's "PDF with notes
+  in the margin", saved as `<doc>-with-margin-notes.pdf`): the pages without
+  notes, unchanged, on wider pages, with each note in a margin beside its
+  column (left of the page for the left column of two). A note is typeset as
+  the paper shows it (math, references, its author's label and color),
+  numbered at its spot in the text and wired to it. In a crowded margin the
+  notes keep their order and are set smaller; those that still don't fit
+  continue on pages after the paper, under the same numbers, and the margin
+  says where. Resolved notes and protected markers are left out. A note that
+  can't be pinned to its exact spot (one between paragraphs, say) is placed by
+  its source line instead; the viewer says how many were. The pages' links
+  don't work in this copy.
 - **Viewer comforts:**
   - a one-row toolbar: on a narrow window, the controls that don't fit move
     into the ⋯ menu, least used first;
@@ -177,8 +190,8 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
 - **Smoke test:** `python3 check.py` (about a minute, with TeX as above)
   compiles the Python, parses the viewer's script (with Node), and runs an
   instance on a scratch two-column paper with git history: build, notes-free
-  pass, endpoints, SyncTeX, both change baselines, and taking over an
-  instance. Run it before pushing.
+  pass, the copy with notes in the margin, endpoints, SyncTeX, both change
+  baselines, and taking over an instance. Run it before pushing.
 - **PDF.js:** vendored in `pdfjs/` (4.10.38 legacy build, Apache-2.0; see
   `pdfjs/LICENSE`).
 
