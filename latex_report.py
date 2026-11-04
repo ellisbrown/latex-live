@@ -2,6 +2,7 @@
 """Post-build hook for latex-live (see latexmkrc next to this file).
 
 Usage: latex_report.py <root> ok|fail   (run from the paper root)
+       latex_report.py --pass <root>   (after each successful pdflatex run; see publish)
        latex_report.py --notes-free <root> <doc>   (the background pass; see start_notes_free_build)
 
 <root> is the latexmk job name (build/<root>.*). On success, atomically
@@ -241,12 +242,49 @@ def rel(path):
     return os.path.relpath(path) if os.path.abspath(path).startswith(os.getcwd() + os.sep) else path
 
 
+def publish(root, dest):
+    """Copy build/<root>.pdf to dest, unless it is the copy published last. latexmkrc runs this
+    after every successful pdflatex pass too, so the viewer shows the first pass at once when
+    latexmk runs another (bibtex, changed references) instead of waiting for both; the later
+    pass replaces it."""
+    src = os.stat(os.path.join(BUILD, f"{root}.pdf"))
+    record = os.path.join(BUILD, f"{root}.published.json")
+    try:
+        with open(record) as f:
+            last = json.load(f)
+        st = os.stat(dest)
+        if last.get("src") == [src.st_mtime_ns, src.st_size] and [st.st_mtime_ns, st.st_size] == [last.get("mtime"), last.get("size")]:
+            return False
+    except (OSError, ValueError, AttributeError):
+        pass
+    # Atomic rename, not an in-place write: vscode-pdf reloads on "created"
+    # as well as "changed", and never sees a half-written file.
+    tmp = os.path.join(os.path.dirname(dest), f".{os.path.basename(dest)}.tmp")
+    shutil.copyfile(os.path.join(BUILD, f"{root}.pdf"), tmp)
+    os.replace(tmp, dest)
+    st = os.stat(dest)  # so live.py can tell when another build (e.g. make) replaces it
+    write_json(record, {"mtime": st.st_mtime_ns, "size": st.st_size, "src": [src.st_mtime_ns, src.st_size]})
+    return True
+
+
+def publish_dest(root):
+    doc = os.environ.get("LATEX_LIVE_DOC") or root
+    return doc, os.environ.get("LATEX_LIVE_PUBLISH") or f"{doc}.pdf"  # live.py --build-dir: inside that directory
+
+
 def main():
     if sys.argv[1] == "--notes-free":
         return notes_free_pass(sys.argv[2], sys.argv[3])
+    if sys.argv[1] == "--pass":
+        root = sys.argv[2]
+        try:
+            if os.path.isfile(os.path.join(BUILD, f"{root}.pdf")):
+                publish(root, publish_dest(root)[1])
+        except OSError:
+            pass  # the end-of-run report publishes it anyway
+        return
     root, status = sys.argv[1], sys.argv[2]
-    doc = os.environ.get("LATEX_LIVE_DOC") or root
-    dest = os.environ.get("LATEX_LIVE_PUBLISH") or f"{doc}.pdf"  # live.py --build-dir: inside that directory
+    doc, dest = publish_dest(root)
     stamp = time.strftime("%H:%M:%S")
     try:
         with open(os.path.join(BUILD, f"{root}.log"), errors="replace") as f:
@@ -299,13 +337,7 @@ def main():
                         "undefined": undefined, "tex": tex_format(log)})
 
     if ok:
-        # Atomic rename, not an in-place write: vscode-pdf reloads on "created"
-        # as well as "changed", and never sees a half-written file.
-        tmp = os.path.join(os.path.dirname(dest), f".{os.path.basename(dest)}.tmp")
-        shutil.copyfile(os.path.join(BUILD, f"{root}.pdf"), tmp)
-        os.replace(tmp, dest)
-        st = os.stat(dest)  # so live.py can tell when another build (e.g. make) replaces it
-        write_json(os.path.join(BUILD, f"{root}.published.json"), {"mtime": st.st_mtime_ns, "size": st.st_size})
+        publish(root, dest)
         print(f"=== live-reload: published {dest} at {stamp}")
         if has_notes(files):
             start_notes_free_build(root, doc)
