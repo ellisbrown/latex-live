@@ -3283,8 +3283,11 @@ def review_tex(plan, geo, colors, notes):
                 x = left + W + REVIEW_INNER if side == "right" else REVIEW_OUTER
                 boxes.append(f"\\node[anchor=south west,inner sep=0pt,font=\\sffamily\\itshape\\fontsize{{6.5}}{{8}}\\selectfont,"
                              f"text=black!65] at ({f(x)},{f(REVIEW_MARGIN)}) {{Notes {where} continue on page {rest[0]['continued']}.}};\n")
+        # (gutters light gray, so the page's edges show; the page white under the paper's, which may have no background)
+        paper = (f"\\fill[black!7] (0,0) rectangle ({f(plan['width'])},{f(H)});\n"
+                 f"\\fill[white] ({f(left)},0) rectangle ({f(left + W)},{f(H)});\n")
         out.append(f"\\latexlivepage{{{f(plan['width'])}}}{{{f(H)}}}{{{f(left)}}}{{\\includegraphics[page={p}]{{export.pdf}}}}"
-                   f"{{%\n{''.join(wires + marks + boxes)}}}\n")
+                   f"{{%\n{paper}{''.join(wires + marks + boxes)}}}\n")
     for i, page in enumerate(continuation_pages(plan["notes"], geo)):
         draw = [f"\\node[anchor=north west,inner sep=0pt,font=\\sffamily\\bfseries\\fontsize{{9}}{{11}}\\selectfont] at (36,{f(H - 24)})"
                 f" {{Notes that didn't fit in the margin{' (continued)' if i else ''}}};\n"]
