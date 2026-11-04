@@ -7,7 +7,9 @@
    Node, if there is one); instances starting at once agree on one token, never an empty one.
    The review copy's layout keeps notes in order, apart, and on their pages, and continues the ones
    that don't fit after the paper; its matching tells apart two authors' notes with the same text,
-   and gives no note the record of a protected marker that holds its text.
+   and gives no note the record of a protected marker that holds its text. The downloads read TeX's
+   logs, .aux, .bbl and SyncTeX files only up to a bound, and say so past it (a stand-in for TeX
+   writes the probe pass's log), and read a log whose wrapped lines split a UTF-8 character.
    In shared mode, the downloads built on request say plainly that the TeX Live image is missing, the
    review copy reads its notes from the files of the last good build (only the paper's own), and
    the inputs kept for its probe leave out symbolic links.
@@ -273,6 +275,7 @@ def static_checks():
     ok("instances starting at once agree on one token, never an empty one")
     layout_checks()
     matching_checks()
+    bounds_checks()
     confinement_checks()
 
 
@@ -344,6 +347,102 @@ def matching_checks():
     if live.match_records([odd], [own]) != {3: [own]}:
         fail("a note whose typeset text no record has lost the record that holds its text")
     ok("the review copy tells apart two authors' notes with the same text, and gives no note a protected marker's record")
+
+
+def tex_stand_in(tmp):
+    """A stand-in for TeX in the downloads (live.exact_export, live.run_probe: server.tex_exec, a command prefix)
+    that runs no TeX: it logs its arguments to tmp/calls, writes tmp/log as the job's log in its output folder
+    (and tmp/pdf, if there is one, as its PDF), and exits with the code in tmp/exit (0 if none)."""
+    script = os.path.join(tmp, "tex.py")
+    with open(script, "w") as f:
+        f.write("import os, shutil, sys\n"
+                "here, args = os.path.dirname(os.path.abspath(__file__)), sys.argv[1:]\n"
+                "with open(os.path.join(here, 'calls'), 'a') as f:\n"
+                "    f.write(' '.join(args) + '\\n')\n"
+                "out = next((a.split('=', 1)[1] for a in args if a.startswith('-output-directory=')), '.')\n"
+                "job = next((a.split('=', 1)[1] for a in args if a.startswith('-jobname=')), 'texput')\n"
+                "for name, ext in (('log', '.log'), ('pdf', '.pdf')):\n"
+                "    if os.path.exists(os.path.join(here, name)):\n"
+                "        shutil.copyfile(os.path.join(here, name), os.path.join(out, job + ext))\n"
+                "sys.exit(int(open(os.path.join(here, 'exit')).read()) if os.path.exists(os.path.join(here, 'exit')) else 0)\n")
+    return f"{shlex.quote(sys.executable)} {shlex.quote(script)}"
+
+
+def bounds_checks():
+    """The downloads read TeX's output within bounds (live.OUTPUT_LIMIT and live.SYNCTEX_LIMIT, made smaller here),
+    without TeX: a log, an .aux or a .bbl past its bound (live.read_output), the probe pass's log (live.run_probe,
+    with a stand-in for TeX) and a SyncTeX file uncompressed (live.synctex_pages) stop a download with a message
+    that says so, before they are read whole; within them, the probe's records are read as before, and so is a log
+    whose wrapped lines split a UTF-8 character."""
+    sys.path.insert(0, HERE)
+    import live
+    saved, tmp = (live.OUTPUT_LIMIT, live.SYNCTEX_LIMIT), tempfile.mkdtemp(prefix="latex-live-check-")
+    try:
+        live.OUTPUT_LIMIT = live.SYNCTEX_LIMIT = 1 << 20
+        root = os.path.join(tmp, "paper")
+        out = os.path.join(root, "build", "review", "main")
+        os.makedirs(out)
+        aux = os.path.join(out, "main-export.aux")
+        put(aux, "\\relax\n" * 1000)
+        if live.read_output(root, aux) != "\\relax\n" * 1000 or live.read_output(root, aux + ".gone") is not None:
+            fail("live.read_output does not read a file within its bound as it is, or has a file that is gone")
+        put_bytes(aux, b"Overfull \\hbox in caf\xc3\n\xa9\n")  # (TeX wraps its log at 79 bytes, splitting a UTF-8 character)
+        try:
+            if "Overfull" not in (live.read_output(root, aux) or ""):
+                raise ValueError("nothing read")
+        except ValueError as e:
+            fail(f"live.read_output does not read a log whose wrapping split a UTF-8 character: {e}")
+        put(aux, "\\relax\n" * 200_000)
+        try:
+            live.read_output(root, aux)
+            fail("live.read_output read a file past its bound")
+        except RuntimeError as e:
+            if "build/review/main/main-export.aux is over 1 MB" not in str(e):
+                fail(f"a file past its bound: {e}")
+
+        stand_in = os.path.join(tmp, "tex")
+        os.makedirs(stand_in)
+        server = types.SimpleNamespace(paper_root=root, tex_exec=tex_stand_in(stand_in))
+        geo = live.review_geometry({"W": 612, "H": 792, "columns": 1})
+        notes = [{"id": 1, "macro": "eb", "body": "Check this", "call": "\\eb{Check this}"}]
+        records = ("latex-live|pos|./body.tex|7|1|4000000|50000000|[EB: Check this]\n"
+                   "latex-live|snippet|1|0|2|100.0pt|10.0pt|2.0pt\nlatex-live|snippet|1|1|3|90.0pt|8.0pt|1.0pt\n"
+                   "latex-live|pages|1\n")
+        put(os.path.join(stand_in, "log"), f"This is pdfTeX\n{'Overfull hbox in a paragraph' * 3}\n{records}"
+                                           "Output written on main-export.pdf (3 pages, 1234 bytes).\n")
+        put(os.path.join(stand_in, "pdf"), "%PDF-1.5\n")
+        probe = live.run_probe(server, out, "main-export", "main", notes, geo)
+        if (probe.get("pages"), [r[:3] for r in probe.get("pos", [])], sorted(probe.get("snippets", {}).get(1, {})),
+                probe.get("pdf")) != (1, [["body.tex", 7, 1]], [0, 1], True) or not os.path.isfile(os.path.join(out, "probe.pdf")):
+            fail(f"the probe's records, read from its log line by line, are not as written: {probe}")
+        put(os.path.join(stand_in, "log"), "x" * 99 + "\n" + ("latex-live|seen|./body.tex|7|[EB: Check this]\n" * 30_000) + records)
+        try:
+            live.run_probe(server, out, "main-export", "main", notes, geo)
+            fail("the probe's log was read past its bound")
+        except RuntimeError as e:
+            if "build/review/main/main-export.log is over 1 MB" not in str(e):
+                fail(f"the probe's log past its bound: {e}")
+
+        synctex = os.path.join(tmp, "export.synctex.gz")
+        head = ("SyncTeX Version:1\nInput:1:/paper/body.tex\nContent:\n{1\n[1,7:4736286,4736286:30000000,40000000,0\n"
+                "(1,7:4736286,9000000:30000000,655360,0\n")
+        with gzip.open(synctex, "wt") as f:
+            f.write(head + "h1,7:4736286,9000000:100000\n" * 10 + ")\n]\n}1\n")
+        if list(live.synctex_pages(synctex)) != [1]:
+            fail(f"live.synctex_pages does not read a small SyncTeX file: {live.synctex_pages(synctex)}")
+        with gzip.open(synctex, "wt") as f:  # (a few KB compressed)
+            f.write(head + "h1,7:4736286,9000000:100000\n" * 50_000 + ")\n]\n}1\n")
+        try:
+            live.synctex_pages(synctex)
+            fail("a SyncTeX file was read past its bound")
+        except RuntimeError as e:
+            if "export.synctex.gz is over 1 MB uncompressed" not in str(e):
+                fail(f"a SyncTeX file past its bound: {e}")
+    finally:
+        live.OUTPUT_LIMIT, live.SYNCTEX_LIMIT = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+    ok("the downloads read TeX's logs, .aux, .bbl and SyncTeX files only up to a bound, past which they stop and say so;"
+       " the probe's records are read from its log line by line; a log whose wrapping split a UTF-8 character reads")
 
 
 def confinement_checks():
