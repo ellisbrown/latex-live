@@ -153,24 +153,26 @@ whole `options` line) if you don't need it.
 1. **Allow the automatic task.** Open the paper folder. VS Code asks whether to
    allow tasks that run on folder open; allow it. To start the task by hand,
    press Cmd+Shift+B (Ctrl+Shift+B on Linux and Windows).
-2. **Remote machine only: keep port numbers.** Open *Preferences: Open Remote
-   Settings (JSON)* and add:
+2. **Remote machine only: one port.** Every preview is served on port 44100.
+   Open *Preferences: Open Remote Settings (JSON)* and add:
 
    ```json
    "remote.portsAttributes": {
-     "44100-44109": { "label": "latex-live viewer", "requireLocalPort": true, "onAutoForward": "silent" }
+     "44100": { "label": "latex-live", "requireLocalPort": true, "onAutoForward": "silent" },
+     "44101-44110": { "label": "latex-live (behind 44100)", "onAutoForward": "ignore" }
    }
    ```
 
-   This keeps the laptop's port the same as the remote machine's, so saved URLs
-   keep working.
+   The first line keeps the laptop's port the same as the remote machine's, so
+   saved URLs keep working. The second stops VS Code from offering to forward
+   each preview's own port, which you never need.
 3. **Open the viewer.**
-   - On a remote machine, forward the port from the task's URL in the Ports
-     panel first. VS Code often forwards it by itself.
-   - Open that `http://localhost:PORT/?t=...` URL in any browser, or in VS
-     Code (*Simple Browser: Show*).
-   - The token becomes a cookie, so later visits to `http://localhost:PORT/`
-     work without it.
+   - On a remote machine, forward port 44100 in the Ports panel (once; VS Code
+     often does it by itself).
+   - Open the task's `http://localhost:44100/p/.../?t=...` URL in any browser,
+     or in VS Code (*Simple Browser: Show*).
+   - The token becomes a cookie, so later visits work without it, and
+     `http://localhost:44100/` lists every running preview.
 4. **Optional: a key for forward search.** Add this to your
    `keybindings.json` (use `ctrl+alt+j` on Linux and Windows):
 
@@ -205,7 +207,8 @@ them. To propose a change, see [CONTRIBUTING.md](CONTRIBUTING.md).
 | 403 in the browser | Open the full URL with `?t=` once. The token is in `~/.config/latex-live/token`. |
 | Stopping the task leaves latexmk running | Your `python3` may be a wrapper that doesn't pass signals on. Use the interpreter itself, e.g. `/usr/bin/python3`. |
 | Double-click does nothing | The task must run in a VS Code terminal so that `code` is on `PATH`. |
-| `no free port in 44100-44109` | Stop old instances (`pgrep -af latex-live/live.py`), or start elsewhere with `--port`. |
+| `port 44100 is taken; the hub is on …` | Another program, or a preview from before 0.2 (one port per paper), holds 44100. Restart every preview task once; or move the hub with `--port`. |
+| `no free port in 44101-44110` | Too many previews: stop old ones (`pgrep -af latex-live/live.py`). |
 | Viewer shows an old PDF with a red banner | The last build failed and the previous PDF was kept. Click the error to open it. |
 
 ### Keeping the image

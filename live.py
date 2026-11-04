@@ -31,8 +31,11 @@ Usage (from a paper root):  live.py [<doc>[.tex] | PATH] [--port 44100] [--page-
   after it (also edit, resolve, reply, and delete). On a remote machine, forward the port (e.g. in VS Code's Ports panel)
   and open the localhost URL; with LATEX_LIVE_HOST set, a direct URL on that host
   is printed too (e.g. a name a tunnel exposes). Anything that reaches the port
-  can send requests, so every request needs the token (kept in ./token next to
-  live.py; ?t=TOKEN once, then a SameSite=Strict cookie).
+  can send requests, so every request needs the token (in ~/.config/latex-live;
+  ?t=TOKEN once, then a SameSite=Strict cookie).
+- One port for every preview (the hub, 44100): each instance runs on its own
+  port from 44101, and the one that holds the hub's lock forwards
+  /p/<paper>/<doc>/ to the right one; / lists them.
 - One instance per document: a second one (e.g. another VS Code window opening
   the same folder) prints the running viewer's URL and exits, or with --replace
   stops the first and runs instead; one that no longer answers is replaced. /papers
@@ -49,6 +52,7 @@ import gzip
 import hashlib
 import hmac
 import html
+import http.client
 import http.cookies
 import http.server
 import json
@@ -85,6 +89,7 @@ STATE = os.environ.get("LATEX_LIVE_STATE") or os.path.join(
 TOKEN_FILE = os.path.join(STATE, "token")
 INSTANCES = os.path.join(STATE, "instances")
 OLD_INSTANCES = os.path.join(HERE, "instances")  # (where instances of 0.1.0 list themselves)
+HUB_LOCK, HUB_FILE = os.path.join(STATE, "hub.lock"), os.path.join(STATE, "hub.json")  # (hub_watch)
 with open(os.path.join(HERE, "VERSION")) as f:
     VERSION = f.read().strip()  # (tagged v<VERSION> on release)
 
@@ -154,7 +159,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_error(403, f"open the URL with ?t=<token> from {TOKEN_FILE}")
         if path == "/":
             self.send_response(302)
-            self.send_header("Location", f"/viewer.html?file={urllib.parse.quote(self.server.default_pdf)}")
+            self.send_header("Location", f"viewer.html?file={urllib.parse.quote(self.server.default_pdf)}")  # (relative: also under the hub)
             self.end_headers()
         elif path.startswith(("/pdf/", "/status/", "/outline/", "/notes/", "/check/", "/graphics/", "/margin/", "/floats/",
                               "/authors/")):
@@ -2696,7 +2701,8 @@ def record_port(server):
     server.lock.write(json.dumps({"port": server.server_address[1], "pid": os.getpid()}))
     server.lock.flush()
     os.makedirs(INSTANCES, exist_ok=True)
-    entry = {"port": server.server_address[1], "pid": os.getpid(), "root": server.paper_root, "doc": server.default_pdf[:-4]}
+    entry = {"port": server.server_address[1], "pid": os.getpid(), "root": server.paper_root, "doc": server.default_pdf[:-4],
+             "id": paper_id(server.paper_root), "version": VERSION}
     with open(os.path.join(INSTANCES, f"{os.getpid()}.json"), "w") as f:
         json.dump(entry, f)
 
@@ -2733,22 +2739,188 @@ def instances():
 
 
 def papers_page(server, host):
-    """/papers: every running preview on this machine, with links to their viewers (on the host
-    this page came through; a forwarded connection needs each port forwarded too)."""
+    """/papers: every running preview on this machine, with links to their viewers: through the
+    hub (one port for all) where an instance has a paper id, else on its own port."""
     hostname = urllib.parse.urlsplit(f"//{host}").hostname or "localhost"
     hostname = f"[{hostname}]" if ":" in hostname else hostname  # (IPv6)
+    hub = hub_port()
     rows = []
     for e in instances():
-        url = f"//{hostname}:{e['port']}/viewer.html?file={urllib.parse.quote(e['doc'])}.pdf"
-        here = " (this one)" if e["pid"] == os.getpid() else ""
+        viewer = f"viewer.html?file={urllib.parse.quote(e['doc'])}.pdf"
+        if not server and e.get("id"):  # (the hub's own page: same origin, whatever port it is forwarded to)
+            url = f"{hub_path(e['id'], e['doc'])}{viewer}"
+        elif hub and e.get("id"):
+            url = f"//{hostname}:{hub}{hub_path(e['id'], e['doc'])}{viewer}"
+        else:
+            url = f"//{hostname}:{e['port']}/{viewer}"
+        here = " (this one)" if server and e["pid"] == os.getpid() else ""
         rows.append(f"<tr><td title='{html.escape(e['root'])}'>{html.escape(os.path.basename(e['root']))}</td>"
-                    f"<td><a href='{html.escape(url)}'>{html.escape(e['doc'])}.tex</a>{here}</td><td>{e['port']}</td></tr>")
+                    f"<td><a href='{html.escape(url)}'>{html.escape(e['doc'])}.tex</a>{here}</td>"
+                    f"<td>{html.escape(e.get('version', ''))}</td></tr>")
     return f"""<!doctype html><meta charset="utf-8"><title>latex-live: previews</title>
 <style>body {{ font: 14px system-ui, sans-serif; background: #323639; color: #eee; margin: 2em; }} a {{ color: #9cf; }}
-td, th {{ padding: 4px 14px 4px 0; text-align: left; }} th {{ opacity: 0.7; font-weight: normal; }} p {{ opacity: 0.7; }}</style>
+td, th {{ padding: 4px 14px 4px 0; text-align: left; }} th {{ opacity: 0.7; font-weight: normal; }}</style>
 <h2>Running previews</h2>
-<table><tr><th>Paper</th><th>Document</th><th>Port</th></tr>{"".join(rows)}</table>
-<p>Through a forwarded port (e.g. VS Code's Ports panel), forward the others' ports too.</p>"""
+<table><tr><th>Paper</th><th>Document</th><th>Version</th></tr>{"".join(rows)}</table>"""
+
+
+# The hub: one port (--port, 44100 by default) for every preview on the machine. Each preview
+# still runs in its own process, with its own latexmk, terminal and port (from --port + 1); the
+# one holding HUB_LOCK also serves the hub, which forwards /p/<paper id>/<doc>/... to that
+# preview. When it exits, another preview takes over the lock and the same port within a second,
+# so viewer URLs keep working; the last one to exit closes it.
+def paper_id(root):
+    """A paper's id in hub URLs: its folder's name and a short hash of its path (and of the build
+    directory, which a second instance of the same paper changes), stable across restarts."""
+    real = os.path.realpath(root)
+    key = real + ("" if BUILD == "build" else "\0" + BUILD)
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", os.path.basename(real)).strip("-") or "paper"
+    return f"{slug}-{hashlib.sha1(key.encode()).hexdigest()[:6]}"
+
+
+def hub_path(id_, doc):
+    return f"/p/{urllib.parse.quote(id_)}/{urllib.parse.quote(doc)}/"
+
+
+def hub_port():
+    """The hub's port, if a live preview serves it."""
+    try:
+        with open(HUB_FILE) as f:
+            hub = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return hub.get("port") if is_live_instance(hub.get("pid")) else None
+
+
+class HubHandler(Handler):
+    """The hub's requests: /p/<id>/<doc>/<path> goes to <path> on that preview's port, with the
+    token, so the viewer works there unchanged (its URLs are relative). /papers lists the
+    previews; / and /viewer.html?file=X (old bookmarks) go to the only matching preview."""
+
+    def do_GET(self):
+        self.route("GET")
+
+    def do_POST(self):
+        self.route("POST")
+
+    def route(self, method):
+        url = urllib.parse.urlsplit(self.path)
+        query = urllib.parse.parse_qs(url.query)
+        if not self.authorize(query if method == "GET" else {}):
+            return self.send_error(403, f"open the URL with ?t=<token> from {TOKEN_FILE}")
+        if m := re.match(r"^/p/([^/]+)/([^/]+)(/.*)?$", url.path):
+            id_, doc = urllib.parse.unquote(m[1]), urllib.parse.unquote(m[2])
+            if not m[3]:
+                return self.redirect(hub_path(id_, doc))
+            target = self.server.find(id_, doc)
+            if not target:
+                return self.send_json(404, {"error": f"no preview of {doc}.tex in {id_} is running"})
+            return self.forward(method, target, m[3] + (f"?{url.query}" if url.query else ""), hub_path(id_, doc))
+        if url.path == "/hub/ping":
+            return self.send_json(200, {"pid": os.getpid()})
+        if url.path == "/papers":
+            return self.send_html(papers_page(None, self.headers.get("Host", "localhost")))
+        if url.path in ("/", "/viewer.html"):
+            want = (query.get("file", [""])[0])[:-4]
+            found = [e for e in self.server.table() if not want or e["doc"] == want]
+            if len(found) == 1:
+                return self.redirect(f"{hub_path(found[0]['id'], found[0]['doc'])}viewer.html?file="
+                                     f"{urllib.parse.quote(found[0]['doc'])}.pdf")
+            return self.redirect("/papers")
+        self.send_error(404)
+
+    def redirect(self, location):
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.end_headers()
+
+    def forward(self, method, target, path, prefix):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else None
+        headers = {k: v for k, v in self.headers.items() if k.lower() in ("content-type", "range", "if-range")}
+        headers["Cookie"] = f"latex_live={self.server.token}"
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", target["port"], timeout=120)
+            conn.request(method, path, body, headers)
+            resp = conn.getresponse()
+        except OSError as e:
+            return self.send_json(502, {"error": f"the preview of {target['doc']}.tex is not answering ({e})"})
+        self.send_response(resp.status)
+        for key, value in resp.getheaders():
+            if key.lower() in ("set-cookie", "connection", "transfer-encoding", "server", "date"):
+                continue
+            if key.lower() == "location" and value.startswith("/"):
+                value = prefix.rstrip("/") + value
+            self.send_header(key, value)
+        self.end_headers()
+        try:
+            shutil.copyfileobj(resp, self.wfile)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            conn.close()
+
+
+class HubServer(DualStackServer):
+    daemon_threads = True
+
+    def table(self, cache={}):
+        """The running previews (instances), looked up at most every 2 s."""
+        if time.monotonic() - cache.get("at", -9) > 2:
+            cache.update(at=time.monotonic(), found=[e for e in instances() if e.get("id")])
+        return cache["found"]
+
+    def find(self, id_, doc):
+        """The preview building doc in paper id_; else the paper's only one (it switched documents)."""
+        same = [e for e in self.table() if e["id"] == id_]
+        return next((e for e in same if e["doc"] == doc), same[0] if len(same) == 1 else None)
+
+
+def hub_watch(port):
+    """Serve the hub once this process holds HUB_LOCK (a thread: waits while another one serves it)."""
+    os.makedirs(STATE, mode=0o700, exist_ok=True)
+    lock = open(HUB_LOCK, "a+")
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            time.sleep(1)
+    for p in range(port, port + 10):
+        try:
+            hub = HubServer(("::", p), HubHandler)
+            break
+        except OSError:
+            continue
+    else:
+        return print(f"=== latex-live: no free port for the hub in {port}-{port + 9}", flush=True)
+    if p != port:
+        print(f"=== latex-live: port {port} is taken; the hub is on {p}", flush=True)
+    hub.token = load_token()
+    with open(HUB_FILE, "w") as f:
+        json.dump({"port": p, "pid": os.getpid()}, f)
+    hub.serve_forever()
+
+
+def hub_answers(port):
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/hub/ping?t={load_token()}", timeout=3) as r:
+            return r.status == 200
+    except (OSError, ValueError):
+        return False
+
+
+def replace_stuck_hub():
+    """Before starting: stop a preview that holds the hub but no longer answers (as with a
+    document's lock, take_lock), so the hub doesn't stay down with it."""
+    try:
+        with open(HUB_FILE) as f:
+            hub = json.load(f)
+    except (OSError, ValueError):
+        return
+    if is_live_instance(hub.get("pid")) and hub.get("pid") != os.getpid() and not hub_answers(hub.get("port")):
+        print(f"=== latex-live: stopping process {hub['pid']}, which serves the hub but is not answering", flush=True)
+        stop_instance(hub["pid"])
 
 
 def instance_answers(port):
@@ -2906,11 +3078,23 @@ def container_exec(paper_root):
     return f"'{os.path.join(HERE, 'tex-exec')}' {TEXLIVE_IMAGE} '{paper_root}'"
 
 
-def print_urls(port):
+def print_urls(port, path="/"):
     token = load_token()
-    print(f"=== latex-live: viewer (on a remote machine, forward port {port} first): http://localhost:{port}/?t={token}", flush=True)
+    print(f"=== latex-live: viewer (on a remote machine, forward port {port} first): http://localhost:{port}{path}?t={token}", flush=True)
     if host := os.environ.get("LATEX_LIVE_HOST"):
-        print(f"=== latex-live: viewer, direct: http://{host}:{port}/?t={token}", flush=True)
+        print(f"=== latex-live: viewer, direct: http://{host}:{port}{path}?t={token}", flush=True)
+
+
+def print_hub_urls(doc, fallback_port, wait=0):
+    """The doc's viewer URLs through the hub (waiting up to wait seconds for one to serve it),
+    else on fallback_port."""
+    end = time.monotonic() + wait
+    while not (hub := hub_port()) and time.monotonic() < end:
+        time.sleep(0.2)
+    if hub:
+        print_urls(hub, hub_path(paper_id(os.getcwd()), doc))
+    else:
+        print_urls(fallback_port)
 
 
 def main():
@@ -2919,7 +3103,8 @@ def main():
                     " sources were edited last. The viewer switches between root files. A path (e.g. the editor's"
                     " current file) runs in that file's paper: it builds the file if it is a root one.")
     ap.add_argument("--version", action="version", version=f"latex-live {VERSION}")
-    ap.add_argument("--port", type=int, default=44100)
+    ap.add_argument("--port", type=int, default=44100, help="the hub's port, which serves every preview (default: 44100);"
+                    " each preview also has its own, from the next one")
     ap.add_argument("--page-limit", type=int, help="main-text page limit to check in the viewer (default: the venue's,"
                     " for ICLR, NeurIPS, COLM, ICML, CVPR and ICCV styles)")
     ap.add_argument("--build-dir", default="build", help="build directory, relative to the paper root (default: build);"
@@ -2961,7 +3146,7 @@ def main():
         holder = f"process {pid}, port {port}" if pid else f"port {port}"
         if port and instance_answers(port) and not args.replace:
             print(f"=== latex-live: already running for {doc}.tex ({holder}; another terminal or window)", flush=True)
-            print_urls(port)
+            print_hub_urls(doc, port)
             print("=== latex-live: --replace stops that one and runs here", flush=True)
             return
         if not pid:
@@ -2973,12 +3158,14 @@ def main():
         lock, other = take_lock(doc)
         if not lock:
             sys.exit(f"latex-live: {doc}.tex is still locked; retry")
-    server = serve(os.getcwd(), f"{doc}.pdf", args.port, args.page_limit)
+    replace_stuck_hub()
+    server = serve(os.getcwd(), f"{doc}.pdf", args.port + 1, args.page_limit)  # (the hub has --port)
     code_updated()  # (what this process runs)
     server.lock = lock
     set_doc(server, doc)
     record_port(server)
-    print_urls(server.server_address[1])
+    threading.Thread(target=hub_watch, args=(args.port,), daemon=True).start()
+    print_hub_urls(doc, server.server_address[1], wait=3)
     others = [d for d in docs if d != doc]
     print(f"=== latex-live {VERSION}: building {doc}.tex" + (f"; the viewer switches to {', '.join(others)}" if others else ""),
           flush=True)

@@ -344,6 +344,9 @@ const { EventBus, PDFViewer, PDFLinkService, PDFFindController, FindState, LinkT
   await import("./pdfjs/web/pdf_viewer.mjs");
 
 const $ = (id) => document.getElementById(id);
+// Under the hub (one port for every preview): "/p/<paper id>/". Settings tied to a paper are kept
+// per paper then, since every paper shares the hub's origin.
+const hubBase = location.pathname.match(/^\/p\/[^/]+\//)?.[0] || "";
 const el = (tag, props = {}, ...children) => { const e = Object.assign(document.createElement(tag), props); e.append(...children); return e; };
 const file = new URLSearchParams(location.search).get("file");
 const isDiff = file.endsWith("-diff.pdf");
@@ -352,7 +355,7 @@ const cleanFile = docFile.replace(/\.pdf$/, "-clean.pdf");
 // Which build to show: "notes" (the live build) or "clean" (the notes-free build, when there is one).
 let view = localStorage.getItem("latex-live:view") === "notes" ? "notes" : "clean"; // notes-free unless chosen otherwise
 let shownVariant = null; // the one on screen
-const viewKey = `latex-live:${file}`;
+const viewKey = `latex-live:${hubBase}${file}`;
 document.title = isDiff ? `diff: ${docFile}` : file;
 
 const container = $("viewerContainer");
@@ -1370,7 +1373,7 @@ const drawAllMargins = () => { for (let n = 1; n <= (doc?.numPages || 0); n++) d
 // and the note appears. In the margin and the sidebar, notes get ✓ (resolve: commented out under a
 // "% RESOLVED <date> (<initials>): <reason>" line), others' notes ↩ (reply), your own ✎ (edit), and
 // the ones written from this tab ✕ (delete, as an undo; this tab remembers them by file, macro, and text).
-let who = localStorage.getItem("latex-live:who") || "", authors = [];
+let who = localStorage.getItem(`latex-live:${hubBase}who`) || "", authors = [];
 const written = new Set(JSON.parse(sessionStorage.getItem("latex-live:written") || "[]"));
 const writtenKey = (file, macro, tex) => JSON.stringify([file, macro, tex]);
 function markWritten(key, on) {
@@ -1387,7 +1390,7 @@ async function loadAuthors() {
 }
 $("whoPick").onchange = (e) => {
   who = e.target.value;
-  localStorage.setItem("latex-live:who", who);
+  localStorage.setItem(`latex-live:${hubBase}who`, who);
   renderNotes();
   drawAllMargins();
 };
@@ -2278,20 +2281,28 @@ async function poll() {
 if (localStorage.getItem("latex-live:side")) showSide(true);
 // Main document: the paper's root .tex files. Picking one makes the server build it instead, and
 // every open viewer follows (poll).
-const openDoc = (pdf) => { location.href = `viewer.html?${new URLSearchParams({ file: pdf })}`; };
+const openDoc = (pdf) => {
+  const dir = hubBase ? `${hubBase}${encodeURIComponent(pdf.slice(0, -4))}/` : ""; // (under the hub, the document's own path)
+  location.href = `${dir}viewer.html?${new URLSearchParams({ file: pdf })}`;
+};
 // The document menu: this paper's root files (switching what this instance builds), the other
-// papers that latex-live instances on this machine preview (their viewers, on their ports), and
-// a page listing them all.
-const viewerOn = (port, doc) => `${location.protocol}//${location.hostname}:${port}/viewer.html?${new URLSearchParams({ file: `${doc}.pdf` })}`;
+// papers that latex-live instances on this machine preview (their viewers: through the hub, else
+// on their own ports), and a page listing them all.
+let otherPreviews = [];
+function viewerOf(i) {
+  const query = new URLSearchParams({ file: `${i.doc}.pdf` });
+  return hubBase && i.id ? `/p/${encodeURIComponent(i.id)}/${encodeURIComponent(i.doc)}/viewer.html?${query}`
+                         : `${location.protocol}//${location.hostname}:${i.port}/viewer.html?${query}`;
+}
 async function loadDocs() {
   const { doc: building, docs } = await (await fetch("docs")).json();
   const { self, instances } = await (await fetch("instances")).json().catch(() => ({ instances: [] }));
-  const others = instances.filter((i) => i.pid !== self);
+  const others = otherPreviews = instances.filter((i) => i.pid !== self);
   const pick = $("docPick");
   pick.replaceChildren(...docs.map((d) => el("option", { value: d, textContent: `${d}.tex`, selected: `${d}.pdf` === docFile })));
   if (others.length) {
     const group = el("optgroup", { label: "Other previews" });
-    group.append(...others.map((i) => el("option", { value: `open:${i.port}:${i.doc}`, title: i.root,
+    group.append(...others.map((i, n) => el("option", { value: `open:${n}`, title: i.root,
                                                      textContent: `${i.root.split("/").pop()}: ${i.doc}.tex` })));
     pick.append(group, el("option", { value: "papers", textContent: "All previews…" }));
   }
@@ -2300,16 +2311,13 @@ async function loadDocs() {
 $("docPick").onchange = async (e) => {
   const value = e.target.value;
   e.target.value = docFile.slice(0, -4);
-  if (value === "papers") return window.open("papers", "latex-live-papers");
-  if (value.startsWith("open:")) {
-    const [, port, doc] = value.match(/^open:(\d+):(.*)$/);
-    return (location.href = viewerOn(port, doc));
-  }
+  if (value === "papers") return window.open(hubBase ? "/papers" : "papers", "latex-live-papers");
+  if (value.startsWith("open:")) return (location.href = viewerOf(otherPreviews[+value.slice(5)]));
   setStatus(`switching to ${value}.tex…`, "busy");
   const r = await fetch(`switch?${new URLSearchParams({ doc: value })}`);
   const body = await r.json().catch(() => ({ error: `switch failed (${r.status})` }));
   if (r.ok) return openDoc(`${value}.pdf`);
-  if (body.port) return (location.href = viewerOn(body.port, value)); // (another instance builds it)
+  if (body.port) return hubBase ? openDoc(`${value}.pdf`) : (location.href = viewerOf({ port: body.port, doc: value })); // (another instance builds it)
   setStatus(body.error, "error");
 };
 loadDocs().catch(() => {});
