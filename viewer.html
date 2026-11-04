@@ -756,7 +756,7 @@ $("keys").querySelector(".welcome").onclick = () => showWelcome(true);
 
 // The toolbar keeps to one row: when it overflows, its controls move into the ⋯ menu, lowest
 // data-priority first, and come back once there is room again. It refits when the window
-// resizes, when a control appears or disappears, and when the status changes.
+// resizes, when a control appears or disappears, and when the status or the page count changes.
 const barItems = [...document.querySelectorAll("[data-priority]")]; // (in toolbar order)
 function placeItem(item, inBar) {
   const where = inBar ? $("bar") : $("moreItems");
@@ -788,7 +788,8 @@ const shownChanged = new MutationObserver((records) => {
 for (const node of [$("bar"), $("moreMenu")]) {
   shownChanged.observe(node, { subtree: true, attributes: true, attributeFilter: ["hidden"], attributeOldValue: true });
 }
-new MutationObserver(fitBar).observe($("status"), { childList: true, characterData: true, subtree: true });
+const textChanged = new MutationObserver(fitBar);
+for (const node of [$("status"), $("pages")]) textChanged.observe(node, { childList: true, characterData: true, subtree: true });
 document.fonts?.ready.then(fitBar);
 
 // Dark mode, the sidebar, and its tab are remembered across sessions.
