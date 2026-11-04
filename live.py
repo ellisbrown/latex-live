@@ -2864,16 +2864,20 @@ class HubHandler(Handler):
 class HubServer(DualStackServer):
     daemon_threads = True
 
-    def table(self, cache={}):
-        """The running previews (instances), looked up at most every 2 s."""
-        if time.monotonic() - cache.get("at", -9) > 2:
+    def table(self, fresh=False, cache={}):
+        """The running previews (instances), looked up at most every 2 s (unless fresh)."""
+        if fresh or time.monotonic() - cache.get("at", -9) > 2:
             cache.update(at=time.monotonic(), found=[e for e in instances() if e.get("id")])
         return cache["found"]
 
     def find(self, id_, doc):
-        """The preview building doc in paper id_; else the paper's only one (it switched documents)."""
-        same = [e for e in self.table() if e["id"] == id_]
-        return next((e for e in same if e["doc"] == doc), same[0] if len(same) == 1 else None)
+        """The preview building doc in paper id_; else the paper's only one (it switched documents).
+        A miss looks again, for a preview that started within the last 2 s."""
+        for fresh in (False, True):
+            same = [e for e in self.table(fresh) if e["id"] == id_]
+            if found := next((e for e in same if e["doc"] == doc), same[0] if len(same) == 1 else None):
+                return found
+        return None
 
 
 def hub_watch(port):
