@@ -3812,10 +3812,11 @@ def exact_export(server, pdf, keep=None):
     Built in build/export/<doc>/ once per build of the document (the published PDF's mtime), one
     export at a time; with SyncTeX, and with the files its last pass read kept in inputs/, so that
     build_review can repeat that pass. keep(out), if given, runs before another export can replace
-    this one (to copy what it needs). Raises RuntimeError when it fails. Each run takes one of
-    SPAWNS' places, as SyncTeX's do; in shared mode, they run only in the TeX Live image, confined
-    (server.tex_exec, which is tex-exec there from the start, with LATEX_LIVE_SANDBOX), never with the
-    host's TeX."""
+    this one (to copy what it needs). Raises RuntimeError when it fails, and at once when it failed
+    for this build already (it would again: for the review copy after /export, say). Each run takes
+    one of SPAWNS' places, as SyncTeX's do; in shared mode, they run only in the TeX Live image,
+    confined (server.tex_exec, which is tex-exec there from the start, with LATEX_LIVE_SANDBOX), never
+    with the host's TeX."""
     root, doc = server.paper_root, pdf[:-4]
     out = os.path.join(root, BUILD, "export", doc)  # (per document: another instance may export another)
     job = f"{doc}-export"
@@ -3830,9 +3831,16 @@ def exact_export(server, pdf, keep=None):
     def log():
         return read_output(root, os.path.join(out, f"{job}.log")) or ""
 
+    def failed(why):  # (remembered with the build it reflects, source)
+        server.exported[pdf] = (source, why)
+        return RuntimeError(why)
+
     with server.export_lock:
         source = str(mtime(pdf_path(root, pdf)))  # (the build it reflects)
-        if server.exported.get(pdf) != source or not os.path.isfile(os.path.join(root, BUILD, f"{job}.pdf")):
+        built, why = server.exported.get(pdf, (None, None))  # (the build last exported, and what failed then)
+        if built == source and why:
+            raise RuntimeError(why)
+        if built != source or not os.path.isfile(os.path.join(root, BUILD, f"{job}.pdf")):
             if SHARED and not image_pulled():  # (said plainly, rather than as a pdflatex failure with no log)
                 raise RuntimeError(f"{IMAGE_MISSING}; until then there is no download without notes (never the host's TeX here)")
             server.exported.pop(pdf, None)
@@ -3847,10 +3855,10 @@ def exact_export(server, pdf, keep=None):
                 keep_inputs(out)
                 if not run(tex, root):
                     first = next((l for l in log().splitlines() if l.startswith("! ") or re.match(r"^\S+:\d+: ", l)), "")
-                    raise RuntimeError(first or f"pdflatex failed; see {BUILD}/export/{doc}/{job}.log")
+                    raise failed(first or f"pdflatex failed; see {BUILD}/export/{doc}/{job}.log")
                 if passes == 1 and "\\bibdata" in (read_output(root, os.path.join(out, f"{job}.aux")) or ""):
                     if not run(f"bibtex {job}", out, {"BIBINPUTS": f"{root}:", "BSTINPUTS": f"{root}:"}):
-                        raise RuntimeError(f"bibtex failed; see {BUILD}/export/{doc}/{job}.blg")
+                        raise failed(f"bibtex failed; see {BUILD}/export/{doc}/{job}.blg")
                     continue
                 settled = not re.search(r"Rerun to get|may have changed\. Rerun|Please rerun|rerunfilecheck Warning", log())
                 # (lineno places its numbers from the previous pass's .aux without asking for a rerun, so
@@ -3858,9 +3866,9 @@ def exact_export(server, pdf, keep=None):
                 if settled and (passes >= 2 or not latex_report.uses_lineno(os.path.join(out, f"{job}.aux"))):
                     break
             else:  # (not exact, so not published)
-                raise RuntimeError(f"the references had not settled after {passes} passes; see {BUILD}/export/{doc}/{job}.log")
+                raise failed(f"the references had not settled after {passes} passes; see {BUILD}/export/{doc}/{job}.log")
             os.replace(os.path.join(out, f"{job}.pdf"), os.path.join(root, BUILD, f"{job}.pdf"))
-            server.exported[pdf] = source
+            server.exported[pdf] = (source, None)
             with server.download_lock:  # (built for the review copy: the download without notes needs no second build)
                 e = server.export
                 if not (e.get("pdf") == pdf and (e.get("state") == "running" or e.get("source") == source)):

@@ -276,6 +276,7 @@ def static_checks():
     layout_checks()
     matching_checks()
     bounds_checks()
+    failed_export_checks()
     confinement_checks()
 
 
@@ -443,6 +444,47 @@ def bounds_checks():
         shutil.rmtree(tmp, ignore_errors=True)
     ok("the downloads read TeX's logs, .aux, .bbl and SyncTeX files only up to a bound, past which they stop and say so;"
        " the probe's records are read from its log line by line; a log whose wrapping split a UTF-8 character reads")
+
+
+def failed_export_checks():
+    """An export that failed fails again at once for the same build of the document (live.exact_export, with a
+    stand-in for TeX), as the review copy asks for it after /export did; the next build is exported again."""
+    sys.path.insert(0, HERE)
+    import live
+    saved, tmp = live.SHARED, tempfile.mkdtemp(prefix="latex-live-check-")
+    try:
+        live.SHARED = False  # (no TeX Live image needed: the stand-in runs instead of TeX)
+        root = os.path.join(tmp, "paper")
+        os.makedirs(os.path.join(root, live.BUILD))
+        published = os.path.join(root, "main.pdf")
+        put(published, "%PDF-1.5\n")
+        stand_in = os.path.join(tmp, "tex")
+        os.makedirs(stand_in)
+        put(os.path.join(stand_in, "log"), "This is pdfTeX\n./main.tex:3: Undefined control sequence.\n")
+        put(os.path.join(stand_in, "exit"), "1")
+        server = types.SimpleNamespace(paper_root=root, tex_exec=tex_stand_in(stand_in), export={}, exported={},
+                                       export_lock=threading.Lock(), download_lock=threading.Lock())
+
+        def runs(what):
+            try:
+                live.exact_export(server, "main.pdf")
+                fail(f"{what} went ahead, though TeX failed")
+            except RuntimeError as e:
+                if str(e) != "./main.tex:3: Undefined control sequence.":
+                    fail(f"{what} failed with: {e}")
+            return len(read_text(os.path.join(stand_in, "calls")).splitlines())
+
+        if (runs("the export"), runs("the export again, for the same build")) != (1, 1):
+            fail("an export that failed was built again for the same build of the document")
+        st = os.stat(published)
+        os.utime(published, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))  # (a new build)
+        if runs("the export of a new build") != 2:
+            fail("an export that failed was not built again for a new build of the document")
+    finally:
+        live.SHARED = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+    ok("an export that failed fails again at once for the same build (no second build for the review copy), and is built"
+       " again for the next one")
 
 
 def confinement_checks():
