@@ -4,18 +4,23 @@
 1. The Python compiles without warnings (and with Python 3.9, if there is one), and the viewer's
    script parses (with Node, if there is one).
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, an inline note, a
-   git repository with a pushed commit and a local one) gets a live.py instance on a spare port:
+   git repository with a pushed commit and a local one) gets a live.py instance, with the hub on
+   port 44180 and state of its own (not the user's):
    - the build publishes main.pdf, and the notes-free pass main-clean.pdf;
-   - the viewer's endpoints answer, SyncTeX finds a source line, /instances lists the instance;
+   - the hub redirects an old bookmark, needs the token or its cookie, and forwards every
+     endpoint (POST /rebuild too); SyncTeX finds a source line; /instances lists the instance;
    - the HEAD and last-push baselines build (they differ: one commit is unpushed), and the
      notes-free baseline's line numbers match the live notes-free build's (two passes with lineno);
+   - a second document runs in its own process behind the same port, and /papers links both;
    - a second instance for the same document says it is already running; --replace takes over,
-     and so does any new instance when the running one no longer answers;
+     and so does any new instance when the running one no longer answers; the hub moves to
+     another instance on the same port, and a hub that no longer answers is replaced;
    - stopping the instance removes it from /instances.
 Exits non-zero on the first failure.
 """
 
 import glob
+import http.client
 import json
 import os
 import re
@@ -29,8 +34,7 @@ import time
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PORT = 44180
-port = PORT  # the instance's (live_checks)
+PORT = 44180  # the hub's; the previews' own ports follow
 
 PAPER = r"""\documentclass[twocolumn]{article}
 \usepackage{xcolor}
@@ -57,7 +61,8 @@ ENV = dict(os.environ)  # for the instances: their own token and instance list (
 def fail(msg):
     for path in LOGS:
         with open(path, errors="replace") as f:
-            print(f"--- {os.path.basename(path)} (last lines)\n" + "".join(f.readlines()[-25:]), flush=True)
+            tail = re.sub(r"t=[A-Za-z0-9_-]{8,}", "t=REDACTED", "".join(f.readlines()[-25:]))  # (never print the token)
+            print(f"--- {os.path.basename(path)} (last lines)\n{tail}", flush=True)
     sys.exit(f"FAIL: {msg}")
 
 
@@ -128,18 +133,48 @@ def make_paper(tmp):
     return paper
 
 
-def start(paper, *extra):
+def start(paper, doc="main", *extra):
     LOGS.append(os.path.join(paper, "..", f"live-{len(LOGS)}.log"))
     log = open(LOGS[-1], "w")
-    return subprocess.Popen([sys.executable, os.path.join(HERE, "live.py"), "main.tex", "--no-open", "--port", str(PORT), *extra],
+    return subprocess.Popen([sys.executable, os.path.join(HERE, "live.py"), f"{doc}.tex", "--no-open", "--port", str(PORT), *extra],
                             cwd=paper, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=ENV)
 
 
-def get(path, token):
-    sep = "&" if "?" in path else "?"
-    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}{sep}t={token}", timeout=30) as r:
-        body = r.read()
-        return json.loads(body) if r.headers.get_content_type() == "application/json" else body.decode()
+def request(path, token=None, method="GET", body=None, cookie=None):
+    """(status, headers, body) of a request to the hub, without following redirects."""
+    conn = http.client.HTTPConnection("127.0.0.1", hub["port"], timeout=30)
+    if token:
+        path += ("&" if "?" in path else "?") + f"t={token}"
+    headers = {"Cookie": f"latex_live={cookie}"} if cookie else {}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    conn.request(method, path, json.dumps(body) if body is not None else None, headers)
+    r = conn.getresponse()
+    data = r.read()
+    conn.close()
+    return r.status, dict(r.getheaders()), data
+
+
+def get(path, token, doc="main"):
+    """A preview's endpoint, through the hub."""
+    status, headers, data = request(f"{hub['base']}{doc}{path}", token)
+    if status != 200:
+        raise OSError(f"{status} {data[:200]!r}")
+    kind = headers.get("Content-Type", "")
+    return json.loads(data) if kind.startswith("application/json") else data.decode() if kind.startswith("text/") else data
+
+
+def read_hub():
+    """The hub's port and pid (HUB_FILE), if it answers."""
+    try:
+        with open(os.path.join(ENV["LATEX_LIVE_STATE"], "hub.json")) as f:
+            hub.update(json.load(f))
+        return request("/hub/ping", TOKEN[0])[0] == 200
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+hub, TOKEN = {}, [None]
 
 
 def ln_records(path):
@@ -147,10 +182,23 @@ def ln_records(path):
         return [line for line in f if "\\@LN" in line]
 
 
+def stop(proc):
+    try:
+        os.killpg(proc.pid, signal.SIGCONT)
+        os.killpg(proc.pid, signal.SIGTERM)
+        proc.wait(20)
+    except ProcessLookupError:
+        pass
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+
+
 def live_checks(tmp):
-    ENV["LATEX_LIVE_STATE"] = os.path.join(tmp, "state")  # (not the user's: their previews keep their list)
+    ENV["LATEX_LIVE_STATE"] = state = os.path.join(tmp, "state")  # (not the user's: their previews keep their list)
     paper = make_paper(tmp)
-    proc = start(paper)
+    with open(os.path.join(paper, "appendix.tex"), "w") as f:
+        f.write("\\documentclass{article}\n\\begin{document}\nAn appendix.\n\\end{document}\n")
+    procs = [start(paper)]
     try:
         build = os.path.join(paper, "build")
         wait_for("main.pdf", lambda: os.path.isfile(os.path.join(paper, "main.pdf")))
@@ -164,17 +212,32 @@ def live_checks(tmp):
             fail("no build/main-clean.pdf")
         ok("the notes-free pass published build/main-clean.pdf")
 
-        with open(os.path.join(ENV["LATEX_LIVE_STATE"], "token")) as f:
-            token = f.read().strip()
-        read_port(build)
+        with open(os.path.join(state, "token")) as f:
+            token = TOKEN[0] = f.read().strip()
+        wait_for("the hub", read_hub, timeout=20)
+        if hub["port"] != PORT or hub["pid"] != procs[0].pid:
+            fail(f"the hub is not on port {PORT} in the first instance: {hub}")
+        with open(os.path.join(build, "main-live.lock")) as f:
+            own = json.load(f)["port"]
+        status, headers, _ = request("/viewer.html?file=main.pdf", token)  # (an old bookmark)
+        if status != 302 or not re.fullmatch(r"/p/paper-[0-9a-f]{6}/main/viewer\.html\?file=main\.pdf", headers.get("Location", "")):
+            fail(f"/viewer.html?file=main.pdf on the hub: {status} {headers.get('Location')}")
+        hub["base"] = headers["Location"][: -len("main/viewer.html?file=main.pdf")]
+        ok(f"the hub serves port {PORT} ({hub['base']}main/; the preview's own port is {own})")
+        if request(f"{hub['base']}main/status/main.pdf")[0] != 403:
+            fail("the hub answers without the token")
+        if request(f"{hub['base']}main/status/main.pdf", cookie=token)[0] != 200:
+            fail("the hub refuses its cookie")
+        ok("the hub needs the token (or its cookie)")
+
         for path in ("/status/main.pdf?base=push", "/outline/main.pdf", "/notes/main.pdf", "/authors/main.pdf",
                      "/check/main.pdf", "/graphics/main.pdf", "/margin/main.pdf", "/floats/main.pdf", "/docs",
-                     "/commits", "/papers", "/viewer.html"):
+                     "/commits", "/papers", "/viewer.html", "/pdfjs/build/pdf.min.mjs", "/pdf/main.pdf"):
             try:
                 get(path, token)
             except Exception as e:
-                fail(f"{path}: {e}")
-        ok("the viewer's endpoints answer")
+                fail(f"{path} (through the hub): {e}")
+        ok("the viewer's endpoints answer through the hub")
         with open(os.path.join(HERE, "VERSION")) as f:
             version = f.read().strip()
         reported = get("/status/main.pdf", token).get("latexLive")
@@ -182,15 +245,15 @@ def live_checks(tmp):
             fail(f"/status reports latexLive {reported}, not version {version}, not updated")
         ok(f"/status reports version {version}")
         notes = get("/notes/main.pdf", token)
-        if not any("hiding it moves" in n.get("text", "") for n in (notes if isinstance(notes, list) else notes.get("notes", []))):
+        if not any("hiding it moves" in n.get("text", "") for n in notes):
             fail(f"/notes does not list the note: {str(notes)[:300]}")
         target = get("/forward?file=main.tex&line=9", token)
         if not target.get("page"):
             fail(f"SyncTeX found no target for main.tex:9: {target}")
         ok(f"SyncTeX: main.tex:9 is on page {target['page']}")
         listed = get("/instances", token)
-        if not any(i["pid"] == proc.pid for i in listed["instances"]):
-            fail(f"/instances does not list the instance: {listed}")
+        if not any(i["pid"] == procs[0].pid and hub["base"] == f"/p/{i['id']}/" for i in listed["instances"]):
+            fail(f"/instances does not list the instance with its paper id: {listed}")
         ok("/instances lists the instance")
 
         def baselines():
@@ -212,62 +275,80 @@ def live_checks(tmp):
         if clean != head_clean:
             fail("the notes-free HEAD baseline's line numbers differ from the live notes-free build's")
         ok("the notes-free baseline's line numbers match the live notes-free build's")
+        status, _, data = request(f"{hub['base']}main/rebuild", method="POST", body={}, cookie=token)
+        if status != 202:
+            fail(f"POST /rebuild through the hub: {status} {data[:200]!r}")
+        ok("POST /rebuild works through the hub")
+
+        procs.append(start(paper, "appendix"))  # (a second document of the same paper, in its own process)
+        wait_for("appendix.pdf through the hub", lambda: _quiet(lambda: get("/status/appendix.pdf", token, "appendix")["version"]))
+        page = request("/papers", token)[2].decode()
+        if f"{hub['base']}main/viewer.html" not in page or f"{hub['base']}appendix/viewer.html" not in page:
+            fail(f"/papers does not link both documents through the hub:\n{page[:600]}")
+        ok("a second document gets its own process, behind the same port")
 
         second = subprocess.run([sys.executable, os.path.join(HERE, "live.py"), "main.tex", "--no-open", "--port", str(PORT)],
                                 cwd=paper, capture_output=True, text=True, timeout=60, env=ENV)
-        if "already running" not in second.stdout or second.returncode:
-            fail(f"a second instance did not report the first:\n{second.stdout}{second.stderr}")
-        ok("a second instance reports the running one and exits")
-        replacement = start(paper, "--replace")
+        if "already running" not in second.stdout or f":{PORT}{hub['base']}main/" not in second.stdout or second.returncode:
+            fail(f"a second instance did not report the first, with its hub URL:\n{second.stdout}{second.stderr}")
+        ok("a second instance reports the running one (its hub URL) and exits")
+        procs.append(start(paper, "main", "--replace"))
         try:
-            proc.wait(30)
+            procs[0].wait(30)
         except subprocess.TimeoutExpired:
             fail("--replace did not stop the first instance")
-        proc = replacement
-        wait_for("the replacement to answer", lambda: _answers(token, build))
+        wait_for("the hub to move to another instance", lambda: read_hub() and hub["pid"] != procs[0].pid, timeout=20)
+        if hub["port"] != PORT:
+            fail(f"the hub moved to port {hub['port']}")
+        wait_for("the replacement, through the hub", lambda: _quiet(lambda: get("/docs", token)))
         listed = get("/instances", token)["instances"]
-        if [i["pid"] for i in listed if i["root"] == os.path.realpath(paper)] != [proc.pid]:
+        if sorted(i["pid"] for i in listed if i["root"] == os.path.realpath(paper)) != sorted([procs[1].pid, procs[2].pid]):
             fail(f"/instances after --replace: {listed}")
-        ok("--replace takes over")
-        os.kill(proc.pid, signal.SIGSTOP)  # (holds the lock, answers nothing)
+        ok(f"--replace takes over; the hub stays on port {PORT} (now in process {hub['pid']})")
+
+        main_proc = procs[2]
+        os.kill(main_proc.pid, signal.SIGSTOP)  # (holds the lock, answers nothing)
         third = subprocess.Popen([sys.executable, os.path.join(HERE, "live.py"), "main.tex", "--no-open", "--port", str(PORT)],
                                  cwd=paper, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
                                  env=ENV)
+        procs.append(third)
         try:
             first_line = third.stdout.readline()
             threading.Thread(target=third.stdout.read, daemon=True).start()  # (keep reading: a full pipe would stall it)
-            proc.wait(30)
+            main_proc.wait(30)
         except subprocess.TimeoutExpired:
-            third.kill()
             fail("an instance that does not answer was not replaced")
         if "not answering" not in first_line:
             fail(f"replacing an instance that does not answer: {first_line}")
-        proc = third
-        wait_for("the instance that replaced the one not answering", lambda: _answers(token, build))
+        wait_for("the instance that replaced the one not answering", lambda: _quiet(lambda: get("/docs", token)))
         ok("an instance that does not answer is replaced")
-    finally:
-        os.killpg(proc.pid, signal.SIGTERM)
+
+        wait_for("the hub, after that", lambda: read_hub() and hub["pid"] != main_proc.pid, timeout=20)
+        stuck = hub["pid"]
+        os.kill(stuck, signal.SIGSTOP)  # (serves the hub, answers nothing)
+        procs.append(start(paper, "main", "--replace"))
+        holder = next(p for p in procs if p.pid == stuck)
         try:
-            proc.wait(20)
+            holder.wait(30)
         except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
-    if os.path.exists(os.path.join(ENV["LATEX_LIVE_STATE"], "instances", f"{proc.pid}.json")):
-        fail("the stopped instance is still listed")
-    ok("a stopped instance is no longer listed")
+            fail("a new instance did not replace the one serving the hub without answering")
+        wait_for("the hub to come back", lambda: read_hub() and hub["pid"] != stuck, timeout=20)
+        if hub["port"] != PORT:
+            fail(f"the hub came back on port {hub['port']}")
+        ok("a hub that does not answer is replaced")
+    finally:
+        for proc in procs:
+            stop(proc)
+    left = os.listdir(os.path.join(state, "instances"))
+    if left:
+        fail(f"stopped instances are still listed: {left}")
+    ok("stopped instances are no longer listed")
 
 
-def read_port(build):
-    """The instance's port, from its lock file (the first free one from PORT)."""
-    global port
-    with open(os.path.join(build, "main-live.lock")) as f:
-        port = json.load(f)["port"]
-
-
-def _answers(token, build):
-    read_port(build)
+def _quiet(test):
     try:
-        return get("/docs", token)
-    except OSError:
+        return test()
+    except (OSError, ValueError, KeyError, TypeError):
         return None
 
 

@@ -18,8 +18,8 @@ The plan below makes it a general tool.
 - **Main document.** With no document named, latex-live builds the root
   `.tex` file whose sources you edited last. A menu in the toolbar switches to
   another root file, and every open viewer follows. The same menu lists the
-  papers other instances on the machine preview and opens their viewers;
-  `/papers` lists them all.
+  papers other instances on the machine preview and opens their viewers, all
+  on one port; `/papers` lists them.
 - **Live rebuild.** `latexmk -pvc` builds into `build/`. The PDF is published
   atomically, and only after a successful run. Errors appear as a clickable
   banner and as `file:line` diagnostics for the VS Code problem matcher. ↻ in
@@ -134,8 +134,12 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
 - **Requirements:** Python 3.9+ (standard library only), `latexmk` on the host,
   and either rootless podman with `docker.io/minidocks/texlive:2024-full`
   pulled, or a host TeX Live with `--host-tex`.
-- **Viewer address:** the first free port from 44100 (`--port` sets the
-  start). Every request needs the token in `~/.config/latex-live/token`
+- **Viewer address:** one port for every preview on the machine, 44100
+  (`--port`): a paper's viewer is at `/p/<folder>-<hash>/<doc>/`, and `/`
+  opens the only preview or lists them all. Each preview still runs in its
+  own process (its own terminal, latexmk and version) on its own port from
+  44101; whichever runs the hub forwards to the others, and another takes over
+  within a second when it stops. Every request needs the token in `~/.config/latex-live/token`
   (`$LATEX_LIVE_STATE/token` if set), which is created on first run and
   shared by every checkout, as is the list of running instances.
 - **Environment variables:**
