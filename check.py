@@ -24,6 +24,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 
@@ -50,6 +51,7 @@ See \ref{sec:method}.
 
 
 LOGS = []  # the instances' output, shown on failure
+ENV = dict(os.environ)  # for the instances: their own token and instance list (live_checks)
 
 
 def fail(msg):
@@ -130,7 +132,7 @@ def start(paper, *extra):
     LOGS.append(os.path.join(paper, "..", f"live-{len(LOGS)}.log"))
     log = open(LOGS[-1], "w")
     return subprocess.Popen([sys.executable, os.path.join(HERE, "live.py"), "main.tex", "--no-open", "--port", str(PORT), *extra],
-                            cwd=paper, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                            cwd=paper, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=ENV)
 
 
 def get(path, token):
@@ -146,6 +148,7 @@ def ln_records(path):
 
 
 def live_checks(tmp):
+    ENV["LATEX_LIVE_STATE"] = os.path.join(tmp, "state")  # (not the user's: their previews keep their list)
     paper = make_paper(tmp)
     proc = start(paper)
     try:
@@ -161,7 +164,7 @@ def live_checks(tmp):
             fail("no build/main-clean.pdf")
         ok("the notes-free pass published build/main-clean.pdf")
 
-        with open(os.path.join(HERE, "token")) as f:
+        with open(os.path.join(ENV["LATEX_LIVE_STATE"], "token")) as f:
             token = f.read().strip()
         read_port(build)
         for path in ("/status/main.pdf?base=push", "/outline/main.pdf", "/notes/main.pdf", "/authors/main.pdf",
@@ -211,7 +214,7 @@ def live_checks(tmp):
         ok("the notes-free baseline's line numbers match the live notes-free build's")
 
         second = subprocess.run([sys.executable, os.path.join(HERE, "live.py"), "main.tex", "--no-open", "--port", str(PORT)],
-                                cwd=paper, capture_output=True, text=True, timeout=60)
+                                cwd=paper, capture_output=True, text=True, timeout=60, env=ENV)
         if "already running" not in second.stdout or second.returncode:
             fail(f"a second instance did not report the first:\n{second.stdout}{second.stderr}")
         ok("a second instance reports the running one and exits")
@@ -228,9 +231,11 @@ def live_checks(tmp):
         ok("--replace takes over")
         os.kill(proc.pid, signal.SIGSTOP)  # (holds the lock, answers nothing)
         third = subprocess.Popen([sys.executable, os.path.join(HERE, "live.py"), "main.tex", "--no-open", "--port", str(PORT)],
-                                 cwd=paper, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+                                 cwd=paper, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True,
+                                 env=ENV)
         try:
             first_line = third.stdout.readline()
+            threading.Thread(target=third.stdout.read, daemon=True).start()  # (keep reading: a full pipe would stall it)
             proc.wait(30)
         except subprocess.TimeoutExpired:
             third.kill()
@@ -246,7 +251,7 @@ def live_checks(tmp):
             proc.wait(20)
         except subprocess.TimeoutExpired:
             os.killpg(proc.pid, signal.SIGKILL)
-    if os.path.exists(os.path.join(HERE, "instances", f"{proc.pid}.json")):
+    if os.path.exists(os.path.join(ENV["LATEX_LIVE_STATE"], "instances", f"{proc.pid}.json")):
         fail("the stopped instance is still listed")
     ok("a stopped instance is no longer listed")
 

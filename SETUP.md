@@ -70,8 +70,9 @@ NeurIPS, COLM, ICML, CVPR and ICCV styles; `--page-limit N` sets another.
 Expected output, in order:
 
 1. Two `=== latex-live: viewer ...` lines with URLs. The first run creates
-   `~/.local/share/latex-live/token`, with mode 0600 and ignored by git.
-2. `=== latex-live: building <doc>.tex`, naming the other root files.
+   the token, `~/.config/latex-live/token` (mode 0600), which every checkout
+   shares.
+2. `=== latex-live <version>: building <doc>.tex`, naming the other root files.
 3. `=== latex-live: TeX Live 2024 (podman)`, or on macOS
    `=== latex-live: TeX from the host (no podman)`
 4. latexmk output, ending with `=== Watching for updated files`. The first build
@@ -80,8 +81,8 @@ Expected output, in order:
 Check it without printing the token:
 
 ```bash
-PORT=$(cat build/<doc>-live.lock)
-TOKEN=$(cat ~/.local/share/latex-live/token)
+PORT=$(python3 -c 'import json; print(json.load(open("build/<doc>-live.lock"))["port"])')
+TOKEN=$(cat ~/.config/latex-live/token)
 curl -s "http://127.0.0.1:$PORT/status/<doc>.pdf?t=$TOKEN" | python3 -m json.tool | grep '"ok"'   # "ok": true
 ```
 
@@ -189,16 +190,19 @@ Check that:
 git -C ~/.local/share/latex-live pull
 ```
 
-Then restart the task with Cmd+Shift+B. To propose a change, push a branch and
-open a pull request rather than pushing to `main`.
+Then restart the task with Cmd+Shift+B; until then, the viewer shows "restart
+to update". To stay on a release instead, check out its tag
+(`git -C ~/.local/share/latex-live checkout v0.1.1`); the releases page lists
+them. To propose a change, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Troubleshooting
 
 | Symptom | Fix |
 | --- | --- |
 | ⚠ TeX image missing in the viewer, `is not pulled` in the task output, or double-click does nothing | Pull the image (step 2). No restart is needed. If it keeps disappearing, a cleanup job is probably pruning unused podman images (`podman system prune -a`). See [Keeping the image](#keeping-the-image). |
-| `already running for <doc>.tex` | Another instance holds the lock, e.g. another VS Code window. It prints that instance's URL. |
-| 403 in the browser | Open the full URL with `?t=` once. The token is in `~/.local/share/latex-live/token`. |
+| `already running for <doc>.tex` | Another instance builds that document, e.g. from another VS Code window, and still answers. It prints that instance's URL; `--replace` stops it and runs here instead. An instance that no longer answers is replaced without asking. `http://localhost:PORT/papers` lists every running preview. |
+| "restart to update" in the viewer | latex-live changed on disk (e.g. after a pull) since the task started. Restart the task, then reload. |
+| 403 in the browser | Open the full URL with `?t=` once. The token is in `~/.config/latex-live/token`. |
 | Stopping the task leaves latexmk running | Your `python3` may be a wrapper that doesn't pass signals on. Use the interpreter itself, e.g. `/usr/bin/python3`. |
 | Double-click does nothing | The task must run in a VS Code terminal so that `code` is on `PATH`. |
 | `no free port in 44100-44109` | Stop old instances (`pgrep -af latex-live/live.py`), or start elsewhere with `--port`. |
