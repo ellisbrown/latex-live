@@ -2488,7 +2488,7 @@ def build_export(server, pdf, source):
     of the bibliography) and pdflatex until the references settle, so page numbers in the contents,
     references and back-references are exact."""
     root, doc = server.paper_root, pdf[:-4]
-    out = os.path.join(root, BUILD, "export")
+    out = os.path.join(root, BUILD, "export", doc)  # (per document: another instance may export another)
     job = f"{doc}-export"
     sys.path.insert(0, HERE)
     import latex_report
@@ -2508,15 +2508,18 @@ def build_export(server, pdf, source):
                 shutil.copyfile(job_file(root, pdf, ext), os.path.join(out, job + ext))
         tex = (f"pdflatex -interaction=batchmode -halt-on-error -file-line-error -output-directory='{out}'"
                f" -jobname={job} '{latex_report.NOTES_OFF}\\input{{{doc}}}'")
-        for n in range(6):
+        for passes in range(1, 7):
             if not run(tex, root):
                 first = next((l for l in log().splitlines() if l.startswith("! ") or re.match(r"^\S+:\d+: ", l)), "")
-                raise RuntimeError(first or f"pdflatex failed; see {BUILD}/export/{job}.log")
-            if n == 0 and "\\bibdata" in (read_text(os.path.join(out, f"{job}.aux")) or ""):
+                raise RuntimeError(first or f"pdflatex failed; see {BUILD}/export/{doc}/{job}.log")
+            if passes == 1 and "\\bibdata" in (read_text(os.path.join(out, f"{job}.aux")) or ""):
                 if not run(f"bibtex {job}", out, {"BIBINPUTS": f"{root}:", "BSTINPUTS": f"{root}:"}):
-                    raise RuntimeError(f"bibtex failed; see {BUILD}/export/{job}.blg")
+                    raise RuntimeError(f"bibtex failed; see {BUILD}/export/{doc}/{job}.blg")
                 continue
-            if not re.search(r"Rerun to get|may have changed\. Rerun|Please rerun|rerunfilecheck Warning", log()):
+            settled = not re.search(r"Rerun to get|may have changed\. Rerun|Please rerun|rerunfilecheck Warning", log())
+            # (lineno places its numbers from the previous pass's .aux without asking for a rerun, so
+            # a first pass seeded with the build-with-notes .aux needs a second: latex_report.uses_lineno)
+            if settled and (passes >= 2 or not latex_report.uses_lineno(os.path.join(out, f"{job}.aux"))):
                 break
         os.replace(os.path.join(out, f"{job}.pdf"), os.path.join(root, BUILD, f"{job}.pdf"))
         state = {"state": "done", "version": str(mtime(os.path.join(root, BUILD, f"{job}.pdf")))}

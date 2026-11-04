@@ -435,7 +435,8 @@ function saveFile(url, name) {
 const docName = () => docFile.replace(/\.pdf$/, "");
 $("downloadPdf").onclick = () => {
   showMore(false);
-  saveFile(`pdf/${encodeURIComponent(docFile)}?v=${buildVersion}`, isDiff ? docFile : `${docName()}${$("downloadClean").hidden ? "" : "-with-notes"}.pdf`);
+  const shown = isDiff ? file : docFile; // (a comparison tab saves the comparison)
+  saveFile(`pdf/${encodeURIComponent(shown)}?v=${buildVersion}`, isDiff ? file : `${docName()}${$("downloadClean").hidden ? "" : "-with-notes"}.pdf`);
 };
 let exporting = false;
 $("downloadClean").onclick = async () => {
