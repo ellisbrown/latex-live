@@ -3,7 +3,9 @@
 
 1. The Python compiles without warnings (and with Python 3.9, if there is one), and the viewer's
    script parses (with Node, if there is one).
-2. A scratch paper in a temporary directory (two columns, lineno line numbers, an inline note, a
+   The review copy's layout keeps notes in order, apart, and on their pages, and continues the ones
+   that don't fit after the paper.
+2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a
    git repository with a pushed commit and a local one) gets a live.py instance, with the hub on
    port 44180 and state of its own (not the user's):
    - the build publishes main.pdf, and the notes-free pass main-clean.pdf;
@@ -11,6 +13,9 @@
      endpoint (POST /rebuild too); SyncTeX finds a source line; /instances lists the instance;
    - the HEAD and last-push baselines build (they differ: one commit is unpushed), and the
      notes-free baseline's line numbers match the live notes-free build's (two passes with lineno);
+   - the download without notes is an exact build, and the review copy places its pages on wider
+     ones with every note in a gutter (none overlapping, the protected marker and the resolved
+     note left out); a document without notes gets a clear failure, not a file;
    - a second document runs in its own process behind the same port, and /papers links both;
    - a second instance for the same document says it is already running; --replace takes over,
      and so does any new instance when the running one no longer answers; the hub moves to
@@ -32,6 +37,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = 44180  # the hub's; the previews' own ports follow
@@ -49,13 +55,16 @@ PAPER = r"""\documentclass[twocolumn]{article}
 moves the text below it. A note long enough that hiding it moves the text below it.}
 \input{body}
 \section{Method}\label{sec:method}
-See \ref{sec:method}.
+See \ref{sec:method}. A sentence with a note \eb{a note in a paragraph, about \ref{sec:method}} and more
+words after it.\footnote{A footnote \eb{a note in a footnote}.}
+% \eb{a resolved note}
+\eb{human-written}
 \end{document}
 """
 
 
 LOGS = []  # the instances' output, shown on failure
-ENV = dict(os.environ)  # for the instances: their own token and instance list (live_checks)
+ENV = dict(os.environ, LATEX_LIVE_PROTECTED=r"\\eb\{human-written\}")  # for the instances: their own token and instance list (live_checks)
 
 
 def redact(text):
@@ -119,6 +128,47 @@ def static_checks():
         if len(tokens) != 1 or "" in tokens:
             fail(f"instances starting at once got {len(tokens)} different tokens{' (one empty)' if '' in tokens else ''}")
     ok("instances starting at once agree on one token, never an empty one")
+    layout_checks()
+
+
+def layout_checks():
+    """The review copy's gutters (live.place_notes, live.review_layout), on made-up notes."""
+    sys.path.insert(0, HERE)
+    import random
+    import live
+    rng = random.Random(7)
+    for _ in range(200):
+        n = rng.randint(1, 12)
+        heights = [rng.uniform(5, 60) for _ in range(n)]
+        want = sorted(rng.uniform(0, 800) for _ in range(n))
+        if sum(heights) + 5 * (n - 1) > 700:
+            continue
+        tops = live.place_notes(want, heights, 40, 740, 5)
+        if any(tops[i] + heights[i] + 5 > tops[i + 1] + 1e-6 for i in range(n - 1)) or tops[0] < 40 - 1e-6 \
+                or tops[-1] + heights[-1] > 740 + 1e-6:
+            fail(f"place_notes overlaps or leaves the gutter: {want} {heights} -> {tops}")
+    geo = live.review_geometry({"W": 612, "H": 792, "columns": 2})
+    notes = [{"id": i, "page": 1 + i // 40, "x": 100 + 300 * (i % 2), "y": 60 + (i * 17) % 700, "author": "EB", "body": "x",
+              "macro": "eb", "file": "a.tex", "line": i, "how": "exact"} for i in range(80)]
+    sizes = {i: {0: [100 + 2 * i, 150, 6, 40], 1: [101 + 2 * i, 150, 5, 30]} for i in range(80)}
+    plan = live.review_layout(notes, {"pdf": True, "snippets": sizes}, geo, 2)
+    if sorted(n["id"] for n in plan["notes"]) != list(range(80)) or [n["n"] for n in plan["notes"]] != list(range(1, 81)):
+        fail("review_layout lost or renumbered notes")
+    gutters = {}
+    for n in plan["notes"]:
+        gutters.setdefault((n["page"], n["side"]), []).append(n)
+    for (page, side), group in gutters.items():
+        placed = [n for n in group if n["top"] is not None]
+        if [n["n"] for n in placed] != sorted(n["n"] for n in placed) or any(n["continued"] for n in placed):
+            fail(f"page {page}, {side} gutter: notes out of order")
+        for a, b in zip(placed, placed[1:]):
+            if a["top"] + a["sizes"][a["size"]]["h"] > b["top"] + 1e-6:
+                fail(f"page {page}, {side} gutter: notes {a['n']} and {b['n']} overlap")
+        if any(n["top"] is None and not n["continued"] for n in group) or not all(n["size"] == 1 for n in group):
+            fail(f"page {page}, {side} gutter: crowded notes not set smaller and continued")
+    if plan["pages"] <= plan["paper"]:
+        fail("crowded notes did not continue on pages after the paper")
+    ok("the review copy's gutters keep notes in order and apart, set crowded ones smaller, then continue them")
 
 
 def git(cwd, *args):
@@ -337,6 +387,7 @@ def live_checks(tmp):
         if ln_records(os.path.join(build, "export", "main", "main-export.aux")) != ln_records(os.path.join(build, "clean", "main-clean.aux")):
             fail("the download without notes has its line numbers in other places than the notes-free view")
         ok("the download without notes is an exact build (line numbers too), made once per build")
+        review_checks(build, token)
 
         procs.append(start(paper, "appendix"))  # (a second document of the same paper, in its own process)
         wait_for("appendix.pdf through the hub", lambda: _quiet(lambda: get("/status/appendix.pdf", token, "appendix")["version"]))
@@ -348,6 +399,12 @@ def live_checks(tmp):
         if f"{hub['base']}main/viewer.html" not in page or f"{hub['base']}appendix/viewer.html" not in page:
             fail(f"/papers does not link both documents through the hub:\n{page[:600]}")
         ok("a second document gets its own process, behind the same port")
+        failed = wait_for("the appendix's review copy", lambda: _quiet(lambda: (lambda e: e if e.get("state") in ("done", "failed")
+                                                                          else None)(get("/review", token, "appendix"))), timeout=120)
+        if failed.get("state") != "failed" or "no notes" not in failed.get("msg", "") or \
+                os.path.exists(os.path.join(build, "appendix-review.pdf")):
+            fail(f"a review copy of a document without notes: {failed}")
+        ok("a document without notes gets no review copy, and says why")
         ghost = os.path.join(state, "instances", "ghost.json")  # (a stale entry: another paper's id, this preview's port)
         with open(ghost, "w") as f:
             json.dump({"port": own, "pid": procs[1].pid, "root": "/elsewhere", "doc": "main", "id": "ghost-000000"}, f)
@@ -425,6 +482,69 @@ def live_checks(tmp):
     if left:
         fail(f"stopped instances are still listed: {left}")
     ok("stopped instances are no longer listed")
+
+
+def written_pages(log):
+    """The page count of a pdflatex run, from its log."""
+    with open(log, errors="replace") as f:
+        m = re.search(r"Output written on .*?\((\d+) pages?", f.read().replace("\n", ""))
+    return int(m.group(1)) if m else None
+
+
+def drawn_pages(pdf, left):
+    """How many times a PDF's content streams draw an image or form unscaled with its bottom left at
+    (left, 0): in the review copy of a two-column paper (a gutter on the left, so the paper's own
+    figures don't count), once per page of the paper."""
+    found = 0
+    for m in re.finditer(rb"stream\r?\n", pdf):
+        try:
+            content = zlib.decompress(pdf[m.end():pdf.find(b"endstream", m.end())])
+        except zlib.error:
+            continue
+        found += len(re.findall(rb"\b1 0 0 1 %s 0 cm\s*/\w+ Do" % f"{left:g}".encode(), content))
+    return found
+
+
+def review_checks(build, token):
+    """The review copy of the scratch paper: the export's pages on wider ones, every note beside its
+    column, numbered and apart, without the protected marker or the resolved note."""
+    reviewed = wait_for("the review copy", lambda: (lambda e: e if e.get("state") in ("done", "failed") else None)(
+        get("/review", token)), timeout=240)
+    if reviewed["state"] != "done":
+        fail(f"the review copy failed: {reviewed.get('msg')}")
+    review = get("/pdf/main-review.pdf", token)
+    if not review.startswith(b"%PDF"):
+        fail("no review copy to download")
+    with open(os.path.join(build, "review", "main", "main-review.json")) as f:
+        plan = json.load(f)
+    pages = written_pages(os.path.join(build, "export", "main", "main-export.log"))
+    if not pages or plan["paper"] != pages or plan["pages"] != pages or \
+            written_pages(os.path.join(build, "review", "main", "main-review.log")) != pages:
+        fail(f"the review copy has {plan['pages']} pages ({plan['paper']} of the paper), the export {pages}")
+    if plan["width"] <= plan["W"]:
+        fail(f"the review copy's pages are no wider than the paper's ({plan['width']} <= {plan['W']})")
+    if drawn_pages(review, plan["left"]) != pages:
+        fail(f"the review copy should place each page of the paper unscaled, {plan['left']} points from its left edge:"
+             f" {drawn_pages(review, plan['left'])} of {pages} are")
+    texts = [n["text"] for n in plan["notes"]]
+    want = ["hiding it moves", "a note in a paragraph", "a note in a footnote"]
+    if len(texts) != len(want) or any(sum(w in t for t in texts) != 1 for w in want):
+        fail(f"the review copy's notes are not the three expected (no protected marker, no resolved note): {texts}")
+    sides = {n["side"] for n in plan["notes"]}
+    if sides != {"left", "right"}:
+        fail(f"notes of both columns should go to both gutters: {sides}")
+    exact = [n["text"][:20] for n in plan["notes"] if n["how"] != "exact" and "hiding it moves" not in n["text"]]
+    if exact:
+        fail(f"notes in a paragraph or a footnote placed only by source line: {exact}")
+    placed = [n for n in plan["notes"] if n["top"] is not None]
+    for a in placed:
+        for b in placed:
+            if a is not b and (a["page"], a["side"]) == (b["page"], b["side"]) and a["top"] <= b["top"] < a["top"] + a["sizes"][a["size"]]["h"]:
+                fail(f"notes {a['n']} and {b['n']} overlap")
+    if reviewed.get("version") != get("/review", token).get("version"):
+        fail("asking again rebuilt the review copy, though the document had not changed")
+    ok(f"the review copy: {pages} pages as exported, unscaled on wider ones, with {len(texts)} notes in both gutters, apart"
+       " (the protected marker and the resolved note left out)")
 
 
 def _quiet(test):
