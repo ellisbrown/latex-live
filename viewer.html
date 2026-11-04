@@ -954,12 +954,12 @@ function renderPages() {
   if (!main) return (badge.textContent = "");
   const shownResult = clean || main;
   const of = main.limit ? ` / ${main.limit}` : "";
-  badge.textContent = clean ? `main text ${clean.value.toFixed(1)}${of} pp · ${main.value.toFixed(1)} with notes`
-                            : `main text ${main.value.toFixed(1)}${of} pp`;
+  badge.textContent = `${shownResult.value.toFixed(1)}${of} pp`; // (the notes-free length when there is one: what would be submitted)
   badge.className = shownResult.cls;
   const shownTag = (v) => (shownVariant === v ? " (as shown)" : "");
-  badge.title = (clean ? `Without the inline notes${shownTag("clean")}: ${clean.range}.\nWith notes${shownTag("notes")}: ${main.range}.`
-                       : `Main text: ${main.range}.`) +
+  badge.title = (clean ? `Main text ${clean.value.toFixed(1)}${of} pp without the inline notes${shownTag("clean")}: ${clean.range}.\n` +
+                         `${main.value.toFixed(1)} pp with notes${shownTag("notes")}: ${main.range}.`
+                       : `Main text ${main.value.toFixed(1)}${of} pp: ${main.range}.`) +
                 "\nEnds at the references or at an unnumbered statement (AI use, ethics, reproducibility, impact, acknowledgments).";
   if (sideOpen("thumbs")) markThumbLimit();
 }
@@ -2157,7 +2157,9 @@ async function load(name, version, variant, info) {
   lastQuery = null; // the find controller starts over with the new document
   $("findCount").textContent = "";
   $("count").textContent = next.numPages;
-  setStatus(`updated ${new Date().toLocaleTimeString()}`, "fresh");
+  const time = new Date().toLocaleTimeString();
+  setStatus(`✓ ${time.replace(/\s*[AP]M$/i, "")}`, "fresh");
+  $("status").title = `Updated at ${time}`;
   setTimeout(() => $("status").classList.remove("fresh"), 1500);
   prevBuildWords = oldWords || null;
   wordsPromise = docWords(next);
