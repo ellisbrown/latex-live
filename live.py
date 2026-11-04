@@ -505,8 +505,8 @@ def layout(paper_root, pdf_name, cache={}):
     stamp = mtime(log)
     if cache.get(log, (None,))[0] != stamp:
         try:
-            with open(log, errors="replace") as f:
-                m = LAYOUT_RE.search(f.read())
+            with open(log, errors="replace") as f:  # (the line comes once the preamble has run: near the start)
+                m = LAYOUT_RE.search(f.read(OUTPUT_LIMIT))
         except OSError:
             m = None
         value = cache.get(log, (None, None))[1]
@@ -2518,7 +2518,7 @@ def exact_export(server, pdf, keep=None):
                               env={**os.environ, **(env or {})}).returncode == 0
 
     def log():
-        return read_text(os.path.join(out, f"{job}.log")) or ""
+        return read_output(root, os.path.join(out, f"{job}.log")) or ""
 
     with server.export_lock:
         source = str(mtime(pdf_path(root, pdf)))  # (the build it reflects)
@@ -2536,7 +2536,7 @@ def exact_export(server, pdf, keep=None):
                 if not run(tex, root):
                     first = next((l for l in log().splitlines() if l.startswith("! ") or re.match(r"^\S+:\d+: ", l)), "")
                     raise RuntimeError(first or f"pdflatex failed; see {BUILD}/export/{doc}/{job}.log")
-                if passes == 1 and "\\bibdata" in (read_text(os.path.join(out, f"{job}.aux")) or ""):
+                if passes == 1 and "\\bibdata" in (read_output(root, os.path.join(out, f"{job}.aux")) or ""):
                     if not run(f"bibtex {job}", out, {"BIBINPUTS": f"{root}:", "BSTINPUTS": f"{root}:"}):
                         raise RuntimeError(f"bibtex failed; see {BUILD}/export/{doc}/{job}.blg")
                     continue
@@ -2559,6 +2559,29 @@ def exact_export(server, pdf, keep=None):
 
 
 AUX_SKIP = (".pdf", ".log", ".synctex.gz", ".blg", ".fls")  # (what a pass writes but doesn't read)
+# The most of TeX's output that the downloads read: of a log, an .aux or a .bbl, which they read whole, and of a
+# SyncTeX file, uncompressed (synctex_pages, whose records take about ten times that in memory). The paper decides
+# how much TeX writes (in shared mode, an editor's paper): past these, a download fails and says so, rather than
+# the server's memory growing with it. A 50-page paper's log is a few hundred KB, and its SyncTeX 3 MB.
+OUTPUT_LIMIT, SYNCTEX_LIMIT = 64 << 20, 32 << 20
+
+
+def read_output(paper_root, path, encoding=None):
+    """A file that TeX or BibTeX wrote (a log, an .aux, a .bbl), read whole for the downloads: its text (bytes
+    that don't decode replaced), or None if there is none. Raises RuntimeError past OUTPUT_LIMIT."""
+    try:
+        with open(path, encoding=encoding, errors="replace") as f:
+            text = f.read(OUTPUT_LIMIT + 1)
+    except OSError:
+        return None
+    if len(text) > OUTPUT_LIMIT:
+        raise RuntimeError(too_big(os.path.relpath(path, paper_root), OUTPUT_LIMIT))
+    return text
+
+
+def too_big(name, limit, what=""):
+    """What a download says when a file of TeX's output is past its limit (read_output, run_probe, synctex_pages)."""
+    return f"{name} is over {limit >> 20} MB{what}, more than the downloads read (does the paper write to it in a loop?)"
 
 
 def keep_inputs(out):
@@ -2747,7 +2770,7 @@ def build_review(server, pdf, source):
                 json.dump(plan, f, indent=1)
             r = subprocess.run(["sh", "-c", f"{server.tex_exec} pdflatex -interaction=batchmode -halt-on-error"
                                             f" {doc}-review.tex >/dev/null 2>&1"], cwd=out, timeout=600)
-            log = read_text(os.path.join(out, f"{doc}-review.log")) or ""
+            log = read_output(root, os.path.join(out, f"{doc}-review.log")) or ""
             written = re.search(r"Output written on .*?\((\d+) pages?", log.replace("\n", ""))
             if r.returncode != 0 or not written or int(written.group(1)) != plan["pages"]:
                 first = next((l for l in log.splitlines() if l.startswith("! ")), "")
@@ -2821,7 +2844,8 @@ def run_probe(server, out, job, doc, notes, geo):
     its log records: {pages, pos: [[file, line, page, x, y, tex]], seen: [[file, line, tex]],
     snippets: {id: {size: [page, width, height, depth]}}, colors: {macro: [r, g, b]}}, with x, y in
     points from the page's top left, and sizes in points (width: of the widest line, which may be less
-    than the page's, or more than the width set); {} if it didn't get as far as the notes."""
+    than the page's, or more than the width set); {} if it didn't get as far as the notes. Raises
+    RuntimeError for a log past OUTPUT_LIMIT."""
     rel = os.path.relpath(out, server.paper_root)
     with open(os.path.join(out, "probe.tex"), "w") as f:
         f.write(REVIEW_PROBE.replace("<WIDTH>", f"{geo['snippet']:.2f}").replace("<NOTES>", f"{rel}/notes"))
@@ -2839,15 +2863,18 @@ def run_probe(server, out, job, doc, notes, geo):
     except subprocess.TimeoutExpired:
         return {}
     probe = {"pos": [], "seen": [], "snippets": {}, "colors": {}, "synctex": os.path.join(out, f"{job}.synctex.gz")}
+    log = os.path.join(out, f"{job}.log")
     try:
-        with open(os.path.join(out, f"{job}.log"), "rb") as f:
-            log = f.read().decode("latin-1")
+        if os.path.getsize(log) > OUTPUT_LIMIT:
+            raise RuntimeError(too_big(os.path.relpath(log, server.paper_root), OUTPUT_LIMIT))
+        with open(log, "rb") as f:  # (only its records, and the line that says how many pages it wrote)
+            lines = [line.decode("latin-1").rstrip("\r\n") for line in f if line.startswith((b"latex-live|", b"Output written on "))]
     except OSError:
         return {}
-    for line in log.split("\n"):
+    for line in lines:
         if not line.startswith("latex-live|"):
             continue
-        kind, *fields = line[len("latex-live|"):].rstrip("\r").split("|")
+        kind, *fields = line[len("latex-live|"):].split("|")
         try:
             if kind == "pos":
                 path, ln, page, x, y = fields[:5]
@@ -2866,7 +2893,7 @@ def run_probe(server, out, job, doc, notes, geo):
             continue
     if "pages" not in probe:  # (it stopped before the notes: nothing it recorded can be trusted to be complete)
         return {}
-    written = re.search(r"Output written on .*?\((\d+) pages?", log.replace("\n", ""))
+    written = next(filter(None, (re.match(r"Output written on .*?\((\d+) pages?", line) for line in lines)), None)
     probe["pdf"] = os.path.isfile(os.path.join(out, f"{job}.pdf")) and bool(written) and int(written.group(1)) == (
         probe["pages"] + sum(len(s) for s in probe["snippets"].values()))
     if probe["pdf"]:
@@ -2883,17 +2910,12 @@ def note_citations(paper_root, pdf_name, bbl, notes):
     cited only in notes: the label they have in the build with notes, as natbib's authors and year
     (their number, or a numeric label, would point to another entry of the export's bibliography),
     else their key. As Latin-1, like the notes."""
-    try:
-        with open(bbl, encoding="latin-1") as f:
-            listed = set(BIBITEM_RE.findall(f.read()))
-    except OSError:  # (no bibliography from BibTeX: \bibitem in the document, notes or not)
+    bibliography = read_output(paper_root, bbl, "latin-1")
+    if bibliography is None:  # (no bibliography from BibTeX: \bibitem in the document, notes or not)
         return {}
+    listed = set(BIBITEM_RE.findall(bibliography))
     keys = {k.strip() for n in notes for m in CITE_RE.finditer(n["body"]) for k in m.group(1).split(",")} - listed - {""}
-    try:
-        with open(job_file(paper_root, pdf_name, ".aux"), encoding="latin-1") as f:
-            aux = f.read()
-    except OSError:
-        aux = ""
+    aux = read_output(paper_root, job_file(paper_root, pdf_name, ".aux"), "latin-1") or ""
     labels = {}
     for m in re.finditer(r"\\bibcite\{([^{}]*)\}(?=\{)", aux):
         labels[m.group(1)] = brace_group(aux, m.end())[0]
@@ -2924,10 +2946,13 @@ def synctex_pages(synctex_gz):
     """{page: [(kind, file, line, x, y, width, box)]}: a build's SyncTeX records in document order, in
     points from the page's top left. box is the hbox (a line) a record is directly in, as [left,
     baseline, right, start, contents] (start: after an indent box; contents: its records but the x
-    ones, for comparing two builds), or None."""
-    inputs, pages, page, stack = {}, {}, 0, []
+    ones, for comparing two builds), or None. Raises RuntimeError past SYNCTEX_LIMIT."""
+    inputs, pages, page, stack, size = {}, {}, 0, [], 0
     with gzip.open(synctex_gz, "rt", errors="replace") as f:
         for record in f:
+            size += len(record)
+            if size > SYNCTEX_LIMIT:
+                raise RuntimeError(too_big(os.path.basename(synctex_gz), SYNCTEX_LIMIT, " uncompressed"))
             c = record[:1]
             if record.startswith("Input:"):
                 tag, _, path = record[6:].rstrip("\n").partition(":")
