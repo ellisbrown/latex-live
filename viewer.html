@@ -72,7 +72,9 @@
   #status.busy { color: #fd6; opacity: 1; }
   #status.error { color: #f88; opacity: 1; }
   #texImage { color: #fd6; cursor: help; }
-  #texImage[hidden] { display: none; }
+  #texImage[hidden], #updated[hidden] { display: none; }
+  #updated { color: #9cf; cursor: help; }
+  #versionInfo { font-size: 11px; opacity: 0.55; }
   #banner { position: fixed; top: 32px; right: 12px; z-index: 10; max-width: 60%; padding: 8px 30px 8px 12px;
             background: #5c1f1f; color: #fee; border-radius: 0 0 6px 6px; box-shadow: 0 2px 8px #0008; }
   #banner[hidden] { display: none; }
@@ -277,6 +279,7 @@
   </span>
   <span id="spacer"></span>
   <span id="texImage" hidden>&#9888; TeX image missing</span>
+  <span id="updated" hidden title="latex-live changed on disk (e.g. after a git pull); this preview still runs the version it started with. Restart the preview task (and then reload) to use the new one.">&#10227; restart to update</span>
   <button id="more" title="More: dark mode, compare with a commit, and what doesn't fit in the toolbar">&#8943;</button>
   <button id="rebuild" title="Rebuild: run latexmk again from the top (e.g. after another build replaced the PDF)">&#8635;</button>
   <span id="pages"></span>
@@ -287,6 +290,7 @@
     <button id="dark" title="Dark mode (inverts the PDF)">&#9680; Dark mode</button>
     <button id="compare" data-priority="11" title="latexdiff against a git commit (opens in a new tab)">Compare with a commit&hellip;</button>
     <button id="keysBtn" title="Keyboard shortcuts (?)">Keyboard shortcuts</button>
+    <span id="versionInfo"></span>
   </div>
   <div id="moreItems"></div>
 </div>
@@ -2235,6 +2239,8 @@ async function poll() {
     $("texImage").hidden = !info.texImage; // builds fall back to the host's TeX; SyncTeX may not work
     $("texImage").title = info.texImage || "";
     $("texImage").textContent = info.texImage?.startsWith("no synctex") ? "⚠ no SyncTeX" : "⚠ TeX image missing";
+    $("updated").hidden = !info.latexLive?.updated;
+    $("versionInfo").textContent = info.latexLive ? `latex-live ${info.latexLive.version}` : "";
     if (info.building) setStatus(isDiff ? "building diff…" : "building…", "busy");
     else if ($("status").className === "busy" && Date.now() - rebuildAt > 4000) setStatus(info.build?.ok === false ? "build failed" : "", info.build?.ok === false ? "error" : "");
     if (!info.version) return info.building || setStatus(`waiting for ${file}…`);

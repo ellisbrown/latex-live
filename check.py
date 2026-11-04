@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Smoke test for latex-live: python3 check.py (about a minute; needs TeX, as live.py does).
 
-1. The Python compiles without warnings, and the viewer's script parses (with Node, if there is one).
+1. The Python compiles without warnings (and with Python 3.9, if there is one), and the viewer's
+   script parses (with Node, if there is one).
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, an inline note, a
    git repository with a pushed commit and a local one) gets a live.py instance on a spare port:
    - the build publishes main.pdf, and the notes-free pass main-clean.pdf;
@@ -78,6 +79,14 @@ def static_checks():
         if r.returncode:
             fail(f"{name} does not compile:\n{r.stderr}")
     ok("the Python compiles")
+    oldest = shutil.which("python3.9")  # (the oldest supported, as macOS ships)
+    for name in ("live.py", "latex_report.py", "forward.py", "check.py") if oldest else ():
+        r = subprocess.run([oldest, "-c", "import sys; compile(open(sys.argv[1]).read(), sys.argv[1], 'exec')",
+                            os.path.join(HERE, name)], capture_output=True, text=True)
+        if r.returncode:
+            fail(f"{name} does not compile with Python 3.9:\n{r.stderr}")
+    if oldest:
+        ok("it compiles with Python 3.9 too")
     node = shutil.which("node")
     if not node:
         return print("skip: no node, so the viewer's script is not checked", flush=True)
@@ -163,6 +172,12 @@ def live_checks(tmp):
             except Exception as e:
                 fail(f"{path}: {e}")
         ok("the viewer's endpoints answer")
+        with open(os.path.join(HERE, "VERSION")) as f:
+            version = f.read().strip()
+        reported = get("/status/main.pdf", token).get("latexLive")
+        if reported != {"version": version, "updated": False}:
+            fail(f"/status reports latexLive {reported}, not version {version}, not updated")
+        ok(f"/status reports version {version}")
         notes = get("/notes/main.pdf", token)
         if not any("hiding it moves" in n.get("text", "") for n in (notes if isinstance(notes, list) else notes.get("notes", []))):
             fail(f"/notes does not list the note: {str(notes)[:300]}")
