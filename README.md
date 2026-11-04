@@ -135,7 +135,7 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
   and either rootless podman with `docker.io/minidocks/texlive:2024-full`
   pulled, or a host TeX Live with `--host-tex`.
 - **Viewer address:** one port for every preview on the machine, 44100
-  (`--port`): a paper's viewer is at `/p/<folder>-<hash>/<doc>/`, and `/`
+  (`--port`, `$LATEX_LIVE_PORT`, or the number in `~/.config/latex-live/port`): a paper's viewer is at `/p/<folder>-<hash>/<doc>/`, and `/`
   opens the only preview or lists them all. Each preview still runs in its
   own process (its own terminal, latexmk and version) on its own port from
   44101; whichever runs the hub forwards to the others, and another takes over

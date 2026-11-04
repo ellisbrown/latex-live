@@ -94,6 +94,24 @@ with open(os.path.join(HERE, "VERSION")) as f:
     VERSION = f.read().strip()  # (tagged v<VERSION> on release)
 
 
+def default_port():
+    """The hub's port when --port isn't given: $LATEX_LIVE_PORT, else STATE/port, else 44100. A
+    setting every preview reads (e.g. when another program holds 44100), so that whichever one
+    serves the hub binds the same port."""
+    for value in (os.environ.get("LATEX_LIVE_PORT"), read_text(os.path.join(STATE, "port"))):
+        if value and value.strip().isdigit():
+            return int(value)
+    return 44100
+
+
+def read_text(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
 def load_token():
     """Stable per-user secret, so the viewer URL can be bookmarked. All checkouts share it: the
     browser keeps one cookie per host, whatever the port. A token from before (./token next to
@@ -3181,8 +3199,9 @@ def main():
                     " sources were edited last. The viewer switches between root files. A path (e.g. the editor's"
                     " current file) runs in that file's paper: it builds the file if it is a root one.")
     ap.add_argument("--version", action="version", version=f"latex-live {VERSION}")
-    ap.add_argument("--port", type=int, default=44100, help="the hub's port, which serves every preview (default: 44100);"
-                    " each preview also has its own, from the next one")
+    ap.add_argument("--port", type=int, default=default_port(), help="the hub's port, which serves every preview (default:"
+                    " $LATEX_LIVE_PORT, else the number in ~/.config/latex-live/port, else 44100); each preview also has"
+                    " its own, from the next one")
     ap.add_argument("--page-limit", type=int, help="main-text page limit to check in the viewer (default: the venue's,"
                     " for ICLR, NeurIPS, COLM, ICML, CVPR and ICCV styles)")
     ap.add_argument("--build-dir", default="build", help="build directory, relative to the paper root (default: build);"
