@@ -207,7 +207,7 @@ them. To propose a change, see [CONTRIBUTING.md](CONTRIBUTING.md).
 | 403 in the browser | Open the full URL with `?t=` once. The token is in `~/.config/latex-live/token`. |
 | Stopping the task leaves latexmk running | Your `python3` may be a wrapper that doesn't pass signals on. Use the interpreter itself, e.g. `/usr/bin/python3`. |
 | Double-click does nothing | The task must run in a VS Code terminal so that `code` is on `PATH`. |
-| `port 44100 is taken, so the hub waits for it` | Another program, or a preview from before 0.2 (one port per paper), holds 44100. Restart every preview task once (or move the hub with `--port`). Meanwhile each viewer works on its preview's own port, which the task prints. |
+| `port 44100 is taken, so the hub waits for it` | Another program, or a preview from before 0.2 (one port per paper), holds 44100. Restart every preview task once (or move the hub with `--port`). Meanwhile each viewer works on its preview's own port, which the task prints; forward that port by hand (the settings above don't forward 44101–44110 on their own). |
 | Every `localhost:44100/p/...` viewer hangs | The preview serving the hub is paused (Ctrl+Z in its terminal: run `fg` there) or stuck. Starting any preview replaces a stuck one after about 10 s. |
 | `no free port in 44101-44110` | Too many previews: stop old ones (`pgrep -af latex-live/live.py`). |
 | Viewer shows an old PDF with a red banner | The last build failed and the previous PDF was kept. Click the error to open it. |

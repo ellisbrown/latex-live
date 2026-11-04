@@ -58,12 +58,17 @@ LOGS = []  # the instances' output, shown on failure
 ENV = dict(os.environ)  # for the instances: their own token and instance list (live_checks)
 
 
+def redact(text):
+    """Never print the token: as a URL parameter, a cookie, or itself."""
+    text = re.sub(r"(t=|latex_live=)[A-Za-z0-9_-]{8,}", r"\1REDACTED", str(text))
+    return text.replace(TOKEN[0], "REDACTED") if TOKEN[0] else text
+
+
 def fail(msg):
     for path in LOGS:
         with open(path, errors="replace") as f:
-            tail = re.sub(r"t=[A-Za-z0-9_-]{8,}", "t=REDACTED", "".join(f.readlines()[-25:]))  # (never print the token)
-            print(f"--- {os.path.basename(path)} (last lines)\n{tail}", flush=True)
-    sys.exit(f"FAIL: {msg}")
+            print(f"--- {os.path.basename(path)} (last lines)\n{redact(''.join(f.readlines()[-25:]))}", flush=True)
+    sys.exit(f"FAIL: {redact(msg)}")
 
 
 def ok(msg):
@@ -236,6 +241,17 @@ def live_checks(tmp):
             fail("a preview answered a request the hub meant for another paper")
         wrong.close()
         ok("a preview refuses a request meant for another paper (421), so the hub looks again")
+        if request(f"{hub['base']}main/status/main.pdf", method="HEAD")[0] != 405 or request("/VERSION", method="HEAD")[0] != 405:
+            fail("HEAD is answered (it would skip the token)")
+        big = http.client.HTTPConnection("127.0.0.1", hub["port"], timeout=10)
+        big.putrequest("POST", f"{hub['base']}main/note")
+        for key, value in (("Cookie", f"latex_live={token}"), ("Content-Type", "application/json"), ("Content-Length", "1000000000")):
+            big.putheader(key, value)
+        big.endheaders()
+        if big.getresponse().status != 413:
+            fail("the hub accepts a huge POST body")
+        big.close()
+        ok("the hub refuses HEAD and oversized POST bodies")
 
         for path in ("/status/main.pdf?base=push", "/outline/main.pdf", "/notes/main.pdf", "/authors/main.pdf",
                      "/check/main.pdf", "/graphics/main.pdf", "/margin/main.pdf", "/floats/main.pdf", "/docs",
@@ -289,6 +305,9 @@ def live_checks(tmp):
 
         procs.append(start(paper, "appendix"))  # (a second document of the same paper, in its own process)
         wait_for("appendix.pdf through the hub", lambda: _quiet(lambda: get("/status/appendix.pdf", token, "appendix")["version"]))
+        routed = get("/instances", token, "appendix")["self"], get("/docs", token, "appendix")["doc"]
+        if routed != (procs[1].pid, "appendix"):
+            fail(f"/p/.../appendix/ reaches process {routed[0]} building {routed[1]}, not the appendix's {procs[1].pid}")
         page = request("/papers", token)[2].decode()
         if f"{hub['base']}main/viewer.html" not in page or f"{hub['base']}appendix/viewer.html" not in page:
             fail(f"/papers does not link both documents through the hub:\n{page[:600]}")
@@ -307,7 +326,7 @@ def live_checks(tmp):
         wait_for("the hub to move to another instance", lambda: read_hub() and hub["pid"] != procs[0].pid, timeout=20)
         if hub["port"] != PORT:
             fail(f"the hub moved to port {hub['port']}")
-        wait_for("the replacement, through the hub", lambda: _quiet(lambda: get("/docs", token)))
+        wait_for("the replacement, through the hub", lambda: _quiet(lambda: get("/instances", token)["self"] == procs[2].pid))
         listed = get("/instances", token)["instances"]
         if sorted(i["pid"] for i in listed if i["root"] == os.path.realpath(paper)) != sorted([procs[1].pid, procs[2].pid]):
             fail(f"/instances after --replace: {listed}")
@@ -327,7 +346,7 @@ def live_checks(tmp):
             fail("an instance that does not answer was not replaced")
         if "not answering" not in first_line:
             fail(f"replacing an instance that does not answer: {first_line}")
-        wait_for("the instance that replaced the one not answering", lambda: _quiet(lambda: get("/docs", token)))
+        wait_for("the instance that replaced the one not answering", lambda: _quiet(lambda: get("/instances", token)["self"] == third.pid))
         ok("an instance that does not answer is replaced")
 
         wait_for("the hub, after that", lambda: read_hub() and hub["pid"] != main_proc.pid, timeout=20)

@@ -145,6 +145,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return True
         return False
 
+    def do_HEAD(self):  # (not served: SimpleHTTPRequestHandler's would skip the token)
+        self.send_error(405)
+
     def misdirected(self):
         """A request the hub meant for another paper (HubHandler.forward): answered 421."""
         want = self.headers.get("X-Latex-Live-Paper")
@@ -2727,7 +2730,7 @@ def is_live_instance(pid):
     except (OSError, TypeError):
         return False
     command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
-    return "live.py" in command
+    return bool(re.match(r"(?i)\S*python[0-9.]*\s+(-\S+\s+)*\S*live\.py(\s|$)", command))  # (python running live.py, not e.g. an editor)
 
 
 def instances():
@@ -2814,6 +2817,7 @@ class HubHandler(Handler):
     """The hub's requests: /p/<id>/<doc>/<path> goes to <path> on that preview's port, with the
     token, so the viewer works there unchanged (its URLs are relative). /papers lists the
     previews; / and /viewer.html?file=X (old bookmarks) go to the only matching preview."""
+    timeout = 60  # (a client that stops sending mid-request frees its thread)
 
     def do_GET(self):
         self.route("GET")
@@ -2853,7 +2857,12 @@ class HubHandler(Handler):
         """Send the request on to the preview of doc in paper id_, and its answer back. The
         preview checks that it is that paper (X-Latex-Live-Paper): a port that its preview gave
         up and another paper's took since the last look answers 421, and the hub looks again."""
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if not 0 <= length <= 100_000:  # (the previews' own limit for a POST)
+            return self.send_error(413 if length > 0 else 400)
         body = self.rfile.read(length) if length else None
         headers = {k: v for k, v in self.headers.items() if k.lower() in ("content-type", "range", "if-range")}
         headers.update({"Cookie": f"latex_live={self.server.token}", "X-Latex-Live-Paper": id_})
@@ -2906,10 +2915,10 @@ class HubServer(DualStackServer):
         """The preview building doc in paper id_; else the paper's only one (it switched documents).
         A miss looks again, for a preview that started since the last look."""
         for again in ((fresh,) if fresh else (False, True)):
-            same = [e for e in self.table(again) if e["id"] == id_]
-            if found := next((e for e in same if e["doc"] == doc), same[0] if len(same) == 1 else None):
+            if found := next((e for e in self.table(again) if e["id"] == id_ and e["doc"] == doc), None):
                 return found
-        return None
+        same = [e for e in self.found if e["id"] == id_]  # (as fresh as the last look)
+        return same[0] if len(same) == 1 else None
 
 
 def hub_watch(port):
@@ -2956,12 +2965,25 @@ def instance_answers(port):
     return answers(port, "/docs")
 
 
+def hub_lock_held():
+    """Whether some process holds HUB_LOCK (HUB_FILE outlives its writer)."""
+    try:
+        with open(HUB_LOCK, "a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            return False
+    except BlockingIOError:
+        return True
+    except OSError:
+        return False
+
+
 def replace_stuck_hub():
     """Before starting: stop the preview serving the hub if it holds the hub's lock but has not
     answered for a while (three tries over about 10 s, so that a busy machine doesn't cost another
     paper its preview), as with a document's lock (take_lock), so the hub doesn't stay down."""
     hub = read_hub()
-    if not hub or hub["pid"] == os.getpid():
+    if not hub or hub["pid"] == os.getpid() or not hub_lock_held():
         return
     for i in range(3):
         if answers(hub["port"], "/hub/ping"):
