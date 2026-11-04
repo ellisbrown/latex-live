@@ -449,10 +449,9 @@ saved then, merged with your changes.
   another name (DNS rebinding). Notes, saves and other actions count only when
   the browser's `Origin` is `LATEX_LIVE_PUBLIC_URL` (or a loopback page, for a
   loopback address), so another site can't act through a coauthor's browser.
-  The two downloads that start a build (without notes, with notes in the
-  margin) are refused when the browser says that another site's page asked
-  (its `Sec-Fetch-Site` or `Origin` header); each builds at most once per
-  build of the paper anyway.
+  That goes for the two downloads that start a build (without notes, with
+  notes in the margin) too: the viewer asks for them that way, and each builds
+  at most once per build of the paper.
 - **Editors are trusted coauthors.** An editor can change the paper's `.tex`,
   `.bib`, `.sty` and `.cls` files, in effect any such file in the copy (an
   `\input` adds one to the paper). The LaTeX they write can read any file

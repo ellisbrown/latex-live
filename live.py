@@ -325,7 +325,8 @@ def least_role(method, path):
     a shared preview serves one document); whatever is not listed is the owner's (open, instances,
     papers, commit). Downloading the paper without its notes (export) or with its notes in the margin
     (review) is reading it: each builds at most once per build of the document (start_export,
-    start_review)."""
+    start_review), and starts only with a POST, whose Origin says it comes from the viewer's own page
+    (a GET of either is answered 405 there, so that an old viewer says why)."""
     if method == "GET" and path.startswith(READ_PATHS + ("/pdfjs/", "/codemirror/")):
         return "viewer"
     if method == "GET":
@@ -334,7 +335,8 @@ def least_role(method, path):
                 "/files": "editor", "/file": "editor"}.get(path, "owner")
     if path == "/switch":
         return None
-    return {"/note": "commenter", "/rebuild": "editor", "/diff": "editor", "/file": "editor"}.get(path, "owner")
+    return {"/note": "commenter", "/rebuild": "editor", "/diff": "editor", "/file": "editor", "/export": "viewer",
+            "/review": "viewer"}.get(path, "owner")
 
 
 def at_least(user, role):
@@ -365,14 +367,14 @@ def me(server, user):
             "can": {"comment": can("/note") and (user["role"] == "owner" or defined), "edit": can("/file"),
                     "rebuild": can("/rebuild"), "compare": can("/diff"), "switch": can("/switch"),
                     "openHost": can("/open") and (not SHARED or editor_cli() is not None),
-                    "download": allowed(user, "GET", "/export") and allowed(user, "GET", "/review")}}
+                    "download": can("/export") and can("/review")}}
 
 
 def shared_pdfs(server):
     """The PDFs a non-owner may ask for: the shared document's, and those derived from it."""
     doc = server.default_pdf[:-4]
     return {f"{doc}{suffix}.pdf" for suffix in ("", "-clean", "-diff", "-head", "-head-clean", "-push", "-push-clean", "-export",
-                                                 "-review")}
+                                                "-review")}
 
 
 def host_kinds(host):
@@ -565,14 +567,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return True
         return "loopback" in self.hosts and bool(LOOPBACK_ORIGIN_RE.fullmatch(origin))
 
-    def cross_site(self):
-        """Whether a GET that starts a build (/export, /review) comes from another site's page, in
-        shared mode: the browser says so (Sec-Fetch-Site: cross-site or same-site), or it sends an
-        Origin that origin_allowed refuses. The viewer's own requests go ahead, and so do those with
-        neither header (a link followed, a program): each builds at most once per build anyway."""
-        sites = {value.strip().lower() for value in self.headers.get_all("Sec-Fetch-Site") or []}
-        return bool(sites & {"cross-site", "same-site"}) or (self.headers.get_all("Origin") is not None and not self.origin_allowed())
-
     def permitted(self, method, path, query):
         """Whether the principal's role allows the request (allowed); non-owners see only the shared
         document (shared_pdfs). Answers 403 if not. (Without shared mode everyone is the owner.)"""
@@ -618,8 +612,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.deny() if SHARED else self.send_error(403, f"open the URL with ?t=<token> from {TOKEN_FILE}")
         if self.misdirected() or not self.permitted("GET", path, query):
             return
-        if SHARED and path in ("/export", "/review") and self.cross_site():  # (they start a build)
-            return self.send_json(403, {"error": "not from this preview's own page"})
         if path == "/":
             self.send_response(302)
             self.send_header("Location", f"viewer.html?file={urllib.parse.quote(self.server.default_pdf)}")  # (relative: also under the hub)
@@ -671,7 +663,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json(200, files_listing(self.server))
         elif path == "/file":
             self.send_json(*file_request(self.server, query))
-        elif path in ("/open", "/diff", "/switch") and SHARED:  # (they act, so only as POST, which checks the Origin)
+        elif path in ("/open", "/diff", "/switch", "/export", "/review") and SHARED:  # (only as POST, which checks the Origin)
             self.send_error(405, "use POST")
         elif path == "/open":
             self.send_text(*open_source(self.server.paper_root, query))
@@ -703,10 +695,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
-        """Actions (POST /note, /file, /rebuild, /switch, /diff, /open, /commit). Only with the cookie, which SameSite=Strict
-        keeps off other sites' requests, and a JSON body, which other sites can't send without asking
-        first; in shared mode, also only from the viewer's own page (origin_allowed), and as the role
-        allows. The body is read before any refusal, so that the answer isn't lost to a reset."""
+        """Actions (POST /note, /file, /rebuild, /switch, /diff, /open, /commit), and the downloads built
+        on request (POST /export, /review). Only with the cookie, which SameSite=Strict keeps off other
+        sites' requests, and a JSON body, which other sites can't send without asking first; in shared
+        mode, also only from the viewer's own page (origin_allowed), and as the role allows. The body is
+        read before any refusal, so that the answer isn't lost to a reset."""
         path = urllib.parse.urlsplit(self.path).path
         self.principal = self.authorize({})
         if not self.principal:
@@ -745,6 +738,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json(*start_diff(self.server, rev, any_rev=self.principal["role"] == "owner"))
         elif path == "/open" and isinstance(req, dict):
             self.send_text(*open_source(self.server.paper_root, json_query(req, "file", "line")))
+        elif path == "/export":
+            self.send_json(*start_export(self.server))
+        elif path == "/review":
+            self.send_json(*start_review(self.server))
         else:
             self.send_error(404)
 
@@ -1462,13 +1459,18 @@ def in_paper(paper_root, path):
     """Whether path (absolute, normalized) is one of the paper's own files: in the paper root, and not in
     the build directory, whose files the build generates. (The .fls a build writes can name any path.)
     In shared mode, also once symbolic links are resolved: coauthors write notes into these files, so a
-    link to a file elsewhere is not one (the owner's own previews keep such links, as they always did)."""
+    link to a file elsewhere is not one (the owner's own previews keep such links, as they always did);
+    and not a dot file or a file in a dot folder, which TeX doesn't read there (openin_any=p), however a
+    file list that the paper's TeX forged names it."""
     if not path.startswith(os.path.join(paper_root, "")) or path.startswith(os.path.join(paper_root, BUILD, "")):
         return False
     if not SHARED:
         return True
     real, root = os.path.realpath(path), os.path.realpath(paper_root)
-    return real.startswith(os.path.join(root, "")) and not real.startswith(os.path.join(os.path.realpath(os.path.join(root, BUILD)), ""))
+    dotted = any(part.startswith(".") for rel in (os.path.relpath(path, paper_root), os.path.relpath(real, root))
+                 for part in rel.split(os.sep))
+    return (real.startswith(os.path.join(root, "")) and not real.startswith(os.path.join(os.path.realpath(os.path.join(root, BUILD)), ""))
+            and not dotted)
 
 
 def project_tex_files(paper_root, fls):
@@ -3772,8 +3774,8 @@ def commits(paper_root):
 
 
 def start_export(server):
-    """/export: the document without its notes, built exactly (build_export), for downloading as
-    build/<doc>-export.pdf. Built once per build of the document, and one at a time (download_lock:
+    """POST /export (and GET /export without shared mode): the document without its notes, built exactly
+    (build_export), for downloading as build/<doc>-export.pdf. Built once per build of the document, and one at a time (download_lock:
     requests meanwhile, from however many viewers, get its state); until then, its state. In shared
     mode every coauthor may ask (least_role: a copy of what they read), and it is the shared document,
     the only one a shared instance builds."""
@@ -3796,10 +3798,22 @@ def build_export(server, pdf, source):
         exact_export(server, pdf)
         state = {"state": "done", "version": str(mtime(os.path.join(server.paper_root, BUILD, f"{pdf[:-4]}-export.pdf")))}
     except Exception as e:  # (shown in the viewer)
-        state = {"state": "failed", "msg": str(e)[:300]}
+        state = {"state": "failed", "msg": failure(server, e)}
     with server.download_lock:  # (not over a newer export's state: start_export)
         if server.export.get("pdf") == pdf and server.export.get("source") == source:
             server.export = {**server.export, **state}
+
+
+def failure(server, e):
+    """What a download that failed says in the viewer (build_export, build_review), in 300 characters at most. In
+    shared mode, where every coauthor reads it, without the server's folders (TeX names the paper's files relative
+    to it, but Python's errors name them in full) or the command line of a TeX run that took too long."""
+    if SHARED and isinstance(e, subprocess.TimeoutExpired):
+        return f"a TeX run took more than {e.timeout / 60:g} minutes"
+    text = str(e)
+    for folder, name in ((os.path.realpath(server.paper_root), "."), (server.paper_root, "."), (HERE, "latex-live")) if SHARED else ():
+        text = text.replace(folder + os.sep, "" if name == "." else name + os.sep).replace(folder, name)
+    return text[:300]
 
 
 def exact_export(server, pdf, keep=None):
@@ -4041,8 +4055,8 @@ BP = 72 / 72.27  # TeX points to PDF points
 
 
 def start_review(server):
-    """/review: the review copy of the current build (build_review), for downloading as
-    build/<doc>-review.pdf. Built once per build of the document, and one at a time (download_lock:
+    """POST /review (and GET /review without shared mode): the review copy of the current build
+    (build_review), for downloading as build/<doc>-review.pdf. Built once per build of the document, and one at a time (download_lock:
     requests meanwhile, from however many viewers, get its state); until then, its state. In shared
     mode every coauthor may ask, as for the export (least_role), and it is the shared document."""
     pdf = server.default_pdf
@@ -4126,7 +4140,7 @@ def build_review(server, pdf, source):
                      "notes": len(plan["notes"]), "approximate": sum(n["how"] != "exact" for n in plan["notes"]),
                      "continued": sum(n["top"] is None for n in plan["notes"])}
         except Exception as e:  # (shown in the viewer)
-            state = {"state": "failed", "msg": str(e)[:300]}
+            state = {"state": "failed", "msg": failure(server, e)}
     with server.download_lock:  # (not over a newer review's state: start_review)
         if server.review.get("pdf") == pdf and server.review.get("source") == source:
             server.review = {**server.review, **state}

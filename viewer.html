@@ -448,8 +448,8 @@
     <p>&#9776; opens the sidebar: the outline, the pages, the notes, checks, and the figures and tables. Search with
       <kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>F</kbd>. <i>Notes: off</i> shows the paper as it would be submitted, with the notes as
       bubbles in the margin; <i>Notes: on</i> puts them back in the text. <kbd>?</kbd> lists the keyboard shortcuts.
-      The toolbar's download button saves the paper with any notes in it<span data-part="download">, or without them, as it would
-      be submitted</span>.</p>
+      The download button (in the toolbar, or <i>Download</i> under &#8943;) saves the paper with any notes
+      in it<span data-part="download">, or without them, as it would be submitted</span>.</p>
     <p class="review" data-part="download">To read the notes away from here, <i>PDF with notes in the margin</i> saves the pages
       as submitted with each note beside its spot.</p>
   </section>
@@ -626,7 +626,7 @@ document.addEventListener("mousedown", (e) => { // (not the welcome guide: it cl
 // makes on request (live.py start_export; once per build of the document); or that build with the
 // notes in its margins (live.py start_review), for co-authors who don't run latex-live. In shared mode
 // the last two are for whoever's role may (me.can.download): it is the shared document, as every
-// coauthor reads it.
+// coauthor reads it. They are asked for with a POST, whose Origin the server checks there (it builds).
 function saveFile(url, name) {
   const a = el("a", { href: url, download: name });
   document.body.append(a);
@@ -678,7 +678,7 @@ async function downloadBuilt(endpoint, built, saveAs, what, done) {
       await sleep(500);
     }
     for (;;) {
-      const r = await fetch(endpoint, { cache: "no-store" }).catch(() => null);
+      const r = await postJSON(endpoint, {}).catch(() => null);
       const e = r ? await readBody(r) : {};
       if (!r || unreachable(r, e)) return setStatus("download failed: can't reach the preview server", "error");
       if (signInPage(r, e)) return setStatus(SIGNED_OUT, "error"); // (a proxy's sign-in page, not the server's answer)

@@ -285,10 +285,10 @@ Such an instance:
   `--host-tex`, and a machine without podman), in a container without
   network, capabilities or shell escape, stopped after 10 minutes, where TeX
   reads files only below the paper folder and in the TeX tree, and writes only
-  into the build folder; a `latexmkrc` in the paper is not run. The downloads built on request
-  (without notes, and with notes in the margin) build there too, each at most
-  once per build of the paper and one at a time, however many ask; a request
-  for one that the browser says comes from another site's page is refused;
+  into the build folder; a `latexmkrc` in the paper is not run. The downloads
+  built on request (without notes, and with notes in the margin) build there
+  too, each at most once per build of the paper and one at a time, however
+  many ask; another site's page can't start one;
 - prints the link for coauthors (`LATEX_LIVE_PUBLIC_URL`, with no token in
   it), then your own.
 

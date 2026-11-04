@@ -61,10 +61,10 @@
    - the download without notes: a viewer may ask; several asking at once share one build, made once
      per build of the document, in the hardened image;
    - the copy with notes in the margin (/review), likewise: a viewer may ask, several asking at once
-     share one build, made once per build of the document; another document's copy and POST /review
-     are refused; its probe pass can't read absolute paths either; a request for it or for the export
-     from another site's page (Sec-Fetch-Site, or an Origin not the viewer's) is refused and starts
-     nothing; and the host's TeX never runs (a stand-in for it on PATH);
+     share one build, made once per build of the document; another document's copy is refused; its
+     probe pass can't read absolute paths either; both downloads start only with a POST from the
+     viewer's own page (a GET, or another site's Origin, starts nothing); and the host's TeX never
+     runs (a stand-in for it on PATH);
    - notes as oneself only: the editor's own macro yes, the owner's no, others' notes no,
      resolving anyone's yes, protected text kept, a macro the paper lacks explained; notes, the
      list of notes and the note macros keep working while the paper rebuilds;
@@ -495,8 +495,10 @@ def confinement_checks():
     """Shared mode's guards around the downloads built on request (live.py), without TeX: with the TeX Live image
     missing, the export and the review copy fail with a message that says so (never the host's TeX); the review
     copy's notes come from the last good build's list of files (.fls.done, not the .fls a build is rewriting), and
-    only from the paper's own files (not a link to a file elsewhere); the inputs kept for its probe leave out
-    symbolic links. Outside shared mode, links count as before."""
+    only from the paper's own files (not a link to a file elsewhere, nor a dot file or a file in a dot folder, which
+    TeX doesn't read there, though that list names them: the paper's TeX can write it); the inputs kept for its
+    probe leave out symbolic links; a failure names no folder of the server's (the paper's, latex-live's), nor the
+    command line of a TeX run that took too long. Outside shared mode, links count as before, and so do failures."""
     sys.path.insert(0, HERE)
     import live
     saved, tmp = (live.SHARED, live.image_pulled), tempfile.mkdtemp(prefix="latex-live-check-")
@@ -520,8 +522,11 @@ def confinement_checks():
             fail(f"with the TeX Live image missing, the review copy in shared mode: {server.review}")
 
         outside = os.path.join(tmp, "outside.tex")
+        os.makedirs(os.path.join(root, ".hidden"))
         for path, text in ((os.path.join(root, "main.tex"), "\\newcommand{\\eb}[1]{\\todotxt{[EB: #1]}}\n\\eb{in main}\n"),
                            (os.path.join(root, "late.tex"), "\\eb{read late in the build}\n"),
+                           (os.path.join(root, ".dot.tex"), "\\eb{in a dot file}\n"),
+                           (os.path.join(root, ".hidden", "inside.tex"), "\\eb{in a dot folder}\n"),
                            (outside, "\\eb{in a file outside the paper}\n")):
             with open(path, "w") as f:
                 f.write(text)
@@ -530,7 +535,8 @@ def confinement_checks():
         with open(fls, "w") as f:  # (as pdflatex rewrites it during a pass: only the files read so far)
             f.write(f"PWD {root}\nINPUT main.tex\n")
         with open(fls + ".done", "w") as f:  # (the last good build's)
-            f.write(f"PWD {root}\nINPUT main.tex\nINPUT late.tex\nINPUT away.tex\nINPUT {outside}\n")
+            f.write(f"PWD {root}\nINPUT main.tex\nINPUT late.tex\nINPUT away.tex\nINPUT {outside}\nINPUT ./.dot.tex\n"
+                    "INPUT ./.hidden/inside.tex\n")
         found = sorted(n["body"] for n in live.review_notes(root, "main.pdf"))
         if found != ["in main", "read late in the build"]:
             fail(f"the review copy's notes in shared mode are not the last good build's, in the paper's own files: {found}")
@@ -543,7 +549,25 @@ def confinement_checks():
         live.keep_inputs(out)
         if sorted(os.listdir(os.path.join(out, "inputs"))) != ["main-export.aux"]:
             fail(f"the inputs kept for the probe in shared mode: {sorted(os.listdir(os.path.join(out, 'inputs')))} (no links wanted)")
+
+        live.image_pulled = lambda: True  # (a stand-in for TeX runs instead)
+        stand_in = os.path.join(tmp, "tex")
+        os.makedirs(stand_in)
+        put(os.path.join(stand_in, "log"), "This is pdfTeX\n")  # (and no SyncTeX, as with \synctex=0 in the export's job)
+        put(os.path.join(stand_in, "pdf"), "%PDF-1.5\n")
+        put(os.path.join(root, "main.pdf"), "%PDF-1.5\n")
+        server.tex_exec, server.review = tex_stand_in(stand_in), {"pdf": "main.pdf", "source": "2", "state": "running"}
+        live.build_review(server, "main.pdf", "2")
+        msg = server.review.get("msg", "")
+        if (server.review.get("state") != "failed" or "build/export/main/main-export.synctex.gz" not in msg or root in msg
+                or live.HERE in msg):
+            fail(f"a review copy that failed for a missing file, in shared mode, says: {server.review}")
+        timeout = subprocess.TimeoutExpired(["sh", "-c", f"'{live.HERE}/tex-exec' image '{root}' pdflatex"], 600)
+        if live.failure(server, timeout) != "a TeX run took more than 10 minutes":
+            fail(f"a TeX run that took too long, in shared mode, says: {live.failure(server, timeout)}")
         live.SHARED = False
+        if root not in live.failure(server, OSError(2, "No such file or directory", os.path.join(build, "x"))):
+            fail("outside shared mode, a download's failure no longer names its file in full")
         live.keep_inputs(out)
         found = [n["body"] for n in live.review_notes(root, "main.pdf")]
         if (sorted(os.listdir(os.path.join(out, "inputs"))) != ["main-export.aux", "main-export.bbl"]
@@ -552,8 +576,9 @@ def confinement_checks():
     finally:
         live.SHARED, live.image_pulled = saved
         shutil.rmtree(tmp, ignore_errors=True)
-    ok("in shared mode, the downloads built on request say plainly that the TeX Live image is missing, and the review copy"
-       " reads the last good build's own files and keeps no links for its probe")
+    ok("in shared mode, the downloads built on request say plainly that the TeX Live image is missing, the review copy"
+       " reads the last good build's own files (no dot files) and keeps no links for its probe, and failures name no"
+       " folder of the server's")
 
 
 def viewer_scripts(page):
@@ -844,9 +869,13 @@ def live_checks(tmp):
             fail("the PDF without notes is missing, or its references had not settled")
         if get("/export", token).get("version") != exported["version"]:
             fail("asking again rebuilt the PDF without notes, though the document had not changed")
+        status, _, data = request(f"{hub['base']}main/export", method="POST", body={}, cookie=token)  # (as the viewer asks)
+        if status != 200 or json.loads(data).get("version") != exported["version"]:
+            fail(f"POST /export through the hub: {status} {data[:200]!r}, not the same download")
         if ln_records(os.path.join(build, "export", "main", "main-export.aux")) != ln_records(os.path.join(build, "clean", "main-clean.aux")):
             fail("the download without notes has its line numbers in other places than the notes-free view")
-        ok("the download without notes is an exact build (line numbers too), made once per build")
+        ok("the download without notes is an exact build (line numbers too), made once per build; the viewer's POST asks"
+           " for the same one")
         review_checks(build, token)
 
         if sh:
@@ -1024,6 +1053,9 @@ def review_checks(build, token):
                 fail(f"notes {a['n']} and {b['n']} overlap")
     if reviewed.get("version") != get("/review", token).get("version"):
         fail("asking again rebuilt the review copy, though the document had not changed")
+    status, _, data = request(f"{hub['base']}main/review", method="POST", body={}, cookie=token)  # (as the viewer asks)
+    if status != 200 or json.loads(data).get("version") != reviewed["version"]:
+        fail(f"POST /review through the hub: {status} {data[:200]!r}, not the same review copy")
     composed(build)
     ok(f"the review copy: {pages} pages as exported, unscaled on wider ones, with {len(texts)} notes in both gutters, apart"
        " (the protected marker, the resolved note, and the one in a branch that is off left out); its last pass loads no"
@@ -1894,27 +1926,26 @@ def role_checks(sh):
 
 
 def export_checks(sh):
-    """The download without notes in shared mode: a viewer may ask for it (a copy of what they read), several
-    asking at once share one build, it is built once per build of the document, in the hardened image (TeX
+    """The download without notes in shared mode (POST /export): a viewer may ask for it (a copy of what they read),
+    several asking at once share one build, it is built once per build of the document, in the hardened image (TeX
     can't read absolute paths there), and coauthors get that PDF."""
     root = sh["root"]
     wait_for("the shared copy's build to settle", lambda: settled(root), timeout=120)
     asked, users = {}, ("vw", "cm", "ed", "vw")
-    askers = [threading.Thread(target=lambda i=i, uid=uid: asked.update({i: send("GET", "/export", [("Host", PROXY_HOST),
-                                                                                                  ("X-Test-User", uid)], quiet=True)}))
-              for i, uid in enumerate(users)]
+    askers = [threading.Thread(target=lambda i=i, uid=uid: asked.update({i: send("POST", "/export", [
+        ("Host", PROXY_HOST), ("X-Test-User", uid), ("Origin", PUBLIC)], {}, quiet=True)})) for i, uid in enumerate(users)]
     for thread in askers:
         thread.start()
     for thread in askers:
         thread.join()
     if sorted(asked) != list(range(len(users))) or None in asked.values():
         fail(f"of {len(users)} requests for the download without notes at once, some got no answer")
-    answers = [expect_dict(asked[i], 200, f"GET export for {uid}, with others at once") for i, uid in enumerate(users)]
+    answers = [expect_dict(asked[i], 200, f"POST export for {uid}, with others at once") for i, uid in enumerate(users)]
     if len({(a.get("source"), a.get("time")) for a in answers}) != 1 or any(a.get("state") not in ("running", "done") for a in answers):
         fail(f"requests for the download without notes at once did not share one build: {answers}")
 
     def exported():
-        e = expect_dict(via_proxy("vw", "/export"), 200, "GET export for a viewer")
+        e = expect_dict(via_proxy("vw", "/export", "POST", {}), 200, "POST export for a viewer")
         if e.get("state") == "failed":
             fail(f"the shared copy's download without notes failed: {e.get('msg')}")
         return e if e.get("state") == "done" else None
@@ -1928,56 +1959,58 @@ def export_checks(sh):
     if "latex-live-check: TeX refused an absolute path" not in texlog:
         fail("the download without notes " + ("read /etc/passwd: its TeX runs without openin_any=p, not in the hardened image"
                                                if "TeX read an absolute path" in texlog else "logged nothing from the probe"))
-    if expect_dict(via_proxy("cm", "/export"), 200, "GET export for a commenter").get("version") != done["version"]:
+    if expect_dict(via_proxy("cm", "/export", "POST", {}), 200, "POST export for a commenter").get("version") != done["version"]:
         fail("asking again rebuilt the shared copy's download without notes, though the document had not changed")
     ok("a viewer may download the shared paper without its notes: one build for several asking at once, once per build of"
        " the document, in the hardened image")
 
 
 def review_shared_checks(sh):
-    """The copy with notes in the margin in shared mode (GET /review), as for the export: a request from another site's
-    page is refused before it starts anything (the export's too), a viewer may ask, several asking at once share one
-    build, made once per build of the document, and coauthors get that PDF; another document's copy is refused, and
-    so is POST /review (the owner's, as whatever the role table doesn't list). It is confined: its probe pass can't
-    read an absolute path (openin_any=p), and the host's TeX never runs."""
+    """The copy with notes in the margin in shared mode (POST /review), as for the export: both start only with a POST
+    from the viewer's own page (a GET, or a POST with another site's Origin, starts nothing), a viewer may ask,
+    several asking at once share one build, made once per build of the document, and coauthors get that PDF; another
+    document's copy is refused. It is confined: its probe pass can't read an absolute path (openin_any=p), its last
+    pass loads no package that the paper's TeX wrote, and the host's TeX never runs."""
     root = sh["root"]
     wait_for("the shared copy's build to settle", lambda: settled(root), timeout=120)
     proxy, owner = [("Host", PROXY_HOST), ("X-Test-User", "vw")], [("Cookie", f"latex_live={sh['token']}")]
-    for headers, what in ((proxy + [("Sec-Fetch-Site", "cross-site")], "Sec-Fetch-Site: cross-site"),
-                          (proxy + [("Sec-Fetch-Site", "same-site")], "Sec-Fetch-Site: same-site"),
-                          (proxy + [("Origin", "http://evil.example")], "another site's Origin"),
-                          (proxy + [("Origin", "null")], "Origin: null"),
-                          (proxy + [("Origin", PUBLIC), ("Origin", PUBLIC)], "two Origin headers"),
-                          (proxy + [("Origin", f"http://localhost:{SHARED_PORT}")], "a loopback Origin through the proxy"),
-                          (owner + [("Origin", "http://evil.example")], "another site's Origin, with the owner's token")):
-        for path in ("/review", "/export"):
-            expect(send("GET", path, headers), 403, f"GET {path} with {what}")
+    for path in ("/review", "/export"):  # (a GET through the proxy with neither header: all another site's page sends over http)
+        for headers, what in ((proxy, "through the proxy"), (proxy + [("Sec-Fetch-Site", "same-origin")], "Sec-Fetch-Site: same-origin"),
+                              (owner, "with the owner's token")):
+            expect(send("GET", path, headers), 405, f"GET {path} {what}")
+        for headers, what in ((proxy, "no Origin, through the proxy"),
+                              (proxy + [("Origin", "http://evil.example")], "another site's Origin"),
+                              (proxy + [("Origin", "null")], "Origin: null"),
+                              (proxy + [("Origin", PUBLIC), ("Origin", PUBLIC)], "two Origin headers"),
+                              (proxy + [("Origin", f"http://localhost:{SHARED_PORT}")], "a loopback Origin through the proxy"),
+                              (owner + [("Origin", "http://evil.example")], "another site's Origin, with the owner's token")):
+            expect(send("POST", path, headers, {}), 403, f"POST {path} with {what}")
     time.sleep(1)  # (a review copy that had started would have its folder by now)
     if os.path.exists(os.path.join(root, "build", "review")):
-        fail("a request for the copy with notes in the margin from another site's page started a build")
-    for headers, what in ((proxy + [("Sec-Fetch-Site", "same-origin")], "Sec-Fetch-Site: same-origin"),
-                          (proxy + [("Origin", PUBLIC)], "the public Origin through the proxy"),
+        fail("a GET of the copy with notes in the margin, or a POST from another site's page, started a build")
+    for headers, what in ((proxy + [("Origin", PUBLIC)], "the public Origin through the proxy"),
                           (owner + [("Origin", f"http://localhost:{SHARED_PORT}")], "a loopback Origin with the owner's token"),
-                          (proxy + [("Sec-Fetch-Site", "none")], "Sec-Fetch-Site: none (typed in)")):
-        expect_dict(send("GET", "/export", headers), 200, f"GET /export with {what}")
-    ok("GET /review and /export from another site's page are refused (Sec-Fetch-Site, or an Origin not the viewer's) and"
-       " start nothing; the viewer's own requests, and those with neither header, go ahead")
+                          (owner, "the owner's token and no Origin, on a loopback Host (curl)")):
+        expect_dict(send("POST", "/export", headers, {}), 200, f"POST /export with {what}")
+    ok("the downloads built on request start only with a POST from the viewer's own page: a GET of /review or /export"
+       " (even through the proxy with neither Origin nor Sec-Fetch-Site), or a POST from another site's page, starts nothing")
 
-    asked, askers = {}, (("vw", []), ("cm", [("Sec-Fetch-Site", "same-origin")]), ("ed", [("Origin", PUBLIC)]), ("vw", []))
-    threads = [threading.Thread(target=lambda i=i, uid=uid, extra=extra: asked.update({i: send(
-        "GET", "/review", [("Host", PROXY_HOST), ("X-Test-User", uid), *extra], quiet=True)})) for i, (uid, extra) in enumerate(askers)]
+    asked, askers = {}, ("vw", "cm", "ed", "vw")
+    threads = [threading.Thread(target=lambda i=i, uid=uid: asked.update({i: send(
+        "POST", "/review", [("Host", PROXY_HOST), ("X-Test-User", uid), ("Origin", PUBLIC)], {}, quiet=True)}))
+        for i, uid in enumerate(askers)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join()
     if sorted(asked) != list(range(len(askers))) or None in asked.values():
         fail(f"of {len(askers)} requests for the copy with notes in the margin at once, some got no answer")
-    answers = [expect_dict(asked[i], 200, f"GET review for {uid}, with others at once") for i, (uid, _) in enumerate(askers)]
+    answers = [expect_dict(asked[i], 200, f"POST review for {uid}, with others at once") for i, uid in enumerate(askers)]
     if len({(a.get("source"), a.get("time")) for a in answers}) != 1 or any(a.get("state") not in ("running", "done") for a in answers):
         fail(f"requests for the copy with notes in the margin at once did not share one build: {answers}")
 
     def reviewed():
-        r = expect_dict(via_proxy("vw", "/review"), 200, "GET review for a viewer")
+        r = expect_dict(via_proxy("vw", "/review", "POST", {}), 200, "POST review for a viewer")
         if r.get("state") == "failed":
             fail(f"the shared copy's copy with notes in the margin failed: {r.get('msg')}")
         return r if r.get("state") == "done" else None
@@ -1987,7 +2020,7 @@ def review_shared_checks(sh):
     # and change its state's step, then its version)
     plan, end = os.path.join(root, "build", "review", "main", "main-review.json"), time.monotonic() + 4
     while time.monotonic() < end:
-        again = expect_dict(via_proxy("vw", "/review"), 200, "GET review for a viewer, once it is done")
+        again = expect_dict(via_proxy("vw", "/review", "POST", {}), 200, "POST review for a viewer, once it is done")
         if (again.get("version"), again.get("step")) != (done.get("version"), done.get("step")) or not os.path.isfile(plan):
             fail(f"the copy with notes in the margin was built again for the same build of the document: {again}")
         time.sleep(0.2)
@@ -1997,8 +2030,6 @@ def review_shared_checks(sh):
     if pdf[2] != read_bytes(os.path.join(root, "build", "main-review.pdf")) or not done.get("notes"):
         fail(f"the viewer's copy with notes in the margin is not the one built, or has no notes: {done}")
     expect(via_proxy("vw", "/pdf/appendix-review.pdf"), 403, "GET /pdf/appendix-review.pdf for a viewer (another document's)")
-    for uid in ("vw", "cm", "ed"):
-        expect(via_proxy(uid, "/review", "POST", {}), 403, f"POST review for {sh['users'][uid]['role']} {uid}")
     if editor_calls(sh["host_tex_log"]):
         fail(f"shared mode ran the host's TeX: {editor_calls(sh['host_tex_log'])}")
     try:
@@ -2011,11 +2042,11 @@ def review_shared_checks(sh):
                                                 if "TeX read an absolute path" in probed
                                                 else "did not get through people.tex and the notes"))
     composed(os.path.join(root, "build"))
-    if expect_dict(via_proxy("cm", "/review"), 200, "GET review for a commenter").get("version") != done["version"]:
+    if expect_dict(via_proxy("cm", "/review", "POST", {}), 200, "POST review for a commenter").get("version") != done["version"]:
         fail("asking again rebuilt the shared copy's copy with notes in the margin, though the document had not changed")
     ok(f"a viewer may download the shared paper with its {done['notes']} notes in the margin: one build for several asking at"
-       " once, once per build of the document, confined (the probe can't read absolute paths; never the host's TeX); another"
-       " document's copy and POST /review are refused")
+       " once, once per build of the document, confined (the probe can't read absolute paths; never the host's TeX; no"
+       " package of the paper's in its last pass); another document's copy is refused")
 
 
 def note(sh, uid, req):
