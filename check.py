@@ -64,7 +64,8 @@ words after it.\footnote{A footnote \eb{a note in a footnote}.}
 
 
 LOGS = []  # the instances' output, shown on failure
-ENV = dict(os.environ, LATEX_LIVE_PROTECTED=r"\\eb\{human-written\}")  # for the instances: their own token and instance list (live_checks)
+# For the instances: their own token and instance list (live_checks), and a protected marker.
+ENV = dict(os.environ, LATEX_LIVE_PROTECTED=r"\\eb\{human-written\}")
 
 
 def redact(text):

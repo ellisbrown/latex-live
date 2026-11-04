@@ -2932,7 +2932,8 @@ def squeeze(tex):
 def review_anchors(paper_root, out, notes, probe, area):
     """The notes that are typeset, each with its spot in the export: [{**note, page, x, y, how}],
     x, y in points from the page's top left (y at the baseline). how is "exact" (the probe's
-    record) or "line" (the export's SyncTeX, by source line)."""
+    record, on a line typeset as in the export) or "line" (approximate: the export's SyncTeX, by
+    source line, or else the probe's record on a line it typeset a little differently)."""
     export = synctex_pages(os.path.join(out, "export.synctex.gz"))
     trusted = same_line(export, synctex_pages(probe["synctex"])) if probe and os.path.isfile(probe["synctex"]) else None
     records = [("pos", *r) for r in probe.get("pos", [])] + [("seen", r[0], r[1], None, None, None, r[2]) for r in probe.get("seen", [])]
@@ -2954,7 +2955,12 @@ def review_anchors(paper_root, out, notes, probe, area):
         near = any((n["file"], ln) in lines for ln in range(n["line"] - 3, n["last"] + 4))
         if not recs and not near:  # (not typeset: the probe never met it, and nothing near it is in the PDF)
             continue
-        spot = line_anchor(paper_root, n, lines, vertical=any(r[0] == "seen" for r in recs))
+        probed = [r for r in recs if r[0] == "pos"]  # (on a line the probe set a little differently)
+        spot = None
+        if not probed or any(r[1] == n["file"] and n["line"] <= r[2] <= n["last"] for r in probed):
+            spot = line_anchor(paper_root, n, lines, vertical=any(r[0] == "seen" for r in recs))
+        if not spot and probed:  # (read elsewhere, as in a macro defined in another file: the probe's spot, near enough)
+            spot = probed[0][3:6]
         if spot:
             placed.append({**n, "page": spot[0], "x": round(spot[1], 2), "y": round(spot[2], 2), "how": "line"})
     return placed
@@ -2964,8 +2970,9 @@ def match_records(notes, records):
     """{note id: [record]}: which note each of the probe's records (kind, file, line, ..., tex) is
     about. A note is recorded when TeX typesets it, at the line TeX is reading then: its own last
     line, or later in an argument read whole (a caption). So a record goes to the note above it in
-    its file whose text it holds (the longest such text, then the nearest note); records of one
-    line and text go in order."""
+    its file whose text it holds (the longest such text, then the nearest note), else to a note in
+    another file whose text it holds (one in a macro used here); records of one line and text go in
+    order."""
     by_file, taken, found = {}, set(), {}
     for n in notes:
         by_file.setdefault(n["file"], []).append(n)
@@ -2975,6 +2982,8 @@ def match_records(notes, records):
     for (path, line, tex), group in keyed.items():
         candidates = [n for n in (by_file.get(path, []) if path else notes)
                       if n["last"] <= line and squeeze(note_source(n["body"])) in tex]
+        if not candidates:  # (a note in a macro defined in another file, recorded where the macro is used)
+            candidates = [n for n in notes if n["file"] != path and squeeze(note_source(n["body"])) in tex]
         free = [n for n in candidates if n["id"] not in taken] or candidates
         chosen = sorted(free, key=lambda n: (len(squeeze(note_source(n["body"]))), n["last"], n["id"]))[-len(group):]
         for i, r in enumerate(group):
