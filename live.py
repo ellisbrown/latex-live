@@ -2764,13 +2764,22 @@ def build_review(server, pdf, source):
 
 def review_notes(paper_root, pdf_name):
     """The notes the review copy shows, in source order: [{id, macro, author, file, line, col, last,
-    call, body}]: not resolved notes (commented out), notes in \\iffalse blocks, notes inside another
-    note (they show in it), or LATEX_LIVE_PROTECTED markers. call is the note as written and body its
-    argument, as Latin-1 (the file's bytes as they are)."""
+    call, body, typeset}]: not resolved notes (commented out), notes in \\iffalse blocks, notes inside
+    another note (they show in it), or LATEX_LIVE_PROTECTED markers. call is the note as written and
+    body its argument, as Latin-1 (the file's bytes as they are); typeset is what its macro hands to
+    \\todotxt, squeezed (to tell apart notes of two authors with the same text), or None."""
     files = project_tex_files(paper_root, job_file(paper_root, pdf_name, ".fls"))
-    kinds = note_kinds(read_tex(p) for p in files)
+    texts = [read_tex(p) for p in files]
+    kinds = note_kinds(texts)
     if not kinds:
         return []
+    templates = {}  # (note macro: the argument it gives \todotxt, with #1 in it)
+    for text in texts:
+        for m in NOTE_DEF_RE.finditer(text):
+            body = brace_group(text, m.end())[0]
+            at = re.search(r"\\todotxt\s*(?=\{)", body)
+            if at:
+                templates[m.group(1)] = brace_group(body, at.end())[0]
     use, found = note_use_re(kinds), []
     for path in files:
         try:
@@ -2788,10 +2797,13 @@ def review_notes(paper_root, pdf_name):
             inside = end = brace_group(text, m.end())[1]
             if PROTECTED_RE and PROTECTED_RE.search(text[m.start():end]):
                 continue
+            body = raw[m.end() + 1:end - 1]
+            template = templates.get(m.group(1))
             found.append({"id": len(found) + 1, "macro": m.group(1), "author": kinds[m.group(1)],
                           "file": os.path.relpath(path, paper_root), "line": text.count("\n", 0, m.start()) + 1,
                           "col": m.start() - text.rfind("\n", 0, m.start()) - 1, "last": text.count("\n", 0, end) + 1,
-                          "call": raw[m.start():end], "body": raw[m.end() + 1:end - 1]})
+                          "call": raw[m.start():end], "body": body,
+                          "typeset": squeeze(note_source(template.replace("#1", body))) if template is not None else None})
     return found
 
 
@@ -3030,8 +3042,9 @@ def match_records(notes, records):
     about. A note is recorded when TeX typesets it, at the line TeX is reading then: its own last
     line, or later in an argument read whole (a caption). So a record goes to the note above it in
     its file whose text it holds (the longest such text, then the nearest note), else to a note in
-    another file whose text it holds (one in a macro used here); records of one line and text go in
-    order."""
+    another file whose text it holds (one in a macro used here), preferring notes whose macro typesets
+    exactly that (so two authors' notes with the same text don't swap); records of one line and text
+    go in order."""
     by_file, taken, found = {}, set(), {}
     for n in notes:
         by_file.setdefault(n["file"], []).append(n)
@@ -3043,6 +3056,7 @@ def match_records(notes, records):
                       if n["last"] <= line and squeeze(note_source(n["body"])) in tex]
         if not candidates:  # (a note in a macro defined in another file, recorded where the macro is used)
             candidates = [n for n in notes if n["file"] != path and squeeze(note_source(n["body"])) in tex]
+        candidates = [n for n in candidates if n.get("typeset") == tex] or candidates  # (its own author's)
         free = [n for n in candidates if n["id"] not in taken] or candidates
         chosen = sorted(free, key=lambda n: (len(squeeze(note_source(n["body"]))), n["last"], n["id"]))[-len(group):]
         for i, r in enumerate(group):
@@ -3169,7 +3183,7 @@ def review_layout(placed, probe, geo, pages):
         for n, *_ in page:
             n["continued"] = pages + 1 + i
     return {"pages": pages + len(extra), "paper": pages, "width": geo["width"], "height": H, "left": geo["left"], "W": W,
-            "notes": [{**{k: v for k, v in n.items() if k not in ("call", "body")}, "text": review_text(n)} for n in placed]}
+            "notes": [{**{k: v for k, v in n.items() if k not in ("call", "body", "typeset")}, "text": review_text(n)} for n in placed]}
 
 
 def continuation_pages(notes, geo):

@@ -4,7 +4,7 @@
 1. The Python compiles without warnings (and with Python 3.9, if there is one), and the viewer's
    script parses (with Node, if there is one).
    The review copy's layout keeps notes in order, apart, and on their pages, and continues the ones
-   that don't fit after the paper.
+   that don't fit after the paper; its matching tells apart two authors' notes with the same text.
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a
    git repository with a pushed commit and a local one) gets a live.py instance, with the hub on
    port 44180 and state of its own (not the user's):
@@ -130,6 +130,7 @@ def static_checks():
             fail(f"instances starting at once got {len(tokens)} different tokens{' (one empty)' if '' in tokens else ''}")
     ok("instances starting at once agree on one token, never an empty one")
     layout_checks()
+    matching_checks()
 
 
 def layout_checks():
@@ -170,6 +171,22 @@ def layout_checks():
     if plan["pages"] <= plan["paper"]:
         fail("crowded notes did not continue on pages after the paper")
     ok("the review copy's gutters keep notes in order and apart, set crowded ones smaller, then continue them")
+
+
+def matching_checks():
+    """The review copy's matching of the probe's records to notes (live.match_records): two authors'
+    notes with the same text, on one line, each get their own record."""
+    sys.path.insert(0, HERE)
+    import live
+    templates = {"eb": r"{\color{Emerald}[\textbf{EB:} #1]}", "ab": r"{\color{Blue}[\textbf{AB:} #1]}"}
+    notes = [{"id": i, "macro": macro, "file": "a.tex", "line": 5, "last": 5, "body": "Check this",
+              "typeset": live.squeeze(templates[macro].replace("#1", "Check this"))} for i, macro in ((1, "eb"), (2, "ab"))]
+    records = [("pos", "a.tex", 5, 1, 100.0, 200.0, r"{\color {Emerald}[\textbf {EB:} Check this]}"),
+               ("pos", "a.tex", 5, 1, 300.0, 200.0, r"{\color {Blue}[\textbf {AB:} Check this]}")]
+    matched = {k: [r[4] for r in v] for k, v in live.match_records(notes, records).items()}
+    if matched != {1: [100.0], 2: [300.0]}:
+        fail(f"two authors' notes with the same text got each other's records: {matched}")
+    ok("the review copy tells apart two authors' notes with the same text")
 
 
 def git(cwd, *args):
