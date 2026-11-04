@@ -10,7 +10,7 @@ describes what it does, and [SETUP.md](SETUP.md) describes how to install it.
   (`git worktree add ../latex-live-<topic> -b <topic> origin/main`), and
   remove the worktree once the branch is merged.
 - One pull request per change. Before you open it and again before you merge,
-  run `python3 check.py`. It takes a minute or two and needs TeX, as `live.py`
+  run `python3 check.py`. It takes about a minute and needs TeX, as `live.py`
   does, and podman for its shared-mode part. When you change behavior that it
   doesn't cover, extend it.
 - Merge with a rebase (`gh pr merge <n> --rebase`), which keeps the history
@@ -67,6 +67,9 @@ shows on reload. `latex_report.py` and `forward.py` run anew each time.
   Extend `check.py`'s role checks with each new endpoint.
 - **Test on scratch papers** in a temporary directory, as `check.py` does.
   Never edit a real paper's sources, and never commit a build of one.
+  `check.py`'s shared-mode checks run in a thread of their own, beside the
+  others (`shared_checks`): give each side its own instances, and wait for a
+  condition (`wait_for`) rather than for a fixed time where you can.
 - **Leave other people's previews running.** Before you kill a process, check
   its command line and working directory. Match processes with anchored
   patterns: `pgrep -f "^python3 /path/to/live.py"`. A bare `pgrep -f live.py`

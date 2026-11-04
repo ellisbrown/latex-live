@@ -2517,7 +2517,9 @@ def commit_loop(server):
     LATEX_LIVE_COMMIT_IDLE seconds (commit_pending). Whatever goes wrong, it says so once (with where,
     for a bug) and keeps going after a pause."""
     while True:
-        time.sleep(1)
+        with server.pending_lock:  # (it wakes when the first one is due, and at least every second for new writes)
+            first = min((entry.get("due", math.inf) for entry in server.pending.values()), default=math.inf)
+        time.sleep(min(1, max(0.05, first - time.monotonic())))
         try:
             with server.pending_lock:
                 due = [uid for uid, entry in server.pending.items() if entry["due"] <= time.monotonic()]

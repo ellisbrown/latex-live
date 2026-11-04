@@ -106,6 +106,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import types
 import urllib.parse
 import urllib.request
@@ -202,6 +203,9 @@ IMPORT_RES = (re.compile(r"""^\s*(?:import|export)\s[^;'"]*?\bfrom\s*["']([^"']+
 
 
 LOGS = []  # the instances' output, shown on failure
+# The shared-mode checks run in a thread of their own, beside the others (live_checks): output is printed whole,
+# and the first failure stops both threads.
+OUT_LOCK, START_LOCK, STOPPING = threading.Lock(), threading.Lock(), threading.Event()
 # For the instances: their own token and instance list (live_checks), a protected marker, and none of
 # the user's own settings.
 ENV = {k: v for k, v in os.environ.items() if not k.startswith("LATEX_LIVE_") and k != "VSCODE_IPC_HOOK_CLI"}
@@ -223,19 +227,32 @@ def prints_token(text):
 
 
 def fail(msg):
-    for path in LOGS:
-        with open(path, errors="replace") as f:
-            print(f"--- {os.path.basename(path)} (last lines)\n{redact(''.join(f.readlines()[-25:]))}", flush=True)
-    sys.exit(f"FAIL: {redact(msg)}")
+    with OUT_LOCK:
+        if not STOPPING.is_set():  # (once: a failure in one thread makes the other stop, and maybe fail too)
+            STOPPING.set()
+            for path in LOGS:
+                with open(path, errors="replace") as f:
+                    print(f"--- {os.path.basename(path)} (last lines)\n{redact(''.join(f.readlines()[-25:]))}", flush=True)
+            print(f"FAIL: {redact(msg)}", file=sys.stderr, flush=True)
+    sys.exit(1)
+
+
+def stopping():
+    """Stop this thread if the other one failed (it said why)."""
+    if STOPPING.is_set():
+        sys.exit(1)
 
 
 def ok(msg):
-    print(f"ok: {msg}", flush=True)
+    stopping()
+    with OUT_LOCK:
+        print(f"ok: {msg}", flush=True)
 
 
-def wait_for(what, test, timeout=180, step=1):
+def wait_for(what, test, timeout=180, step=0.1):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
+        stopping()
         if result := test():
             return result
         time.sleep(step)
@@ -662,10 +679,15 @@ def make_paper(tmp):
 
 
 def start(paper, doc="main", *extra, env=None, port=PORT):
-    LOGS.append(os.path.join(paper, "..", f"live-{len(LOGS)}.log"))
-    log = open(LOGS[-1], "w")
-    return subprocess.Popen([sys.executable, os.path.join(HERE, "live.py"), f"{doc}.tex", "--no-open", "--port", str(port), *extra],
-                            cwd=paper, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=env or ENV)
+    """An instance of live.py; its output goes to proc.log."""
+    with START_LOCK:
+        LOGS.append(os.path.join(paper, "..", f"live-{len(LOGS)}.log"))
+        path = LOGS[-1]
+    with open(path, "w") as log:
+        proc = subprocess.Popen([sys.executable, os.path.join(HERE, "live.py"), f"{doc}.tex", "--no-open", "--port", str(port), *extra],
+                                cwd=paper, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=env or ENV)
+    proc.log = path
+    return proc
 
 
 def request(path, token=None, method="GET", body=None, cookie=None, headers=None):
@@ -770,6 +792,7 @@ def live_checks(tmp):
         if request(f"{hub['base']}main/status/main.pdf", cookie=token)[0] != 200:
             fail("the hub refuses its cookie")
         ok("the hub needs the token (or its cookie)")
+        shared = shared_checks(sh, sharing, own, token) if sh else None  # (beside the rest, which doesn't touch its instance)
         wrong = http.client.HTTPConnection("127.0.0.1", own, timeout=10)  # (as from a hub that looked up a stale port)
         wrong.request("GET", "/docs", headers={"Cookie": f"latex_live={token}", "X-Latex-Live-Paper": "other-000000"})
         if wrong.getresponse().status != 421:
@@ -877,17 +900,6 @@ def live_checks(tmp):
         ok("the download without notes is an exact build (line numbers too), made once per build; the viewer's POST asks"
            " for the same one")
         review_checks(build, token)
-
-        if sh:
-            shared_start_checks(sh, own, token)
-            identity_checks(sh)
-            role_checks(sh)
-            export_checks(sh)
-            review_shared_checks(sh)
-            note_checks(sh)
-            editor_checks(sh)
-            commit_checks(sh)
-            shared_stop_checks(sh, sharing)
         switch_checks(token)
 
         procs.append(start(paper, "appendix"))  # (a second document of the same paper, in its own process)
@@ -972,7 +984,7 @@ def live_checks(tmp):
             holder.wait(60)  # (three tries over about 10 s first)
         except subprocess.TimeoutExpired:
             fail("a new instance did not replace the one serving the hub without answering")
-        with open(LOGS[-1]) as f:
+        with open(procs[-1].log) as f:
             if "serves the hub but is not answering" not in f.read():
                 fail("the hub that did not answer was stopped some other way")
         wait_for("the hub to come back", lambda: read_hub() and hub["pid"] != stuck, timeout=20)
@@ -982,6 +994,10 @@ def live_checks(tmp):
         # (another instance may have taken the hub while the new one still starts: an instance stopped before it has
         # started latexmk exits without removing itself from the list, so let it build first)
         wait_for("extra.pdf through the hub", lambda: _quiet(lambda: get("/status/extra.pdf", token, "extra")["version"]))
+        if shared:
+            shared.join()
+            if shared.failed:
+                sys.exit(1)
     finally:
         for proc in procs + sharing:
             stop(proc)
@@ -1153,7 +1169,7 @@ def switch_checks(token):
         status, _, data = request(f"{hub['base']}main/{path}", method=method, body=body, cookie=token)
         if status != 200 or _quiet(lambda: json.loads(data)["state"]) != "running":
             fail(f"{method} /{path} through the hub: {status} {data[:200]!r}")
-        wait_for(f"the latexdiff that {method} /{path} started", diffed, timeout=120, step=0.5)
+        wait_for(f"the latexdiff that {method} /{path} started", diffed, timeout=120, step=0.2)
     status, headers, _ = request(f"{hub['base']}main/pdf/main-diff.pdf", token)
     if status != 200 or headers.get("Content-Type") != "application/pdf":
         fail(f"/pdf/main-diff.pdf through the hub: {status} {headers.get('Content-Type')}")
@@ -1263,8 +1279,34 @@ def shared_setup(tmp, sharing):
     sh["base"] = git_out(sh["root"], "rev-parse", "shared")
     sh["proc"] = start(sh["root"], env=sh["env"], port=SHARED_PORT)
     sharing.append(sh["proc"])
-    sh["log"] = LOGS[-1]
+    sh["log"] = sh["proc"].log
     return sh
+
+
+def shared_checks(sh, sharing, own, token):
+    """Start the shared-mode checks, which take the longest, in a thread of their own: they have an instance and a
+    paper of their own, so they run beside the others. The first ones run here, before the takeover checks replace
+    the owner's preview, which they reach. Returns the thread; its .failed says whether a check failed."""
+    shared_start_checks(sh, own, token)
+
+    def run():
+        try:
+            for check in (identity_checks, role_checks, export_checks, review_shared_checks, note_checks, editor_checks,
+                          commit_checks):
+                check(sh)
+            shared_stop_checks(sh, sharing)
+        except SystemExit:  # (fail said why)
+            thread.failed = True
+        except BaseException:
+            thread.failed = True
+            with OUT_LOCK:
+                STOPPING.set()
+                traceback.print_exc()
+
+    thread = threading.Thread(target=run, name="shared-mode checks", daemon=True)
+    thread.failed = False
+    thread.start()
+    return thread
 
 
 def texlive_image():
@@ -2082,7 +2124,7 @@ def wait_commit(sh, uid, paths, what):
                                  env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"}).returncode
         return new if new and not unsaved else None
 
-    sh["tip"] = wait_for(f"the auto-commit of {what}", landed, timeout=20, step=0.5)[0]
+    sh["tip"] = wait_for(f"the auto-commit of {what}", landed, timeout=20)[0]
 
 
 def note_checks(sh):
@@ -2534,7 +2576,7 @@ def shared_stop_checks(sh, sharing):
         env["LATEX_LIVE_PROXY_UID"] = str(os.getuid() + 1)
     proc = start(root, "main", "--no-build", env=env, port=SHARED_PORT)
     sharing.append(proc)
-    log = LOGS[-1]
+    log = proc.log
 
     def answering():
         if proc.poll() is not None:
@@ -2542,7 +2584,7 @@ def shared_stop_checks(sh, sharing):
         r = send("GET", "/me", [("Cookie", f"latex_live={sh['token']}")], quiet=True)
         return r is not None and r[0] == 200
 
-    wait_for("the shared-mode instance, restarted", answering, timeout=60, step=0.5)
+    wait_for("the shared-mode instance, restarted", answering, timeout=60)
     end = time.monotonic() + 20  # (it commits what the last run left before it serves a write)
     while glob.glob(pending) or git_out(root, "status", "--porcelain", "--untracked-files=no"):
         if time.monotonic() > end:

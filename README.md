@@ -245,7 +245,7 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
   to update" until the task is restarted.
 - **Contributing:** see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow,
   how the pieces fit together, and the rules.
-- **Smoke test:** `python3 check.py` (a minute or two, with TeX as above; its
+- **Smoke test:** `python3 check.py` (about a minute, with TeX as above; its
   shared-mode part needs podman) compiles the Python, checks the viewer's
   import map and parses its script (with Node), and runs an instance on a
   scratch two-column paper with git history: build, notes-free pass,
