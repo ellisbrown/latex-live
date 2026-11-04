@@ -1374,11 +1374,11 @@ const drawAllMargins = () => { for (let n = 1; n <= (doc?.numPages || 0); n++) d
 // "% RESOLVED <date> (<initials>): <reason>" line), others' notes ↩ (reply), your own ✎ (edit), and
 // the ones written from this tab ✕ (delete, as an undo; this tab remembers them by file, macro, and text).
 let who = localStorage.getItem(`latex-live:${hubBase}who`) || "", authors = [];
-const written = new Set(JSON.parse(sessionStorage.getItem("latex-live:written") || "[]"));
+const written = new Set(JSON.parse(sessionStorage.getItem(`latex-live:${hubBase}written`) || "[]"));
 const writtenKey = (file, macro, tex) => JSON.stringify([file, macro, tex]);
 function markWritten(key, on) {
   on ? written.add(key) : written.delete(key);
-  sessionStorage.setItem("latex-live:written", JSON.stringify([...written]));
+  sessionStorage.setItem(`latex-live:${hubBase}written`, JSON.stringify([...written]));
 }
 const authorOf = (macro) => authors.find((a) => a.macro === macro)?.author || macro;
 async function loadAuthors() {
@@ -2317,7 +2317,10 @@ $("docPick").onchange = async (e) => {
   const r = await fetch(`switch?${new URLSearchParams({ doc: value })}`);
   const body = await r.json().catch(() => ({ error: `switch failed (${r.status})` }));
   if (r.ok) return openDoc(`${value}.pdf`);
-  if (body.port) return hubBase ? openDoc(`${value}.pdf`) : (location.href = viewerOf({ port: body.port, doc: value })); // (another instance builds it)
+  if (body.port) { // (another instance builds it: its viewer, through the hub unless it predates it)
+    const other = otherPreviews.find((i) => i.port === body.port);
+    return (location.href = viewerOf({ port: body.port, doc: value, id: other?.id }));
+  }
   setStatus(body.error, "error");
 };
 loadDocs().catch(() => {});
