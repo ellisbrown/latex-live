@@ -2521,6 +2521,8 @@ def build_export(server, pdf, source):
             # a first pass seeded with the build-with-notes .aux needs a second: latex_report.uses_lineno)
             if settled and (passes >= 2 or not latex_report.uses_lineno(os.path.join(out, f"{job}.aux"))):
                 break
+        else:  # (not exact, so not published)
+            raise RuntimeError(f"the references had not settled after {passes} passes; see {BUILD}/export/{doc}/{job}.log")
         os.replace(os.path.join(out, f"{job}.pdf"), os.path.join(root, BUILD, f"{job}.pdf"))
         state = {"state": "done", "version": str(mtime(os.path.join(root, BUILD, f"{job}.pdf")))}
     except Exception as e:  # (shown in the viewer)
