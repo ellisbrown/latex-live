@@ -852,8 +852,8 @@ def notes(paper_root, pdf_name):
     """The inline notes in the build's files, in reading order: [{author, text, file, line, ...}]
     (plus note_fields, for editing them from the viewer).
 
-    Note macros are the one-argument commands whose body goes through \todotxt (this
-    project's show/hide switch), e.g. \todo and the per-author \eb, \ch; the author label
+    Note macros are the one-argument commands whose body goes through \\todotxt (this
+    project's show/hide switch), e.g. \\todo and the per-author \\eb, \\ch; the author label
     is the bold "XX:" in the body.
     """
     files = project_tex_files(paper_root, job_file(paper_root, pdf_name, ".fls"))
@@ -2455,10 +2455,9 @@ def pushed_commit(paper_root):
     best = None
     for ref in dict.fromkeys(refs):
         base = git("merge-base", "HEAD", ref)
-        if base:
-            ahead = int(git("rev-list", "--count", f"{base}..HEAD"))
-            if best is None or ahead < best[0]:
-                best = (ahead, base, ref)
+        ahead = git("rev-list", "--count", f"{base}..HEAD") if base else ""
+        if ahead.isdigit() and (best is None or int(ahead) < best[0]):
+            best = (int(ahead), base, ref)
     return (best[1], best[2]) if best else (None, None)
 
 
@@ -2466,7 +2465,8 @@ def base_status(server, pdf_name, kind, build=True):
     """A baseline the viewer diffs against to mark changes: PDFs of the document as committed at
     HEAD ("head") or at the last push ("push", pushed_commit), rebuilt whenever that commit moves
     (build_base); with build=False, only the commit is reported (the push baseline is built only
-    once a viewer shows it). The commit is checked every few seconds. The versions appear once a
+    once a viewer shows it). When the last push is HEAD, the push baseline reuses HEAD's PDFs
+    (share_head_base). The commit is checked every few seconds. The versions appear once a
     build has finished; None outside git (or with nothing pushed), and for a document the server
     is not building."""
     root = server.paper_root
@@ -2487,8 +2487,16 @@ def base_status(server, pdf_name, kind, build=True):
             elif (sha, pdf_name) != (b.get("sha"), b.get("pdf")) and b.get("state") != "running":
                 server.bases[kind] = b = {"sha": sha, "ref": ref, "pdf": pdf_name, "state": "waiting", "msg": ""}
             if b.get("state") == "waiting" and build and os.path.isfile(job_file(root, pdf_name, ".aux")):
-                b["state"] = "running"
-                threading.Thread(target=build_base, args=(server, kind, sha, pdf_name), daemon=True).start()
+                head = server.bases["head"]
+                if kind == "push" and (head.get("sha"), head.get("pdf")) == (sha, pdf_name):
+                    if head.get("built") == sha:  # (else wait for the HEAD build)
+                        share_head_base(server, pdf_name)
+                        b.update(state="done", built=sha)
+                    elif head.get("state") == "failed":
+                        b.update(state="failed", msg=head.get("msg", ""))
+                else:
+                    b["state"] = "running"
+                    threading.Thread(target=build_base, args=(server, kind, sha, pdf_name), daemon=True).start()
         finally:
             lock.release()
     b = server.bases[kind]
@@ -2503,6 +2511,22 @@ def base_status(server, pdf_name, kind, build=True):
     return info
 
 
+def share_head_base(server, pdf_name):
+    """The push baseline when nothing is unpushed: build/<doc>-push[-clean].pdf as links to the
+    HEAD baseline's PDFs, which a rebuild of that baseline replaces rather than rewrites."""
+    for suffix in ("", "-clean"):
+        head, push = (pdf_path(server.paper_root, f"{pdf_name[:-4]}-{kind}{suffix}.pdf") for kind in ("head", "push"))
+        try:
+            os.remove(push)
+        except FileNotFoundError:
+            pass
+        if os.path.isfile(head):
+            try:
+                os.link(head, push)
+            except OSError:
+                shutil.copy2(head, push)
+
+
 def build_base(server, kind, sha, pdf_name):
     """The document as committed at sha, for the kind of baseline (base_status): build/<doc>-<kind>.pdf,
     plus build/<doc>-<kind>-clean.pdf without notes (when the live build has a notes-free PDF).
@@ -2511,7 +2535,8 @@ def build_base(server, kind, sha, pdf_name):
     Figures, styles, fonts and the bibliography resolve to the working tree's (through TEXINPUTS,
     and links for the top-level entries with no .tex files, such as a class's font directory), so
     the diff shows text edits; the viewer marks changed figures itself. The live build's .aux/.bbl
-    seed the references: two passes with notes, then one without.
+    seed the references: two passes with notes, then one without (two with line numbers,
+    latex_report.uses_lineno).
     """
     root = server.paper_root
     doc = pdf_name[:-4]
@@ -2551,6 +2576,8 @@ def build_base(server, kind, sha, pdf_name):
                 if os.path.exists(os.path.join(out, job + ext)):
                     shutil.copyfile(os.path.join(out, job + ext), os.path.join(out, f"{job}-clean{ext}"))
             clean_pdf = tex(f"{job}-clean", f"{latex_report.NOTES_OFF}\\input{{{doc}}}")
+            if latex_report.uses_lineno(os.path.join(out, f"{job}-clean.aux")):
+                clean_pdf = tex(f"{job}-clean", f"{latex_report.NOTES_OFF}\\input{{{doc}}}")
         os.replace(pdf, os.path.join(root, BUILD, f"{job}.pdf"))
         if clean_pdf and os.path.isfile(clean_pdf):
             os.replace(clean_pdf, os.path.join(root, BUILD, f"{job}-clean.pdf"))

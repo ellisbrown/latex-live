@@ -151,8 +151,9 @@ def start_notes_free_build(root, doc):
     """One background pdflatex pass without notes, reusing this run's .aux/.bbl (notes_free_pass).
 
     Runs as job <doc>-clean in build/clean/ and then moves the PDF to build/<doc>-clean.pdf
-    (pdflatex writes its PDF page by page, so the viewer must not see it early). It runs two
-    passes (notes_free_pass). A newer build's pass replaces an unfinished one.
+    (pdflatex writes its PDF page by page, so the viewer must not see it early). One pass is
+    enough to measure length, two with line numbers (notes_free_pass). A newer build's pass
+    replaces an unfinished one.
     """
     out = os.path.join(BUILD, "clean")
     job = f"{doc}-clean"
@@ -174,6 +175,18 @@ def start_notes_free_build(root, doc):
         f.write(str(proc.pid))
 
 
+def uses_lineno(aux):
+    """Whether a pass's .aux holds lineno's records. lineno (the review-mode line numbers of
+    CVPR-style classes) places each number from the previous pass's .aux, so a pass seeded with
+    the .aux of the build with notes puts numbers in the wrong column or at the wrong height
+    wherever hiding the notes moved the text: such a document needs a second pass."""
+    try:
+        with open(aux, errors="replace") as f:
+            return "\\@LN" in f.read()
+    except OSError:
+        return False
+
+
 def tex_format(log):
     """The format a log's run used, e.g. "pdflatex 2024.6.15": it tells TeX installations apart."""
     m = re.search(r"\(preloaded format=([^)]*)\)", log[:2000])
@@ -193,11 +206,7 @@ def notes_free_pass(root, doc):
     tex = f"{os.environ.get('LATEX_LIVE_EXEC', '')} pdflatex -interaction=batchmode -halt-on-error -file-line-error -synctex=1"
     cmd = f"{tex} -output-directory={out} -jobname={job} '{NOTES_OFF}\\input{{{doc}}}' >/dev/null 2>&1"
     ran = subprocess.run(["sh", "-c", cmd]).returncode == 0
-    # A second pass reads the first pass's own .aux. The copied .aux describes the layout with
-    # notes, and lineno (the review-mode line numbers of CVPR-style classes) places each number
-    # from the previous pass's .aux, so after one pass the numbers land in the wrong column or
-    # at the wrong height wherever hiding the notes moved the text.
-    if ran:
+    if ran and uses_lineno(os.path.join(out, f"{job}.aux")):  # (a second pass reads the first's .aux)
         ran = subprocess.run(["sh", "-c", cmd]).returncode == 0
     stamp = time.strftime("%H:%M:%S")
     if ran and os.path.isfile(os.path.join(out, f"{job}.pdf")):
