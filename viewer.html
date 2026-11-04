@@ -2319,7 +2319,8 @@ $("docPick").onchange = async (e) => {
   if (r.ok) return openDoc(`${value}.pdf`);
   if (body.port) { // (another instance builds it: its viewer, through the hub unless it predates it)
     const other = otherPreviews.find((i) => i.port === body.port);
-    return (location.href = viewerOf({ port: body.port, doc: value, id: other?.id }));
+    const id = other ? other.id : hubBase && decodeURIComponent(hubBase.split("/")[2]); // (not listed yet: the same paper, so this one's id)
+    return (location.href = viewerOf({ port: body.port, doc: value, id }));
   }
   setStatus(body.error, "error");
 };

@@ -139,7 +139,7 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
   opens the only preview or lists them all. Each preview still runs in its
   own process (its own terminal, latexmk and version) on its own port from
   44101; whichever runs the hub forwards to the others, and another takes over
-  within a second when it stops. Every request needs the token in `~/.config/latex-live/token`
+  within a second when it stops (once nothing else holds the port). Every request needs the token in `~/.config/latex-live/token`
   (`$LATEX_LIVE_STATE/token` if set), which is created on first run and
   shared by every checkout, as is the list of running instances.
 - **Environment variables:**

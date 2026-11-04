@@ -251,7 +251,21 @@ def live_checks(tmp):
         if big.getresponse().status != 413:
             fail("the hub accepts a huge POST body")
         big.close()
-        ok("the hub refuses HEAD and oversized POST bodies")
+        direct = http.client.HTTPConnection("127.0.0.1", own, timeout=10)
+        direct.request("HEAD", "/status/main.pdf", headers={"Cookie": f"latex_live={token}"})
+        if direct.getresponse().status != 405:
+            fail("a preview answers HEAD on its own port")
+        direct.close()
+        for length in ("-1", "abc", "1000000000"):
+            direct = http.client.HTTPConnection("127.0.0.1", own, timeout=10)
+            direct.putrequest("POST", "/note")
+            for key, value in (("Cookie", f"latex_live={token}"), ("Content-Type", "application/json"), ("Content-Length", length)):
+                direct.putheader(key, value)
+            direct.endheaders()
+            if direct.getresponse().status not in (400, 413):
+                fail(f"a preview accepts Content-Length: {length} on its own port")
+            direct.close()
+        ok("the hub and the previews refuse HEAD and bad or oversized POST bodies")
 
         for path in ("/status/main.pdf?base=push", "/outline/main.pdf", "/notes/main.pdf", "/authors/main.pdf",
                      "/check/main.pdf", "/graphics/main.pdf", "/margin/main.pdf", "/floats/main.pdf", "/docs",
@@ -305,13 +319,22 @@ def live_checks(tmp):
 
         procs.append(start(paper, "appendix"))  # (a second document of the same paper, in its own process)
         wait_for("appendix.pdf through the hub", lambda: _quiet(lambda: get("/status/appendix.pdf", token, "appendix")["version"]))
-        routed = get("/instances", token, "appendix")["self"], get("/docs", token, "appendix")["doc"]
+        routed = wait_for("the appendix route", lambda: _quiet(lambda: (get("/instances", token, "appendix")["self"],
+                                                                        get("/docs", token, "appendix")["doc"])), timeout=20)
         if routed != (procs[1].pid, "appendix"):
             fail(f"/p/.../appendix/ reaches process {routed[0]} building {routed[1]}, not the appendix's {procs[1].pid}")
         page = request("/papers", token)[2].decode()
         if f"{hub['base']}main/viewer.html" not in page or f"{hub['base']}appendix/viewer.html" not in page:
             fail(f"/papers does not link both documents through the hub:\n{page[:600]}")
         ok("a second document gets its own process, behind the same port")
+        ghost = os.path.join(state, "instances", "ghost.json")  # (a stale entry: another paper's id, this preview's port)
+        with open(ghost, "w") as f:
+            json.dump({"port": own, "pid": procs[1].pid, "root": "/elsewhere", "doc": "main", "id": "ghost-000000"}, f)
+        status, _, data = request("/p/ghost-000000/main/docs", cookie=token)
+        os.remove(ghost)
+        if status != 502:
+            fail(f"the hub forwarded a request for another paper to this preview's port: {status} {data[:200]!r}")
+        ok("the hub, refused by a preview that is another paper's, looks again and doesn't misroute")
 
         second = subprocess.run([sys.executable, os.path.join(HERE, "live.py"), "main.tex", "--no-open", "--port", str(PORT)],
                                 cwd=paper, capture_output=True, text=True, timeout=60, env=ENV)

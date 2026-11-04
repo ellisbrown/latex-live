@@ -127,7 +127,16 @@ class DualStackServer(http.server.ThreadingHTTPServer):
 STATIC = {"/viewer.html"}  # plus everything under /pdfjs/
 
 
+def content_length(headers):
+    """A request's Content-Length; -1 when it is malformed."""
+    try:
+        return int(headers.get("Content-Length") or 0)
+    except ValueError:
+        return -1
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
+    timeout = 60  # (a client that stops sending mid-request frees its thread)
     extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map, ".mjs": "text/javascript"}
 
     def __init__(self, *args, **kwargs):
@@ -241,9 +250,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self.send_error(415, "expected a JSON body")
-        length = int(self.headers.get("Content-Length") or 0)
-        if length > 100_000:
-            return self.send_error(413)
+        length = content_length(self.headers)
+        if not 0 <= length <= 100_000:
+            return self.send_error(413 if length > 0 else 400)
         try:
             req = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
@@ -2730,7 +2739,8 @@ def is_live_instance(pid):
     except (OSError, TypeError):
         return False
     command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
-    return bool(re.match(r"(?i)\S*python[0-9.]*\s+(-\S+\s+)*\S*live\.py(\s|$)", command))  # (python running live.py, not e.g. an editor)
+    # (python running live.py, not e.g. an editor on it; the path may have spaces, as ps prints it unquoted)
+    return bool(re.match(r"(?i)\S*python[0-9.]*\s(.*[/\s])?live\.py(\s|$)", command))
 
 
 def instances():
@@ -2783,7 +2793,8 @@ td, th {{ padding: 4px 14px 4px 0; text-align: left; }} th {{ opacity: 0.7; font
 # The hub: one port (--port, 44100 by default) for every preview on the machine. Each preview
 # still runs in its own process, with its own latexmk, terminal and port (from --port + 1); the
 # one holding HUB_LOCK also serves the hub, which forwards /p/<paper id>/<doc>/... to that
-# preview. When it exits, another preview takes over the lock and the same port within a second,
+# preview. When it exits, another preview takes over the lock and the same port within a second
+# (once the port is free; it waits while another program holds it),
 # so viewer URLs keep working; the last one to exit closes it.
 def paper_id(root):
     """A paper's id in hub URLs: its folder's name and a short hash of its path (and of the build
@@ -2817,7 +2828,6 @@ class HubHandler(Handler):
     """The hub's requests: /p/<id>/<doc>/<path> goes to <path> on that preview's port, with the
     token, so the viewer works there unchanged (its URLs are relative). /papers lists the
     previews; / and /viewer.html?file=X (old bookmarks) go to the only matching preview."""
-    timeout = 60  # (a client that stops sending mid-request frees its thread)
 
     def do_GET(self):
         self.route("GET")
@@ -2857,16 +2867,15 @@ class HubHandler(Handler):
         """Send the request on to the preview of doc in paper id_, and its answer back. The
         preview checks that it is that paper (X-Latex-Live-Paper): a port that its preview gave
         up and another paper's took since the last look answers 421, and the hub looks again."""
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            length = -1
+        length = content_length(self.headers)
         if not 0 <= length <= 100_000:  # (the previews' own limit for a POST)
             return self.send_error(413 if length > 0 else 400)
         body = self.rfile.read(length) if length else None
         headers = {k: v for k, v in self.headers.items() if k.lower() in ("content-type", "range", "if-range")}
         headers.update({"Cookie": f"latex_live={self.server.token}", "X-Latex-Live-Paper": id_})
         for fresh in (False, True):
+            if fresh:
+                self.server.found_at = -9.0  # (look again now, whatever the last look's age)
             target = self.server.find(id_, doc, fresh)
             if not target:
                 return self.send_json(404, {"error": f"no preview of {doc}.tex in {id_} is running"})
@@ -2876,7 +2885,9 @@ class HubHandler(Handler):
                 resp = conn.getresponse()
             except (OSError, http.client.HTTPException) as e:
                 conn.close()
-                if fresh:
+                # Try again only if the request can't have been acted on: a POST that reached a
+                # preview (e.g. a note written, then the answer lost) must not be sent twice.
+                if fresh or (method != "GET" and not isinstance(e, ConnectionRefusedError)):
                     return self.send_json(502, {"error": f"the preview of {doc}.tex is not answering ({e})"})
                 continue
             if resp.status != 421:
@@ -2989,6 +3000,8 @@ def replace_stuck_hub():
         if answers(hub["port"], "/hub/ping"):
             return
         time.sleep(2)
+    if read_hub() != hub or not hub_lock_held():  # (it changed hands, or went, meanwhile)
+        return
     print(f"=== latex-live: stopping process {hub['pid']}, which serves the hub but is not answering", flush=True)
     stop_instance(hub["pid"])
 
@@ -2997,8 +3010,11 @@ def stop_instance(pid):
     """Stop another latex-live instance (it stops its latexmk); False if pid is not one, or won't stop."""
     if not is_live_instance(pid):
         return False
-    os.kill(pid, signal.SIGTERM)
-    os.kill(pid, signal.SIGCONT)  # (a paused one handles SIGTERM only once it runs: then it stops its latexmk itself)
+    try:
+        os.kill(pid, signal.SIGTERM)
+        os.kill(pid, signal.SIGCONT)  # (a paused one handles SIGTERM only once it runs: then it stops its latexmk itself)
+    except ProcessLookupError:  # (it exited meanwhile)
+        pass
     for i in range(150):
         if not is_live_instance(pid):
             for folder in (INSTANCES, OLD_INSTANCES):  # (killed, it can't remove its entry itself)
