@@ -6,11 +6,28 @@
 # Rootless podman maps container root to the caller, so outputs stay owned by us. latexmk passes
 # BIBINPUTS/BSTINPUTS/TEXINPUTS through the environment when it runs bibtex from build/; forward
 # them (unset ones are skipped), plus max_print_line (unwrapped log lines, for latex_report.py).
+#
+# In shared mode, where coauthors write the sources, live.py sets LATEX_LIVE_REQUIRE_IMAGE=1: never
+# the host's TeX, so a missing image fails the build; and LATEX_LIVE_SANDBOX=1: the container gets no
+# capabilities, no new privileges, at most 512 processes and at most 10 minutes (podman stops it then,
+# even when the caller has stopped waiting), and TeX no shell escape and no files outside its working
+# directory and the TeX tree (openin_any=p). That skips the image's entrypoint, which switches users
+# and so needs a capability.
 image=$1 root=$2
 shift 2
 if podman image exists "$image"; then
+    if [ "$LATEX_LIVE_SANDBOX" = 1 ]; then
+        set -- --cap-drop=all --security-opt=no-new-privileges --pids-limit=512 --timeout=600 --entrypoint= \
+            -e openin_any=p -e openout_any=p -e shell_escape=f "$image" "$@"
+    else
+        set -- "$image" "$@"
+    fi
     exec podman run --rm --init --pull=never --network=none --security-opt label=disable \
-        -v "$root:$root" -w "$(pwd -P)" -e BIBINPUTS -e BSTINPUTS -e TEXINPUTS -e max_print_line "$image" "$@"
+        -v "$root:$root" -w "$(pwd -P)" -e BIBINPUTS -e BSTINPUTS -e TEXINPUTS -e max_print_line "$@"
+fi
+if [ "$LATEX_LIVE_REQUIRE_IMAGE" = 1 ]; then
+    echo "=== latex-live: $image is not pulled (to fix: podman pull $image); shared mode never runs the host's $1" >&2
+    exit 1
 fi
 echo "=== latex-live: $image is not pulled (to fix: podman pull $image); using the host's $1" >&2
 exec "$@"

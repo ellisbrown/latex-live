@@ -10,7 +10,8 @@ the viewer reloads once, on a complete file. Then prints errors and undefined
 refs/citations, and overfull hboxes (as info) as
 `/abs/path.tex:LINE: error|warning|info: msg` lines, which a tasks.json problem
 matcher turns into Problems-panel entries. Also writes build/<root>.status.json
-for the browser viewer's build-status banner.
+for the browser viewer's build-status banner, and on success keeps the list of
+files the run read (build/<root>.fls.done), which live.py reads the paper's files from.
 
 When the sources have inline notes (macros that go through \todotxt), a
 successful run also starts a background pass without them
@@ -99,6 +100,19 @@ def overfull_boxes(log):
             elif ch == ")" and stack:
                 stack.pop()
     return boxes
+
+
+def keep_inputs(root):
+    """Copy this successful run's list of the files it read, build/<root>.fls, to build/<root>.fls.done,
+    in one step. live.py reads the paper's files (for notes, note macros, the browser editor) from
+    that copy: pdflatex rewrites the .fls itself during every pass, so mid-build it lacks the files
+    read later. A failed run keeps the copy of the last good one, which matches the published PDF."""
+    fls = os.path.join(BUILD, f"{root}.fls")
+    try:
+        shutil.copyfile(fls, fls + ".done.tmp")
+        os.replace(fls + ".done.tmp", fls + ".done")
+    except OSError:
+        pass
 
 
 def write_json(path, value):
@@ -203,6 +217,11 @@ def notes_free_pass(root, doc):
     """
     out = os.path.join(BUILD, "clean")
     job = f"{doc}-clean"
+    # Shared mode never runs the host's TeX. (live.py always sets LATEX_LIVE_EXEC there: this guards a
+    # manual run of latexmk with that environment.)
+    if os.environ.get("LATEX_LIVE_REQUIRE_IMAGE") == "1" and not os.environ.get("LATEX_LIVE_EXEC"):
+        return write_status(job, {"ok": False, "time": time.strftime("%H:%M:%S"),
+                                  "errors": [{"file": None, "line": None, "msg": "shared mode builds only in the TeX Live image"}]}, out)
     tex = f"{os.environ.get('LATEX_LIVE_EXEC', '')} pdflatex -interaction=batchmode -halt-on-error -file-line-error -synctex=1"
     cmd = f"{tex} -output-directory={out} -jobname={job} '{NOTES_OFF}\\input{{{doc}}}' >/dev/null 2>&1"
     ran = subprocess.run(["sh", "-c", cmd]).returncode == 0
@@ -299,6 +318,7 @@ def main():
                         "undefined": undefined, "tex": tex_format(log)})
 
     if ok:
+        keep_inputs(root)
         # Atomic rename, not an in-place write: vscode-pdf reloads on "created"
         # as well as "changed", and never sees a half-written file.
         tmp = os.path.join(os.path.dirname(dest), f".{os.path.basename(dest)}.tmp")

@@ -29,6 +29,10 @@ $pre_tex_code = '\\def\\latexlivelayout{\\typeout{latex-live layout:'
     . '\\ifdefined\\AddToHook\\AddToHook{begindocument/end}{\\latexlivelayout}\\else\\AtBeginDocument{\\latexlivelayout}\\fi';
 $pdflatex = "touch $build/%R.building; $exec pdflatex -synctex=1 -file-line-error -halt-on-error %O %P";
 $bibtex = "$exec bibtex %O %S";
+if ($ENV{LATEX_LIVE_SANDBOX}) {  # shared mode (coauthors write the sources): no TeX tool runs on the host
+    $makeindex = "$exec makeindex %O -o %D %S";
+    $biber = "$exec biber %O %S";
+}
 $out_dir = $build;
 $view = 'none';     # live.py's viewer reloads itself when the PDF changes
 $sleep_time = 1;    # watch poll interval (s)
