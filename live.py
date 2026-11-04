@@ -5517,7 +5517,7 @@ def main():
                     " sources were edited last. The viewer switches between root files. A path (e.g. the editor's"
                     " current file) runs in that file's paper: it builds the file if it is a root one.")
     ap.add_argument("--version", action="version", version=f"latex-live {VERSION}")
-    ap.add_argument("--port", type=int, default=default_port(), help="the hub's port, which serves every preview (default:"
+    ap.add_argument("--port", type=int, help="the hub's port, which serves every preview (default:"
                     " $LATEX_LIVE_PORT, else the number in ~/.config/latex-live/port, else 44100); each preview also has"
                     " its own, from the next one. A shared instance (LATEX_LIVE_USERS) serves exactly this port, without"
                     " the hub")
@@ -5531,6 +5531,10 @@ def main():
     ap.add_argument("--replace", action="store_true", help="stop another instance building the same document and run here"
                     " (one that no longer answers is replaced anyway)")
     args = ap.parse_args()
+    if args.port is None:
+        if SHARED:  # (it would otherwise take the hub's port, which the owner's previews use)
+            sys.exit("latex-live: a shared instance (LATEX_LIVE_USERS) needs --port: the port its proxy connects to")
+        args.port = default_port()
     global BUILD, PUBLISH
     BUILD = os.environ["LATEX_LIVE_BUILD"] = os.path.normpath(args.build_dir)
     PUBLISH = "" if BUILD == "build" else BUILD
@@ -5585,8 +5589,12 @@ def main():
               + ("" if args.replace else ", which is not answering"), flush=True)
         if not stop_instance(pid, os.getcwd()):
             sys.exit(f"latex-live: could not stop process {pid}; stop it and retry")
-        lock, other = take_lock(doc)
-        if not lock:
+        for _ in range(50):  # (an exiting instance stops looking live a moment before it lets go of the lock)
+            lock, other = take_lock(doc)
+            if lock:
+                break
+            time.sleep(0.1)
+        else:
             sys.exit(f"latex-live: {doc}.tex is still locked; retry")
     if not SHARED:  # (a shared instance takes no part in the hub)
         replace_stuck_hub()

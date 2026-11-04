@@ -1461,6 +1461,12 @@ def shared_start_checks(sh, own, hub_token):
     if f"{second.pid}.json" in recorded(sh["state"]):
         fail("the instance that found its port taken is still listed")
     ok("a shared-mode instance whose port is taken says so and exits")
+    portless = subprocess.run([sys.executable, os.path.join(HERE, "live.py"), "appendix.tex", "--no-build", "--no-open"],
+                              cwd=root, env=sh["env"], capture_output=True, text=True, timeout=60)
+    if not portless.returncode or "--port" not in portless.stdout + portless.stderr:
+        fail(f"a shared-mode instance without --port exited {portless.returncode} without asking for it:\n"
+             f"{portless.stdout + portless.stderr}")
+    ok("a shared-mode instance needs --port (it never takes the hub's)")
     again = subprocess.run([sys.executable, os.path.join(HERE, "live.py"), "main.tex", "--no-build", "--no-open", "--port",
                             str(SHARED_PORT)], cwd=root, env=sh["env"], capture_output=True, text=True, timeout=60)
     out = again.stdout + again.stderr
