@@ -324,6 +324,17 @@ def live_checks(tmp):
         if status != 202:
             fail(f"POST /rebuild through the hub: {status} {data[:200]!r}")
         ok("POST /rebuild works through the hub")
+        exported = wait_for("the PDF without notes", lambda: (lambda e: e if e.get("state") in ("done", "failed") else None)(
+            get("/export", token)), timeout=240)
+        if exported["state"] != "done":
+            fail(f"the build without notes failed: {exported.get('msg')}")
+        pdf = get("/pdf/main-export.pdf", token)
+        log = open(os.path.join(build, "export", "main-export.log"), errors="replace").read()
+        if not pdf.startswith(b"%PDF") or re.search(r"Rerun to get|may have changed\. Rerun", log):
+            fail("the PDF without notes is missing, or its references had not settled")
+        if get("/export", token).get("version") != exported["version"]:
+            fail("asking again rebuilt the PDF without notes, though the document had not changed")
+        ok("the download without notes is an exact build, made once per build")
 
         procs.append(start(paper, "appendix"))  # (a second document of the same paper, in its own process)
         wait_for("appendix.pdf through the hub", lambda: _quiet(lambda: get("/status/appendix.pdf", token, "appendix")["version"]))
