@@ -4,7 +4,8 @@
 1. The Python compiles without warnings (and with Python 3.9, if there is one), and the viewer's
    script parses (with Node, if there is one).
    The review copy's layout keeps notes in order, apart, and on their pages, and continues the ones
-   that don't fit after the paper; its matching tells apart two authors' notes with the same text.
+   that don't fit after the paper; its matching tells apart two authors' notes with the same text,
+   and gives no note the record of a protected marker that holds its text.
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a
    git repository with a pushed commit and a local one) gets a live.py instance, with the hub on
    port 44180 and state of its own (not the user's):
@@ -197,7 +198,10 @@ def layout_checks():
 
 def matching_checks():
     """The review copy's matching of the probe's records to notes (live.match_records): two authors'
-    notes with the same text, on one line, each get their own record."""
+    notes with the same text, on one line, each get their own record; a protected marker (no note, but
+    recorded as its macro typesets it) whose text holds a note's, in another file or below the note in
+    its own, gives that note no record, while a note whose typeset text no record has (an unusual macro)
+    still gets the record that holds its text."""
     sys.path.insert(0, HERE)
     import live
     templates = {"eb": r"{\color{Emerald}[\textbf{EB:} #1]}", "ab": r"{\color{Blue}[\textbf{AB:} #1]}"}
@@ -208,7 +212,18 @@ def matching_checks():
     matched = {k: [r[4] for r in v] for k, v in live.match_records(notes, records).items()}
     if matched != {1: [100.0], 2: [300.0]}:
         fail(f"two authors' notes with the same text got each other's records: {matched}")
-    ok("the review copy tells apart two authors' notes with the same text")
+    note = {"id": 3, "macro": "eb", "file": "b.tex", "line": 43, "last": 44, "body": "human-written",
+            "typeset": live.squeeze(templates["eb"].replace("#1", "human-written"))}
+    own = ("pos", "b.tex", 44, 8, 415.0, 207.0, r"{\color {Emerald}[\textbf {EB:} human-written]}")
+    for where in ("a.tex", "b.tex"):  # (the marker's record comes first, as its page does)
+        marker = ("pos", where, 213, 5, 170.0, 222.0, r"{\color {Cyan}{[\textbf {CH:} human-written]}}")
+        matched = {k: [r[3] for r in v] for k, v in live.match_records([note], [marker, own]).items()}
+        if matched != {3: [8]}:
+            fail(f"a protected marker in {where} (page 5) and a note with its text in b.tex (page 8): the note got pages {matched}")
+    odd = {**note, "typeset": "[EB:human-written]"}  # (as review_notes would make it of a macro it reads otherwise than TeX)
+    if live.match_records([odd], [own]) != {3: [own]}:
+        fail("a note whose typeset text no record has lost the record that holds its text")
+    ok("the review copy tells apart two authors' notes with the same text, and gives no note a protected marker's record")
 
 
 def git(cwd, *args):
