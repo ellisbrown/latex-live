@@ -56,7 +56,7 @@ moves the text below it. A note long enough that hiding it moves the text below 
 \input{body}
 \section{Method}\label{sec:method}
 See \ref{sec:method}. A sentence with a note \eb{a note in a paragraph, about \ref{sec:method}} and more
-words after it.\footnote{A footnote \eb{a note in a footnote}.}
+words after it.\footnote{A footnote \eb{a note in a footnote}.} \ifnum0=1 \eb{a note in a branch that is off}\fi
 % \eb{a resolved note}
 \eb{human-written}
 \end{document}
@@ -530,7 +530,8 @@ def review_checks(build, token):
     texts = [n["text"] for n in plan["notes"]]
     want = ["hiding it moves", "a note in a paragraph", "a note in a footnote"]
     if len(texts) != len(want) or any(sum(w in t for t in texts) != 1 for w in want):
-        fail(f"the review copy's notes are not the three expected (no protected marker, no resolved note): {texts}")
+        fail(f"the review copy's notes are not the three expected (no protected marker, resolved note, or note in a branch"
+             f" that is off): {texts}")
     sides = {n["side"] for n in plan["notes"]}
     if sides != {"left", "right"}:
         fail(f"notes of both columns should go to both gutters: {sides}")
@@ -545,7 +546,7 @@ def review_checks(build, token):
     if reviewed.get("version") != get("/review", token).get("version"):
         fail("asking again rebuilt the review copy, though the document had not changed")
     ok(f"the review copy: {pages} pages as exported, unscaled on wider ones, with {len(texts)} notes in both gutters, apart"
-       " (the protected marker and the resolved note left out)")
+       " (the protected marker, the resolved note, and the one in a branch that is off left out)")
 
 
 def _quiet(test):

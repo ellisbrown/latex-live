@@ -95,11 +95,11 @@ The plan below makes it a general tool.
   every `\input`).
 - **Compare.** latexdiff of the working tree against any git commit (in the
   ⋯ menu).
-- **Download** (the toolbar's download button; its menu opens on hover or click): the PDF as built, notes included; without notes; or
-  with notes in the margin. The version without notes is an exact build, as
-  you would submit it: its own bibtex run (a citation only in a note drops out)
-  and as many passes as the references need, made once per build of the
-  document.
+- **Download** (the toolbar's download button; its menu opens on hover or
+  click): the PDF as built, notes included; without notes; or with notes in
+  the margin. The version without notes is an exact build, as you would
+  submit it: its own bibtex run (a citation only in a note drops out) and as
+  many passes as the references need, made once per build of the document.
 - **Notes in the margin, for co-authors** (the download menu's "PDF with notes
   in the margin", saved as `<doc>-with-margin-notes.pdf`): the pages without
   notes, unchanged, on wider pages, with each note in a margin beside its
@@ -108,10 +108,12 @@ The plan below makes it a general tool.
   numbered at its spot in the text and wired to it. In a crowded margin the
   notes keep their order and are set smaller; those that still don't fit
   continue on pages after the paper, under the same numbers, and the margin
-  says where. Resolved notes and protected markers are left out. A note that
+  says where. Resolved notes, protected markers, and notes the document
+  leaves out (in a conditional that is off, say) are left out. A note that
   can't be pinned to its exact spot (one between paragraphs, say) is placed by
-  its source line instead; the viewer says how many were. The pages' links
-  don't work in this copy.
+  its source line instead; the viewer says how many were. A citation only in
+  notes, which the bibliography leaves out, shows its key (with natbib, its
+  authors and year). The pages' links don't work in this copy.
 - **Viewer comforts:**
   - a one-row toolbar: on a narrow window, the controls that don't fit move
     into the ⋯ menu, least used first;
