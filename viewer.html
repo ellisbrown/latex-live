@@ -25,15 +25,15 @@
   #bar > *, .grp > * { flex-shrink: 0; }
   .grp { display: flex; gap: 4px; align-items: center; }
   .grp:not(:has(> :not([hidden]))) { display: none; }
-  :is(#bar, #moreMenu) button { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 8px; cursor: pointer; }
-  :is(#bar, #moreMenu) button:hover:not(:disabled) { background: #5b6164; }
-  :is(#bar, #moreMenu) button:disabled { opacity: 0.35; cursor: default; }
-  :is(#bar, #moreMenu) button.on { background: #2f6fb0; }
-  :is(#bar, #moreMenu) input { background: #202124; color: #eee; border: 1px solid #555; }
+  :is(#bar, #moreMenu, #downloadMenu) button { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 8px; cursor: pointer; }
+  :is(#bar, #moreMenu, #downloadMenu) button:hover:not(:disabled) { background: #5b6164; }
+  :is(#bar, #moreMenu, #downloadMenu) button:disabled { opacity: 0.35; cursor: default; }
+  :is(#bar, #moreMenu, #downloadMenu) button.on { background: #2f6fb0; }
+  :is(#bar, #moreMenu, #downloadMenu) input { background: #202124; color: #eee; border: 1px solid #555; }
   #docPick, #zoomPick { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 4px; cursor: pointer; }
   #docPick[hidden] { display: none; }
   #docPick { max-width: 14em; field-sizing: content; } /* (as wide as the document shown; other previews can have long names) */
-  :is(#bar, #moreMenu) a { color: #9cf; }
+  :is(#bar, #moreMenu, #downloadMenu) a { color: #9cf; }
   #page { width: 3em; text-align: right; }
   #findGroup, #find { flex-shrink: 1; min-width: 6em; } /* (only once nothing else can move: fitBar measures unshrunk) */
   #bar.measuring * { flex-shrink: 0 !important; }
@@ -54,7 +54,10 @@
   #moreMenu { position: fixed; top: 32px; right: 8px; z-index: 11; display: flex; flex-direction: column; gap: 6px;
               min-width: 180px; padding: 8px; background: #2a2d2f; color: #eee; border-radius: 0 0 6px 6px; box-shadow: 0 4px 12px #000a; }
   #moreMenu[hidden] { display: none; }
-  #downloadClean[hidden] { display: none; }
+  #downloadMenu { position: fixed; z-index: 12; display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 6px;
+                  background: #2a2d2f; border-radius: 0 0 6px 6px; box-shadow: 0 4px 12px #000a; }
+  #downloadMenu button { text-align: left; }
+  #downloadMenu[hidden], #downloadClean[hidden] { display: none; }
   #keys { position: fixed; top: 60px; left: 50%; transform: translateX(-50%); z-index: 14; padding: 12px 16px;
           background: #2a2d2f; color: #ddd; border-radius: 6px; box-shadow: 0 6px 20px #000c; font-size: 13px; }
   #keys[hidden] { display: none; }
@@ -278,6 +281,7 @@
       <button id="clearChanges" title="Clear the highlights">&#10005;</button>
     </span>
   </span>
+  <button id="downloadBtn" data-priority="4.5" data-label="Download" aria-haspopup="menu" aria-expanded="false" title="Download the PDF"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" style="vertical-align: -1px"><path d="M6 1v6.5M3.2 4.8 6 7.6l2.8-2.8M1.5 9.5v1h9v-1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
   <span id="spacer"></span>
   <span id="texImage" hidden>&#9888; TeX image missing</span>
   <span id="updated" hidden title="latex-live changed on disk (e.g. after a git pull); this preview still runs the version it started with. Restart the preview task (and then reload) to use the new one.">&#10227; restart to update</span>
@@ -289,13 +293,15 @@
 <div id="moreMenu" hidden>
   <div id="moreFixed">
     <button id="dark" title="Dark mode (inverts the PDF)">&#9680; Dark mode</button>
-    <button id="downloadPdf" title="Save this PDF, notes included">&#8615; Download PDF</button>
-    <button id="downloadClean" hidden title="Save the paper without its notes, as you would submit it (an exact build: about as long as a full build)">&#8615; Download without notes</button>
     <button id="compare" data-priority="11" title="latexdiff against a git commit (opens in a new tab)">Compare with a commit&hellip;</button>
     <button id="keysBtn" title="Keyboard shortcuts (?)">Keyboard shortcuts</button>
     <span id="versionInfo"></span>
   </div>
   <div id="moreItems"></div>
+</div>
+<div id="downloadMenu" role="menu" hidden>
+  <button id="downloadPdf" role="menuitem" title="Save this PDF, notes included">PDF with notes</button>
+  <button id="downloadClean" role="menuitem" hidden title="Save the paper without its notes, as you would submit it (an exact build: about as long as a full build)">PDF without notes (as submitted)</button>
 </div>
 <div id="keys" hidden>
   <div class="head">Keyboard shortcuts <span class="close" title="Close (Esc)">&#10005;</span></div>
@@ -433,14 +439,37 @@ function saveFile(url, name) {
   a.remove();
 }
 const docName = () => docFile.replace(/\.pdf$/, "");
+// The toolbar's download button opens its menu on hover (and on click, for keyboards and touch).
+function showDownloads(open) {
+  const menu = $("downloadMenu"), button = $("downloadBtn");
+  if (open) {
+    const r = button.getBoundingClientRect();
+    menu.style.left = `${Math.max(4, Math.min(r.left, window.innerWidth - 270))}px`;
+    menu.style.top = `${r.bottom + 2}px`;
+  }
+  menu.hidden = !open;
+  button.setAttribute("aria-expanded", String(open));
+  button.classList.toggle("on", open);
+}
+let downloadsTimer = 0;
+for (const node of [$("downloadBtn"), $("downloadMenu")]) {
+  node.addEventListener("mouseenter", () => { clearTimeout(downloadsTimer); showDownloads(true); });
+  node.addEventListener("mouseleave", () => { downloadsTimer = setTimeout(() => showDownloads(false), 300); }); // (time to reach the menu)
+}
+$("downloadBtn").onclick = () => showDownloads(true);
+document.addEventListener("mousedown", (e) => {
+  if (!$("downloadMenu").hidden && !$("downloadMenu").contains(e.target) && !$("downloadBtn").contains(e.target)) showDownloads(false);
+});
 $("downloadPdf").onclick = () => {
   showMore(false);
+  showDownloads(false);
   const shown = isDiff ? file : docFile; // (a comparison tab saves the comparison)
   saveFile(`pdf/${encodeURIComponent(shown)}?v=${buildVersion}`, isDiff ? file : `${docName()}${$("downloadClean").hidden ? "" : "-with-notes"}.pdf`);
 };
 let exporting = false;
 $("downloadClean").onclick = async () => {
   showMore(false);
+  showDownloads(false);
   if (exporting) return;
   exporting = true;
   try {
@@ -618,7 +647,7 @@ window.addEventListener("keydown", (e) => {
   else if (e.target.tagName === "INPUT") return; // keep word-wise cursor keys in the text boxes
   else if ((e.altKey && e.key === "ArrowLeft") || (e.metaKey && e.key === "[")) { e.preventDefault(); travel(back, ahead); }
   else if ((e.altKey && e.key === "ArrowRight") || (e.metaKey && e.key === "]")) { e.preventDefault(); travel(ahead, back); }
-  else if (e.key === "Escape") { hidePreview(); $("comparePanel").hidden = true; closeNotePop(); showMore(false); showKeys(false); }
+  else if (e.key === "Escape") { hidePreview(); $("comparePanel").hidden = true; closeNotePop(); showMore(false); showKeys(false); showDownloads(false); }
   else if (!mod && !e.altKey && e.key === "?") { e.preventDefault(); showKeys($("keys").hidden); }
   else if (!mod && !e.altKey && e.key === "c" && !$("commentBtn").hidden) { e.preventDefault(); startComment(); }
   else if (!mod && !e.altKey && e.key === "d") { e.preventDefault(); toggleChanges(); }
@@ -2293,6 +2322,7 @@ async function poll() {
     pushInfo = info.push || null;
     $("notesView").hidden = isDiff || !info.clean?.version;
     $("downloadClean").hidden = isDiff || !info.clean?.version; // (only a paper with notes has a version without them)
+    $("downloadPdf").textContent = isDiff ? "This comparison" : $("downloadClean").hidden ? "PDF" : "PDF with notes";
     const clean = !isDiff && view === "clean" && info.clean?.version ? info.clean : null;
     const want = clean ? `clean:${clean.version}` : info.version;
     if (want !== shown) {
