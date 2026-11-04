@@ -4062,9 +4062,10 @@ def start_review(server):
 def build_review(server, pdf, source):
     """build/<doc>-review.pdf (see REVIEW_PROBE), built in build/review/<doc>/: the exact export,
     the probe (one pdflatex pass), the layout of the gutters, and a document that places the
-    export's pages and the typeset notes with TikZ (one more pass). The layout also goes to
-    <doc>-review.json there. Published whole or not at all. Each TeX run takes one of SPAWNS' places,
-    as the export's do, and in shared mode runs only in the TeX Live image, confined (exact_export)."""
+    export's pages and the typeset notes with TikZ (one more pass, in .copy/ there: a folder that
+    holds only that document and the two PDFs it places). The layout also goes to <doc>-review.json
+    there. Published whole or not at all. Each TeX run takes one of SPAWNS' places, as the export's
+    do, and in shared mode runs only in the TeX Live image, confined (exact_export)."""
     root, doc = server.paper_root, pdf[:-4]
     out = os.path.join(root, BUILD, "review", doc)
     job = f"{doc}-export"  # (the probe repeats the export's last pass, \jobname included)
@@ -4100,19 +4101,27 @@ def build_review(server, pdf, source):
             pages = len(synctex_pages(os.path.join(out, "export.synctex.gz")))
             plan = review_layout(placed, probe, geo, pages)
             step("typesetting the review copy")
-            with open(os.path.join(out, f"{doc}-review.tex"), "w", encoding="utf-8") as f:
-                f.write(review_tex(plan, geo, probe.get("colors", {}), notes))
             with open(os.path.join(out, f"{doc}-review.json"), "w") as f:
                 json.dump(plan, f, indent=1)
+            # (TeX takes packages from its working folder first, and the paper's TeX writes into out: the last pass
+            # runs in a folder made only now, with a name that starts with a dot, which no TeX run of the paper's can
+            # write into either, as openout_any=p refuses it)
+            copy = os.path.join(out, ".copy")
+            os.makedirs(copy)
+            for name in ("export.pdf", "probe.pdf"):
+                if os.path.exists(os.path.join(out, name)):
+                    os.replace(os.path.join(out, name), os.path.join(copy, name))
+            with open(os.path.join(copy, f"{doc}-review.tex"), "w", encoding="utf-8") as f:
+                f.write(review_tex(plan, geo, probe.get("colors", {}), notes))
             with SPAWNS:
                 r = subprocess.run(["sh", "-c", f"{server.tex_exec} pdflatex -interaction=batchmode -halt-on-error"
-                                                f" {doc}-review.tex >/dev/null 2>&1"], cwd=out, timeout=600)
-            log = read_output(root, os.path.join(out, f"{doc}-review.log")) or ""
+                                                f" {doc}-review.tex >/dev/null 2>&1"], cwd=copy, timeout=600)
+            log = read_output(root, os.path.join(copy, f"{doc}-review.log")) or ""
             written = re.search(r"Output written on .*?\((\d+) pages?", log.replace("\n", ""))
             if r.returncode != 0 or not written or int(written.group(1)) != plan["pages"]:
                 first = next((l for l in log.splitlines() if l.startswith("! ")), "")
-                raise RuntimeError(f"the review copy didn't build ({first or 'see ' + os.path.join(BUILD, 'review', doc, doc + '-review.log')})")
-            os.replace(os.path.join(out, f"{doc}-review.pdf"), os.path.join(root, BUILD, f"{doc}-review.pdf"))
+                raise RuntimeError(f"the review copy didn't build ({first or f'see {os.path.relpath(copy, root)}/{doc}-review.log'})")
+            os.replace(os.path.join(copy, f"{doc}-review.pdf"), os.path.join(root, BUILD, f"{doc}-review.pdf"))
             state = {"state": "done", "version": str(mtime(os.path.join(root, BUILD, f"{doc}-review.pdf"))),
                      "notes": len(plan["notes"]), "approximate": sum(n["how"] != "exact" for n in plan["notes"]),
                      "continued": sum(n["top"] is None for n in plan["notes"])}

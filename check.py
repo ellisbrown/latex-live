@@ -30,8 +30,9 @@
      notes-free baseline's line numbers match the live notes-free build's (two passes with lineno);
    - the download without notes is an exact build (its line numbers match the notes-free view's),
      made once per build of the document, and the review copy places its pages on wider ones with
-     every note in a gutter (none overlapping, the protected marker and the resolved note left out);
-     a document without notes gets a clear failure, not a file;
+     every note in a gutter (none overlapping, the protected marker and the resolved note left out),
+     and its last pass loads no package that the paper's TeX wrote; a document without notes gets a
+     clear failure, not a file;
    - POST /switch moves the preview to another document and GET /switch back, and POST /diff and
      GET /diff build a latexdiff (the viewer's POST forms and the old GET ones, through the hub);
    - a second document runs in its own process behind the same port, and /papers links both; the
@@ -170,9 +171,12 @@ words after it.\footnote{A footnote \eb{a note in a footnote}.} \ifnum0=1 \eb{a 
 \end{document}
 """
 # The coauthors' note macros (the users of shared_setup), in a file of their own so that main.tex
-# keeps its line numbers.
+# keeps its line numbers; and, in the review copy's probe pass only, a package that TeX writes into
+# that pass's folder, which the copy's last pass must not load (composed).
 PEOPLE = r"""\newcommand{\ed}[1]{\todotxt{[ED: #1]}}
 \newcommand{\cm}[1]{\todotxt{[CM: #1]}}
+\makeatletter\ifdefined\latexlive@record\newwrite\planted\immediate\openout\planted=lmodern.sty
+\immediate\write\planted{\noexpand\typeout{latex-live-check: a package that TeX wrote ran}}\immediate\closeout\planted\fi\makeatother
 """
 # The start of body.tex, for the notes in shared mode (note_checks), near the top of page 1: a paragraph
 # with a note of the owner's, and one that the owner's protected-text marker ends (LATEX_LIVE_PROTECTED).
@@ -995,7 +999,7 @@ def review_checks(build, token):
         plan = json.load(f)
     pages = written_pages(os.path.join(build, "export", "main", "main-export.log"))
     if not pages or plan["paper"] != pages or plan["pages"] != pages or \
-            written_pages(os.path.join(build, "review", "main", "main-review.log")) != pages:
+            written_pages(os.path.join(build, "review", "main", ".copy", "main-review.log")) != pages:
         fail(f"the review copy has {plan['pages']} pages ({plan['paper']} of the paper), the export {pages}")
     if plan["width"] <= plan["W"]:
         fail(f"the review copy's pages are no wider than the paper's ({plan['width']} <= {plan['W']})")
@@ -1020,8 +1024,21 @@ def review_checks(build, token):
                 fail(f"notes {a['n']} and {b['n']} overlap")
     if reviewed.get("version") != get("/review", token).get("version"):
         fail("asking again rebuilt the review copy, though the document had not changed")
+    composed(build)
     ok(f"the review copy: {pages} pages as exported, unscaled on wider ones, with {len(texts)} notes in both gutters, apart"
-       " (the protected marker, the resolved note, and the one in a branch that is off left out)")
+       " (the protected marker, the resolved note, and the one in a branch that is off left out); its last pass loads no"
+       " package that the paper's TeX wrote")
+
+
+def composed(build):
+    """The review copy's last pass (in build/review/main/.copy/) loaded no package that the paper's TeX wrote into the
+    probe pass's folder (people.tex has the probe pass write lmodern.sty there, a package that the last pass uses)."""
+    with open(os.path.join(build, "review", "main", ".copy", "main-review.log"), errors="replace") as f:
+        log = f.read()
+    if not os.path.isfile(os.path.join(build, "review", "main", "lmodern.sty")):
+        fail("the probe pass wrote no lmodern.sty into its folder (people.tex has it write one)")
+    if "latex-live-check: a package that TeX wrote ran" in log:
+        fail("the review copy's last pass loaded lmodern.sty from the folder the paper's TeX writes into")
 
 
 def owner_checks(token, own, editor_log):
@@ -1993,6 +2010,7 @@ def review_shared_checks(sh):
         fail("the review copy's probe pass " + ("read /etc/passwd: its TeX runs without openin_any=p, not in the hardened image"
                                                 if "TeX read an absolute path" in probed
                                                 else "did not get through people.tex and the notes"))
+    composed(os.path.join(root, "build"))
     if expect_dict(via_proxy("cm", "/review"), 200, "GET review for a commenter").get("version") != done["version"]:
         fail("asking again rebuilt the shared copy's copy with notes in the margin, though the document had not changed")
     ok(f"a viewer may download the shared paper with its {done['notes']} notes in the margin: one build for several asking at"
