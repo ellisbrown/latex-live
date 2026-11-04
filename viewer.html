@@ -662,7 +662,9 @@ $("downloadPdf").onclick = () => {
   // ("-with-notes" when the paper has notes, so a version without them too: the Notes switch shows then)
   saveFile(`pdf/${encodeURIComponent(shown)}?v=${buildVersion}`, isDiff ? file : `${docName()}${$("notesView").hidden ? "" : "-with-notes"}.pdf`);
 };
-// The server builds them in the background: ask until it is done, showing its progress, then save.
+// The server builds them in the background, from the PDF as last built: ask until it is done, showing its
+// progress (poll leaves the status line to it meanwhile: liveStatus), then save. While the document builds,
+// or is about to (behind), that PDF lacks the latest change: wait for the build first.
 const building = new Set();
 async function downloadBuilt(endpoint, built, saveAs, what, done) {
   showMore(false);
@@ -670,6 +672,11 @@ async function downloadBuilt(endpoint, built, saveAs, what, done) {
   if (building.has(endpoint)) return;
   building.add(endpoint);
   try {
+    const asked = Date.now();
+    while (behind() && !pollFailed && Date.now() - asked < 600000) { // (not for more than 10 minutes)
+      setStatus(`waiting for the build in progress, then the PDF ${what}…`, "busy");
+      await sleep(500);
+    }
     for (;;) {
       const r = await fetch(endpoint, { cache: "no-store" }).catch(() => null);
       const e = r ? await readBody(r) : {};
@@ -678,11 +685,10 @@ async function downloadBuilt(endpoint, built, saveAs, what, done) {
       if (!r.ok && !e.state) return setStatus(`download failed: ${e.error}`, "error"); // (refused: e.g. the access ended)
       if (e.state === "done") {
         saveFile(`pdf/${encodeURIComponent(built)}?v=${e.version}`, saveAs);
-        return setStatus(`saved ${saveAs} (${done(e)})`, "fresh");
+        return setStatus(`saved ${saveAs} (${done(e)}${buildFailed ? "; of the last build that worked" : ""})`, "fresh");
       }
       if (e.state === "failed") return setStatus(`couldn't build the PDF ${what}: ${e.msg}`, "error");
       setStatus(`building the PDF ${what}${e.step ? `: ${e.step}` : ""}…`, "busy");
-      rebuildAt = Date.now(); // (poll keeps a busy status a few seconds after a request)
       await sleep(1000);
     }
   } catch (err) {
@@ -1111,6 +1117,13 @@ function setStatus(text, cls = "") {
   $("status").textContent = $("status").title = text; // (the title: the whole text when it is cut off)
   $("status").className = cls;
 }
+// The live build's state on the status line (poll, load), unless a download that the server builds is in
+// progress: that has the line meanwhile (downloadBuilt), rather than the two taking turns.
+function liveStatus(text, cls = "", title = text) {
+  if (building.size) return;
+  setStatus(text, cls);
+  $("status").title = title;
+}
 
 // Build-status banner: shows the first errors of a failed build, or else of a failed notes-free
 // pass (the notes-free view and its page count are then out of date); click one to open it in the
@@ -1502,6 +1515,7 @@ async function saveSource({ keepalive = false } = {}) {
     if (trouble) throw Object.assign(new Error(res.error || `save failed (${r.status})`), { trouble });
     if (r.status === 404 && (await stillListed(target.path))) throw Object.assign(new Error(res.error), { trouble: "server" }); // (not gone after all)
     backOnline();
+    if (r.ok) wroteAt = Date.now(); // (a build comes: behind)
     const { since } = busy;
     busy = null;
     if (ed !== target) return;
@@ -2769,6 +2783,7 @@ async function postNote(body) {
     if (r.status === 503 && res.retry) return `${ownerName()} is still updating the shared copy: try again in a minute ${kept}`;
     if (unreachable(r, res)) return `Can't reach the preview server: try again in a moment ${kept}`;
     if (!r.ok || typeof res.source !== "string") return res.error || `failed (${r.status})`;
+    wroteAt = Date.now();
     const old = writtenKey(body.source, body.macro, body.tex);
     if (body.action === "add" || body.action === "reply") markWritten(writtenKey(res.source, res.macro, res.tex), true);
     else if (written.has(old)) {
@@ -3456,6 +3471,18 @@ let pollFailed = false; // (the status line says why the last poll failed)
 let forwardSeq = null;
 let wordsPromise = null;
 let buildVersion = null;
+// Whether the PDF as last built lacks a change that a build is adding (for downloadBuilt): while the document
+// builds (poll: seeBuild), and after this tab writes to its sources (a save, a note: wroteAt) until a build
+// starts, for a few seconds at most (latexmk looks for changes every second, and builds again after a build
+// that a write came during).
+let buildRunning = false, buildStarted = 0, buildEnded = 0, buildFailed = false, wroteAt = 0;
+function seeBuild(running, failed) {
+  if (running && !buildRunning) buildStarted = Date.now();
+  if (!running && buildRunning) buildEnded = Date.now();
+  buildRunning = running;
+  buildFailed = failed; // (the last build that finished: the PDF is then the one before)
+}
+const behind = () => buildRunning || (wroteAt > buildStarted && Date.now() - Math.max(wroteAt, buildEnded) < 3000);
 
 async function load(name, version, variant, info) {
   // Fetch and parse the new PDF before swapping, so the old one stays visible meanwhile.
@@ -3479,8 +3506,7 @@ async function load(name, version, variant, info) {
   $("findCount").textContent = "";
   $("count").textContent = next.numPages;
   const time = new Date().toLocaleTimeString();
-  setStatus(`✓ ${time.replace(/\s*[AP]M$/i, "")}`, "fresh");
-  $("status").title = `Updated at ${time}`;
+  liveStatus(`✓ ${time.replace(/\s*[AP]M$/i, "")}`, "fresh", `Updated at ${time}`);
   setTimeout(() => $("status").classList.remove("fresh"), 1500);
   prevBuildWords = oldWords || null;
   wordsPromise = docWords(next);
@@ -3525,8 +3551,9 @@ async function poll() {
                       : r.status === 404 ? "server is older than this viewer: restart the LaTeX build task" : `status ${r.status}`);
     }
     const info = await r.json();
-    if (pollFailed) setStatus(""); // (it answers again)
+    if (pollFailed) liveStatus(""); // (it answers again)
     pollFailed = false;
+    if (!isDiff) seeBuild(!!info.building, info.build?.ok === false);
     sourceStatus(info.source, epoch);
     if (!isDiff && info.doc && info.doc !== docFile) return openDoc(info.doc); // the server builds another document now
     if (info.layout) area = info.layout;
@@ -3537,9 +3564,9 @@ async function poll() {
     $("texImage").textContent = info.texImage?.startsWith("no synctex") ? "⚠ no SyncTeX" : "⚠ TeX image missing";
     $("updated").hidden = !info.latexLive?.updated || isCollaborator(); // (only the owner can restart the preview)
     $("versionInfo").textContent = info.latexLive ? `latex-live ${info.latexLive.version}` : "";
-    if (info.building) setStatus(isDiff ? "building diff…" : "building…", "busy");
-    else if ($("status").className === "busy" && Date.now() - rebuildAt > 4000) setStatus(info.build?.ok === false ? "build failed" : "", info.build?.ok === false ? "error" : "");
-    if (!info.version) return info.building || setStatus(`waiting for ${file}…`);
+    if (info.building) liveStatus(isDiff ? "building diff…" : "building…", "busy");
+    else if ($("status").className === "busy" && Date.now() - rebuildAt > 4000) liveStatus(info.build?.ok === false ? "build failed" : "", info.build?.ok === false ? "error" : "");
+    if (!info.version) return info.building || liveStatus(`waiting for ${file}…`);
     buildVersion = info.version;
     headInfo = info.head || null;
     pushInfo = info.push || null;
