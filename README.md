@@ -95,7 +95,7 @@ The plan below makes it a general tool.
   every `\input`).
 - **Compare.** latexdiff of the working tree against any git commit (in the
   ⋯ menu).
-- **Download** (⋯ menu): the PDF as built, notes included, or without notes.
+- **Download** (the toolbar's download button; its menu opens on hover or click): the PDF as built, notes included, or without notes.
   The version without notes is an exact build, as you would submit it: its own
   bibtex run (a citation only in a note drops out) and as many passes as the
   references need, made once per build of the document.
