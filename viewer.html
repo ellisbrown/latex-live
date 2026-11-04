@@ -54,6 +54,7 @@
   #moreMenu { position: fixed; top: 32px; right: 8px; z-index: 11; display: flex; flex-direction: column; gap: 6px;
               min-width: 180px; padding: 8px; background: #2a2d2f; color: #eee; border-radius: 0 0 6px 6px; box-shadow: 0 4px 12px #000a; }
   #moreMenu[hidden] { display: none; }
+  #downloadClean[hidden] { display: none; }
   #keys { position: fixed; top: 60px; left: 50%; transform: translateX(-50%); z-index: 14; padding: 12px 16px;
           background: #2a2d2f; color: #ddd; border-radius: 6px; box-shadow: 0 6px 20px #000c; font-size: 13px; }
   #keys[hidden] { display: none; }
@@ -288,6 +289,8 @@
 <div id="moreMenu" hidden>
   <div id="moreFixed">
     <button id="dark" title="Dark mode (inverts the PDF)">&#9680; Dark mode</button>
+    <button id="downloadPdf" title="Save this PDF, notes included">&#8615; Download PDF</button>
+    <button id="downloadClean" hidden title="Save the paper without its notes, as you would submit it (an exact build: about as long as a full build)">&#8615; Download without notes</button>
     <button id="compare" data-priority="11" title="latexdiff against a git commit (opens in a new tab)">Compare with a commit&hellip;</button>
     <button id="keysBtn" title="Keyboard shortcuts (?)">Keyboard shortcuts</button>
     <span id="versionInfo"></span>
@@ -420,6 +423,43 @@ document.addEventListener("mousedown", (e) => {
   if (!$("moreMenu").hidden && !$("moreMenu").contains(e.target) && !$("more").contains(e.target)) showMore(false);
   if (!$("keys").hidden && !$("keys").contains(e.target)) showKeys(false);
 });
+
+// Downloads: the PDF as built (notes included), or without notes, from an exact build that the
+// server makes on request (live.py start_export; once per build of the document).
+function saveFile(url, name) {
+  const a = el("a", { href: url, download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
+const docName = () => docFile.replace(/\.pdf$/, "");
+$("downloadPdf").onclick = () => {
+  showMore(false);
+  saveFile(`pdf/${encodeURIComponent(docFile)}?v=${buildVersion}`, isDiff ? docFile : `${docName()}${$("downloadClean").hidden ? "" : "-with-notes"}.pdf`);
+};
+let exporting = false;
+$("downloadClean").onclick = async () => {
+  showMore(false);
+  if (exporting) return;
+  exporting = true;
+  try {
+    for (;;) {
+      const e = await (await fetch("export")).json();
+      if (e.state === "done") {
+        saveFile(`pdf/${encodeURIComponent(`${docName()}-export.pdf`)}?v=${e.version}`, `${docName()}.pdf`);
+        return setStatus(`saved ${docName()}.pdf (without notes)`, "fresh");
+      }
+      if (e.state === "failed") return setStatus(`the build without notes failed: ${e.msg}`, "error");
+      setStatus("building the PDF without notes…", "busy");
+      rebuildAt = Date.now(); // (poll keeps a busy status a few seconds after a request)
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  } catch (err) {
+    setStatus(`download failed: ${err.message || err}`, "error");
+  } finally {
+    exporting = false;
+  }
+};
 
 // The toolbar keeps to one row: when it overflows, its controls move into the ⋯ menu, lowest
 // data-priority first, and come back once there is room again. It refits when the window
@@ -2251,6 +2291,7 @@ async function poll() {
     headInfo = info.head || null;
     pushInfo = info.push || null;
     $("notesView").hidden = isDiff || !info.clean?.version;
+    $("downloadClean").hidden = isDiff || !info.clean?.version; // (only a paper with notes has a version without them)
     const clean = !isDiff && view === "clean" && info.clean?.version ? info.clean : null;
     const want = clean ? `clean:${clean.version}` : info.version;
     if (want !== shown) {

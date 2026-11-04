@@ -210,7 +210,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not name.endswith(".pdf") or os.path.basename(name) != name:
                 return self.send_error(404)
             pdf = pdf_path(self.server.paper_root, name)
-            doc_pdf = re.sub(r"(-head|-push)?-(clean|diff|head|push)\.pdf$", ".pdf", name)  # the document a derived PDF belongs to
+            doc_pdf = re.sub(r"(-head|-push)?-(clean|diff|head|push|export)\.pdf$", ".pdf", name)  # the document a derived PDF belongs to
             if path.startswith("/status/"):  # (?base=push: a viewer shows changes since the last push)
                 body = json.dumps(status(self.server, name, urllib.parse.parse_qs(url.query).get("base") == ["push"])).encode()
             elif path.startswith("/outline/"):
@@ -246,6 +246,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json(*forward_request(self.server.paper_root, urllib.parse.parse_qs(url.query)))
         elif path == "/commits":
             self.send_json(200, commits(self.server.paper_root))
+        elif path == "/export":
+            self.send_json(*start_export(self.server))
         elif path == "/diff":
             self.send_json(*start_diff(self.server, urllib.parse.parse_qs(url.query)))
         elif path == "/instances":
@@ -375,8 +377,8 @@ def clean_file(paper_root, pdf_name, ext):
 
 def pdf_path(paper_root, name):
     """Published <doc>.pdf in the paper root; derived <doc>-clean.pdf / -diff.pdf / -head.pdf /
-    -head-clean.pdf / -push.pdf / -push-clean.pdf in build/."""
-    if re.search(r"-(clean|diff|head|push)\.pdf$", name):
+    -head-clean.pdf / -push.pdf / -push-clean.pdf / -export.pdf in build/."""
+    if re.search(r"-(clean|diff|head|push|export)\.pdf$", name):
         return os.path.join(paper_root, BUILD, name)
     return os.path.join(paper_root, PUBLISH, name)
 
@@ -2464,6 +2466,66 @@ def commits(paper_root):
                                         for l in out.splitlines()]}
 
 
+def start_export(server):
+    """/export: the document without its notes, built exactly (build_export), for downloading as
+    build/<doc>-export.pdf. Built once per build of the document; until then, its state."""
+    pdf = server.default_pdf
+    if not os.path.isfile(pdf_path(server.paper_root, pdf)):
+        return 409, {"state": "failed", "msg": f"{pdf} has not built yet"}
+    source = str(mtime(pdf_path(server.paper_root, pdf)))  # (the build it reflects)
+    e = server.export
+    if e.get("pdf") == pdf and (e.get("state") == "running" or e.get("source") == source):  # (a failure too, until the next build)
+        return 200, e
+    server.export = {"pdf": pdf, "source": source, "state": "running", "time": time.strftime("%H:%M:%S"), "msg": ""}
+    threading.Thread(target=build_export, args=(server, pdf, source), daemon=True).start()
+    return 200, server.export
+
+
+def build_export(server, pdf, source):
+    """build/<doc>-export.pdf: the document without notes, as it would be submitted. Unlike the
+    quick notes-free pass (latex_report.notes_free_pass), which reuses the cross-references of the
+    build with notes, this one runs bibtex for its own citations (a \\cite only in a note drops out
+    of the bibliography) and pdflatex until the references settle, so page numbers in the contents,
+    references and back-references are exact."""
+    root, doc = server.paper_root, pdf[:-4]
+    out = os.path.join(root, BUILD, "export")
+    job = f"{doc}-export"
+    sys.path.insert(0, HERE)
+    import latex_report
+
+    def run(command, cwd, env=None):
+        return subprocess.run(["sh", "-c", f"{server.tex_exec} {command} >/dev/null 2>&1"], cwd=cwd, timeout=600,
+                              env={**os.environ, **(env or {})}).returncode == 0
+
+    def log():
+        return read_text(os.path.join(out, f"{job}.log")) or ""
+
+    try:
+        shutil.rmtree(out, ignore_errors=True)
+        os.makedirs(out)
+        for ext in (".aux", ".bbl", ".brf", ".out", ".toc"):  # (a head start; bibtex and the passes correct them)
+            if os.path.exists(job_file(root, pdf, ext)):
+                shutil.copyfile(job_file(root, pdf, ext), os.path.join(out, job + ext))
+        tex = (f"pdflatex -interaction=batchmode -halt-on-error -file-line-error -output-directory='{out}'"
+               f" -jobname={job} '{latex_report.NOTES_OFF}\\input{{{doc}}}'")
+        for n in range(6):
+            if not run(tex, root):
+                first = next((l for l in log().splitlines() if l.startswith("! ") or re.match(r"^\S+:\d+: ", l)), "")
+                raise RuntimeError(first or f"pdflatex failed; see {BUILD}/export/{job}.log")
+            if n == 0 and "\\bibdata" in (read_text(os.path.join(out, f"{job}.aux")) or ""):
+                if not run(f"bibtex {job}", out, {"BIBINPUTS": f"{root}:", "BSTINPUTS": f"{root}:"}):
+                    raise RuntimeError(f"bibtex failed; see {BUILD}/export/{job}.blg")
+                continue
+            if not re.search(r"Rerun to get|may have changed\. Rerun|Please rerun|rerunfilecheck Warning", log()):
+                break
+        os.replace(os.path.join(out, f"{job}.pdf"), os.path.join(root, BUILD, f"{job}.pdf"))
+        state = {"state": "done", "version": str(mtime(os.path.join(root, BUILD, f"{job}.pdf")))}
+    except Exception as e:  # (shown in the viewer)
+        state = {"state": "failed", "msg": str(e)[:300]}
+    if server.export.get("pdf") == pdf and server.export.get("source") == source:
+        server.export = {**server.export, **state}
+
+
 def start_diff(server, query):
     """/diff?rev=REV: build <doc>-diff.pdf, a latexdiff of REV against the working tree, in the background."""
     rev = query.get("rev", [""])[0]
@@ -2703,6 +2765,7 @@ def serve(paper_root, default_pdf, port, page_limit):
     server.default_pdf = default_pdf
     server.page_limit = page_limit
     server.diff = {}
+    server.export = {}  # (start_export)
     server.bases, server.base_checked = {"head": {}, "push": {}}, {"head": 0, "push": 0}  # (base_status)
     server.base_locks = {"head": threading.Lock(), "push": threading.Lock()}
     server.tex_exec = ""  # main: the tex-exec prefix, as for latexmk
