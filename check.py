@@ -196,8 +196,9 @@ def stop(proc):
 def live_checks(tmp):
     ENV["LATEX_LIVE_STATE"] = state = os.path.join(tmp, "state")  # (not the user's: their previews keep their list)
     paper = make_paper(tmp)
-    with open(os.path.join(paper, "appendix.tex"), "w") as f:
-        f.write("\\documentclass{article}\n\\begin{document}\nAn appendix.\n\\end{document}\n")
+    for name in ("appendix", "extra"):
+        with open(os.path.join(paper, f"{name}.tex"), "w") as f:
+            f.write(f"\\documentclass{{article}}\n\\begin{{document}}\nThe {name}.\n\\end{{document}}\n")
     procs = [start(paper)]
     try:
         build = os.path.join(paper, "build")
@@ -229,6 +230,12 @@ def live_checks(tmp):
         if request(f"{hub['base']}main/status/main.pdf", cookie=token)[0] != 200:
             fail("the hub refuses its cookie")
         ok("the hub needs the token (or its cookie)")
+        wrong = http.client.HTTPConnection("127.0.0.1", own, timeout=10)  # (as from a hub that looked up a stale port)
+        wrong.request("GET", "/docs", headers={"Cookie": f"latex_live={token}", "X-Latex-Live-Paper": "other-000000"})
+        if wrong.getresponse().status != 421:
+            fail("a preview answered a request the hub meant for another paper")
+        wrong.close()
+        ok("a preview refuses a request meant for another paper (421), so the hub looks again")
 
         for path in ("/status/main.pdf?base=push", "/outline/main.pdf", "/notes/main.pdf", "/authors/main.pdf",
                      "/check/main.pdf", "/graphics/main.pdf", "/margin/main.pdf", "/floats/main.pdf", "/docs",
@@ -326,12 +333,15 @@ def live_checks(tmp):
         wait_for("the hub, after that", lambda: read_hub() and hub["pid"] != main_proc.pid, timeout=20)
         stuck = hub["pid"]
         os.kill(stuck, signal.SIGSTOP)  # (serves the hub, answers nothing)
-        procs.append(start(paper, "main", "--replace"))
+        procs.append(start(paper, "extra"))  # (another document: only the hub's check can stop the stuck one)
         holder = next(p for p in procs if p.pid == stuck)
         try:
-            holder.wait(30)
+            holder.wait(60)  # (three tries over about 10 s first)
         except subprocess.TimeoutExpired:
             fail("a new instance did not replace the one serving the hub without answering")
+        with open(LOGS[-1]) as f:
+            if "serves the hub but is not answering" not in f.read():
+                fail("the hub that did not answer was stopped some other way")
         wait_for("the hub to come back", lambda: read_hub() and hub["pid"] != stuck, timeout=20)
         if hub["port"] != PORT:
             fail(f"the hub came back on port {hub['port']}")

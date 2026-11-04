@@ -145,6 +145,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return True
         return False
 
+    def misdirected(self):
+        """A request the hub meant for another paper (HubHandler.forward): answered 421."""
+        want = self.headers.get("X-Latex-Live-Paper")
+        if want and want != self.server.paper_id:
+            self.send_error(421, f"this preview is {self.server.paper_id}, not {want}")
+            return True
+        return False
+
     def end_headers(self):
         if getattr(self, "set_cookie", False):
             self.send_header("Set-Cookie", f"latex_live={self.server.token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000")
@@ -157,6 +165,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         path = urllib.parse.unquote(url.path)
         if not self.authorize(urllib.parse.parse_qs(url.query)):
             return self.send_error(403, f"open the URL with ?t=<token> from {TOKEN_FILE}")
+        if self.misdirected():
+            return
         if path == "/":
             self.send_response(302)
             self.send_header("Location", f"viewer.html?file={urllib.parse.quote(self.server.default_pdf)}")  # (relative: also under the hub)
@@ -224,6 +234,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         if not self.authorize({}):
             return self.send_error(403, "open the viewer URL with ?t=<token> first")
+        if self.misdirected():
+            return
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self.send_error(415, "expected a JSON body")
         length = int(self.headers.get("Content-Length") or 0)
@@ -2653,6 +2665,7 @@ def serve(paper_root, default_pdf, port, page_limit):
         sys.exit(f"latex-live: no free port in {port}-{port + 9}")
     server.daemon_threads = True
     server.paper_root = paper_root
+    server.paper_id = paper_id(paper_root)  # (checked against the hub's requests: Handler.misdirected)
     server.default_pdf = default_pdf
     server.page_limit = page_limit
     server.diff = {}
@@ -2782,14 +2795,19 @@ def hub_path(id_, doc):
     return f"/p/{urllib.parse.quote(id_)}/{urllib.parse.quote(doc)}/"
 
 
-def hub_port():
-    """The hub's port, if a live preview serves it."""
+def read_hub():
+    """HUB_FILE: {port, pid} of the preview serving the hub, if that process is alive; else {}."""
     try:
         with open(HUB_FILE) as f:
             hub = json.load(f)
     except (OSError, ValueError):
-        return None
-    return hub.get("port") if is_live_instance(hub.get("pid")) else None
+        return {}
+    return hub if is_live_instance(hub.get("pid")) else {}
+
+
+def hub_port():
+    """The hub's port, if a live preview serves it."""
+    return read_hub().get("port")
 
 
 class HubHandler(Handler):
@@ -2812,10 +2830,7 @@ class HubHandler(Handler):
             id_, doc = urllib.parse.unquote(m[1]), urllib.parse.unquote(m[2])
             if not m[3]:
                 return self.redirect(hub_path(id_, doc))
-            target = self.server.find(id_, doc)
-            if not target:
-                return self.send_json(404, {"error": f"no preview of {doc}.tex in {id_} is running"})
-            return self.forward(method, target, m[3] + (f"?{url.query}" if url.query else ""), hub_path(id_, doc))
+            return self.forward(method, id_, doc, m[3] + (f"?{url.query}" if url.query else ""))
         if url.path == "/hub/ping":
             return self.send_json(200, {"pid": os.getpid()})
         if url.path == "/papers":
@@ -2834,28 +2849,43 @@ class HubHandler(Handler):
         self.send_header("Location", location)
         self.end_headers()
 
-    def forward(self, method, target, path, prefix):
+    def forward(self, method, id_, doc, path):
+        """Send the request on to the preview of doc in paper id_, and its answer back. The
+        preview checks that it is that paper (X-Latex-Live-Paper): a port that its preview gave
+        up and another paper's took since the last look answers 421, and the hub looks again."""
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else None
         headers = {k: v for k, v in self.headers.items() if k.lower() in ("content-type", "range", "if-range")}
-        headers["Cookie"] = f"latex_live={self.server.token}"
-        try:
+        headers.update({"Cookie": f"latex_live={self.server.token}", "X-Latex-Live-Paper": id_})
+        for fresh in (False, True):
+            target = self.server.find(id_, doc, fresh)
+            if not target:
+                return self.send_json(404, {"error": f"no preview of {doc}.tex in {id_} is running"})
             conn = http.client.HTTPConnection("127.0.0.1", target["port"], timeout=120)
-            conn.request(method, path, body, headers)
-            resp = conn.getresponse()
-        except OSError as e:
-            return self.send_json(502, {"error": f"the preview of {target['doc']}.tex is not answering ({e})"})
+            try:
+                conn.request(method, path, body, headers)
+                resp = conn.getresponse()
+            except (OSError, http.client.HTTPException) as e:
+                conn.close()
+                if fresh:
+                    return self.send_json(502, {"error": f"the preview of {doc}.tex is not answering ({e})"})
+                continue
+            if resp.status != 421:
+                break
+            conn.close()
+        else:
+            return self.send_json(502, {"error": f"no preview of {doc}.tex in {id_} answers"})
         self.send_response(resp.status)
         for key, value in resp.getheaders():
             if key.lower() in ("set-cookie", "connection", "transfer-encoding", "server", "date"):
                 continue
             if key.lower() == "location" and value.startswith("/"):
-                value = prefix.rstrip("/") + value
+                value = hub_path(id_, doc).rstrip("/") + value
             self.send_header(key, value)
         self.end_headers()
         try:
             shutil.copyfileobj(resp, self.wfile)
-        except (BrokenPipeError, ConnectionResetError):
+        except (OSError, http.client.HTTPException):  # (either side went away mid-answer)
             pass
         finally:
             conn.close()
@@ -2863,25 +2893,29 @@ class HubHandler(Handler):
 
 class HubServer(DualStackServer):
     daemon_threads = True
+    found, found_at = [], -9.0  # (table)
 
-    def table(self, fresh=False, cache={}):
-        """The running previews (instances), looked up at most every 2 s (unless fresh)."""
-        if fresh or time.monotonic() - cache.get("at", -9) > 2:
-            cache.update(at=time.monotonic(), found=[e for e in instances() if e.get("id")])
-        return cache["found"]
+    def table(self, fresh=False):
+        """The running previews (instances), looked up at most every 2 s; fresh: at most every
+        0.5 s (a viewer of a stopped preview keeps asking)."""
+        if time.monotonic() - self.found_at > (0.5 if fresh else 2):
+            self.found, self.found_at = [e for e in instances() if e.get("id")], time.monotonic()
+        return self.found
 
-    def find(self, id_, doc):
+    def find(self, id_, doc, fresh=False):
         """The preview building doc in paper id_; else the paper's only one (it switched documents).
-        A miss looks again, for a preview that started within the last 2 s."""
-        for fresh in (False, True):
-            same = [e for e in self.table(fresh) if e["id"] == id_]
+        A miss looks again, for a preview that started since the last look."""
+        for again in ((fresh,) if fresh else (False, True)):
+            same = [e for e in self.table(again) if e["id"] == id_]
             if found := next((e for e in same if e["doc"] == doc), same[0] if len(same) == 1 else None):
                 return found
         return None
 
 
 def hub_watch(port):
-    """Serve the hub once this process holds HUB_LOCK (a thread: waits while another one serves it)."""
+    """Serve the hub on port once this process holds HUB_LOCK (a thread: it waits while another
+    preview serves it). Only that port, so the hub's address never changes: while something else
+    holds it, the previews' own ports still work, and the hub keeps trying."""
     os.makedirs(STATE, mode=0o700, exist_ok=True)
     lock = open(HUB_LOCK, "a+")
     while True:
@@ -2890,50 +2924,51 @@ def hub_watch(port):
             break
         except BlockingIOError:
             time.sleep(1)
-    for p in range(port, port + 10):
+    told = False
+    while True:
         try:
-            hub = HubServer(("::", p), HubHandler)
+            hub = HubServer(("::", port), HubHandler)
             break
         except OSError:
-            continue
-    else:
-        return print(f"=== latex-live: no free port for the hub in {port}-{port + 9}", flush=True)
-    if p != port:
-        print(f"=== latex-live: port {port} is taken; the hub is on {p}", flush=True)
+            if not told:
+                print(f"=== latex-live: port {port} is taken, so the hub waits for it; meanwhile each viewer works on its own"
+                      " preview's port (a preview from before 0.2 may hold it: restart it)", flush=True)
+                told = True
+            time.sleep(2)
+    if told:
+        print(f"=== latex-live: the hub is on port {port} now", flush=True)
     hub.token = load_token()
     with open(HUB_FILE, "w") as f:
-        json.dump({"port": p, "pid": os.getpid()}, f)
+        json.dump({"port": port, "pid": os.getpid()}, f)
     hub.serve_forever()
 
 
-def hub_answers(port):
+def answers(port, path):
+    """Whether latex-live answers path on port (within a few seconds)."""
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/hub/ping?t={load_token()}", timeout=3) as r:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}?t={load_token()}", timeout=3) as r:
             return r.status == 200
-    except (OSError, ValueError):
+    except (OSError, ValueError, http.client.HTTPException):
         return False
-
-
-def replace_stuck_hub():
-    """Before starting: stop a preview that holds the hub but no longer answers (as with a
-    document's lock, take_lock), so the hub doesn't stay down with it."""
-    try:
-        with open(HUB_FILE) as f:
-            hub = json.load(f)
-    except (OSError, ValueError):
-        return
-    if is_live_instance(hub.get("pid")) and hub.get("pid") != os.getpid() and not hub_answers(hub.get("port")):
-        print(f"=== latex-live: stopping process {hub['pid']}, which serves the hub but is not answering", flush=True)
-        stop_instance(hub["pid"])
 
 
 def instance_answers(port):
-    """Whether a latex-live viewer answers on port (within a few seconds)."""
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/docs?t={load_token()}", timeout=3) as r:
-            return r.status == 200
-    except (OSError, ValueError):
-        return False
+    return answers(port, "/docs")
+
+
+def replace_stuck_hub():
+    """Before starting: stop the preview serving the hub if it holds the hub's lock but has not
+    answered for a while (three tries over about 10 s, so that a busy machine doesn't cost another
+    paper its preview), as with a document's lock (take_lock), so the hub doesn't stay down."""
+    hub = read_hub()
+    if not hub or hub["pid"] == os.getpid():
+        return
+    for i in range(3):
+        if answers(hub["port"], "/hub/ping"):
+            return
+        time.sleep(2)
+    print(f"=== latex-live: stopping process {hub['pid']}, which serves the hub but is not answering", flush=True)
+    stop_instance(hub["pid"])
 
 
 def stop_instance(pid):
@@ -2941,6 +2976,7 @@ def stop_instance(pid):
     if not is_live_instance(pid):
         return False
     os.kill(pid, signal.SIGTERM)
+    os.kill(pid, signal.SIGCONT)  # (a paused one handles SIGTERM only once it runs: then it stops its latexmk itself)
     for i in range(150):
         if not is_live_instance(pid):
             for folder in (INSTANCES, OLD_INSTANCES):  # (killed, it can't remove its entry itself)
@@ -3150,7 +3186,10 @@ def main():
         holder = f"process {pid}, port {port}" if pid else f"port {port}"
         if port and instance_answers(port) and not args.replace:
             print(f"=== latex-live: already running for {doc}.tex ({holder}; another terminal or window)", flush=True)
-            print_hub_urls(doc, port)
+            if any(e["pid"] == pid and e.get("id") for e in instances()):
+                print_hub_urls(doc, port)
+            else:  # (a version from before the hub, which only serves its own port)
+                print_urls(port)
             print("=== latex-live: --replace stops that one and runs here", flush=True)
             return
         if not pid:

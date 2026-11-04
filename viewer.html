@@ -1094,7 +1094,7 @@ function markThumbLimit() {
 const AUTHOR_COLORS = { TODO: "#ef5350", EB: "#26a69a", CH: "#4fc3f7", SX: "#bcaaa4", Hu: "#ce93d8", MR: "#f06292",
                         JV: "#9575cd", Shengyi: "#f8bbd0", Daniel: "#66bb6a" };
 const authorColor = (a) => AUTHOR_COLORS[a] || `hsl(${[...a].reduce((h, c) => h * 31 + c.charCodeAt(0), 7) % 360} 60% 70%)`;
-const hiddenAuthors = new Set(JSON.parse(localStorage.getItem("latex-live:hiddenAuthors") || "[]"));
+const hiddenAuthors = new Set(JSON.parse(localStorage.getItem(`latex-live:${hubBase}hiddenAuthors`) || "[]"));
 let noteList = [];
 async function loadNotes() {
   noteList = await (await fetch(`notes/${encodeURIComponent(file)}`)).json();
@@ -1113,7 +1113,7 @@ function renderNotes() {
     chip.style.background = authorColor(author);
     chip.onclick = () => {
       hiddenAuthors.has(author) ? hiddenAuthors.delete(author) : hiddenAuthors.add(author);
-      localStorage.setItem("latex-live:hiddenAuthors", JSON.stringify([...hiddenAuthors]));
+      localStorage.setItem(`latex-live:${hubBase}hiddenAuthors`, JSON.stringify([...hiddenAuthors]));
       renderNotes();
       drawAllMargins();
     };
