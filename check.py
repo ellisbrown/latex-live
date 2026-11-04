@@ -31,6 +31,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -40,7 +41,28 @@ import urllib.request
 import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PORT = 44180  # the hub's; the previews' own ports follow
+
+
+def free_ports(start, count=8):
+    """The first of count consecutive ports from start (in steps of count) that all bind: the
+    kernel also hands out ports in this range to outgoing connections."""
+    for port in range(start, start + 400, count):
+        socks = []
+        try:
+            for p in range(port, port + count):
+                s = socket.socket(socket.AF_INET6)
+                socks.append(s)
+                s.bind(("::", p))
+            return port
+        except OSError:
+            pass
+        finally:
+            for s in socks:
+                s.close()
+    raise SystemExit(f"FAIL: no {count} free ports from {start}")
+
+
+PORT = free_ports(44180)  # the hub's; the previews' own ports follow
 
 PAPER = r"""\documentclass[twocolumn]{article}
 \usepackage{xcolor}

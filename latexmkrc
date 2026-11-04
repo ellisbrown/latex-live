@@ -19,7 +19,8 @@ my $build = $ENV{LATEX_LIVE_BUILD} || 'build';  # live.py --build-dir
 $pdf_mode = 1;
 # -halt-on-error: stop at the first error (fast failure, no cascade of follow-on errors).
 # Touching build/%R.building first lets the viewer show "building..." until latex_report.py
-# writes build/%R.status.json at the end of the run.
+# writes build/%R.status.json at the end of the run. After each successful pass, `--pass`
+# publishes the PDF already, so the viewer need not wait for a second pass (bibtex, references).
 # %P is the source with $pre_tex_code before it: once the preamble has run, it prints the page
 # layout (live.py reads the text area and line spacing from the log, so the viewer needs no
 # per-template constants).
@@ -27,11 +28,11 @@ $pre_tex_code = '\\def\\latexlivelayout{\\typeout{latex-live layout:'
     . ' \\the\\paperwidth,\\the\\paperheight,\\the\\hoffset,\\the\\oddsidemargin,\\the\\voffset,\\the\\topmargin,'
     . '\\the\\headheight,\\the\\headsep,\\the\\textwidth,\\the\\textheight,\\the\\columnwidth,\\the\\baselineskip}}'
     . '\\ifdefined\\AddToHook\\AddToHook{begindocument/end}{\\latexlivelayout}\\else\\AtBeginDocument{\\latexlivelayout}\\fi';
-$pdflatex = "touch $build/%R.building; $exec pdflatex -synctex=1 -file-line-error -halt-on-error %O %P";
+$pdflatex = "touch $build/%R.building; $exec pdflatex -synctex=1 -file-line-error -halt-on-error %O %P && python3 '$here/latex_report.py' --pass %R";
 $bibtex = "$exec bibtex %O %S";
 $out_dir = $build;
 $view = 'none';     # live.py's viewer reloads itself when the PDF changes
-$sleep_time = 1;    # watch poll interval (s)
+$sleep_time = 0.25; # watch poll interval (s; latexmk 4.x takes fractions)
 $silent = 1;        # keep the terminal readable; full log is in build/<doc>.log
 
 # Watch-mode hooks; latexmk expands %R to the root name. $warning_cmd fires
