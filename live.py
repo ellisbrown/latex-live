@@ -79,6 +79,8 @@ IMAGE_MISSING = f"{TEXLIVE_IMAGE} is not pulled (to fix: podman pull {TEXLIVE_IM
 BUILD = os.environ.get("LATEX_LIVE_BUILD", "build")
 PUBLISH = "" if BUILD == "build" else BUILD
 TOKEN_FILE = os.path.join(HERE, "token")
+with open(os.path.join(HERE, "VERSION")) as f:
+    VERSION = f.read().strip()  # (tagged v<VERSION> on release)
 INSTANCES = os.path.join(HERE, "instances")  # one <pid>.json per running instance (record_port)
 
 
@@ -500,7 +502,20 @@ def status(server, pdf_name, push=False):
     info["head"] = base_status(server, pdf_name, "head")
     info["push"] = base_status(server, pdf_name, "push", build=push)
     info["texImage"] = image_problem(server)
+    info["latexLive"] = {"version": VERSION, "updated": code_updated()}
     return info
+
+
+def code_updated(started={}):
+    """Whether live.py on disk differs from the one this process runs (e.g. after a git pull):
+    the viewer then asks for a restart. latex_report.py and forward.py run anew each time."""
+    path = os.path.join(HERE, "live.py")
+    stamp = mtime(path)
+    if "hash" not in started:
+        started.update(hash=file_hash(path), stamp=stamp, updated=False)
+    elif stamp != started["stamp"]:
+        started.update(stamp=stamp, updated=file_hash(path) != started["hash"])
+    return started["updated"]
 
 
 TOC_LEVELS = {"part": 0, "chapter": 0, "section": 1, "subsection": 2, "subsubsection": 3, "paragraph": 4}
@@ -2885,6 +2900,7 @@ def main():
     ap.add_argument("doc", nargs="?", help="root .tex file (with or without extension); default: the one whose"
                     " sources were edited last. The viewer switches between root files. A path (e.g. the editor's"
                     " current file) runs in that file's paper: it builds the file if it is a root one.")
+    ap.add_argument("--version", action="version", version=f"latex-live {VERSION}")
     ap.add_argument("--port", type=int, default=44100)
     ap.add_argument("--page-limit", type=int, help="main-text page limit to check in the viewer (default: the venue's,"
                     " for ICLR, NeurIPS, COLM, ICML, CVPR and ICCV styles)")
@@ -2940,12 +2956,13 @@ def main():
         if not lock:
             sys.exit(f"latex-live: {doc}.tex is still locked; retry")
     server = serve(os.getcwd(), f"{doc}.pdf", args.port, args.page_limit)
+    code_updated()  # (what this process runs)
     server.lock = lock
     set_doc(server, doc)
     record_port(server)
     print_urls(server.server_address[1])
     others = [d for d in docs if d != doc]
-    print(f"=== latex-live: building {doc}.tex" + (f"; the viewer switches to {', '.join(others)}" if others else ""),
+    print(f"=== latex-live {VERSION}: building {doc}.tex" + (f"; the viewer switches to {', '.join(others)}" if others else ""),
           flush=True)
     if not args.no_open:
         threading.Thread(target=open_in_editor, args=(pdf_path(os.getcwd(), f"{doc}.pdf"),), daemon=True).start()

@@ -158,6 +158,13 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
     or inside a caption. Notes written from the viewer (replies too) go after
     the paragraph or caption it marks, and the marker itself can't be edited,
     resolved, or deleted there.
+- **Versions:** releases are tagged `v<VERSION>` (see `VERSION`; `live.py
+  --version` prints it), with notes on the GitHub releases page. To pin one,
+  check out its tag; to follow development, track `main`. After the checkout
+  changes, a running preview keeps its version and the viewer shows "restart
+  to update" until the task is restarted.
+- **Contributing:** see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow,
+  how the pieces fit together, and the rules.
 - **Smoke test:** `python3 check.py` (about a minute, with TeX as above)
   compiles the Python, parses the viewer's script (with Node), and runs an
   instance on a scratch two-column paper with git history: build, notes-free
