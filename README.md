@@ -17,7 +17,9 @@ The plan below makes it a general tool.
 
 - **Main document.** With no document named, latex-live builds the root
   `.tex` file whose sources you edited last. A menu in the toolbar switches to
-  another root file, and every open viewer follows.
+  another root file, and every open viewer follows. The same menu lists the
+  papers other instances on the machine preview and opens their viewers;
+  `/papers` lists them all.
 - **Live rebuild.** `latexmk -pvc` builds into `build/`. The PDF is published
   atomically, and only after a successful run. Errors appear as a clickable
   banner and as `file:line` diagnostics for the VS Code problem matcher. ↻ in
@@ -58,11 +60,12 @@ The plan below makes it a general tool.
   `figure*`), and a note's bubble sits in a gutter beside its column, left of
   the page for the left column.
 - **Change highlights (Δ, or `d`; off by default).** A word-level diff of the
-  text against the last commit (a PDF of `HEAD`'s `.tex` files, rebuilt when
-  `HEAD` moves), the last push (the same for the commit the branch's remote
-  branch is at, from the remote-tracking branches, so no network), or the
-  previous build, plus outlines on changed figures. The "vs" button switches
-  the baseline; the toolbar arrows (or `,` and `.`) step through the changes.
+  text against the last push (a PDF of the `.tex` files at the commit the
+  branch's remote branch is at, from the remote-tracking branches, so no
+  network; the default), the last commit (the same for `HEAD`, rebuilt when
+  `HEAD` moves; the default when nothing was pushed), or the previous build,
+  plus outlines on changed figures. The "vs" button switches the baseline; the
+  toolbar arrows (or `,` and `.`) step through the changes.
 - **Space hints (✂).** Marks short last lines and large blank gaps.
 - **Sidebar:**
   - an outline, numbered as in the paper (appendix letters too), with pages per
@@ -99,6 +102,7 @@ The plan below makes it a general tool.
   - back/forward through links;
   - hover previews of reference targets;
   - dark mode (in the ⋯ menu);
+  - `?` lists the keyboard shortcuts;
   - trackpad pinch zoom that zooms the PDF, not the page.
 
 ## Usage (current)
@@ -108,7 +112,7 @@ troubleshooting), see [SETUP.md](SETUP.md). It also works as instructions for
 a coding agent. From a paper root:
 
 ```bash
-python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR]
+python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR] [--replace]
 ```
 
 - **Document:** a root `.tex` file, with or without the extension. Without one,
@@ -117,6 +121,10 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
   Given a path instead, e.g. the editor's current file, it runs in that file's
   paper (its folder, or the nearest one above with a root file) and builds the
   file if it is a root one, so one editor task serves several papers.
+
+- **One instance per document:** another one for the same document prints the
+  running viewer's URL and exits; `--replace` stops the running one and takes
+  over instead. An instance that no longer answers is replaced without asking.
 
 - **Second instance:** `--build-dir build/next` (or any other directory) keeps
   every output there, including `<doc>.pdf`. A second instance, such as a
@@ -150,6 +158,11 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
     or inside a caption. Notes written from the viewer (replies too) go after
     the paragraph or caption it marks, and the marker itself can't be edited,
     resolved, or deleted there.
+- **Smoke test:** `python3 check.py` (about a minute, with TeX as above)
+  compiles the Python, parses the viewer's script (with Node), and runs an
+  instance on a scratch two-column paper with git history: build, notes-free
+  pass, endpoints, SyncTeX, both change baselines, and taking over an
+  instance. Run it before pushing.
 - **PDF.js:** vendored in `pdfjs/` (4.10.38 legacy build, Apache-2.0; see
   `pdfjs/LICENSE`).
 

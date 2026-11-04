@@ -32,6 +32,7 @@
   :is(#bar, #moreMenu) input { background: #202124; color: #eee; border: 1px solid #555; }
   #docPick, #zoomPick { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 4px; cursor: pointer; }
   #docPick[hidden] { display: none; }
+  #docPick { max-width: 14em; field-sizing: content; } /* (as wide as the document shown; other previews can have long names) */
   :is(#bar, #moreMenu) a { color: #9cf; }
   #page { width: 3em; text-align: right; }
   #findGroup, #find { flex-shrink: 1; min-width: 6em; } /* (only once nothing else can move: fitBar measures unshrunk) */
@@ -53,6 +54,15 @@
   #moreMenu { position: fixed; top: 32px; right: 8px; z-index: 11; display: flex; flex-direction: column; gap: 6px;
               min-width: 180px; padding: 8px; background: #2a2d2f; color: #eee; border-radius: 0 0 6px 6px; box-shadow: 0 4px 12px #000a; }
   #moreMenu[hidden] { display: none; }
+  #keys { position: fixed; top: 60px; left: 50%; transform: translateX(-50%); z-index: 14; padding: 12px 16px;
+          background: #2a2d2f; color: #ddd; border-radius: 6px; box-shadow: 0 6px 20px #000c; font-size: 13px; }
+  #keys[hidden] { display: none; }
+  #keys .head { font-weight: 600; margin-bottom: 8px; }
+  #keys .close { float: right; cursor: pointer; opacity: 0.7; margin-left: 16px; }
+  #keys td { padding: 3px 14px 3px 0; vertical-align: top; }
+  #keys td:first-child { white-space: nowrap; }
+  kbd { display: inline-block; min-width: 1em; padding: 0 4px; border: 1px solid #666; border-bottom-width: 2px;
+        border-radius: 3px; background: #3a3d40; font: 12px ui-monospace, monospace; text-align: center; }
   #moreFixed, #moreItems { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
   #moreItems { border-top: 1px solid #444; padding-top: 8px; }
   #moreItems:not(:has(> :not([hidden]))) { display: none; }
@@ -276,8 +286,23 @@
   <div id="moreFixed">
     <button id="dark" title="Dark mode (inverts the PDF)">&#9680; Dark mode</button>
     <button id="compare" data-priority="11" title="latexdiff against a git commit (opens in a new tab)">Compare with a commit&hellip;</button>
+    <button id="keysBtn" title="Keyboard shortcuts (?)">Keyboard shortcuts</button>
   </div>
   <div id="moreItems"></div>
+</div>
+<div id="keys" hidden>
+  <div class="head">Keyboard shortcuts <span class="close" title="Close (Esc)">&#10005;</span></div>
+  <table>
+    <tr><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>F</kbd></td><td>search; <kbd>Enter</kbd> / <kbd>Shift</kbd> <kbd>Enter</kbd> next / previous match, <kbd>Esc</kbd> clear</td></tr>
+    <tr><td><kbd>Ctrl</kbd> <kbd>+</kbd> / <kbd>Ctrl</kbd> <kbd>&minus;</kbd></td><td>zoom in / out</td></tr>
+    <tr><td><kbd>Ctrl</kbd> <kbd>0</kbd></td><td>fit width</td></tr>
+    <tr><td><kbd>Alt</kbd> <kbd>&larr;</kbd> / <kbd>Alt</kbd> <kbd>&rarr;</kbd></td><td>back / forward after a link (also <kbd>Cmd</kbd> <kbd>[</kbd> / <kbd>Cmd</kbd> <kbd>]</kbd>)</td></tr>
+    <tr><td><kbd>d</kbd></td><td>change highlights on / off</td></tr>
+    <tr><td><kbd>,</kbd> / <kbd>.</kbd></td><td>previous / next change</td></tr>
+    <tr><td><kbd>c</kbd></td><td>comment on the selected text</td></tr>
+    <tr><td>double-click</td><td>open the source line in the editor (SyncTeX)</td></tr>
+    <tr><td><kbd>?</kbd></td><td>this list</td></tr>
+  </table>
 </div>
 <div id="banner" hidden></div>
 <div id="comparePanel" hidden></div>
@@ -381,8 +406,12 @@ function showMore(open) {
 }
 const revealControl = (node) => { if ($("moreMenu").contains(node)) showMore(true); }; // (before focusing a control there)
 $("more").onclick = () => showMore($("moreMenu").hidden);
+const showKeys = (open) => { $("keys").hidden = !open; };
+$("keysBtn").onclick = () => { showMore(false); showKeys(true); };
+$("keys").querySelector(".close").onclick = () => showKeys(false);
 document.addEventListener("mousedown", (e) => {
   if (!$("moreMenu").hidden && !$("moreMenu").contains(e.target) && !$("more").contains(e.target)) showMore(false);
+  if (!$("keys").hidden && !$("keys").contains(e.target)) showKeys(false);
 });
 
 // The toolbar keeps to one row: when it overflows, its controls move into the ⋯ menu, lowest
@@ -541,7 +570,8 @@ window.addEventListener("keydown", (e) => {
   else if (e.target.tagName === "INPUT") return; // keep word-wise cursor keys in the text boxes
   else if ((e.altKey && e.key === "ArrowLeft") || (e.metaKey && e.key === "[")) { e.preventDefault(); travel(back, ahead); }
   else if ((e.altKey && e.key === "ArrowRight") || (e.metaKey && e.key === "]")) { e.preventDefault(); travel(ahead, back); }
-  else if (e.key === "Escape") { hidePreview(); $("comparePanel").hidden = true; closeNotePop(); showMore(false); }
+  else if (e.key === "Escape") { hidePreview(); $("comparePanel").hidden = true; closeNotePop(); showMore(false); showKeys(false); }
+  else if (!mod && !e.altKey && e.key === "?") { e.preventDefault(); showKeys($("keys").hidden); }
   else if (!mod && !e.altKey && e.key === "c" && !$("commentBtn").hidden) { e.preventDefault(); startComment(); }
   else if (!mod && !e.altKey && e.key === "d") { e.preventDefault(); toggleChanges(); }
   else if (!mod && !e.altKey && (e.key === "." || e.key === ",")) { e.preventDefault(); goToChange(e.key === "." ? 1 : -1); }
@@ -1702,8 +1732,11 @@ function showChanges(oldWords, newWords, figures, against) {
 // built by the server whenever HEAD moves), the last push ("push": build/<doc>-push[-clean].pdf,
 // the commit the branch's remote branch is at, built once a viewer asks for it in poll), or the
 // previous build ("build"). Until the commit's baseline exists (or outside git), the previous build.
-const BASES = ["head", "push", "build"];
-let changeBase = BASES.find((b) => b === localStorage.getItem("latex-live:changeBase")) || "head";
+// The last push by default, which covers several local commits; the last commit when nothing
+// was pushed anywhere (baseKind).
+const BASES = ["push", "head", "build"];
+let changeBase = BASES.find((b) => b === localStorage.getItem("latex-live:changesAgainst")) || "push";
+const baseKind = () => (changeBase === "push" && !pushInfo && headInfo ? "head" : changeBase);
 // Change highlights are off unless turned on with the toolbar's Delta button (remembered).
 let changesOn = localStorage.getItem("latex-live:changesOn") === "1";
 $("changesBtn").classList.toggle("on", changesOn);
@@ -1713,11 +1746,12 @@ let prevBuildWords = null; // words of the build shown before this one (same var
 let figuresPromise = null; // {build, head, push}: changed figures of the shown PDF
 let docSeq = 0, changesKey = null, baseCache = null;
 function commitBase() {
-  const info = { head: headInfo, push: pushInfo }[changeBase];
+  const kind = baseKind();
+  const info = { head: headInfo, push: pushInfo }[kind];
   const version = shownVariant === "clean" ? info?.clean : info?.version;
   if (!version) return null;
-  const name = docFile.replace(/\.pdf$/, `-${changeBase}${shownVariant === "clean" ? "-clean" : ""}.pdf`);
-  return { key: `${changeBase}:${name}:${version}`, kind: changeBase, name, version };
+  const name = docFile.replace(/\.pdf$/, `-${kind}${shownVariant === "clean" ? "-clean" : ""}.pdf`);
+  return { key: `${kind}:${name}:${version}`, kind, name, version };
 }
 function baseWords(commit) {
   if (baseCache?.key !== commit.key) {
@@ -1748,17 +1782,18 @@ async function updateChanges() {
   }
 }
 function showBase(commit) {
+  const kind = baseKind();
   const b = $("changeBase");
   b.hidden = !headInfo;
   if (!headInfo) return;
-  const pending = changeBase !== "build" && !commit;
-  b.textContent = { head: "vs HEAD", push: "vs last push", build: "vs last build" }[changeBase] + (pending ? "…" : "");
+  const pending = kind !== "build" && !commit;
+  b.textContent = { head: "vs HEAD", push: "vs last push", build: "vs last build" }[kind] + (pending ? "…" : "");
   const fallback = "showing changes since the last build";
-  b.title = (changeBase === "head"
+  b.title = (kind === "head"
     ? (pending ? (headInfo.state === "failed" ? `The HEAD build failed (${headInfo.msg}); ${fallback}.`
                                               : `Building the HEAD (${headInfo.sha}) baseline; ${fallback} meanwhile.`)
                : `Changes since the last commit (${headInfo.sha}).`)
-    : changeBase === "push"
+    : kind === "push"
     ? (!pushInfo ? `No pushed commit to compare with (no remote-tracking branch); ${fallback}.`
        : pending ? (pushInfo.state === "failed" ? `The last-push build failed (${pushInfo.msg}); ${fallback}.`
                                                 : `Building the last-push (${pushInfo.sha}, ${pushInfo.ref}) baseline; ${fallback} meanwhile.`)
@@ -1772,10 +1807,10 @@ function toggleChanges() {
   updateChanges();
 }
 $("changesBtn").onclick = toggleChanges;
-$("changeBase").onclick = () => { // head, push (when there is a pushed commit), build
-  do changeBase = BASES[(BASES.indexOf(changeBase) + 1) % BASES.length];
+$("changeBase").onclick = () => { // push (when there is a pushed commit), head, build
+  do changeBase = BASES[(BASES.indexOf(baseKind()) + 1) % BASES.length];
   while (changeBase === "push" && !pushInfo);
-  localStorage.setItem("latex-live:changeBase", changeBase);
+  localStorage.setItem("latex-live:changesAgainst", changeBase);
   updateChanges();
 };
 function textChanges(result, newWords, add) {
@@ -2238,19 +2273,37 @@ if (localStorage.getItem("latex-live:side")) showSide(true);
 // Main document: the paper's root .tex files. Picking one makes the server build it instead, and
 // every open viewer follows (poll).
 const openDoc = (pdf) => { location.href = `viewer.html?${new URLSearchParams({ file: pdf })}`; };
+// The document menu: this paper's root files (switching what this instance builds), the other
+// papers that latex-live instances on this machine preview (their viewers, on their ports), and
+// a page listing them all.
+const viewerOn = (port, doc) => `${location.protocol}//${location.hostname}:${port}/viewer.html?${new URLSearchParams({ file: `${doc}.pdf` })}`;
 async function loadDocs() {
   const { doc: building, docs } = await (await fetch("docs")).json();
+  const { self, instances } = await (await fetch("instances")).json().catch(() => ({ instances: [] }));
+  const others = instances.filter((i) => i.pid !== self);
   const pick = $("docPick");
   pick.replaceChildren(...docs.map((d) => el("option", { value: d, textContent: `${d}.tex`, selected: `${d}.pdf` === docFile })));
-  pick.hidden = isDiff || docs.length < 2 || `${building}.pdf` !== docFile;
+  if (others.length) {
+    const group = el("optgroup", { label: "Other previews" });
+    group.append(...others.map((i) => el("option", { value: `open:${i.port}:${i.doc}`, title: i.root,
+                                                     textContent: `${i.root.split("/").pop()}: ${i.doc}.tex` })));
+    pick.append(group, el("option", { value: "papers", textContent: "All previews…" }));
+  }
+  pick.hidden = isDiff || docs.length + others.length < 2 || `${building}.pdf` !== docFile;
 }
 $("docPick").onchange = async (e) => {
-  const doc = e.target.value;
-  setStatus(`switching to ${doc}.tex…`, "busy");
-  const r = await fetch(`switch?${new URLSearchParams({ doc })}`);
-  const body = await r.json().catch(() => ({ error: `switch failed (${r.status})` }));
-  if (r.ok) return openDoc(`${doc}.pdf`);
+  const value = e.target.value;
   e.target.value = docFile.slice(0, -4);
+  if (value === "papers") return window.open("papers", "latex-live-papers");
+  if (value.startsWith("open:")) {
+    const [, port, doc] = value.match(/^open:(\d+):(.*)$/);
+    return (location.href = viewerOn(port, doc));
+  }
+  setStatus(`switching to ${value}.tex…`, "busy");
+  const r = await fetch(`switch?${new URLSearchParams({ doc: value })}`);
+  const body = await r.json().catch(() => ({ error: `switch failed (${r.status})` }));
+  if (r.ok) return openDoc(`${value}.pdf`);
+  if (body.port) return (location.href = viewerOn(body.port, value)); // (another instance builds it)
   setStatus(body.error, "error");
 };
 loadDocs().catch(() => {});

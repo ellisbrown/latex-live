@@ -34,7 +34,9 @@ Usage (from a paper root):  live.py [<doc>[.tex] | PATH] [--port 44100] [--page-
   can send requests, so every request needs the token (kept in ./token next to
   live.py; ?t=TOKEN once, then a SameSite=Strict cookie).
 - One instance per document: a second one (e.g. another VS Code window opening
-  the same folder) prints the running viewer's URL and exits.
+  the same folder) prints the running viewer's URL and exits, or with --replace
+  stops the first and runs instead; one that no longer answers is replaced. /papers
+  lists every running instance on the machine.
 """
 
 import argparse
@@ -46,6 +48,7 @@ import glob
 import gzip
 import hashlib
 import hmac
+import html
 import http.cookies
 import http.server
 import json
@@ -64,6 +67,7 @@ import threading
 import time
 import unicodedata
 import urllib.parse
+import urllib.request
 import zipfile
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -75,6 +79,7 @@ IMAGE_MISSING = f"{TEXLIVE_IMAGE} is not pulled (to fix: podman pull {TEXLIVE_IM
 BUILD = os.environ.get("LATEX_LIVE_BUILD", "build")
 PUBLISH = "" if BUILD == "build" else BUILD
 TOKEN_FILE = os.path.join(HERE, "token")
+INSTANCES = os.path.join(HERE, "instances")  # one <pid>.json per running instance (record_port)
 
 
 def load_token():
@@ -177,6 +182,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json(200, commits(self.server.paper_root))
         elif path == "/diff":
             self.send_json(*start_diff(self.server, urllib.parse.parse_qs(url.query)))
+        elif path == "/instances":
+            self.send_json(200, {"self": os.getpid(), "instances": instances()})
+        elif path == "/papers":
+            self.send_html(papers_page(self.server, self.headers.get("Host", "localhost")))
         elif path == "/docs":
             self.send_json(200, {"doc": self.server.default_pdf[:-4], "docs": root_docs(self.server.paper_root)})
         elif path == "/switch":
@@ -212,6 +221,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         body = json.dumps(value).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_html(self, text):
+        body = text.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -2624,23 +2642,108 @@ def open_in_editor(pdf):
 
 
 def take_lock(doc):
-    """The lock on build/<doc>-live.lock (one instance per document), or (None, the holder's port)."""
+    """The lock on build/<doc>-live.lock (one instance per document), or (None, the holder's
+    {port, pid}; no pid from older versions, which recorded only the port)."""
     lock = open(os.path.join(BUILD, f"{doc}-live.lock"), "a+")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         lock.seek(0)
-        port = lock.read().strip() or "?"
+        text = lock.read().strip()
         lock.close()
-        return None, port
+        try:
+            return None, json.loads(text) if text.startswith("{") else {"port": int(text)}
+        except ValueError:
+            return None, {}
     return lock, None
 
 
-def record_port(lock, port):
-    """The viewer port, in the lock file, for later instances."""
-    lock.truncate(0)
-    lock.write(str(port))
-    lock.flush()
+def record_port(server):
+    """The viewer port and this process, in the lock file for later instances of the document,
+    and in the list of running instances (instances)."""
+    server.lock.truncate(0)
+    server.lock.write(json.dumps({"port": server.server_address[1], "pid": os.getpid()}))
+    server.lock.flush()
+    os.makedirs(INSTANCES, exist_ok=True)
+    entry = {"port": server.server_address[1], "pid": os.getpid(), "root": server.paper_root, "doc": server.default_pdf[:-4]}
+    with open(os.path.join(INSTANCES, f"{os.getpid()}.json"), "w") as f:
+        json.dump(entry, f)
+
+
+def is_live_instance(pid):
+    """Whether pid is a running latex-live (not a reused pid)."""
+    try:
+        os.kill(pid, 0)
+    except (OSError, TypeError):
+        return False
+    command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+    return "live.py" in command
+
+
+def instances():
+    """The running latex-live instances on this machine: [{port, pid, root, doc}], from
+    INSTANCES (each removes its entry on exit; entries of crashed ones are dropped here)."""
+    found = []
+    for path in glob.glob(os.path.join(INSTANCES, "*.json")):
+        try:
+            with open(path) as f:
+                entry = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if is_live_instance(entry.get("pid")):
+            found.append(entry)
+        else:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    return sorted(found, key=lambda e: e["port"])
+
+
+def papers_page(server, host):
+    """/papers: every running preview on this machine, with links to their viewers (on the host
+    this page came through; a forwarded connection needs each port forwarded too)."""
+    hostname = urllib.parse.urlsplit(f"//{host}").hostname or "localhost"
+    hostname = f"[{hostname}]" if ":" in hostname else hostname  # (IPv6)
+    rows = []
+    for e in instances():
+        url = f"//{hostname}:{e['port']}/viewer.html?file={urllib.parse.quote(e['doc'])}.pdf"
+        here = " (this one)" if e["pid"] == os.getpid() else ""
+        rows.append(f"<tr><td title='{html.escape(e['root'])}'>{html.escape(os.path.basename(e['root']))}</td>"
+                    f"<td><a href='{html.escape(url)}'>{html.escape(e['doc'])}.tex</a>{here}</td><td>{e['port']}</td></tr>")
+    return f"""<!doctype html><meta charset="utf-8"><title>latex-live: previews</title>
+<style>body {{ font: 14px system-ui, sans-serif; background: #323639; color: #eee; margin: 2em; }} a {{ color: #9cf; }}
+td, th {{ padding: 4px 14px 4px 0; text-align: left; }} th {{ opacity: 0.7; font-weight: normal; }} p {{ opacity: 0.7; }}</style>
+<h2>Running previews</h2>
+<table><tr><th>Paper</th><th>Document</th><th>Port</th></tr>{"".join(rows)}</table>
+<p>Through a forwarded port (e.g. VS Code's Ports panel), forward the others' ports too.</p>"""
+
+
+def instance_answers(port):
+    """Whether a latex-live viewer answers on port (within a few seconds)."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/docs?t={load_token()}", timeout=3) as r:
+            return r.status == 200
+    except (OSError, ValueError):
+        return False
+
+
+def stop_instance(pid):
+    """Stop another latex-live instance (it stops its latexmk); False if pid is not one, or won't stop."""
+    if not is_live_instance(pid):
+        return False
+    os.kill(pid, signal.SIGTERM)
+    for i in range(150):
+        if not is_live_instance(pid):
+            try:  # (killed, it can't remove its entry itself)
+                os.remove(os.path.join(INSTANCES, f"{pid}.json"))
+            except OSError:
+                pass
+            return True
+        if i == 100:
+            os.kill(pid, signal.SIGKILL)
+        time.sleep(0.1)
+    return False
 
 
 def set_doc(server, doc):
@@ -2735,12 +2838,13 @@ def switch_doc(server, doc):
         return 200, {"doc": doc}
     lock, other = take_lock(doc)
     if not lock:
-        return 409, {"error": f"{doc}.tex is open in another latex-live instance (port {other})"}
+        return 409, {"error": f"{doc}.tex is open in another latex-live instance (port {other.get('port', '?')})",
+                     "port": other.get("port")}
     stop_latexmk(server)
     server.lock.close()
     server.lock = lock
-    record_port(lock, server.server_address[1])
     set_doc(server, doc)
+    record_port(server)
     start_latexmk(server)
     print(f"=== latex-live: now building {doc}.tex", flush=True)
     return 200, {"doc": doc}
@@ -2789,6 +2893,8 @@ def main():
     ap.add_argument("--no-build", action="store_true", help="viewer only; don't run latexmk")
     ap.add_argument("--no-open", action="store_true", help="don't open the PDF in a VS Code editor tab")
     ap.add_argument("--host-tex", action="store_true", help="use the host's TeX installation, not the TeX Live 2024 image")
+    ap.add_argument("--replace", action="store_true", help="stop another instance building the same document and run here"
+                    " (one that no longer answers is replaced anyway)")
     args = ap.parse_args()
     global BUILD, PUBLISH
     BUILD = os.environ["LATEX_LIVE_BUILD"] = os.path.normpath(args.build_dir)
@@ -2813,17 +2919,30 @@ def main():
     else:
         sys.exit(f"latex-live: no .tex file with a \\documentclass in {os.getcwd()}")
 
-    # One instance per document; the lock file records the viewer port for later instances.
+    # One instance per document; the lock file records the viewer port and process for later instances.
     os.makedirs(BUILD, exist_ok=True)
     lock, other = take_lock(doc)
     if not lock:
-        print(f"=== latex-live: already running for {doc}.tex (another terminal or window)", flush=True)
-        print_urls(other)
-        return
+        port, pid = other.get("port"), other.get("pid")
+        holder = f"process {pid}, port {port}" if pid else f"port {port}"
+        if port and instance_answers(port) and not args.replace:
+            print(f"=== latex-live: already running for {doc}.tex ({holder}; another terminal or window)", flush=True)
+            print_urls(port)
+            print("=== latex-live: --replace stops that one and runs here", flush=True)
+            return
+        if not pid:
+            sys.exit(f"latex-live: {doc}.tex is held by an instance that is not answering ({holder}); stop it and retry")
+        print(f"=== latex-live: stopping the instance for {doc}.tex ({holder})"
+              + ("" if args.replace else ", which is not answering"), flush=True)
+        if not stop_instance(pid):
+            sys.exit(f"latex-live: could not stop process {pid}; stop it and retry")
+        lock, other = take_lock(doc)
+        if not lock:
+            sys.exit(f"latex-live: {doc}.tex is still locked; retry")
     server = serve(os.getcwd(), f"{doc}.pdf", args.port, args.page_limit)
     server.lock = lock
-    record_port(lock, server.server_address[1])
     set_doc(server, doc)
+    record_port(server)
     print_urls(server.server_address[1])
     others = [d for d in docs if d != doc]
     print(f"=== latex-live: building {doc}.tex" + (f"; the viewer switches to {', '.join(others)}" if others else ""),
@@ -2868,6 +2987,10 @@ def main():
     except KeyboardInterrupt:
         pass
     stop_latexmk(server)
+    try:
+        os.remove(os.path.join(INSTANCES, f"{os.getpid()}.json"))
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":
