@@ -116,24 +116,25 @@ def load_token():
     """Stable per-user secret, so the viewer URL can be bookmarked. All checkouts share it: the
     browser keeps one cookie per host, whatever the port. A token from before (./token next to
     live.py) carries over, so its URLs and cookies keep working."""
-    try:
-        with open(TOKEN_FILE) as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        os.makedirs(STATE, mode=0o700, exist_ok=True)
-        try:
-            with open(os.path.join(HERE, "token")) as f:
-                token = f.read().strip()
-        except FileNotFoundError:
-            token = secrets.token_urlsafe(16)
-        try:
-            fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:  # (another instance starting at the same time made it)
-            time.sleep(0.2)
-            return load_token()
-        with os.fdopen(fd, "w") as f:
-            f.write(token)
+    token = (read_text(TOKEN_FILE) or "").strip()
+    if token:
         return token
+    if os.path.exists(TOKEN_FILE):  # (never an empty token: it would let every request in)
+        sys.exit(f"latex-live: {TOKEN_FILE} is empty; delete it and start again")
+    os.makedirs(STATE, mode=0o700, exist_ok=True)
+    token = (read_text(os.path.join(HERE, "token")) or "").strip() or secrets.token_urlsafe(16)
+    # Written whole to a file of its own, then linked into place: another instance starting at the
+    # same time reads either no token or all of it, and whichever links first wins.
+    fd, tmp = tempfile.mkstemp(dir=STATE, prefix=".token-")
+    with os.fdopen(fd, "w") as f:
+        f.write(token)
+    try:
+        os.link(tmp, TOKEN_FILE)
+    except FileExistsError:
+        pass
+    finally:
+        os.remove(tmp)
+    return load_token()
 
 
 class DualStackServer(http.server.ThreadingHTTPServer):
@@ -164,6 +165,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         """Every client needs ?t=TOKEN once, then the cookie (forwarded traffic arrives via loopback too)."""
         self.set_cookie = False
         token = self.server.token
+        if not token:  # (never: load_token refuses an empty one)
+            return False
         cookie = http.cookies.SimpleCookie(self.headers.get("Cookie", "")).get("latex_live")
         if cookie and hmac.compare_digest(cookie.value, token):
             return True
@@ -570,14 +573,15 @@ def status(server, pdf_name, push=False):
 
 
 def code_updated(started={}):
-    """Whether live.py on disk differs from the one this process runs (e.g. after a git pull):
-    the viewer then asks for a restart. latex_report.py and forward.py run anew each time."""
-    path = os.path.join(HERE, "live.py")
-    stamp = mtime(path)
+    """Whether live.py or VERSION on disk differs from what this process runs (e.g. after a git
+    pull, or a release that only bumps VERSION): the viewer then asks for a restart.
+    latex_report.py and forward.py run anew each time."""
+    paths = [os.path.join(HERE, name) for name in ("live.py", "VERSION")]
+    stamp = [mtime(path) for path in paths]
     if "hash" not in started:
-        started.update(hash=file_hash(path), stamp=stamp, updated=False)
+        started.update(hash=[file_hash(path) for path in paths], stamp=stamp, updated=False)
     elif stamp != started["stamp"]:
-        started.update(stamp=stamp, updated=file_hash(path) != started["hash"])
+        started.update(stamp=stamp, updated=[file_hash(path) for path in paths] != started["hash"])
     return started["updated"]
 
 
@@ -2745,6 +2749,7 @@ def record_port(server):
     server.lock.flush()
     os.makedirs(INSTANCES, exist_ok=True)
     entry = {"port": server.server_address[1], "pid": os.getpid(), "root": server.paper_root, "doc": server.default_pdf[:-4],
+             "was": getattr(server, "was", []),
              "id": paper_id(server.paper_root), "version": VERSION}
     with open(os.path.join(INSTANCES, f"{os.getpid()}.json"), "w") as f:
         json.dump(entry, f)
@@ -2756,9 +2761,26 @@ def is_live_instance(pid):
         os.kill(pid, 0)
     except (OSError, TypeError):
         return False
-    command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
-    # (python running live.py, not e.g. an editor on it; the path may have spaces, as ps prints it unquoted)
-    return bool(re.match(r"(?i)\S*python[0-9.]*\s(.*[/\s])?live\.py(\s|$)", command))
+    try:  # Linux: the exact argument list
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            argv = f.read().decode(errors="replace").split("\0")[:-1]
+    except OSError:  # macOS: ps prints it joined, unquoted (a path may have spaces)
+        command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        return bool(re.match(r"(?i)\S*python[0-9.]*\s+(-(?![cm]\b)\S+\s+)*(?!-)((?!\.py\s).)*?(^|/)live\.py(\s|$)", command))
+    return is_live_argv(argv)
+
+
+def is_live_argv(argv):
+    """Whether argv is python running live.py as its script (not e.g. an editor on it, or python
+    -c with live.py among its arguments)."""
+    if not argv or not re.fullmatch(r"(?i)python[0-9.]*", os.path.basename(argv[0])):
+        return False
+    args = argv[1:]
+    while args and args[0].startswith("-"):
+        if args[0] in ("-c", "-m"):
+            return False
+        args = args[2:] if args[0] in ("-W", "-X") else args[1:]  # (options with a value)
+    return bool(args) and os.path.basename(args[0]) == "live.py"
 
 
 def instances():
@@ -2891,9 +2913,7 @@ class HubHandler(Handler):
         body = self.rfile.read(length) if length else None
         headers = {k: v for k, v in self.headers.items() if k.lower() in ("content-type", "range", "if-range")}
         headers.update({"Cookie": f"latex_live={self.server.token}", "X-Latex-Live-Paper": id_})
-        for fresh in (False, True):
-            if fresh:
-                self.server.found_at = -9.0  # (look again now, whatever the last look's age)
+        for fresh in (False, True):  # (fresh: after a 421 or a refused connection, look again now)
             target = self.server.find(id_, doc, fresh)
             if not target:
                 return self.send_json(404, {"error": f"no preview of {doc}.tex in {id_} is running"})
@@ -2933,21 +2953,35 @@ class HubServer(DualStackServer):
     daemon_threads = True
     found, found_at = [], -9.0  # (table)
 
-    def table(self, fresh=False):
-        """The running previews (instances), looked up at most every 2 s; fresh: at most every
-        0.5 s (a viewer of a stopped preview keeps asking)."""
-        if time.monotonic() - self.found_at > (0.5 if fresh else 2):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.misses = {}  # (id, doc) -> when a lookup last missed (find)
+
+    def table(self):
+        """The running previews (instances), looked up at most every 2 s."""
+        if time.monotonic() - self.found_at > 2:
             self.found, self.found_at = [e for e in instances() if e.get("id")], time.monotonic()
         return self.found
 
     def find(self, id_, doc, fresh=False):
-        """The preview building doc in paper id_; else the paper's only one (it switched documents).
-        A miss looks again, for a preview that started since the last look."""
-        for again in ((fresh,) if fresh else (False, True)):
-            if found := next((e for e in self.table(again) if e["id"] == id_ and e["doc"] == doc), None):
-                return found
-        same = [e for e in self.found if e["id"] == id_]  # (as fresh as the last look)
-        return same[0] if len(same) == 1 else None
+        """The preview building doc in paper id_ (looked up again at once if fresh, or on a miss,
+        e.g. a preview just started or switched to doc, unless that route missed in the last 0.5 s:
+        a viewer of a stopped preview keeps asking); else one that switched away from doc (its
+        viewers follow it, info.doc); else the paper's only one."""
+        exact = lambda: next((e for e in self.table() if e["id"] == id_ and e["doc"] == doc), None)
+        if fresh:
+            self.found_at = -9.0
+        found = exact()
+        if not found and time.monotonic() - self.misses.get((id_, doc), -9) > 0.5:
+            self.misses = {k: t for k, t in self.misses.items() if time.monotonic() - t < 60}
+            self.misses[(id_, doc)] = time.monotonic()
+            self.found_at = -9.0
+            found = exact()
+        if found:
+            return found
+        same = [e for e in self.found if e["id"] == id_]
+        switched = [e for e in same if doc in e.get("was", [])]
+        return switched[-1] if switched else same[0] if len(same) == 1 else None
 
 
 def hub_watch(port):
@@ -3049,6 +3083,9 @@ def stop_instance(pid):
 
 def set_doc(server, doc):
     """Serve doc as the document being built, and remember it as the last one (pick_doc)."""
+    old = getattr(server, "default_pdf", "")[:-4]
+    if old and old != doc:  # (its viewers' hub URLs still name it: HubServer.find)
+        server.was = [d for d in getattr(server, "was", []) if d != doc] + [old]
     server.default_pdf = f"{doc}.pdf"
     server.bases, server.base_checked = {"head": {}, "push": {}}, {"head": 0, "push": 0}
     if server.diff.get("state") != "running":
