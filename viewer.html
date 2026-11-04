@@ -2313,6 +2313,7 @@ $("docPick").onchange = async (e) => {
   setStatus(body.error, "error");
 };
 loadDocs().catch(() => {});
+setInterval(() => { if (document.activeElement !== $("docPick")) loadDocs().catch(() => {}); }, 15000); // (papers opened since)
 if (!isDiff) loadAuthors().catch(() => {});
 
 poll();

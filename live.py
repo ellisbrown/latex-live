@@ -78,20 +78,36 @@ IMAGE_MISSING = f"{TEXLIVE_IMAGE} is not pulled (to fix: podman pull {TEXLIVE_IM
 # so a second instance can run beside the usual build without touching its files.
 BUILD = os.environ.get("LATEX_LIVE_BUILD", "build")
 PUBLISH = "" if BUILD == "build" else BUILD
-TOKEN_FILE = os.path.join(HERE, "token")
+# Per-user state, shared by every checkout (a pinned version and a development one see the same
+# token and the same instances): the token, and one <pid>.json per running instance (record_port).
+STATE = os.environ.get("LATEX_LIVE_STATE") or os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "latex-live")
+TOKEN_FILE = os.path.join(STATE, "token")
+INSTANCES = os.path.join(STATE, "instances")
+OLD_INSTANCES = os.path.join(HERE, "instances")  # (where instances of 0.1.0 list themselves)
 with open(os.path.join(HERE, "VERSION")) as f:
     VERSION = f.read().strip()  # (tagged v<VERSION> on release)
-INSTANCES = os.path.join(HERE, "instances")  # one <pid>.json per running instance (record_port)
 
 
 def load_token():
-    """Stable per-user secret, so the viewer URL can be bookmarked."""
+    """Stable per-user secret, so the viewer URL can be bookmarked. All checkouts share it: the
+    browser keeps one cookie per host, whatever the port. A token from before (./token next to
+    live.py) carries over, so its URLs and cookies keep working."""
     try:
         with open(TOKEN_FILE) as f:
             return f.read().strip()
     except FileNotFoundError:
-        token = secrets.token_urlsafe(16)
-        fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.makedirs(STATE, mode=0o700, exist_ok=True)
+        try:
+            with open(os.path.join(HERE, "token")) as f:
+                token = f.read().strip()
+        except FileNotFoundError:
+            token = secrets.token_urlsafe(16)
+        try:
+            fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:  # (another instance starting at the same time made it)
+            time.sleep(0.2)
+            return load_token()
         with os.fdopen(fd, "w") as f:
             f.write(token)
         return token
@@ -2697,9 +2713,10 @@ def is_live_instance(pid):
 
 def instances():
     """The running latex-live instances on this machine: [{port, pid, root, doc}], from
-    INSTANCES (each removes its entry on exit; entries of crashed ones are dropped here)."""
+    INSTANCES (each removes its entry on exit; entries of crashed ones are dropped here), and
+    from OLD_INSTANCES for instances of an older version."""
     found = []
-    for path in glob.glob(os.path.join(INSTANCES, "*.json")):
+    for path in glob.glob(os.path.join(INSTANCES, "*.json")) + glob.glob(os.path.join(OLD_INSTANCES, "*.json")):
         try:
             with open(path) as f:
                 entry = json.load(f)
@@ -2750,10 +2767,11 @@ def stop_instance(pid):
     os.kill(pid, signal.SIGTERM)
     for i in range(150):
         if not is_live_instance(pid):
-            try:  # (killed, it can't remove its entry itself)
-                os.remove(os.path.join(INSTANCES, f"{pid}.json"))
-            except OSError:
-                pass
+            for folder in (INSTANCES, OLD_INSTANCES):  # (killed, it can't remove its entry itself)
+                try:
+                    os.remove(os.path.join(folder, f"{pid}.json"))
+                except OSError:
+                    pass
             return True
         if i == 100:
             os.kill(pid, signal.SIGKILL)

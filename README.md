@@ -135,8 +135,9 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
   and either rootless podman with `docker.io/minidocks/texlive:2024-full`
   pulled, or a host TeX Live with `--host-tex`.
 - **Viewer address:** the first free port from 44100 (`--port` sets the
-  start). Every request needs the token in `./token`, which is created on
-  first run and gitignored.
+  start). Every request needs the token in `~/.config/latex-live/token`
+  (`$LATEX_LIVE_STATE/token` if set), which is created on first run and
+  shared by every checkout, as is the list of running instances.
 - **Environment variables:**
   - `LATEX_LIVE_ANON_TERMS`: a regular expression of affiliations and other
     terms that identify the authors, for the anonymity check, e.g.
