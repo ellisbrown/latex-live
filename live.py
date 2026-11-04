@@ -2580,9 +2580,10 @@ def keep_inputs(out):
 # penalties before a note in a paragraph come off and go back after the record (in math, a record
 # changes no spacing). A record counts only where its line (the innermost hbox) is typeset exactly as
 # in the export, by their SyncTeX; other notes, and notes between paragraphs, are placed from the
-# export's SyncTeX by source line instead. After the last page, the probe also typesets every note as
-# the paper shows it (its macros, colors, references), at two sizes, each on a page of its own, which
-# the review copy places in the gutters as they are.
+# export's SyncTeX by source line instead. A note the probe never meets isn't typeset (it is in a
+# conditional that is off, say) and is left out. After the last page, the probe also typesets every
+# note as the paper shows it (its macros, colors, references), at two sizes, each on a page of its
+# own, which the review copy places in the gutters as they are.
 REVIEW_PROBE = r"""% latex-live: the review copy's probe (build_review in live.py), read before the document.
 \ifdefined\ReadonlyShipoutCounter\else\endinput\fi
 \makeatletter
@@ -2596,16 +2597,38 @@ REVIEW_PROBE = r"""% latex-live: the review copy's probe (build_review in live.p
   \ifnum\lastnodetype=13 \edef\latexlive@tail{\penalty\the\lastpenalty\relax\unexpanded\expandafter{\latexlive@tail}}%
     \unpenalty\let\latexlive@next\latexlive@strip\fi
   \latexlive@next}
-\protected\long\def\latexlive@mark#1{\begingroup\def\latexlive@tail{}\ifmmode\else\latexlive@strip\fi\pdfsavepos
-  \edef\latexlive@record{\write-1{latex-live|pos|\latexlive@here|\noexpand\the\ReadonlyShipoutCounter
-    |\noexpand\the\pdflastxpos|\noexpand\the\pdflastypos|\detokenize{#1}}}%
-  \latexlive@record\latexlive@tail\endgroup}
+% A note's spot (page, position), written at shipout.
+\long\def\latexlive@record#1{\pdfsavepos\edef\latexlive@write{\write-1{latex-live|pos|\latexlive@here
+  |\noexpand\the\ReadonlyShipoutCounter|\noexpand\the\pdflastxpos|\noexpand\the\pdflastypos|\detokenize{#1}}}%
+  \latexlive@write}
+% In a paragraph, the spaces, kerns and penalties before the note go back after the record, so the
+% lines break where they did (elsewhere nothing breaks, and they stay before it, as in a cell's template).
+% A record stops \ignorespaces (or TeX's look for an optional space), which in the export goes on past
+% the vanished note, so the record skips the spaces after it where that is likely: after rigid or
+% infinite glue (a template's, or \@esphack's after \label) and at the start of a paragraph (after a
+% display), not after a word's space.
+\protected\long\def\latexlive@mark#1{\begingroup\def\latexlive@tail{}\def\latexlive@then{}%
+  \ifhmode
+    \ifnum\lastnodetype<\z@\ifinner\else\def\latexlive@then{\ignorespaces}\fi\fi
+    \ifnum\lastnodetype=11
+      \ifnum\gluestretchorder\lastskip>\z@\def\latexlive@then{\ignorespaces}\fi
+      \ifdim\gluestretch\lastskip=\z@\ifdim\glueshrink\lastskip=\z@\def\latexlive@then{\ignorespaces}\fi\fi
+    \fi
+    \ifinner\else\latexlive@strip\fi
+  \fi
+  \latexlive@record{#1}\latexlive@tail\expandafter\endgroup\latexlive@then}
 \protected\long\def\latexlive@seen#1{\latexlive@log{seen|\latexlive@here|\detokenize{#1}}}
-% Typesetting, not writing to a file or a mark; and not where an alignment looks ahead for \omit or
-% \noalign (an empty cell, or between rows), where anything but expansion would show.
+% At the start of a cell, whose template has begun (in a p column, in vertical mode); in the export,
+% the look ahead for \omit skipped the spaces after the note.
+\protected\long\def\latexlive@cell#1{\ifvmode\latexlive@seen{#1}\else\latexlive@record{#1}\expandafter\ignorespaces\fi}
+% Typesetting, not writing to a file or a mark. Where an alignment looks ahead for \noalign or \omit,
+% the probe must not start a row or a cell that the export doesn't: between rows, the note is logged
+% from a \noalign of its own; at the start of a cell, from a protected macro, which starts the cell
+% there, as the note's text does in the build with notes (so \omit can't follow it in a paper that
+% builds).
 \long\def\latexlive@todotxt#1{\ifx\protect\@typeset@protect
-  \ifvmode\ifnum\currentgrouptype=6 \else\latexlive@seen{#1}\fi
-  \else\ifnum\ifnum\currentgrouptype=6 \lastnodetype\else0\fi<0 \else\latexlive@mark{#1}\fi\fi\fi}
+  \ifvmode\ifnum\currentgrouptype=6 \noalign{\latexlive@seen{#1}}\else\latexlive@seen{#1}\fi
+  \else\ifnum\ifnum\currentgrouptype=6 \lastnodetype\else0\fi<0 \latexlive@cell{#1}\else\latexlive@mark{#1}\fi\fi\fi}
 \ifcsname tex_shipout:D\endcsname\expandafter\let\expandafter\latexlive@shipout\csname tex_shipout:D\endcsname
 \else\let\latexlive@shipout\shipout\fi
 \newbox\latexlive@box \newdimen\latexlive@wide \newcount\latexlive@page
@@ -2627,6 +2650,8 @@ REVIEW_PROBE = r"""% latex-live: the review copy's probe (build_review in live.p
   \ifdim\latexlive@wide<\wd\latexlive@box\global\latexlive@wide\wd\latexlive@box\fi
   \begingroup\pdfpagewidth\latexlive@wide\pdfpageheight\dimexpr\ht\latexlive@box+\dp\latexlive@box+1sp\relax
   \pdfhorigin\z@\pdfvorigin\z@\latexlive@shipout\box\latexlive@box\endgroup}
+% \latexlivecite{key}{label}: a citation only in notes, which the export's bibliography leaves out.
+\def\latexlive@cite#1#2{\global\expandafter\def\csname b@\detokenize{#1}\ifdefined\@extra@binfo\@extra@binfo\fi\endcsname{#2}}
 \long\def\latexlive@snippet#1#2{\latexlive@size{#1}0\footnotesize{#2}\latexlive@size{#1}1\scriptsize{#2}}
 \def\latexlive@color#1#2#3{\ifdefined\convertcolorspec\begingroup
   \ifx\relax#2\relax\extractcolorspecs{#3}\latexlive@m\latexlive@s\else\def\latexlive@m{#2}\def\latexlive@s{#3}\fi
@@ -2634,7 +2659,7 @@ REVIEW_PROBE = r"""% latex-live: the review copy's probe (build_review in live.p
 \def\latexlive@notes{\begingroup
   \latexlive@log{pages|\the\ReadonlyShipoutCounter}\global\latexlive@page\ReadonlyShipoutCounter
   \long\def\todotxt##1{##1}\ifdefined\showtodostrue\showtodostrue\fi
-  \let\latexlivesnippet\latexlive@snippet\let\latexlivecolor\latexlive@color
+  \let\latexlivesnippet\latexlive@snippet\let\latexlivecolor\latexlive@color\let\latexlivecite\latexlive@cite
   \input{<NOTES>}\endgroup}
 \AddToHook{enddocument/afterlastpage}{\latexlive@notes}
 \AtBeginDocument{\ifdefined\todotxt\let\todotxt\latexlive@todotxt\fi\ifdefined\showtodosfalse\showtodosfalse\fi
@@ -2791,6 +2816,8 @@ def run_probe(server, out, job, doc, notes, geo):
     with open(os.path.join(out, "notes.tex"), "w", encoding="latin-1") as f:
         for macro, (model, spec) in note_colors(server.paper_root, f"{doc}.pdf", {n["macro"] for n in notes}).items():
             f.write(f"\\latexlivecolor{{{macro}}}{{{model}}}{{{spec}}}\n")
+        for key, label in note_citations(server.paper_root, f"{doc}.pdf", os.path.join(out, f"{job}.bbl"), notes).items():
+            f.write(f"\\latexlivecite{{{key}}}{{{label}}}\n")
         for n in notes:
             f.write(f"\\latexlivesnippet{{{n['id']}}}{{{n['call']}}}\n")
     try:
@@ -2833,6 +2860,39 @@ def run_probe(server, out, job, doc, notes, geo):
     if probe["pdf"]:
         os.replace(os.path.join(out, f"{job}.pdf"), os.path.join(out, "probe.pdf"))
     return probe
+
+
+CITE_RE = re.compile(r"\\[a-zA-Z]*cite[a-zA-Z]*\*?\s*(?:\[[^\]]*\]\s*){0,2}\{([^{}]*)\}")
+BIBITEM_RE = re.compile(r"\\bibitem\s*(?:\[(?:[^\[\]]|\[[^\]]*\])*\])?\s*\{([^{}]*)\}")
+
+
+def note_citations(paper_root, pdf_name, bbl, notes):
+    """{key: label} for the citations in notes that the export's bibliography (bbl) leaves out, being
+    cited only in notes: the label they have in the build with notes, as natbib's authors and year
+    (their number, or a numeric label, would point to another entry of the export's bibliography),
+    else their key. As Latin-1, like the notes."""
+    try:
+        with open(bbl, encoding="latin-1") as f:
+            listed = set(BIBITEM_RE.findall(f.read()))
+    except OSError:  # (no bibliography from BibTeX: \bibitem in the document, notes or not)
+        return {}
+    keys = {k.strip() for n in notes for m in CITE_RE.finditer(n["body"]) for k in m.group(1).split(",")} - listed - {""}
+    try:
+        with open(job_file(paper_root, pdf_name, ".aux"), encoding="latin-1") as f:
+            aux = f.read()
+    except OSError:
+        aux = ""
+    labels = {}
+    for m in re.finditer(r"\\bibcite\{([^{}]*)\}(?=\{)", aux):
+        labels[m.group(1)] = brace_group(aux, m.end())[0]
+    found = {}
+    for key in sorted(keys):
+        label, name = labels.get(key, ""), escape_note(key)
+        if label.startswith("{") and brace_group(label, 0)[1] < len(label):  # (natbib: {number}{year}{{authors}}{{full}})
+            found[key] = "{" + name + "}" + label[brace_group(label, 0)[1]:]
+        else:
+            found[key] = label if label and not label.strip().isdigit() else name
+    return found
 
 
 def note_colors(paper_root, pdf_name, macros):
@@ -2952,9 +3012,8 @@ def review_anchors(paper_root, out, notes, probe, area):
             r = (inside or exact)[0]
             placed.append({**n, "page": r[3], "x": round(r[4], 2), "y": round(r[5], 2), "how": "exact"})
             continue
-        near = any((n["file"], ln) in lines for ln in range(n["line"] - 3, n["last"] + 4))
-        if not recs and not near:  # (not typeset: the probe never met it, and nothing near it is in the PDF)
-            continue
+        if not recs and ("pages" in probe or not any((n["file"], ln) in lines for ln in range(n["line"] - 3, n["last"] + 4))):
+            continue  # (not typeset: the probe went through and never met it; or, without a probe, nothing near it shows)
         probed = [r for r in recs if r[0] == "pos"]  # (on a line the probe set a little differently)
         spot = None
         if not probed or any(r[1] == n["file"] and n["line"] <= r[2] <= n["last"] for r in probed):
@@ -3035,8 +3094,8 @@ def line_anchor(paper_root, n, lines, vertical):
             if child:
                 recs = lines[min(k for k in lines if k[0] == child)]
                 break
-        if recs:
-            page, _, _, _, x, y, _, box = recs[0]
+        if recs:  # (its first words: a line's first records can belong to the row or line before it)
+            page, _, _, _, x, y, _, box = next((r for r in recs if r[1] == "x"), recs[0])
             return (page, box[3], box[1]) if box else (page, x, y)
     for ln in range(n["line"], max(0, n["line"] - 40), -1):
         if ln not in moved and (recs := lines.get((n["file"], ln))):
