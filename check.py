@@ -111,6 +111,14 @@ def static_checks():
     if r.returncode:
         fail(f"the viewer's script does not parse:\n{r.stderr}")
     ok("the viewer's script parses")
+    with tempfile.TemporaryDirectory(prefix="latex-live-token-") as state:  # (instances starting at once)
+        racers = [subprocess.Popen([sys.executable, "-c", "import live; print(live.load_token())"], cwd=HERE,
+                                   env={**os.environ, "LATEX_LIVE_STATE": state}, stdout=subprocess.PIPE, text=True)
+                  for _ in range(12)]
+        tokens = {r.communicate()[0].strip() for r in racers}
+        if len(tokens) != 1 or "" in tokens:
+            fail(f"instances starting at once got {len(tokens)} different tokens{' (one empty)' if '' in tokens else ''}")
+    ok("instances starting at once agree on one token, never an empty one")
 
 
 def git(cwd, *args):
@@ -330,11 +338,20 @@ def live_checks(tmp):
         ghost = os.path.join(state, "instances", "ghost.json")  # (a stale entry: another paper's id, this preview's port)
         with open(ghost, "w") as f:
             json.dump({"port": own, "pid": procs[1].pid, "root": "/elsewhere", "doc": "main", "id": "ghost-000000"}, f)
-        status, _, data = request("/p/ghost-000000/main/docs", cookie=token)
+        status, _, data = wait_for("the hub to see the stale entry", lambda: (lambda r: r if r[0] != 404 else None)(
+            request("/p/ghost-000000/main/docs", cookie=token)), timeout=10)  # (it rescans at most every 0.5 s)
         os.remove(ghost)
         if status != 502:
             fail(f"the hub forwarded a request for another paper to this preview's port: {status} {data[:200]!r}")
         ok("the hub, refused by a preview that is another paper's, looks again and doesn't misroute")
+        if get("/switch?doc=extra", token).get("doc") != "extra":
+            fail("switching main's preview to extra failed")
+        if wait_for("main's old route", lambda: _quiet(lambda: get("/docs", token)["doc"]), timeout=20) != "extra":
+            fail("after a switch, the old document's viewers no longer reach their preview")
+        if get("/switch?doc=main", token, "extra").get("doc") != "main":
+            fail("switching back to main failed")
+        wait_for("main again", lambda: _quiet(lambda: get("/docs", token)["doc"] == "main"), timeout=20)
+        ok("after a switch (two documents running), the old document's viewers still reach their preview")
 
         second = subprocess.run([sys.executable, os.path.join(HERE, "live.py"), "main.tex", "--no-open", "--port", str(PORT)],
                                 cwd=paper, capture_output=True, text=True, timeout=60, env=ENV)
