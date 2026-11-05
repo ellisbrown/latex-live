@@ -61,6 +61,7 @@ def free_ports(start, count=8):
             for p in range(port, port + count):
                 s = socket.socket(socket.AF_INET6)
                 socks.append(s)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # (as live.py's servers: ports that closed connections still hold are free)
                 s.bind(("::", p))
             return port
         except OSError:
