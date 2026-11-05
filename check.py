@@ -279,15 +279,21 @@ def wait_for(what, test, timeout=180, step=0.1):
     fail(f"timed out waiting for {what}")
 
 
+def python_files():
+    """The Python files of the checkout: the scripts and the server's package (latexlive/)."""
+    return ["live.py", "latex_report.py", "forward.py", "check.py",
+            *sorted(os.path.relpath(p, HERE) for p in glob.glob(os.path.join(HERE, "latexlive", "*.py")))]
+
+
 def static_checks():
-    for name in ("live.py", "latex_report.py", "forward.py", "check.py"):
+    for name in python_files():
         r = subprocess.run([sys.executable, "-W", "error", "-m", "py_compile", os.path.join(HERE, name)],
                            capture_output=True, text=True)
         if r.returncode:
             fail(f"{name} does not compile:\n{r.stderr}")
     ok("the Python compiles")
     oldest = shutil.which("python3.9")  # (the oldest supported, as macOS ships)
-    for name in ("live.py", "latex_report.py", "forward.py", "check.py") if oldest else ():
+    for name in python_files() if oldest else ():
         r = subprocess.run([oldest, "-c", "import sys; compile(open(sys.argv[1]).read(), sys.argv[1], 'exec')",
                             os.path.join(HERE, name)], capture_output=True, text=True)
         if r.returncode:
@@ -356,16 +362,17 @@ def tex_stand_in(tmp):
 
 
 def bounds_checks():
-    """The downloads read TeX's output within bounds (live.OUTPUT_LIMIT and live.SYNCTEX_LIMIT, made smaller here),
+    """The downloads read TeX's output within bounds (config.OUTPUT_LIMIT and config.SYNCTEX_LIMIT, made smaller here),
     without TeX: a log, an .aux or a .bbl past its bound (live.read_output), the probe pass's log (live.run_probe,
     with a stand-in for TeX) and a SyncTeX file uncompressed (live.synctex_pages) stop a download with a message
     that says so, before they are read whole; within them, the probe's records are read as before, and so is a log
     whose wrapped lines split a UTF-8 character."""
     sys.path.insert(0, HERE)
     import live
-    saved, tmp = (live.OUTPUT_LIMIT, live.SYNCTEX_LIMIT), tempfile.mkdtemp(prefix="latex-live-check-")
+    from latexlive import config
+    saved, tmp = (config.OUTPUT_LIMIT, config.SYNCTEX_LIMIT), tempfile.mkdtemp(prefix="latex-live-check-")
     try:
-        live.OUTPUT_LIMIT = live.SYNCTEX_LIMIT = 1 << 20
+        config.OUTPUT_LIMIT = config.SYNCTEX_LIMIT = 1 << 20
         root = os.path.join(tmp, "paper")
         out = os.path.join(root, "build", "review", "main")
         os.makedirs(out)
@@ -426,7 +433,7 @@ def bounds_checks():
             if "export.synctex.gz is over 1 MB uncompressed" not in str(e):
                 fail(f"a SyncTeX file past its bound: {e}")
     finally:
-        live.OUTPUT_LIMIT, live.SYNCTEX_LIMIT = saved
+        config.OUTPUT_LIMIT, config.SYNCTEX_LIMIT = saved
         shutil.rmtree(tmp, ignore_errors=True)
     ok("the downloads read TeX's logs, .aux, .bbl and SyncTeX files only up to a bound, past which they stop and say so;"
        " the probe's records are read from its log line by line; a log whose wrapping split a UTF-8 character reads")
@@ -438,10 +445,11 @@ def failed_export_checks():
     next build is exported again."""
     sys.path.insert(0, HERE)
     import live
+    from latexlive import config
     tmp = tempfile.mkdtemp(prefix="latex-live-check-")
     try:
         root = os.path.join(tmp, "paper")
-        os.makedirs(os.path.join(root, live.BUILD))
+        os.makedirs(os.path.join(root, config.BUILD))
         published = os.path.join(root, "main.pdf")
         put(published, "%PDF-1.5\n")
         stand_in = os.path.join(tmp, "tex")
@@ -472,7 +480,7 @@ def failed_export_checks():
             fail("an export that failed was not built again for a new build of the document")
         new_build()
 
-        def too_long(*args, **kwargs):  # (live.run_tool's answer for a run it stopped at its deadline)
+        def too_long(*args, **kwargs):  # (run_tool's answer for a run it stopped at its deadline)
             with open(os.path.join(stand_in, "calls"), "a") as f:
                 f.write("timed out\n")
             return None, ""
@@ -496,10 +504,11 @@ def waiting_download_checks():
     start (a build of theirs that runs is reported as it is). With --no-build, a stale marker holds nothing up."""
     sys.path.insert(0, HERE)
     import live
+    from latexlive import config
     tmp = tempfile.mkdtemp(prefix="latex-live-check-")
     try:
         root = os.path.join(tmp, "paper")
-        os.makedirs(os.path.join(root, live.BUILD))
+        os.makedirs(os.path.join(root, config.BUILD))
         put(os.path.join(root, "main.pdf"), "%PDF-1.5\n")
         status, building = live.job_file(root, "main.pdf", ".status.json"), live.job_file(root, "main.pdf", ".building")
         put(status, "{}")
@@ -605,11 +614,12 @@ def confinement_checks():
     command line of a TeX run that took too long. Outside shared mode, links count as before, and so do failures."""
     sys.path.insert(0, HERE)
     import live
-    saved, tmp = (live.SHARED, live.image_pulled), tempfile.mkdtemp(prefix="latex-live-check-")
+    from latexlive import config
+    saved, tmp = (config.SHARED, live.image_pulled), tempfile.mkdtemp(prefix="latex-live-check-")
     try:
-        live.SHARED, live.image_pulled = True, lambda: False
+        config.SHARED, live.image_pulled = True, lambda: False
         root = os.path.join(tmp, "paper")
-        build = os.path.join(root, live.BUILD)
+        build = os.path.join(root, config.BUILD)
         os.makedirs(build)
         server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", tex_exec="false", export={}, review={},
                                        exported={}, export_lock=threading.Lock(), review_lock=threading.Lock(),
@@ -618,11 +628,11 @@ def confinement_checks():
             live.exact_export(server, "main.pdf")
             fail("with the TeX Live image missing, the export in shared mode went ahead")
         except RuntimeError as e:
-            if live.IMAGE_MISSING not in str(e):
+            if config.IMAGE_MISSING not in str(e):
                 fail(f"with the TeX Live image missing, the export in shared mode says: {e}")
         server.review = {"pdf": "main.pdf", "source": "1", "state": "running"}
         live.build_review(server, "main.pdf", "1")
-        if server.review.get("state") != "failed" or live.IMAGE_MISSING not in server.review.get("msg", ""):
+        if server.review.get("state") != "failed" or config.IMAGE_MISSING not in server.review.get("msg", ""):
             fail(f"with the TeX Live image missing, the review copy in shared mode: {server.review}")
 
         outside = os.path.join(tmp, "outside.tex")
@@ -664,12 +674,12 @@ def confinement_checks():
         live.build_review(server, "main.pdf", "2")
         msg = server.review.get("msg", "")
         if (server.review.get("state") != "failed" or "build/export/main/main-export.synctex.gz" not in msg or root in msg
-                or live.HERE in msg):
+                or config.HERE in msg):
             fail(f"a review copy that failed for a missing file, in shared mode, says: {server.review}")
-        timeout = subprocess.TimeoutExpired(["sh", "-c", f"'{live.HERE}/tex-exec' image '{root}' pdflatex"], 600)
+        timeout = subprocess.TimeoutExpired(["sh", "-c", f"'{config.HERE}/tex-exec' image '{root}' pdflatex"], 600)
         if live.failure(server, timeout) != "a TeX run took more than 10 minutes":
             fail(f"a TeX run that took too long, in shared mode, says: {live.failure(server, timeout)}")
-        live.SHARED = False
+        config.SHARED = False
         if root not in live.failure(server, OSError(2, "No such file or directory", os.path.join(build, "x"))):
             fail("outside shared mode, a download's failure no longer names its file in full")
         live.keep_inputs(out)
@@ -678,7 +688,7 @@ def confinement_checks():
                 or "in a file outside the paper" not in found):
             fail("outside shared mode, the review copy no longer follows links as it did")
     finally:
-        live.SHARED, live.image_pulled = saved
+        config.SHARED, live.image_pulled = saved
         shutil.rmtree(tmp, ignore_errors=True)
     ok("in shared mode, the downloads built on request say plainly that the TeX Live image is missing, the review copy"
        " reads the last good build's own files (no dot files) and keeps no links for its probe, and failures name no"
@@ -690,6 +700,7 @@ def shared_build_checks():
     latexmkrc's $pre_tex_code."""
     sys.path.insert(0, HERE)
     import live
+    from latexlive import config
     with open(os.path.join(HERE, "latexmkrc")) as f:
         rc = re.search(r"^\$pre_tex_code = (.*?);$", f.read(), re.S | re.M).group(1)
     code = "".join(re.sub(r"\\([\\'])", r"\1", part) for part in re.findall(r"'((?:[^'\\]|\\.)*)'", rc))
@@ -709,9 +720,9 @@ def shared_build_checks():
         try:
             for name, text in (("main-live.aux", "\\relax\n\\@input{chapter.aux}\n\\@input{../outside.aux}\n"),
                                ("chapter.aux", "\\relax\n\\citation{late}\n"), ("../outside.aux", "\\citation{outside}\n")):
-                os.makedirs(os.path.dirname(os.path.join(live.BUILD, name)) or live.BUILD, exist_ok=True)
-                put(os.path.join(live.BUILD, name), text)
-            tree = live.aux_tree(read_text(os.path.join(live.BUILD, "main-live.aux")))
+                os.makedirs(os.path.dirname(os.path.join(config.BUILD, name)) or config.BUILD, exist_ok=True)
+                put(os.path.join(config.BUILD, name), text)
+            tree = live.aux_tree(read_text(os.path.join(config.BUILD, "main-live.aux")))
         finally:
             os.chdir(cwd)
         if "\\citation{late}" not in tree or "outside" in tree.replace("../outside.aux", ""):
@@ -730,13 +741,14 @@ def shared_parsing_checks():
     what the builder watches."""
     sys.path.insert(0, HERE)
     import live
-    saved = (live.SHARED, live.SYNCTEX_LIMIT, live.RECORD_LIMIT)
+    from latexlive import config
+    saved = (config.SHARED, config.SYNCTEX_LIMIT, config.RECORD_LIMIT)
     tmp = tempfile.mkdtemp(prefix="latex-live-check-")
     cwd = os.getcwd()
     try:
-        live.SHARED = True
+        config.SHARED = True
         root = os.path.join(tmp, "paper")
-        build = os.path.join(root, live.BUILD)
+        build = os.path.join(root, config.BUILD)
         os.makedirs(build)
         os.chdir(root)
         secret = os.path.join(tmp, "other.aux")
@@ -753,27 +765,27 @@ def shared_parsing_checks():
         put(os.path.join(build, "big.json"), "[" + "1," * (1 << 20) + "1]")
         began = time.monotonic()
         if live.read_json(os.path.join(build, "big.json")) is not None or time.monotonic() - began > 2:
-            fail("a JSON file past live.JSON_LIMIT was parsed")
-        live.RECORD_LIMIT = 1000
+            fail("a JSON file past config.JSON_LIMIT was parsed")
+        config.RECORD_LIMIT = 1000
         put(os.path.join(build, "main-live.fls"), "INPUT main.tex\n" * 5000)
         if len(live.fls_inputs(os.path.join(build, "main-live.fls"))) != 1000:
-            fail("a recorder file was read past live.RECORD_LIMIT lines")
-        live.RECORD_LIMIT, live.SYNCTEX_LIMIT = 2_000_000, 1 << 20
-        synctex = os.path.join(build, "main-live.synctex.gz")
+            fail("a recorder file was read past config.RECORD_LIMIT lines")
+        config.RECORD_LIMIT, config.SYNCTEX_LIMIT = 2_000_000, 1 << 20
+        synctex_gz = os.path.join(build, "main-live.synctex.gz")
         head = "SyncTeX Version:1\nInput:1:/paper/main.tex\nContent:\n{x\n{1\n[1,7:4736286,4736286:30000000,40000000,0\n"
         for body in ("h1,7:4736286,9000000:100000\n" * 400_000, "x" * (20 << 20), "h1,seven:a,b:c\n" * 10):
-            with gzip.open(synctex, "wt") as f:  # (a bomb: a few KB compressed)
+            with gzip.open(synctex_gz, "wt") as f:  # (a bomb: a few KB compressed)
                 f.write(head + body)
             began = time.monotonic()
             try:
-                points = live.synctex_points(synctex)
-                live.synctex_boxes(synctex)
+                points = live.synctex_points(synctex_gz)
+                live.synctex_boxes(synctex_gz)
             except Exception as e:
                 fail(f"a SyncTeX file the paper's TeX could write raised {type(e).__name__}: {e}")
             if time.monotonic() - began > 10 or sum(len(v) for v in points.values()) > 1 << 20:
-                fail("a SyncTeX file was read past live.SYNCTEX_LIMIT")
-        put(synctex, "not gzip at all")
-        if live.synctex_points(synctex) or list(live.synctex_records(synctex)):
+                fail("a SyncTeX file was read past config.SYNCTEX_LIMIT")
+        put(synctex_gz, "not gzip at all")
+        if live.synctex_points(synctex_gz) or list(live.synctex_records(synctex_gz)):
             fail("a SyncTeX file that isn't gzip gave records")
 
         server = types.SimpleNamespace(paper_root=root)
@@ -793,7 +805,7 @@ def shared_parsing_checks():
             fail("shared mode's builder would not run bibtex again once a .bib the .aux names appears")
     finally:
         os.chdir(cwd)
-        live.SHARED, live.SYNCTEX_LIMIT, live.RECORD_LIMIT = saved
+        config.SHARED, config.SYNCTEX_LIMIT, config.RECORD_LIMIT = saved
         shutil.rmtree(tmp, ignore_errors=True)
     ok("the host reads no .aux outside build/ (absolute, .., links), and JSON, recorder and SyncTeX files only within"
        " bounds; bibtex's state and the builder's watch cover the .bib and .bst files an .aux names, at any depth, even"
@@ -1514,8 +1526,8 @@ def shared_checks(sh, sharing, own, token):
 
 
 def texlive_image():
-    """(The TeX Live image that live.py builds in, its TEXLIVE_IMAGE; whether podman has it here.)"""
-    with open(os.path.join(HERE, "live.py"), encoding="utf-8") as f:
+    """(The TeX Live image that live.py builds in, its config.TEXLIVE_IMAGE; whether podman has it here.)"""
+    with open(os.path.join(HERE, "latexlive", "config.py"), encoding="utf-8") as f:
         image = re.search(r'^TEXLIVE_IMAGE = "([^"]+)"', f.read(), re.M).group(1)
     return image, bool(shutil.which("podman")) and subprocess.run(["podman", "image", "exists", image], timeout=60).returncode == 0
 
@@ -1629,9 +1641,10 @@ def tex_exec_check(tmp):
                               capture_output=True, text=True, timeout=60)
     sys.path.insert(0, HERE)
     import live
-    shared, live.SHARED = live.SHARED, True
+    from latexlive import config
+    shared, config.SHARED = config.SHARED, True
     started = live.container_argv(tmp)
-    live.SHARED = shared
+    config.SHARED = shared
     want = ("--cap-drop=all", "--security-opt=no-new-privileges", "--pids-limit=512", "--memory=4g", "--cpus=2",
             "fsize=1073741824:1073741824", "--timeout=60", "latex-live.instance=check-1", "latex-live.run=main-7",
             "latex-live.kind=main", f"{root}:{root}:ro", f"{root}/out:{root}/out", "openin_any=p", "openout_any=p",
@@ -2808,7 +2821,7 @@ def editor_checks(sh):
 
 
 def instance_containers(pid, run=None):
-    """The running containers that tex-exec labelled for the shared instance in process pid (live.INSTANCE starts
+    """The running containers that tex-exec labelled for the shared instance in process pid (config.INSTANCE starts
     with its pid), or those of one kind of run ("main", "clean"; each run has a label of its own, main-12 say)."""
     r = subprocess.run(["podman", "ps", "--filter", "label=latex-live.instance", "--format",
                         '{{.ID}} {{index .Labels "latex-live.instance"}} {{index .Labels "latex-live.kind"}}'],
@@ -2996,17 +3009,18 @@ def rebuild_stop_checks(sh):
 
     sys.path.insert(0, HERE)
     import live
-    saved = live.SHARED, live.INSTANCE
-    live.SHARED, live.INSTANCE = True, f"{pid}-timeoutcheck"
+    from latexlive import config
+    saved = config.SHARED, config.INSTANCE
+    config.SHARED, config.INSTANCE = True, f"{pid}-timeoutcheck"
     try:
         free = live.SPAWNS._value
         code, _ = live.run_tool([os.path.join(HERE, "tex-exec"), image, root, "sleep", "120"], root, timeout=8, kind="synctex",
                                 env={**ENV, "LATEX_LIVE_SANDBOX": "1", "LATEX_LIVE_REQUIRE_IMAGE": "1",
-                                     "LATEX_LIVE_INSTANCE": live.INSTANCE})
-        left = subprocess.run(["podman", "ps", "-q", "--filter", f"label=latex-live.instance={live.INSTANCE}"], capture_output=True,
+                                     "LATEX_LIVE_INSTANCE": config.INSTANCE})
+        left = subprocess.run(["podman", "ps", "-q", "--filter", f"label=latex-live.instance={config.INSTANCE}"], capture_output=True,
                               text=True, timeout=60).stdout.split()
     finally:
-        live.SHARED, live.INSTANCE = saved
+        config.SHARED, config.INSTANCE = saved
     if code == 0 or left or live.SPAWNS._value != free:  # (None: stopped by run_tool; else by podman's own, equal, deadline)
         fail(f"a tool that ran out of time: exit {code}, {len(left)} container(s) left, {live.SPAWNS._value} of {free} slots free")
     ok("a tool that runs out of time has its container stopped before its slot is free again")
