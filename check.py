@@ -20,7 +20,8 @@
      notes-free baseline's line numbers match the live notes-free build's (two passes with lineno);
    - the download without notes is an exact build, and the review copy places its pages on wider
      ones with every note in a gutter (none overlapping, the protected marker and the resolved
-     note left out); a document without notes gets a clear failure, not a file;
+     note left out), and its last pass loads no package that the paper's TeX wrote; a document
+     without notes gets a clear failure, not a file;
    - a second document runs in its own process behind the same port, and /papers links both;
    - a second instance for the same document says it is already running; --replace takes over,
      and so does any new instance when the running one no longer answers; the hub moves to
@@ -89,6 +90,10 @@ See \ref{sec:method}. A sentence with a note \eb{a note in a paragraph, about \r
 words after it.\footnote{A footnote \eb{a note in a footnote}.} \ifnum0=1 \eb{a note in a branch that is off}\fi
 % \eb{a resolved note}
 \eb{human-written}
+% In the review copy's probe pass only: a package that TeX writes into that pass's folder, which the
+% copy's last pass uses and must not load from there.
+\makeatletter\ifdefined\latexlive@record\newwrite\planted\immediate\openout\planted=lmodern.sty
+\immediate\write\planted{\noexpand\typeout{latex-live-check: a package that TeX wrote ran}}\immediate\closeout\planted\fi\makeatother
 \end{document}
 """
 
@@ -778,7 +783,7 @@ def review_checks(build, token):
         plan = json.load(f)
     pages = written_pages(os.path.join(build, "export", "main", "main-export.log"))
     if not pages or plan["paper"] != pages or plan["pages"] != pages or \
-            written_pages(os.path.join(build, "review", "main", "main-review.log")) != pages:
+            written_pages(os.path.join(build, "review", "main", ".copy", "main-review.log")) != pages:
         fail(f"the review copy has {plan['pages']} pages ({plan['paper']} of the paper), the export {pages}")
     if plan["width"] <= plan["W"]:
         fail(f"the review copy's pages are no wider than the paper's ({plan['width']} <= {plan['W']})")
@@ -801,10 +806,17 @@ def review_checks(build, token):
         for b in placed:
             if a is not b and (a["page"], a["side"]) == (b["page"], b["side"]) and a["top"] <= b["top"] < a["top"] + a["sizes"][a["size"]]["h"]:
                 fail(f"notes {a['n']} and {b['n']} overlap")
+    with open(os.path.join(build, "review", "main", ".copy", "main-review.log"), errors="replace") as f:
+        log = f.read()
+    if not os.path.isfile(os.path.join(build, "review", "main", "lmodern.sty")):
+        fail("the probe pass wrote no lmodern.sty into its folder (the scratch paper has it write one)")
+    if "latex-live-check: a package that TeX wrote ran" in log:
+        fail("the review copy's last pass loaded lmodern.sty from the folder the paper's TeX writes into")
     if reviewed.get("version") != get("/review", token).get("version"):
         fail("asking again rebuilt the review copy, though the document had not changed")
     ok(f"the review copy: {pages} pages as exported, unscaled on wider ones, with {len(texts)} notes in both gutters, apart"
-       " (the protected marker, the resolved note, and the one in a branch that is off left out)")
+       " (the protected marker, the resolved note, and the one in a branch that is off left out); its last pass loads no"
+       " package that the paper's TeX wrote")
 
 
 def _quiet(test):
