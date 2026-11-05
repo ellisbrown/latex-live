@@ -2851,7 +2851,7 @@ def rebuild_stop_checks(sh):
     ok("a rebuild stops the run in progress, and its container")
 
     build = os.path.join(root, "build")
-    forged = {"main-live.status.json": json.dumps({"ok": False, "time": "00:00:00", "errors": [{"msg": "forged"}]}),
+    forged = {"main-status.status.json": json.dumps({"ok": False, "time": "00:00:00", "errors": [{"msg": "forged"}]}),
               "main-live.building": "", "main-live.published.json": json.dumps({"mtime": 1, "size": 1})}
     for name, text in forged.items():
         put(os.path.join(build, name), text)
