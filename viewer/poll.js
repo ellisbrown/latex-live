@@ -128,7 +128,7 @@ let polling = false, pollFailed = false; // (the status line says why the last p
 // second, so that it shows the PDF as soon as it is published; coauthors' viewers keep their pace, as there may be
 // many. The notes-free pass is waited for at most HURRY_FOR ms after the build (it may have failed).
 const HURRY = 50, HURRY_FOR = 30000;
-let hurry = false, versionAt = 0, lastVersion = null;
+let hurry = false, hurryTimer = null, versionAt = 0, lastVersion = null; // (one hurried poll pending at a time)
 export async function poll() {
   if (loading || polling) return;
   polling = true;
@@ -218,6 +218,6 @@ export async function poll() {
     else setStatus([UNREACHABLE, SIGNED_OUT].includes(message) ? message : `${message} (retrying)`, "error");
   } finally {
     polling = loading = false;
-    if (hurry) setTimeout(poll, HURRY);
+    if (hurry && !hurryTimer) hurryTimer = setTimeout(() => { hurryTimer = null; poll(); }, HURRY);
   }
 }
