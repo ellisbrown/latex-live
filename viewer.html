@@ -3353,8 +3353,13 @@ let leaving = false;
 async function openDoc(pdf) {
   if (leaving) return;
   leaving = true;
-  setTimeout(() => (leaving = false), 30000); // (should the page stay, e.g. to keep edits that can't be saved)
-  await flushSource();
+  if (!(await flushSource())) { // (edits the pane can't save, e.g. an unsettled conflict: the page stays, and asks again soon)
+    setStatus(`${ed.path} is not saved yet${ed.markers ? " (settle its conflicts first)" : ""}, so this page stays on ` +
+              `${docFile.slice(0, -4)}.tex, though ${pdf.slice(0, -4)}.tex is the one built now`, "error");
+    setTimeout(() => (leaving = false), 3000);
+    return;
+  }
+  setTimeout(() => (leaving = false), 30000); // (should the page stay anyway)
   const dir = hubBase ? `${hubBase}${encodeURIComponent(pdf.slice(0, -4))}/` : ""; // (under the hub, the document's own path)
   location.href = `${dir}viewer.html?${new URLSearchParams({ file: pdf })}`;
 }
