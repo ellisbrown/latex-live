@@ -5113,7 +5113,8 @@ def serve(paper_root, default_pdf, port, page_limit):
     # shared_build's state: whether a run is on, its status and the notes-free pass's, what it published, the
     # sources' stat it built from, and the requests to build again (POST /rebuild, at most every 20 s for coauthors).
     server.shared = {"building": False, "status": None, "clean": None, "published": None, "wanted": threading.Event(),
-                     "force": False, "rebuilt": -60, "proc": None, "clean_seq": 0, "bib": None, "idx": None, "retried": -60}
+                     "force": False, "rebuilt": -60, "proc": None, "clean_seq": 0, "bib": None, "biber": None, "idx": None,
+                     "retried": -60}
     server.token = load_token()
     return server
 
@@ -5689,14 +5690,14 @@ def shared_inputs(server):
 
 def shared_build(server):
     """Shared mode's builder, a thread of its own: a run (shared_run) at the start, then whenever one of
-    the files it depends on changes (shared_inputs, looked at twice a second; a change during a run
-    makes another), or POST /rebuild asks for one (shared_rebuild_request). Never more than one run
+    the files it depends on changes, goes or appears (shared_inputs, looked at twice a second; a change
+    during a run makes another), or POST /rebuild asks for one (shared_rebuild_request). Never more than one run
     at a time."""
     built = None
     while not server.stopping:
         asked = server.shared["wanted"].wait(0.5)
         now = shared_inputs(server)
-        if not asked and built is not None and all(built.get(path, stat) == stat for path, stat in now.items()):
+        if not asked and now == built:  # (a file gone, or new, counts as a change too)
             continue
         server.shared["wanted"].clear()
         server.shared["force"] = False
@@ -5706,7 +5707,8 @@ def shared_build(server):
             print(f"=== latex-live: the build failed:\n{traceback.format_exc().rstrip()}", flush=True)
             server.shared.update(building=False, status={"ok": False, "time": time.strftime("%H:%M:%S"),
                                                          "errors": [{"file": None, "line": None, "msg": "the build failed (see the server's log)"}]})
-        built = {**shared_inputs(server), **now}  # (as the run started: files the run read for the first time count as they are now)
+        # The files the run depends on, as they were when it started (files it read for the first time: as they are now).
+        built = {path: now.get(path, stat) for path, stat in shared_inputs(server).items()}
 
 
 def shared_tool(server, argv, run="main"):
@@ -5751,6 +5753,18 @@ def bib_state(server, aux):
     return hashlib.sha256(repr((BIBDATA_RE.findall(aux), stats)).encode()).hexdigest()
 
 
+def biber_state(server, bcf):
+    """What a biber run depends on: the control file (.bcf: the citations, the options) and the stat of the
+    data sources it names in the paper (in_paper), to tell whether biber needs to run again."""
+    root, stats = server.paper_root, []
+    for name in re.findall(r"<bcf:datasource[^>]*>([^<]+)</bcf:datasource>", bcf):
+        path = os.path.normpath(os.path.join(root, html.unescape(name.strip())))
+        if in_paper(root, path) and os.path.isfile(path):
+            st = os.stat(path)
+            stats.append((path, st.st_mtime_ns, st.st_size))
+    return hashlib.sha256(repr((bcf, stats)).encode()).hexdigest()
+
+
 def shared_run(server):
     """One build of the shared document (shared_build), as latexmk would make it: pdflatex in passes, with
     bibtex, biber or makeindex between them where the paper uses them, until the references settle (at
@@ -5786,8 +5800,10 @@ def shared_run(server):
             if "\\bibdata" in aux and (state := bib_state(server, aux)) != server.shared["bib"]:
                 ran = shared_tool(server, ["bibtex", f"{BUILD}/{job}"])
                 server.shared["bib"] = state  # (failed or not: again once what it reads changes, or on a rebuild)
-            elif os.path.exists(out(".bcf")) and re.search(r"Please \(?re\)?run Biber", log):
+            elif (bcf := read_build(out(".bcf"))) and ((state := biber_state(server, bcf)) != server.shared["biber"]
+                                                      or re.search(r"Please \(?re\)?run Biber", log)):
                 ran = shared_tool(server, ["biber", f"--output-directory={BUILD}", job])
+                server.shared["biber"] = state
             idx = read_build(out(".idx"))
             if idx and (state := hashlib.sha256(idx.encode()).hexdigest()) != server.shared["idx"]:
                 server.shared["idx"] = state
@@ -5877,7 +5893,7 @@ def shared_rebuild_request(server, user):
         if time.monotonic() - server.shared["rebuilt"] < 20:
             return 429, {"error": "it was just rebuilt; try again in a few seconds"}
         server.shared["rebuilt"] = time.monotonic()
-    server.shared.update(force=True, bib=None, idx=None)  # (bibtex and makeindex run again too)
+    server.shared.update(force=True, bib=None, biber=None, idx=None)  # (bibtex, biber and makeindex run again too)
     if proc := server.shared["proc"]:
         proc.terminate()
     stop_containers("main")

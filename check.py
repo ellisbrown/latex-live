@@ -10,7 +10,7 @@
    In shared mode, the downloads built on request say plainly that the TeX Live image is missing, the
    review copy reads its notes from the files of the last good build (only the paper's own), and
    the inputs kept for its probe leave out symbolic links; shared mode's builder prints the page
-   layout as latexmkrc does.
+   layout as latexmkrc does, and runs biber again when a data source changes.
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a git
    repository with a pushed commit and a local one) gets a live.py instance, with the hub on port
    44180 (or the first free block of 13 ports above it; LATEX_LIVE_CHECK_PORT sets it), state of its own
@@ -77,8 +77,8 @@
      never opens the editor (only the owner's POST open does), with a line past a file's end moved
      to its last line; diffs only against commits that HEAD builds on; editors' rebuilds at most
      every 20 s;
-   - a rebuild stops the run in progress and its container (a pass kept busy for a minute); the
-     status ignores a status, a .building marker and a record of what was published forged in
+   - a rebuild stops the run in progress and its container (a pass kept busy for a minute); removing
+     a file the build reads rebuilds it; the status ignores a status, a .building marker and a record of what was published forged in
      build/; a second instance asks the port in a forged lock file without its token;
    - auto-commit: each user's edits are committed as that user (by the owner) once they are
      quiet, or at the owner's POST commit, only the files the server wrote, on the shared branch
@@ -688,7 +688,15 @@ def shared_build_checks():
     code = "".join(re.sub(r"\\([\\'])", r"\1", part) for part in re.findall(r"'((?:[^'\\]|\\.)*)'", rc))
     if code != live.LAYOUT_TEX:
         fail(f"live.LAYOUT_TEX is not latexmkrc's $pre_tex_code:\n{live.LAYOUT_TEX}\n{code}")
-    ok("shared mode's builder prints the page layout as latexmkrc does")
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as root:
+        server = types.SimpleNamespace(paper_root=root)
+        bcf = '<bcf:datasource type="file" datatype="bibtex" glob="false">refs.bib</bcf:datasource>'
+        put(os.path.join(root, "refs.bib"), "@misc{a}\n")
+        before = live.biber_state(server, bcf)
+        put(os.path.join(root, "refs.bib"), "@misc{a, title = {A}}\n")
+        if live.biber_state(server, bcf) == before:
+            fail("shared mode's builder would not run biber again after a change to a .bib file the .bcf names")
+    ok("shared mode's builder prints the page layout as latexmkrc does, and runs biber again when a data source changes")
 
 
 def viewer_scripts(page):
@@ -2674,6 +2682,19 @@ def rebuild_stop_checks(sh):
         fail(f"the shared copy's status follows files forged in build/: building {info.get('building')}, build"
              f" {info.get('build')}, overwritten {info.get('overwritten')}")
     ok("the shared copy's status ignores a status, a .building marker and a record of what was published forged in build/")
+
+    inc = os.path.join(root, "generated.inc")  # (a file the build reads that the editor doesn't offer)
+    kept = read_bytes(inc)
+    os.remove(inc)
+    try:
+        gone = wait_for("a build without generated.inc", lambda: (shared_status(sh).get("build") or {}).get("ok") is False
+                        and shared_status(sh)["build"], timeout=60, step=0.5)
+    finally:
+        put_bytes(inc, kept)
+    wait_for("the shared copy's build to settle", lambda: settled(sh) and (shared_status(sh).get("build") or {}).get("ok"),
+             timeout=120)
+    ok(f"removing a file the build reads rebuilds the shared copy (which then fails: {str(gone.get('errors'))[:60]}), and"
+       " restoring it builds again")
     lock_spoof_checks(sh)
 
 
