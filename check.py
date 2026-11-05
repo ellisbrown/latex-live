@@ -313,7 +313,7 @@ def static_checks():
         fail(f"the viewer's script does not parse:\n{r.stderr}")
     ok("the viewer's script parses")
     with tempfile.TemporaryDirectory(prefix="latex-live-token-") as state:  # (instances starting at once)
-        racers = [subprocess.Popen([sys.executable, "-c", "import live; print(live.load_token())"], cwd=HERE,
+        racers = [subprocess.Popen([sys.executable, "-c", "from latexlive.auth import load_token; print(load_token())"], cwd=HERE,
                                    env={**ENV, "LATEX_LIVE_STATE": state}, stdout=subprocess.PIPE, text=True)
                   for _ in range(12)]
         tokens = {r.communicate()[0].strip() for r in racers}
