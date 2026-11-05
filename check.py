@@ -327,6 +327,50 @@ def static_checks():
     bounds_checks()
     failed_export_checks()
     waiting_download_checks()
+    code_updated_checks()
+
+
+def code_updated_checks():
+    """The viewer asks for a restart when the code on disk changes (status.code_updated): every module the
+    server imports is watched, and a module changed, added or removed counts, but a file only touched or
+    changed back does not."""
+    sys.path.insert(0, HERE)
+    from latexlive import config, status
+    __import__("latexlive.main")  # (and with it every module the server imports)
+    watched = set(status.server_files())
+    for name, module in sorted(sys.modules.items()):
+        if (name == "latexlive" or name.startswith("latexlive.")) and os.path.realpath(module.__file__) not in watched:
+            fail(f"code_updated does not watch {module.__file__}")
+    saved, tmp = config.HERE, tempfile.mkdtemp(prefix="latex-live-check-")
+    try:
+        config.HERE = tmp
+        for name in ("live.py", "VERSION", "latexlive/a.py", "latexlive/b.py"):
+            put(os.path.join(tmp, name), f"{name}\n")
+        started = {}
+        b, c = os.path.join(tmp, "latexlive", "b.py"), os.path.join(tmp, "latexlive", "c.py")
+
+        def updated(what, expected, stamps=iter(range(10, 100))):
+            if os.path.exists(b):
+                os.utime(b, ns=(next(stamps),) * 2)  # (each step a new time, however coarse the file system's)
+            if status.code_updated(started) != expected:
+                fail(f"code_updated after {what}: {not expected}")
+
+        updated("starting", False)
+        updated("touching a module", False)
+        put(b, "changed\n")
+        updated("changing a module", True)
+        put(b, "latexlive/b.py\n")
+        updated("changing it back", False)
+        put(c, "new\n")
+        updated("adding a module", True)
+        os.remove(c)
+        updated("removing it again", False)
+        os.remove(b)
+        updated("removing a module", True)
+    finally:
+        config.HERE = saved
+        shutil.rmtree(tmp)
+    ok("a restart is asked for when a module of the server changes, is added or is removed")
 
 
 def put(path, text):

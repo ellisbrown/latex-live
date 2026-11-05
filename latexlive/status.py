@@ -68,14 +68,29 @@ def status(server, pdf_name, push=False):
     return info
 
 
+def server_files():
+    """The files of latex-live this process runs: live.py, VERSION and the modules in latexlive/."""
+    package = os.path.join(config.HERE, "latexlive")
+    return [os.path.join(config.HERE, name) for name in ("live.py", "VERSION")] + sorted(
+        os.path.join(package, name) for name in os.listdir(package) if name.endswith(".py"))
+
+
+def code_hash(path):
+    """file_hash, or None for a file gone (a module a git pull removed)."""
+    try:
+        return file_hash(path)
+    except OSError:
+        return None
+
+
 def code_updated(started={}):
-    """Whether live.py or VERSION on disk differs from what this process runs (e.g. after a git
-    pull, or a release that only bumps VERSION): the viewer then asks for a restart.
-    latex_report.py and forward.py run anew each time."""
-    paths = [os.path.join(config.HERE, name) for name in ("live.py", "VERSION")]
-    stamp = [mtime(path) for path in paths]
+    """Whether live.py, VERSION or a module in latexlive/ on disk differs from what this process runs
+    (e.g. after a git pull, or a release that only bumps VERSION), also a module added or removed: the
+    viewer then asks for a restart. latex_report.py and forward.py run anew each time."""
+    paths = server_files()
+    stamp = [(path, mtime(path)) for path in paths]
     if "hash" not in started:
-        started.update(hash=[file_hash(path) for path in paths], stamp=stamp, updated=False)
+        started.update(hash=[(path, code_hash(path)) for path in paths], stamp=stamp, updated=False)
     elif stamp != started["stamp"]:
-        started.update(stamp=stamp, updated=[file_hash(path) for path in paths] != started["hash"])
+        started.update(stamp=stamp, updated=[(path, code_hash(path)) for path in paths] != started["hash"])
     return started["updated"]
