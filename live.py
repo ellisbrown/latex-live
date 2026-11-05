@@ -1647,7 +1647,7 @@ def file_request(server, query):
 
 
 def save_request(server, req):
-    """POST /file {path, base, text, base_text?, force?}: save a file from the browser editor. Returns
+    """POST /file {path, base, text, base_text?, force?, editor?}: save a file from the browser editor. Returns
     (status, JSON).
 
     base is the version the edits in text (the whole new text, \\n line ends) started from. If the
@@ -1658,10 +1658,12 @@ def save_request(server, req):
     both changed the same lines, with nothing written (the file's version and text, and git's merge
     with conflict markers); or 409 {"stale": true, "version", "text"} without base's text: send it
     again with base_text."""
-    rel, text, base, base_text, force = (req.get(key) for key in ("path", "text", "base", "base_text", "force"))
+    rel, text, base, base_text, force, editor = (req.get(key) for key in ("path", "text", "base", "base_text", "force",
+                                                                          "editor"))
     if not (isinstance(rel, str) and isinstance(text, str) and isinstance(base, (str, type(None)))
-            and isinstance(base_text, (str, type(None))) and isinstance(force, (bool, type(None)))):
-        return 400, {"error": "expected path, base and text (and maybe base_text, force)"}
+            and isinstance(base_text, (str, type(None))) and isinstance(force, (bool, type(None)))
+            and isinstance(editor, (str, type(None))) and len(editor or "") <= 64):
+        return 400, {"error": "expected path, base and text (and maybe base_text, force, editor)"}
     rel = os.path.normpath(rel or ".")
     real = editable_files(server).get(rel)
     if not real:
@@ -1677,7 +1679,7 @@ def save_request(server, req):
     for _ in range(3):  # (again when another program writes the file between our read and write)
         try:
             with NOTE_LOCK:
-                return save_file(server, rel, real, text, base, base_text, bool(force))
+                return save_file(server, rel, real, text, base, base_text, bool(force), editor)
         except SourceChanged:
             continue
         except UnicodeDecodeError:
@@ -1687,14 +1689,15 @@ def save_request(server, req):
     return 409, {"error": f"{rel} keeps changing on disk; try again"}
 
 
-def save_file(server, rel, real, sent, base, base_text, force):
+def save_file(server, rel, real, sent, base, base_text, force, editor=None):
     """save_request's read, merge and write of rel (at real) with the text sent, under NOTE_LOCK:
     (status, JSON).
 
-    When the merge from base conflicts but the file is just as the last save of rel left it, the
-    answer to that save got lost (the editor then keeps the older base), and the new text builds on
-    what was sent then: it is merged from that text instead, so that the editor's own save doesn't
-    count as someone else's change."""
+    When the merge from base conflicts but the file is just as this editor's (the viewer page's
+    own name for its saves) last save of rel left it, the answer to that save got lost (the editor
+    then keeps the older base), and the new text builds on what was sent then: it is merged from
+    that text instead, so that the editor's own save doesn't count as someone else's change. Another
+    page's save never counts as this one's."""
     with open(real, "rb") as f:
         data = f.read()
     raw = data.decode("utf-8")
@@ -1708,7 +1711,7 @@ def save_file(server, rel, real, sent, base, base_text, force):
         if base_text is None:
             return 409, {"stale": True, "version": version, "text": current,
                          "error": f"{rel} changed meanwhile, and the text your edits started from is not known here"}
-        own = server.last_saves.get(rel)  # (the version the last save left, and that of the text it sent)
+        own = editor and server.last_saves.get((rel, editor))  # (the version it left, and that of the text sent)
         try:
             conflicts, text = merge_texts(current, base_text, sent)
             if conflicts and own and own[0] == version:
@@ -1733,7 +1736,11 @@ def save_file(server, rel, real, sent, base, base_text, force):
     if text != sent:  # (merged: keep the text sent too, should the answer get lost)
         sent_version = file_version((sent.replace("\n", eol) if eol != "\n" else sent).encode("utf-8"))
         remember_version(server, rel, sent_version, sent)
-    server.last_saves[rel] = (new_version, sent_version)
+    if editor:
+        server.last_saves[(rel, editor)] = (new_version, sent_version)
+        server.last_saves.move_to_end((rel, editor))
+        while len(server.last_saves) > 256:
+            server.last_saves.popitem(last=False)
     return 200, {"version": new_version, "merged": text != sent, **({"text": text} if text != sent else {})}
 
 
@@ -3944,7 +3951,7 @@ def serve(paper_root, default_pdf, port, page_limit):
     server.requests = queue.Queue()  # document switches and rebuilds, for the main thread (on_main_thread)
     server.editable = None  # (editable_files)
     server.versions, server.versions_lock = collections.OrderedDict(), threading.Lock()  # (remember_version)
-    server.last_saves = {}  # (save_file)
+    server.last_saves = collections.OrderedDict()  # (save_file: by file and editor, the last 256)
     server.token = load_token()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server

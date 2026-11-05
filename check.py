@@ -28,9 +28,9 @@
      opening the editor (a stand-in that logs its arguments); its files API lists and refuses
      the right files (../, absolute paths, .git, build/, a link out of the paper, a new file, too
      big, not UTF-8), reads, saves, merges a stale save, writes nothing on a conflict, asks for the
-     base text it lacks, survives a save whose answer got lost, and keeps CRLF line ends and the
-     file's mode; status ?open= follows the open file; the hub takes a save above the other
-     actions' size limit;
+     base text it lacks, survives a save whose answer got lost (but not another tab's save of the
+     same lines), and keeps CRLF line ends and the file's mode; status ?open= follows the open
+     file; the hub takes a save above the other actions' size limit;
    - a second document runs in its own process behind the same port, and /papers links both;
    - a second instance for the same document says it is already running; --replace takes over,
      and so does any new instance when the running one no longer answers; the hub moves to
@@ -981,14 +981,21 @@ def editor_checks(paper, state, token, own, editor_log):
     if again.get("merged") is not True or any(t not in text for t in ("eighteen, changed", "twenty-two, changed", "three, saved again")):
         fail(f"a save with its base text did not merge: {str(again)[:300]}")
     base = expect("/file?path=body.tex", None, 200, "GET file body.tex")
-    save({"path": "body.tex", "base": base["version"], "text": with_paragraph(base["text"], 7, "Seven, saved once.")}, 200,
-         "a save (whose answer the editor never gets)")
+    save({"path": "body.tex", "base": base["version"], "text": with_paragraph(base["text"], 7, "Seven, saved once."),
+          "editor": "tab-a"}, 200, "a save (whose answer the editor never gets)")
     more = with_paragraph(base["text"], 7, "Seven, saved once, then typed on.")
-    save({"path": "body.tex", "base": base["version"], "text": more}, 200, "the next save of that line, from the version before")
+    save({"path": "body.tex", "base": base["version"], "text": more, "editor": "tab-a"}, 200,
+         "the next save of that line, from the version before")
     if read_bytes(path).decode() != more:
         fail("the save after one whose answer got lost did not write its text")
+    other = with_paragraph(base["text"], 7, "Seven, from another tab.")
+    clash = save({"path": "body.tex", "base": base["version"], "text": other, "editor": "tab-b"}, 409,
+                 "another tab's save of that line, from the same version")
+    if clash.get("conflict") is not True or read_bytes(path).decode() != more:
+        fail("another tab's save of the same line overwrote the first tab's instead of conflicting")
     ok("a save writes; a stale save merges; a conflict writes nothing and answers both texts; force writes; an unknown base"
-       " asks for its text; a save whose answer got lost doesn't conflict with the next one")
+       " asks for its text; a save whose answer got lost doesn't conflict with the same tab's next one, but another"
+       " tab's does")
 
     crlf = expect("/file?path=crlf.bib", None, 200, "GET file crlf.bib")
     raw = read_bytes(crlf_path)
