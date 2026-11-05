@@ -47,10 +47,12 @@ A pass runs normally, saying why once, unless all of these hold:
   arguments but the output directory, the working folder, LATEX_LIVE_EXEC, the environment, the
   root's name, L and the preamble's bytes. Standbys of other keys are stopped;
 - the key is verified for the current contents of the files its preamble read, with the same TeX
-  format as the last pass. Until then, a pass runs normally and the standby beside it on the same
-  inputs; when both succeed, the standby's PDF equals the normal one but for dates and IDs, and its
-  .fls lists the same files, the key is verified; when not, the standby is off for it until one of
-  those files changes (verify);
+  format as the last pass. Until then (after a preamble edit, say), a pass runs normally, with a
+  standby beside it on the same inputs (the waiting one, or one it starts); when both succeed, no file
+  they read changed meanwhile, and the standby's PDF equals the normal one but for dates and IDs and
+  its .fls lists the same files, the key is verified; when they differ, the standby is off for the key
+  until one of those files changes (verify). A waiting standby whose preamble read a file that has
+  changed since is stopped first (outdated);
 - at the release (before_release): the standby waits on its FIFO within READY_WAIT, is younger than
   MAX_AGE and from today (local time and UTC); no name has appeared in the paper's folders or in B
   since it started (a probe such as \\IfFileExists that missed a file could now find it); the files a
@@ -369,6 +371,10 @@ class Records:
                     return record
         return None
 
+    def paths(self, key):
+        """The files that preambles of key read when they were verified (also those that have changed since)."""
+        return sorted({path for r in self.data["verified"] if r["key"] == key for path, _ in r["inputs"]})
+
     def add(self, name, record, keep):
         self.data[name] = [r for r in self.data[name] if r["key"] != record["key"]][-(keep - 1):] + [record]
         self.dirty = True
@@ -377,8 +383,8 @@ class Records:
 # ---------------------------------------------------------------------------------------------------
 # A standby's folder, build/standby/<job>-<id>/: TeX's output directory out/ (S), and standby.json (what it
 # runs, written before it starts), keeper.json (when its TeX run started and what the paper's folders held
-# then), claimed (who took it: a pass's pid, or "keeper"), done.json (its TeX run's exit status), tex.out
-# (what TeX printed).
+# then), claimed (who took it: a pass's pid, "keeper", or "stopped" by a pass that stopped it), done.json (its
+# TeX run's exit status), tex.out (what TeX printed).
 
 class Standby:
     def __init__(self, folder):
@@ -421,8 +427,9 @@ class Standby:
         return bool(self.keeper) or not self.info or time.time() - self.info["created"] > 20
 
     def stop(self):
-        """Have the keeper stop its TeX run and remove the folder (not waited for); remove it at once if
-        the keeper is gone."""
+        """Have the keeper stop its TeX run and remove the folder (not waited for), and claim the standby
+        meanwhile, so that no one takes it or counts it as waiting; remove it at once if the keeper is gone."""
+        self.claim("stopped")
         if self.keeper_alive() and os.path.basename(self.dir) in command_line(self.keeper["pid"]):
             try:
                 os.kill(self.keeper["pid"], signal.SIGTERM)
@@ -451,7 +458,14 @@ def tidy(p, records, key):
                 remove(sb.dir)
             continue
         who, done = sb.claimed(), sb.done()
-        if who == "keeper":
+        if who == "verify":  # (its keeper judges it once its run ends: beside)
+            if os.path.exists(sb.path("verdict.json")):
+                merge(records, sb)
+            elif not sb.keeper_alive():
+                if done is not None:
+                    judge(sb)
+                merge(records, sb)
+        elif who == "keeper":
             if done is not None:  # (its TeX run stopped before anyone took it)
                 if done.get("reason"):
                     refuse(records, sb.info["key"], done)
@@ -470,6 +484,16 @@ def tidy(p, records, key):
     return sorted(waiting, key=lambda sb: sb.info["created"], reverse=True)
 
 
+def outdated(sb, paths):
+    """Whether one of the files (paths) changed after the standby started: its preamble read an old version."""
+    sb.keeper = sb.keeper or read_json(sb.path("keeper.json"))
+    for path in paths if sb.keeper else ():
+        st = stamp(path)
+        if st is None or changed_since(st, sb.keeper["t0"]):
+            return True
+    return False
+
+
 def refuse(records, key, done):
     """Record that the standby of key stopped before its release (done: its keeper's account)."""
     until = None if done.get("error") else time.time() + RETRY
@@ -480,12 +504,12 @@ def refuse(records, key, done):
 
 def start_standby(p, records, key, lines, line):
     """Start a standby for passes like p (key: its key; lines and line: the preamble and L), unless one of
-    that key waits already or the key is refused."""
+    that key waits already or the key is refused. Returns it, or None."""
     if records.find("refused", key):
-        return
+        return None
     for sb in standbys(p):
         if sb.info and sb.info["key"] == key and sb.claimed() is None and sb.done() is None and not sb.keeper_lost():
-            return
+            return None
     folder = os.path.join(p.folder(), f"{p.job}-{time.time_ns():x}-{os.getpid()}")
     out = os.path.join(folder, "out")
     os.makedirs(out)
@@ -505,6 +529,7 @@ def start_standby(p, records, key, lines, line):
         "pass": p.argv, "owner": p.owner, "owner_start": process_start(p.owner), "created": time.time(), "host": not p.exec})
     subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "--keep", folder], cwd=p.cwd, start_new_session=True,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return Standby(folder)
 
 
 def build_folders(build):
@@ -621,6 +646,8 @@ def keep(folder):
                                           "inputs": preamble_reads(sb, t0)[0] if error else []})
     else:
         write_json(sb.path("done.json"), {"code": code})
+        if sb.claimed() == "verify":  # (handed over by a verifying pass: beside)
+            judge(sb)
 
 
 def stop_tex(proc, info):
@@ -808,24 +835,24 @@ def preamble_reads(sb, t0):
 
 
 def after_release(p, sb, record, code, root_stamp):
-    """(the files the preamble read, as preamble_reads; why the finished run is in doubt, or None)."""
+    """Why the finished run of the standby (of a verified key: record) is in doubt, or None."""
     reads, doubt = preamble_reads(sb, sb.keeper["t0"])
     used = tex_format(os.path.join(sb.out, f"{p.job}.log"))
     if code is None:
         doubt = "its keeper stopped"
-    elif record and sorted(r[0] for r in reads) != sorted(r[0] for r in record["inputs"]):
+    elif sorted(r[0] for r in reads) != sorted(r[0] for r in record["inputs"]):
         doubt = doubt or "its preamble read other files than the verified one"
-    elif record and used != record["format"]:
+    elif used != record["format"]:
         doubt = doubt or f"it ran another TeX ({used})"
     elif stamp(p.root) != root_stamp:
         doubt = doubt or f"{p.root} changed during the pass"
-    return reads, doubt
+    return doubt
 
 
-def rewrite(sb, p):
+def rewrite(sb):
     """The (old, new) replacements that turn S's paths in TeX's output into B's, and the copy's into the root's."""
-    out = os.path.normpath(sb.out)
-    return [(f"{out}/{p.root}".encode(), f"./{p.root}".encode()), (f"{out}/".encode(), f"{p.build}/".encode())]
+    out, root, build = os.path.normpath(sb.out), sb.info["root"], sb.info["build"]
+    return [(f"{out}/{root}".encode(), f"./{root}".encode()), (f"{out}/".encode(), f"{build}/".encode())]
 
 
 def fixed(data, reps):
@@ -836,7 +863,7 @@ def fixed(data, reps):
 
 def finish(p, sb):
     """Move the standby's output into B, as a normal pass leaves it (rewrite)."""
-    out, job, reps = sb.out, p.job, rewrite(sb, p)
+    out, job, reps = sb.out, p.job, rewrite(sb)
     fifo = f"INPUT {os.path.normpath(out)}/{job}-standby.fifo".encode()
     try:
         with open(os.path.join(out, f"{job}.fls"), "rb") as f:
@@ -889,18 +916,47 @@ def fls_set(fls, reps=(), drop=None):
             for kind, path in fls_entries(fls) if path != drop}
 
 
-def verify(p, sb, records, key, reads):
-    """Compare the standby's run with the normal pass beside it (in B), and record the verdict."""
-    out = sb.out
-    pdf, ours = masked(p.file(".pdf")), masked(os.path.join(out, f"{p.job}.pdf"))
-    fifo = os.path.normpath(os.path.join(out, f"{p.job}-standby.fifo"))
-    same_files = fls_set(os.path.join(out, f"{p.job}.fls"), rewrite(sb, p), fifo) == fls_set(p.file(".fls"))
-    if pdf is not None and pdf == ours and same_files:
-        records.add("verified", {"key": key, "inputs": reads, "format": tex_format(os.path.join(out, f"{p.job}.log"))}, 4)
-        return
-    why = "its PDF differed from a normal pass's" if pdf != ours else "it read or wrote other files than a normal pass"
-    records.add("refused", {"key": key, "reason": why, "inputs": reads, "until": None}, 8)
-    records.say_once(f"mismatch:{key}", f"the warm standby is off for this preamble: {why}")
+def judge(sb):
+    """Compare a standby's run with the normal pass beside it (verify.json says when that started; reference.pdf
+    and reference.fls are its output) and write the verdict, verdict.json, which merge records; whether this call
+    did (only one does). In doubt if a file of the paper that the normal pass read changed after it started (the
+    two may have read different versions of it), or as preamble_reads says."""
+    try:
+        os.close(os.open(sb.path("judged"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644))
+    except OSError:
+        return False  # (the pass and the keeper both may get here; one judges)
+    job, out, started = sb.info["job"], sb.out, read_json(sb.path("verify.json"))["started"]
+    keeper = sb.keeper or read_json(sb.path("keeper.json"))
+    reads, doubt = preamble_reads(sb, keeper["t0"])
+    if (sb.done() or {}).get("code") != 0:
+        doubt = "its run failed"
+    for kind, path in fls_entries(sb.path("reference.fls")):
+        st = stamp(path) if kind == "INPUT" and not os.path.isabs(path) and not path.startswith(sb.info["build"] + os.sep) else None
+        if st and changed_since(st, started):
+            doubt = doubt or f"{path} changed during the pass"
+    verdict = {"key": sb.info["key"], "inputs": reads, "format": tex_format(os.path.join(out, f"{job}.log")), "doubt": doubt}
+    if doubt is None:
+        fifo = os.path.normpath(os.path.join(out, f"{job}-standby.fifo"))
+        pdf, ours = masked(sb.path("reference.pdf")), masked(os.path.join(out, f"{job}.pdf"))
+        if pdf is None or pdf != ours:
+            verdict["mismatch"] = "its PDF differed from a normal pass's"
+        elif fls_set(os.path.join(out, f"{job}.fls"), rewrite(sb), fifo) != fls_set(sb.path("reference.fls")):
+            verdict["mismatch"] = "it read or wrote other files than a normal pass"
+    write_json(sb.path("verdict.json"), verdict)
+    return True
+
+
+def merge(records, sb):
+    """Record a standby's verdict (judge), and remove its folder."""
+    verdict = read_json(sb.path("verdict.json"))
+    if verdict and verdict["doubt"] is None:
+        key = verdict["key"]
+        if verdict.get("mismatch"):
+            records.add("refused", {"key": key, "reason": verdict["mismatch"], "inputs": verdict["inputs"], "until": None}, 8)
+            records.say_once(f"mismatch:{key}", f"the warm standby is off for this preamble: {verdict['mismatch']}")
+        else:
+            records.add("verified", {"key": key, "inputs": verdict["inputs"], "format": verdict["format"]}, 4)
+    remove(sb.dir)
 
 
 def take(p, records, key, sb, lines, line):
@@ -908,45 +964,75 @@ def take(p, records, key, sb, lines, line):
     record = records.find("verified", key)
     if record and record["format"] != tex_format(p.file(".log")):
         record = None  # (another TeX than when it was verified)
+    if record is None:
+        return beside(p, records, key, sb, lines, line)
     root_stamp = stamp(p.root)
     seed(p, sb)
-    normal = None if record else subprocess.Popen([*p.exec, *p.argv])  # (verifying: the normal pass, beside the standby)
-    fd = ready(sb, time.monotonic() + READY_WAIT, normal)
-    if fd is None:
-        done = sb.done()
-        if done is not None and sb.keeper:  # (it stopped before its release: an error in its preamble, say)
-            reason, error = stopped_why(sb, sb.info, done.get("code"))
-            refuse(records, key, {"reason": reason, "error": error,
-                                  "inputs": preamble_reads(sb, sb.keeper["t0"])[0] if error else []})
-        why = ("it stopped before its release" if done is not None else "it was not ready in time"
-               if normal is None or normal.poll() is None else "the normal pass beside it ended first")
-    else:
-        why = before_release(p, sb, record)
-        if why is not None:
-            os.close(fd)  # (its \read finds the FIFO's end, and TeX stops)
-        elif not release(sb, fd):
-            why = "its release failed"
+    fd = ready(sb, time.monotonic() + READY_WAIT)
+    why = stopped(records, key, sb) if fd is None else before_release(p, sb, record)
+    if why is None and not release(sb, fd):
+        why = "its release failed"
+    elif why is not None and fd is not None:
+        os.close(fd)  # (its \read finds the FIFO's end, and TeX stops)
     start_standby(p, records, key, lines, line)  # (for the next pass)
     if why is None:
         code = wait_done(sb)
-        reads, why = after_release(p, sb, record, code, root_stamp)
-        if normal is not None:
-            if why is None and code == 0 and normal.wait() == 0:
-                verify(p, sb, records, key, reads)
-        elif why is None:
+        why = after_release(p, sb, record, code, root_stamp)
+        if why is None:
             finish(p, sb)
             show_output(sb)
             remove(sb.dir)
             records.last("standby")
             return code
     sb.stop()
-    if why and normal is None:  # (a verifying pass runs normally anyway)
-        records.say_once(f"doubt:{key}:{why}", f"not using the warm standby for this pass: {why}")
-    if normal is not None:
-        records.last("verify", why)
-        return normal.wait()
+    records.say_once(f"doubt:{key}:{why}", f"not using the warm standby for this pass: {why}")
     records.last("normal", why)
     return None
+
+
+def beside(p, records, key, sb, lines, line):
+    """Run the pass normally, with standby sb (claimed, of a key not verified yet) beside it on the same inputs
+    (seeded before the normal pass starts), to verify it (judge): here when it ends first, else in its keeper
+    once it ends. Returns the normal pass's exit status."""
+    started = time.time_ns()
+    seed(p, sb)
+    normal = subprocess.Popen([*p.exec, *p.argv])
+    fd = ready(sb, time.monotonic() + READY_WAIT, normal)
+    if fd is None:
+        why = stopped(records, key, sb) if normal.poll() is None else "the normal pass ended first"
+    else:
+        why = before_release(p, sb, None)
+        if why is not None:
+            os.close(fd)
+        elif not release(sb, fd):
+            why = "its release failed"
+    start_standby(p, records, key, lines, line)  # (for the next pass)
+    status = normal.wait()
+    records.last("verify", why)
+    if why is not None or status != 0:
+        sb.stop()
+        return status
+    write_json(sb.path("verify.json"), {"started": started})
+    try:
+        shutil.copyfile(p.file(".pdf"), sb.path("reference.pdf"))
+        shutil.copyfile(p.file(".fls"), sb.path("reference.fls"))
+    except OSError:
+        sb.stop()
+        return status
+    put(sb.path("claimed"), b"verify")  # (from here on its keeper judges it when its run ends, if it hasn't yet)
+    if sb.done() is not None and judge(sb):
+        merge(records, sb)
+    return status
+
+
+def stopped(records, key, sb):
+    """Why a standby didn't get ready (its run stopped: an error in its preamble, say, recorded; or it ran out of time)."""
+    done = sb.done()
+    if done is None or not sb.keeper:
+        return "it was not ready in time" if done is None else "it stopped before its release"
+    reason, error = stopped_why(sb, sb.info, done.get("code"))
+    refuse(records, key, {"reason": reason, "error": error, "inputs": preamble_reads(sb, sb.keeper["t0"])[0] if error else []})
+    return "it stopped before its release"
 
 
 def show_output(sb):
@@ -973,12 +1059,12 @@ def run_pass(argv):
         records.save()
         p.run_plain()
     key = p.key(lines, line)
-    taken = None
+    taken, paths = None, records.paths(key)
     for sb in tidy(p, records, key):
-        if taken is None and sb.claim(os.getpid()):
+        if taken is None and not outdated(sb, paths) and sb.claim(os.getpid()):
             taken = sb
         else:
-            sb.stop()  # (only one waits)
+            sb.stop()  # (only one waits; one whose preamble read a file that has changed since is no use)
     if taken is not None:
         def stopped(*_):
             taken.stop()
@@ -991,8 +1077,12 @@ def run_pass(argv):
             sys.exit(code)
     else:
         refused = records.find("refused", key)
+        fresh = start_standby(p, records, key, lines, line)
+        if fresh is not None and not records.find("verified", key) and fresh.claim(os.getpid()):
+            code = take(p, records, key, fresh, lines, line)  # (verified on this pass, beside it: see take)
+            records.save()
+            sys.exit(code)
         records.last("normal", refused["reason"] if refused else "no standby was waiting")
-        start_standby(p, records, key, lines, line)
         records.save()
     p.run_plain()
 

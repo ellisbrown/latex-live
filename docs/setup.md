@@ -285,8 +285,8 @@ are in [shared-mode.md](shared-mode.md#settings).
   a save waits only for the body: about a third less time for a typical
   paper. The PDF, the errors and SyncTeX are what a normal build gives. After
   a change to the preamble, or to a file it reads, the next pass runs
-  normally, and the one after it is checked against a normal pass before the
-  standby is trusted. A pass that can't use the standby runs normally, and
+  normally while a new standby is checked against it, and the passes after
+  that use the standby. A pass that can't use the standby runs normally, and
   the task's output says why once (`=== latex-live: ... warm standby ...`).
   A waiting standby holds about 120 MB of memory (pdflatex and its podman
   client). It runs only in the TeX Live image (or with `--host-tex` on the

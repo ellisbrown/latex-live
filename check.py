@@ -47,7 +47,7 @@
    Beside these, in a thread of its own, the warm standby (standby_checks) on a paper and an instance of its own,
    whose preamble reads a file and typesets a box: once a body edit runs from the standby, its PDF has a normal
    pass's pages and text; both passes of an edit that adds a reference run from it; a preamble edit runs normally
-   and starts a new standby, which the next edits verify and then use, and so does a change to the file the
+   (verifying a new standby beside it) and the next edits use the standby, and so does a change to the file the
    preamble reads; an error in the body is reported at its file and line; forward and inverse search work after a
    pass from the standby (also on the box); killing live.py (kill -9) stops its standbys, and so does stopping it,
    leaving no keeper, container or folder; LATEX_LIVE_STANDBY=0 builds without standbys.
@@ -1756,9 +1756,9 @@ def standby_run(tmp):
     def text():
         return pdf_pages_and_text(os.path.join(paper, "main.pdf"))[1]
 
-    def until_standby(what, body):
-        """Body edits until one runs from the standby (the first after a preamble change verifies it); its passes."""
-        for i in range(4):
+    def until_standby(what, body, tries=4):
+        """Body edits until one runs from the standby, at most tries; its passes."""
+        for i in range(tries):
             ran, _ = save("body.tex", body.replace("Capybara three", f"Capybara three ({what} {i})"))
             if ran.get("standby"):
                 return ran
@@ -1780,16 +1780,16 @@ def standby_run(tmp):
         ok("both passes of an edit that adds a reference run from the warm standby, and the reference resolves")
 
         ran, _ = save("main.tex", STANDBY_PAPER.replace("Boxed in the preamble", "Boxed again"))
-        if ran.get("standby") or "Boxed again" not in text():
+        if ran.get("standby") or not ran.get("verify") or "Boxed again" not in text():
             fail(f"a preamble edit: passes {ran}, text {text()[:200]!r}")
-        until_standby("preamble", body)
-        ok("a preamble edit runs normally and starts a new standby, which the next edits verify and then use")
+        until_standby("preamble", body, tries=2)
+        ok("a preamble edit runs normally (and verifies a new standby beside it), and the next edits use the standby")
 
         ran, _ = save("macros.tex", "\\newcommand\\macro{Macro version two}\n")
-        if ran.get("standby") or "Macro version two" not in text():
+        if ran.get("standby") or not ran.get("verify") or "Macro version two" not in text():
             fail(f"a change to a file the preamble reads: passes {ran}, text {text()[:200]!r}")
-        until_standby("macros", body)
-        ok("a change to a file the preamble reads runs normally; the next edits verify the standby again and use it")
+        until_standby("macros", body, tries=2)
+        ok("a change to a file the preamble reads runs normally (and verifies a new standby), and the next edits use it")
 
         ran, status = save("body.tex", body.replace("Platypus two", "Platypus two \\undefinedcontrolsequence"))
         errors = status.get("errors") or [{}]
