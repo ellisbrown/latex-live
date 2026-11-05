@@ -123,9 +123,16 @@ async function load(name, version, variant, info, timed = () => {}) {
 // kept from before the preview restarted, say) would otherwise hold its request, and every later poll would
 // queue behind the few connections the browser opens to this port, which every viewer on it shares.
 let polling = false, pollFailed = false; // (the status line says why the last poll failed)
+// While a new PDF is on its way (a build runs, the notes-free pass after it hasn't published yet, or where the
+// references start is being looked up), the owner's viewer polls every HURRY ms instead of the usual four times a
+// second, so that it shows the PDF as soon as it is published; coauthors' viewers keep their pace, as there may be
+// many. The notes-free pass is waited for at most HURRY_FOR ms after the build (it may have failed).
+const HURRY = 50, HURRY_FOR = 30000;
+let hurry = false, versionAt = 0, lastVersion = null;
 export async function poll() {
   if (loading || polling) return;
   polling = true;
+  hurry = false;
   const epoch = sourceEpoch;
   const asked = performance.now();
   try {
@@ -145,6 +152,10 @@ export async function poll() {
     }
     const info = await r.json();
     const answered = performance.now();
+    if (info.version !== lastVersion) [lastVersion, versionAt] = [info.version, Date.now()];
+    const cleanBehind = !isDiff && view === "clean" && info.clean?.version && BigInt(info.clean.version) < BigInt(info.version || 0)
+      && Date.now() - versionAt < HURRY_FOR;
+    hurry = !isCollaborator() && !!(info.building || cleanBehind || info.refsPending || info.clean?.refsPending);
     if (pollFailed) setStatus(""); // (it answers again)
     pollFailed = false;
     sourceStatus(info.source, epoch);
@@ -207,5 +218,6 @@ export async function poll() {
     else setStatus([UNREACHABLE, SIGNED_OUT].includes(message) ? message : `${message} (retrying)`, "error");
   } finally {
     polling = loading = false;
+    if (hurry) setTimeout(poll, HURRY);
   }
 }
