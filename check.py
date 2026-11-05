@@ -102,6 +102,7 @@ import gzip
 import hashlib
 import http.client
 import ipaddress
+import contextlib
 import json
 import os
 import re
@@ -329,7 +330,8 @@ def put(path, text):
 
 
 def put_bytes(path, data):
-    """put, for bytes."""
+    """put, for bytes (making the folder it goes in, if need be)."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path + ".check-new", "wb") as f:
         f.write(data)
     os.replace(path + ".check-new", path)
@@ -471,16 +473,19 @@ def failed_export_checks():
             fail("an export that failed was not built again for a new build of the document")
         new_build()
 
-        def too_long(*args, **kwargs):
+        def too_long(*args, **kwargs):  # (live.run_tool's answer for a run it stopped at its deadline)
             with open(os.path.join(stand_in, "calls"), "a") as f:
                 f.write("timed out\n")
-            raise subprocess.TimeoutExpired(args[0], 600)
+            return None, ""
 
-        live.subprocess = types.SimpleNamespace(run=too_long, TimeoutExpired=subprocess.TimeoutExpired)
-        if (runs("an export that times out", "a pass took over 10 minutes"), runs("it again", "a pass took over 10 minutes")) != (3, 3):
-            fail("an export that timed out was built again for the same build of the document")
+        saved, live.run_tool = live.run_tool, too_long
+        try:
+            if (runs("an export that times out", "a pass took over 10 minutes"),
+                    runs("it again", "a pass took over 10 minutes")) != (3, 3):
+                fail("an export that timed out was built again for the same build of the document")
+        finally:
+            live.run_tool = saved
     finally:
-        live.subprocess = subprocess
         shutil.rmtree(tmp, ignore_errors=True)
     ok("an export that failed or timed out fails again at once for the same build (no second build for the review"
        " copy), and is built again for the next one")
@@ -714,6 +719,86 @@ def shared_build_checks():
             fail(f"shared mode's builder doesn't read a chapter's .aux for bibtex (or reads one outside build/): {tree!r}")
     ok("shared mode's builder prints the page layout as latexmkrc does, runs biber again when a data source changes, and"
        " bibtex when a chapter's .aux changes")
+    shared_parsing_checks()
+
+
+def shared_parsing_checks():
+    """What the host reads of the files the paper's TeX writes stays within the build and within bounds (live.py, no
+    TeX): an .aux's \\@input of an absolute path, of .. or through a link reads nothing (aux_tree, and written_contents
+    for the outline); a JSON file, a recorder file, a SyncTeX file (records, size, a line without an end, numbers that
+    aren't, a file that isn't gzip) are read only up to their bounds, quickly; and the bibliographies and styles that the
+    .aux and .bcf name, at any depth and even before they exist, are what bibtex's and biber's states depend on and
+    what the builder watches."""
+    sys.path.insert(0, HERE)
+    import live
+    saved = (live.SHARED, live.SYNCTEX_LIMIT, live.RECORD_LIMIT)
+    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
+    cwd = os.getcwd()
+    try:
+        live.SHARED = True
+        root = os.path.join(tmp, "paper")
+        build = os.path.join(root, live.BUILD)
+        os.makedirs(build)
+        os.chdir(root)
+        secret = os.path.join(tmp, "other.aux")
+        put(secret, "\\citation{secretkey}\n\\@writefile{toc}{\\contentsline {section}{\\numberline {1}Secret heading}{1}}\n")
+        os.symlink(secret, os.path.join(build, "link.aux"))
+        put(os.path.join(build, "main-live.aux"), f"\\relax\n\\@input{{{secret}}}\n\\@input{{../../other.aux}}\n\\@input{{link.aux}}\n"
+            "\\@input{chapter.aux}\n")
+        put(os.path.join(build, "chapter.aux"), "\\citation{chapterkey}\n")
+        tree = live.aux_tree(read_text(os.path.join(build, "main-live.aux")))
+        heads = live.written_contents(os.path.join(build, "main-live.aux"), "toc")
+        if "secretkey" in tree or "chapterkey" not in tree or "Secret heading" in json.dumps(heads):
+            fail(f"an .aux's \\@input of an absolute path, of .. or through a link was read: {tree!r} {heads!r}")
+
+        put(os.path.join(build, "big.json"), "[" + "1," * (1 << 20) + "1]")
+        began = time.monotonic()
+        if live.read_json(os.path.join(build, "big.json")) is not None or time.monotonic() - began > 2:
+            fail("a JSON file past live.JSON_LIMIT was parsed")
+        live.RECORD_LIMIT = 1000
+        put(os.path.join(build, "main-live.fls"), "INPUT main.tex\n" * 5000)
+        if len(live.fls_inputs(os.path.join(build, "main-live.fls"))) != 1000:
+            fail("a recorder file was read past live.RECORD_LIMIT lines")
+        live.RECORD_LIMIT, live.SYNCTEX_LIMIT = 2_000_000, 1 << 20
+        synctex = os.path.join(build, "main-live.synctex.gz")
+        head = "SyncTeX Version:1\nInput:1:/paper/main.tex\nContent:\n{x\n{1\n[1,7:4736286,4736286:30000000,40000000,0\n"
+        for body in ("h1,7:4736286,9000000:100000\n" * 400_000, "x" * (20 << 20), "h1,seven:a,b:c\n" * 10):
+            with gzip.open(synctex, "wt") as f:  # (a bomb: a few KB compressed)
+                f.write(head + body)
+            began = time.monotonic()
+            try:
+                points = live.synctex_points(synctex)
+                live.synctex_boxes(synctex)
+            except Exception as e:
+                fail(f"a SyncTeX file the paper's TeX could write raised {type(e).__name__}: {e}")
+            if time.monotonic() - began > 10 or sum(len(v) for v in points.values()) > 1 << 20:
+                fail("a SyncTeX file was read past live.SYNCTEX_LIMIT")
+        put(synctex, "not gzip at all")
+        if live.synctex_points(synctex) or list(live.synctex_records(synctex)):
+            fail("a SyncTeX file that isn't gzip gave records")
+
+        server = types.SimpleNamespace(paper_root=root)
+        for name in ("deep/er/refs.bib", "styles/local.bst"):
+            put(os.path.join(root, name), "% x\n")
+        auxes = "\\bibdata{deep/er/refs,later/refs,../outside,/etc/passwd}\n\\bibstyle{styles/local}\n"
+        deps = sorted(os.path.relpath(p, os.path.realpath(root)) for p in live.shared_deps(server, auxes, ""))
+        if deps != ["deep/er/refs.bib", "later/refs.bib", "styles/local.bst"]:
+            fail(f"the bibliographies and styles an .aux names, for the builder to watch: {deps}")
+        before = live.bib_state(server, auxes)
+        put(os.path.join(root, "styles/local.bst"), "% changed\n")
+        if live.bib_state(server, auxes) == before:
+            fail("shared mode's builder would not run bibtex again after a change to the .bst the .aux names")
+        before = live.bib_state(server, auxes)
+        put(os.path.join(root, "later/refs.bib"), "@misc{x}\n")
+        if live.bib_state(server, auxes) == before:
+            fail("shared mode's builder would not run bibtex again once a .bib the .aux names appears")
+    finally:
+        os.chdir(cwd)
+        live.SHARED, live.SYNCTEX_LIMIT, live.RECORD_LIMIT = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+    ok("the host reads no .aux outside build/ (absolute, .., links), and JSON, recorder and SyncTeX files only within"
+       " bounds; bibtex's state and the builder's watch cover the .bib and .bst files an .aux names, at any depth, even"
+       " before they exist")
 
 
 def viewer_scripts(page):
@@ -1472,7 +1557,8 @@ def make_shared_paper(tmp, state):
                        (BIBDATA_NAME + ".bib", "@misc{probe, title = {Probe}}\n")):
         write_text(root, name, text)
     with open(os.path.join(root, "body.tex"), "a") as f:
-        f.write("\n\\input{generated.inc}\n")  # (typeset text from a file the editor does not offer)
+        f.write("\n\\input{generated.inc}\n\\iffalse\\eb{Quagga private draft note}\\fi\n")  # (typeset text from a file the
+        # editor does not offer, and a note that is not: role_checks)
     git(root, "add", "-A")
     git(root, "commit", "-qm", "shared fixtures")
     os.chmod(os.path.join(root, "crlf.bib"), 0o640)  # (a save keeps the mode; git does not track this one)
@@ -1516,9 +1602,9 @@ def tex_exec_check(tmp):
     """tex-exec with LATEX_LIVE_REQUIRE_IMAGE=1 (shared mode) refuses to run a tool on the host while the
     image is missing; without it, it falls back to the host as before. With LATEX_LIVE_SANDBOX=1 (shared
     mode), it confines the container, as a stand-in for podman shows: no capabilities, no new privileges,
-    at most 512 processes, 4 GB, 2 CPUs, 1 GB files and 10 minutes (a caller's timeout stops only the
-    podman client), labels that name the instance and the run (for stopping it), the paper read-only
-    (its dot entries, .git among them, hidden) and only build/ writable, no shell escape, and TeX's files
+    at most 512 processes, 4 GB, 2 CPUs, 1 GB files and the caller's deadline (LATEX_LIVE_TIMEOUT, at most
+    10 minutes), labels that name the instance, the run and its kind (for stopping it), the paper read-only
+    (its dot entries at any depth, .git among them, hidden) and only build/ writable, no shell escape, and TeX's files
     only below its folder; live.container_argv in shared mode goes through tex-exec too."""
     cmd = [os.path.join(HERE, "tex-exec"), "localhost/latex-live-check-missing:none", tmp, "true"]
     fallback = subprocess.run(cmd, cwd=tmp, env=ENV, capture_output=True, text=True, timeout=60)
@@ -1535,9 +1621,12 @@ def tex_exec_check(tmp):
     root = os.path.join(tmp, "sandboxed")  # (a paper root with dot entries, which the container must not see)
     os.makedirs(os.path.join(root, ".git"))
     put(os.path.join(root, ".env"), "")
+    put(os.path.join(root, "sub", ".secret.bib"), "")  # (and below the top: tex-exec hides them at any depth)
+    os.makedirs(os.path.join(root, "sub", "deeper", ".private"))
     confined = subprocess.run([os.path.join(HERE, "tex-exec"), "localhost/latex-live-check:none", root, "pdflatex", "x.tex"], cwd=root,
                               env={**ENV, "LATEX_LIVE_SANDBOX": "1", "LATEX_LIVE_BUILD": "out", "LATEX_LIVE_INSTANCE": "check-1",
-                                   "LATEX_LIVE_RUN": "main", "PATH": stub + os.pathsep + ENV.get("PATH", os.defpath)},
+                                   "LATEX_LIVE_RUN": "main-7", "LATEX_LIVE_TIMEOUT": "60",
+                                   "PATH": stub + os.pathsep + ENV.get("PATH", os.defpath)},
                               capture_output=True, text=True, timeout=60)
     sys.path.insert(0, HERE)
     import live
@@ -1545,9 +1634,10 @@ def tex_exec_check(tmp):
     started = live.container_argv(tmp)
     live.SHARED = shared
     want = ("--cap-drop=all", "--security-opt=no-new-privileges", "--pids-limit=512", "--memory=4g", "--cpus=2",
-            "fsize=1073741824:1073741824", "--timeout=600", "latex-live.instance=check-1", "latex-live.run=main",
-            f"{root}:{root}:ro", f"{root}/out:{root}/out", "openin_any=p", "openout_any=p", "shell_escape=f",
-            f"{root}/.git:ro,size=4k,notmpcopyup", f"/dev/null:{root}/.env:ro")
+            "fsize=1073741824:1073741824", "--timeout=60", "latex-live.instance=check-1", "latex-live.run=main-7",
+            "latex-live.kind=main", f"{root}:{root}:ro", f"{root}/out:{root}/out", "openin_any=p", "openout_any=p",
+            "shell_escape=f", f"{root}/.git:ro,size=4k,notmpcopyup", f"/dev/null:{root}/.env:ro",
+            f"/dev/null:{root}/sub/.secret.bib:ro", f"{root}/sub/deeper/.private:ro,size=4k,notmpcopyup")
     args = confined.stdout.splitlines()
     if (confined.returncode or not all(w in args for w in want) or f"{root}:{root}" in args
             or args[-3:] != ["localhost/latex-live-check:none", "pdflatex", "x.tex"]):
@@ -1967,7 +2057,7 @@ def identity_checks(sh):
     ok("the users file is read again when it changes; a broken one leaves the last good one in place")
 
 
-READS = ("/viewer.html?file=main.pdf", "/pdf/main.pdf", "/pdf/main-clean.pdf", "/status/main.pdf", "/status/main-diff.pdf",
+READS = ("/viewer.html?file=main.pdf", "/pdf/main.pdf", "/pdf/main-clean.pdf", "/status/main.pdf",
          "/outline/main.pdf", "/notes/main.pdf", "/authors/main.pdf", "/graphics/main.pdf", "/margin/main.pdf", "/floats/main.pdf",
          "/forward?file=main.tex&line=9", "/docs", "/me", "/pdfjs/build/pdf.min.mjs")
 
@@ -1982,6 +2072,26 @@ def role_checks(sh):
     authors = as_viewer("/authors/main.pdf")
     if not isinstance(authors, list) or not {"eb", "ed", "cm"} <= {a.get("macro") for a in authors if isinstance(a, dict)}:
         fail(f"/authors does not list every note macro for a viewer: {authors}")
+    hidden = ("Quagga private draft note", "a note in a branch that is off")  # (\iffalse, and \ifnum0=1: not in the PDF)
+    seen = {uid: json.dumps(expect(via_proxy(uid, "/notes/main.pdf"), 200, f"GET notes for {uid}")) for uid in ("vw", "cm", "ed")}
+    if any(h in seen[uid] for h in hidden for uid in ("vw", "cm")) or not all(h in seen["ed"] for h in hidden) \
+            or not all("An owner note to resolve" in seen[uid] for uid in seen):
+        fail(f"/notes for a viewer or commenter lists notes the PDF doesn't show, or misses one it does (or the editor's"
+             f" misses a hidden one): {seen}")
+    for uid in ("vw", "cm"):
+        info = expect_dict(via_proxy(uid, "/status/main.pdf?base=push"), 200, f"GET status for {uid}")
+        if {"head", "push", "diff", "source"} & set(info) or not info.get("version"):
+            fail(f"/status for {uid} has more than the current PDF's state: {sorted(info)}")
+        floats = expect(via_proxy(uid, "/floats/main.pdf"), 200, f"GET floats for {uid}")
+        if any({"keys", "file", "line", "last"} & set(f) for f in floats):
+            fail(f"/floats for {uid} names labels or source lines: {floats[:2]}")
+        for name in ("main-diff.pdf", "main-head.pdf", "main-push.pdf", "main-head-clean.pdf"):
+            for kind in ("pdf", "status"):
+                expect(via_proxy(uid, f"/{kind}/{name}"), 403, f"GET {kind} {name} for {uid} (an earlier version: editors only)")
+        expect(via_proxy(uid, "/baseline", "POST", {"kind": "head"}), 403, f"POST baseline for {uid} (editors only)")
+    expect(via_proxy("ed", "/status/main-diff.pdf"), 200, "GET status main-diff.pdf for the editor")
+    ok("viewers and commenters see the current PDF and what it shows: not notes in false branches, the baselines and diff,"
+       " the build's error messages, nor the figures' labels and source lines; editors see them")
     home = via_proxy("vw", "/")
     location = header(home, "Location") or ""
     if home[0] != 302 or not location.endswith("viewer.html?file=main.pdf") or "/p/" in location:
@@ -2399,7 +2509,7 @@ def notes_while_rebuilding(sh):
             time.sleep(0.002)
 
     wait_for("the shared copy's build to catch up", lambda: settled(sh), timeout=120)
-    listed = as_viewer("/notes/main.pdf")
+    listed = expect(via_proxy("ed", "/notes/main.pdf"), 200, "GET notes for the editor")
     mine = [n for n in listed if isinstance(n, dict) and n.get("macro") == "ed" and n.get("file") == "body.tex"]
     if not mine:
         fail(f"/notes lists no note of the editor's in body.tex: {listed}")
@@ -2412,7 +2522,7 @@ def notes_while_rebuilding(sh):
         note_ok(sh, "ed", {**req, "text": text}, f"the editor editing their own note as a pass of the build begins ({state['edits']})")
         req["tex"] = text
         during += mid_pass()  # (pdflatex still had not read body.tex: the note was written mid-pass)
-        now = as_viewer("/notes/main.pdf")
+        now = expect(via_proxy("ed", "/notes/main.pdf"), 200, "GET notes for the editor")
         authors = {a.get("macro") for a in as_viewer("/authors/main.pdf") if isinstance(a, dict)}
         if len(now) != len(listed) or not {"eb", "ed", "cm"} <= authors:
             fail(f"while the shared copy rebuilds, /notes lists {len(now)} notes, not {len(listed)}, and /authors {sorted(authors)}")
@@ -2591,7 +2701,7 @@ def editor_checks(sh):
     # Before it writes the commenter's note in body.tex, the server commits the editor's edit there (a commit holds
     # one person's edits), which it can't while git is busy: so the note waits a moment, then is refused (503, to be
     # tried again), with nothing written.
-    cms = [n for n in as_viewer("/notes/main.pdf") if isinstance(n, dict) and n.get("macro") == "cm" and n.get("tex") == "CM note edited"]
+    cms = [n for n in expect(via_proxy("ed", "/notes/main.pdf"), 200, "GET notes for the editor") if isinstance(n, dict) and n.get("macro") == "cm" and n.get("tex") == "CM note edited"]
     if not cms:
         fail("/notes does not list the commenter's note CM note edited")
     later = {"action": "edit", "source": "body.tex", "line": cms[0]["line"], "macro": "cm", "tex": "CM note edited",
@@ -2660,9 +2770,9 @@ def editor_checks(sh):
 
 def instance_containers(pid, run=None):
     """The running containers that tex-exec labelled for the shared instance in process pid (live.INSTANCE starts
-    with its pid), or those of one kind of run ("main", "clean")."""
+    with its pid), or those of one kind of run ("main", "clean"; each run has a label of its own, main-12 say)."""
     r = subprocess.run(["podman", "ps", "--filter", "label=latex-live.instance", "--format",
-                        '{{.ID}} {{index .Labels "latex-live.instance"}} {{index .Labels "latex-live.run"}}'],
+                        '{{.ID}} {{index .Labels "latex-live.instance"}} {{index .Labels "latex-live.kind"}}'],
                        capture_output=True, text=True, timeout=60)
     found = [line.split() for line in r.stdout.splitlines()]
     return {f[0] for f in found if len(f) == 3 and f[1].startswith(f"{pid}-") and run in (None, f[2])}
@@ -2729,9 +2839,42 @@ def rebuild_stop_checks(sh):
         put_bytes(bib, kept)
     wait_for("the shared copy's build to settle", lambda: settled(sh) and (shared_status(sh).get("build") or {}).get("ok"),
              timeout=120)
-    if broken.get("ok") is not False:
-        fail(f"a build whose bibtex failed reports success: {broken}")
-    ok("a build whose bibtex fails reports it, and builds again once the .bib is fixed")
+    if broken.get("ok") is not False or "the end of its log" not in json.dumps(broken.get("errors")):
+        fail(f"a build whose bibtex failed reports success, or not what bibtex said: {broken}")
+    ok("a build whose bibtex fails reports it, with the end of its log, and builds again once the .bib is fixed")
+
+    # A tool that failed runs again on the next run even when nothing it reads changed: here bibtex can't read the
+    # .bib (no permission, which changes no mtime or size, so nothing is rebuilt for it), then can, and the next run,
+    # for an unrelated change (main.tex touched), must run bibtex again rather than keep its failure.
+    put(bib, read_text(bib) + "% changed\n")
+    os.chmod(bib, 0)
+    try:
+        wait_for("a build whose bibtex can't read the .bib", lambda: "bibtex failed" in json.dumps(
+            (shared_status(sh).get("build") or {}).get("errors")) and not shared_status(sh).get("building"), timeout=60, step=0.5)
+    finally:
+        os.chmod(bib, 0o644)
+    main = os.path.join(root, "main.tex")
+    os.utime(main)
+    wait_for("a build after the .bib is readable again (main.tex touched)", lambda: (b := shared_status(sh).get("build") or {})
+             .get("ok") and b.get("began", 0) >= mtime_ns(main) and settled(sh), timeout=120, step=0.5)
+    put_bytes(bib, kept)
+    wait_for("the shared copy's build to settle", lambda: settled(sh) and (shared_status(sh).get("build") or {}).get("ok"),
+             timeout=120)
+    ok("a failed bibtex runs again on the next run, though nothing it reads changed")
+
+    with open(sh["log"], errors="replace") as f:
+        runs = len(re.findall(r"=== live-reload: (?:published|BUILD FAILED)", f.read()))
+    began = time.monotonic()
+    while time.monotonic() - began < 3:  # (saves in a row: one build, once they stop)
+        os.utime(main)
+        time.sleep(0.25)
+    wait_for("the shared copy's build to settle", lambda: settled(sh) and (shared_status(sh).get("build") or {}).get("ok"),
+             timeout=120)
+    with open(sh["log"], errors="replace") as f:
+        made = len(re.findall(r"=== live-reload: (?:published|BUILD FAILED)", f.read())) - runs
+    if not 1 <= made <= 2:
+        fail(f"12 changes to main.tex within 3 s made {made} builds, not one (or two)")
+    ok(f"changes in a row make one build once they stop ({made})")
 
     refer, later = os.path.join(root, "refer.tex"), os.path.join(root, "later.tex")
     put(refer, "\\input{later}\n")  # (a file that doesn't exist yet, as an edit that refers to a figure still to come)
@@ -2771,18 +2914,63 @@ def rebuild_stop_checks(sh):
     ok(f"a build that fills build/ past LATEX_LIVE_BUILD_LIMIT is stopped, build/ emptied, and it says so"
        f" ({str(full.get('errors'))[:70]}); the next one builds")
 
+    lock = os.path.join(root, "build", "main-live.lock")
+    held = os.stat(lock).st_ino
+    with open(os.path.join(root, "build", "flood.lock"), "wb") as f:  # (TeX could write it: only the instance's own lock stays)
+        f.truncate(0)
+        f.write(b"\0" * (70 << 20))
+    wait_for("build/flood.lock removed", lambda: not os.path.exists(os.path.join(root, "build", "flood.lock")), timeout=30, step=0.5)
+    if not os.path.exists(lock) or os.stat(lock).st_ino != held:
+        fail("emptying build/ removed the instance's own lock file")
+    asked = time.time_ns()
+    expect(with_token(owner, "/rebuild", "POST", {}), 202, "the owner rebuilding after build/ was emptied")
+    wait_for("the rebuild after build/ was emptied", lambda: (b := shared_status(sh).get("build") or {}).get("ok")
+             and b.get("began", 0) >= asked and not shared_status(sh).get("building"), timeout=180, step=0.5)
+    ok("a large file in build/ named like a lock file is removed with the rest when build/ is emptied; the instance's lock stays")
+
     marker = secrets.token_hex(8)
     put(os.path.join(root, ".git", "latex-live-check-marker"), marker)
     with open(os.path.join(root, ".git", "config"), "a") as f:  # (where a remote's credentials would be)
         f.write(f"[latexlivecheck]\n\tmarker = {marker}\n")
+    nested = (os.path.join("sub", ".nested.bib"), os.path.join("sub", ".private", "refs.bib"))
+    for name in nested:
+        put(os.path.join(root, name), f"@misc{{{marker}}}\n")
     image = texlive_image()[0]
-    seen = subprocess.run([os.path.join(HERE, "tex-exec"), image, root, "sh", "-c",
-                           "cat .git/config .git/latex-live-check-marker .private.bib; ls -a .git"], cwd=root, capture_output=True,
-                          text=True, timeout=120, env={**ENV, "LATEX_LIVE_SANDBOX": "1", "LATEX_LIVE_REQUIRE_IMAGE": "1",
-                                                       "LATEX_LIVE_INSTANCE": f"{pid}-dotcheck"})
+    try:
+        seen = subprocess.run([os.path.join(HERE, "tex-exec"), image, root, "sh", "-c",
+                               f"cat .git/config .git/latex-live-check-marker .private.bib {' '.join(nested)}; ls -a .git sub/.private"],
+                              cwd=root, capture_output=True, text=True, timeout=120,
+                              env={**ENV, "LATEX_LIVE_SANDBOX": "1", "LATEX_LIVE_REQUIRE_IMAGE": "1",
+                                   "LATEX_LIVE_INSTANCE": f"{pid}-dotcheck"})
+    finally:
+        # (A container that a build started meanwhile may still mount over them: podman makes an empty file or
+        # folder where one is gone. Removed again once no container of the instance runs.)
+        for _ in range(2):
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(os.path.join(root, nested[0]))
+            shutil.rmtree(os.path.join(root, "sub", ".private"), ignore_errors=True)
+            wait_for("the instance's containers to finish", lambda: not instance_containers(pid), timeout=120, step=0.5)
     if marker in seen.stdout + seen.stderr or "@misc{five}" in seen.stdout:
-        fail("a shared-mode container can read the paper's .git (or another dot entry): biber, which ignores openin_any, would too")
-    ok("a shared-mode container sees no .git or other dot entry of the paper (empty in their place)")
+        fail("a shared-mode container can read the paper's .git (or another dot entry, at any depth): biber, which ignores"
+             " openin_any, would too")
+    ok("a shared-mode container sees no .git or other dot entry of the paper, at any depth (empty in their place)")
+
+    sys.path.insert(0, HERE)
+    import live
+    saved = live.SHARED, live.INSTANCE
+    live.SHARED, live.INSTANCE = True, f"{pid}-timeoutcheck"
+    try:
+        free = live.SPAWNS._value
+        code, _ = live.run_tool([os.path.join(HERE, "tex-exec"), image, root, "sleep", "120"], root, timeout=8, kind="synctex",
+                                env={**ENV, "LATEX_LIVE_SANDBOX": "1", "LATEX_LIVE_REQUIRE_IMAGE": "1",
+                                     "LATEX_LIVE_INSTANCE": live.INSTANCE})
+        left = subprocess.run(["podman", "ps", "-q", "--filter", f"label=latex-live.instance={live.INSTANCE}"], capture_output=True,
+                              text=True, timeout=60).stdout.split()
+    finally:
+        live.SHARED, live.INSTANCE = saved
+    if code == 0 or left or live.SPAWNS._value != free:  # (None: stopped by run_tool; else by podman's own, equal, deadline)
+        fail(f"a tool that ran out of time: exit {code}, {len(left)} container(s) left, {live.SPAWNS._value} of {free} slots free")
+    ok("a tool that runs out of time has its container stopped before its slot is free again")
     lock_spoof_checks(sh)
 
 
@@ -2915,18 +3103,18 @@ def shared_stop_checks(sh, sharing):
     ok("the shared copy builds with everyone's edits and notes")
 
     for _ in range(2):  # (the second after the commit check's interval: a GET still builds nothing)
-        head = (expect_dict(via_proxy("vw", "/status/main.pdf?base=head"), 200, "the status, asking for base=head") or {}).get("head")
+        head = (expect_dict(via_proxy("ed", "/status/main.pdf?base=head"), 200, "the status, asking for base=head") or {}).get("head")
         if not isinstance(head, dict) or head.get("state") != "waiting" or os.path.isdir(os.path.join(root, "build", "head")):
             fail(f"a GET of the status started the HEAD baseline's build (shared mode builds only on a POST): {head}")
         time.sleep(3.5)
-    asked = expect_dict(via_proxy("vw", "/baseline", "POST", {"kind": "head"}), 200, "a viewer asking for the HEAD baseline")
+    asked = expect_dict(via_proxy("ed", "/baseline", "POST", {"kind": "head"}), 200, "the editor asking for the HEAD baseline")
     if asked.get("state") not in ("running", "done"):
         fail(f"POST baseline for the HEAD baseline: {asked}")
     head = wait_for("the HEAD baseline", lambda: (shared_status(sh).get("head") or {}).get("state") in ("done", "failed")
                     and shared_status(sh)["head"], timeout=120, step=0.5)
     if head.get("state") != "done" or not head.get("version"):
         fail(f"the HEAD baseline, asked for with POST baseline, did not build: {head}")
-    ok("a GET of the status builds no baseline; a viewer's POST baseline does")
+    ok("a GET of the status builds no baseline; an editor's POST baseline does")
 
     tip = git_out(root, "rev-parse", "shared")
     current = expect_dict(via_proxy("ed", "/file?path=body.tex"), 200, "GET file body.tex")

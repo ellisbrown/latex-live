@@ -28,6 +28,7 @@ build/clean/<doc>-clean.status.json, for the viewer's banner.
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -192,9 +193,9 @@ def start_notes_free_build(root, doc):
         f.write(str(proc.pid))
 
 
-def seed_notes_free(root, doc):
-    """Copy this run's .aux, .bbl and the like into build/clean/ for the notes-free pass to read."""
-    out = os.path.join(BUILD, "clean")
+def seed_notes_free(root, doc, out=None):
+    """Copy this run's .aux, .bbl and the like into build/clean/ (or out) for the notes-free pass to read."""
+    out = out or os.path.join(BUILD, "clean")
     os.makedirs(out, exist_ok=True)
     for ext in (".aux", ".bbl", ".brf", ".out", ".toc"):  # (.brf: hyperref's back-references)
         if os.path.exists(os.path.join(BUILD, root + ext)):
@@ -219,25 +220,43 @@ def tex_format(log):
     return m.group(1) if m else None
 
 
-def notes_free_pass(root, doc, env=None):
+def notes_free_pass(root, doc, env=None, out=None, publish=None):
     """The notes-free pass (start_notes_free_build): publish build/<doc>-clean.pdf, and record the
     result, with the first errors on failure, in build/clean/<doc>-clean.status.json; also returns it.
-    env: the TeX runs' environment (default: this process's).
+    env: the TeX runs' environment (default: this process's), LATEX_LIVE_EXEC included; each run stops
+    after 10 minutes (then the status has "timeout"). out: the folder it builds in (default
+    build/clean/); publish(pdf): instead of moving the PDF to build/, what publishes it, returning
+    whether it did (live.py's shared mode: only for the newest pass).
 
     The pass reads the main build's .aux. If that came from another TeX installation (e.g. the
     host's, while the TeX Live image was missing), its package data may not load here: then the
     main document is rebuilt from scratch.
     """
-    out = os.path.join(BUILD, "clean")
+    out = out or os.path.join(BUILD, "clean")
     job = f"{doc}-clean"
-    tex = f"{os.environ.get('LATEX_LIVE_EXEC', '')} pdflatex -interaction=batchmode -halt-on-error -file-line-error -synctex=1"
-    cmd = f"{tex} -output-directory={out} -jobname={job} '{NOTES_OFF}\\input{{{doc}}}' >/dev/null 2>&1"
-    ran = subprocess.run(["sh", "-c", cmd], env=env).returncode == 0
+    env = dict(os.environ if env is None else env, LATEX_LIVE_TIMEOUT="600")
+    argv = [*shlex.split(env.get("LATEX_LIVE_EXEC", "")), "pdflatex", "-interaction=batchmode", "-halt-on-error",
+            "-file-line-error", "-synctex=1", f"-output-directory={out}", f"-jobname={job}", f"{NOTES_OFF}\\input{{{doc}}}"]
+
+    def run():
+        try:
+            return subprocess.run(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  timeout=600).returncode == 0
+        except subprocess.TimeoutExpired:
+            return None
+
+    ran = run()
     if ran and uses_lineno(os.path.join(out, f"{job}.aux")):  # (a second pass reads the first's .aux)
-        ran = subprocess.run(["sh", "-c", cmd], env=env).returncode == 0
+        ran = run()
     stamp = time.strftime("%H:%M:%S")
+    if ran is None:
+        return {"ok": False, "time": stamp, "timeout": True,
+                "errors": [{"file": None, "line": None, "msg": "the pass without notes took more than 10 minutes"}]}
     if ran and os.path.isfile(os.path.join(out, f"{job}.pdf")):
-        os.replace(os.path.join(out, f"{job}.pdf"), os.path.join(BUILD, f"{job}.pdf"))
+        if publish is None:
+            os.replace(os.path.join(out, f"{job}.pdf"), os.path.join(BUILD, f"{job}.pdf"))
+        elif not publish(os.path.join(out, f"{job}.pdf")):
+            return {"ok": False, "time": stamp, "superseded": True, "errors": []}
         write_status(job, {"ok": True, "time": stamp}, out)
         return {"ok": True, "time": stamp}
 

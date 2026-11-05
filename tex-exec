@@ -11,11 +11,16 @@
 # the host's TeX, so a missing image fails the run; and LATEX_LIVE_SANDBOX=1: the paper folder is
 # mounted read-only and only its build folder ($LATEX_LIVE_BUILD) writable; the container gets no
 # capabilities, no new privileges, at most 512 processes, 4 GB of memory, 2 CPUs, files of at most
-# 1 GB and 10 minutes (podman stops it then, even when the caller has stopped waiting); it is labelled
-# with the instance ($LATEX_LIVE_INSTANCE) and the kind of run ($LATEX_LIVE_RUN), so that live.py can
-# stop it; and TeX gets no shell escape, and no files outside its working directory and the TeX tree
-# (openin_any=p). The paper root's dot entries (.git, whose config may hold a remote's credentials,
-# .env, ...) are hidden: an empty folder or file over each, since biber and latexdiff ignore openin_any.
+# 1 GB and the caller's deadline ($LATEX_LIVE_TIMEOUT seconds, at most 10 minutes: podman stops it
+# then, even when the caller has stopped waiting); it is labelled with the instance
+# ($LATEX_LIVE_INSTANCE), the run ($LATEX_LIVE_RUN, e.g. main-12) and its kind (main), so that live.py
+# can stop it; and TeX gets no shell escape, and no files outside its working directory and the TeX
+# tree (openin_any=p). The paper's dot entries, at any depth (.git, whose config may hold a remote's
+# credentials, .env, chapters/.private/, ...), are hidden: an empty folder or file over each, since
+# biber and latexdiff ignore openin_any. A dot entry that is a symbolic link is left: in the
+# container, where the paper is the only folder mounted, it leads into the paper, which shows nothing
+# hidden, or into the image. A name with a newline, ':' or ',' can't be hidden this way, so the run
+# is refused.
 # That skips the image's entrypoint, which switches users and so needs a capability.
 image=$1 root=$2
 shift 2
@@ -23,17 +28,40 @@ if podman image exists "$image"; then
     if [ "$LATEX_LIVE_SANDBOX" = 1 ]; then
         build="$root/${LATEX_LIVE_BUILD:-build}"
         set -- "$image" "$@"
-        for entry in "$root"/.[!.]* "$root"/..?*; do
-            if [ -L "$entry" ] || [ ! -e "$entry" ] || [ "$entry" = "$build" ]; then continue; fi
+        nl='
+'
+        run=${LATEX_LIVE_RUN:-other} kind=${LATEX_LIVE_RUN:-other}
+        kind=${kind%%-*}
+        timeout=${LATEX_LIVE_TIMEOUT:-600}
+        case $timeout in ''|*[!0-9]*) timeout=600 ;; esac
+        if [ "$timeout" -gt 600 ] || [ "$timeout" -lt 1 ]; then timeout=600; fi
+        dots=$(find "$root" -path "$build" -prune -o ! -path "$root" -name '.*' -prune ! -type l -print) || dots=-
+        if [ -n "$(find "$root" -path "$build" -prune -o -name "*$nl*" -print | head -c 1)" ]; then dots=-; fi
+        case $dots in
+            -|*:*|*,*)
+                echo "=== latex-live: the paper has a dot entry that can't be hidden (or find failed); not running $2" >&2
+                exit 1 ;;
+        esac
+        if [ "$(printf '%s\n' "$dots" | wc -l)" -gt 1000 ]; then
+            echo "=== latex-live: the paper has more than 1000 dot entries to hide; not running $2" >&2
+            exit 1
+        fi
+        set -f
+        saved=$IFS IFS=$nl
+        for entry in $dots; do
+            case $entry in "$root"/*) ;; *) echo "=== latex-live: a dot entry can't be hidden; not running $2" >&2; exit 1 ;; esac
             if [ -d "$entry" ]; then
                 set -- --tmpfs "$entry:ro,size=4k,notmpcopyup" "$@"
-            else
+            elif [ -e "$entry" ]; then
                 set -- -v "/dev/null:$entry:ro" "$@"
             fi
         done
+        IFS=$saved
+        set +f
         set -- --cap-drop=all --security-opt=no-new-privileges --pids-limit=512 --memory=4g --cpus=2 \
-            --ulimit fsize=1073741824:1073741824 --timeout=600 --entrypoint= \
-            --label "latex-live.instance=$LATEX_LIVE_INSTANCE" --label "latex-live.run=${LATEX_LIVE_RUN:-other}" \
+            --ulimit fsize=1073741824:1073741824 --timeout="$timeout" --entrypoint= \
+            --label "latex-live.instance=$LATEX_LIVE_INSTANCE" --label "latex-live.run=$run" \
+            --label "latex-live.kind=$kind" \
             -v "$root:$root:ro" -v "$build:$build" -e openin_any=p -e openout_any=p -e shell_escape=f "$@"
     else
         set -- -v "$root:$root" "$image" "$@"
