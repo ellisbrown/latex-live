@@ -66,10 +66,10 @@ if ($ENV{LATEX_LIVE_DOC} && defined &add_hook) {
         }
         my $owner = $$;
         my $pid = fork();
-        if (defined $pid && $pid == 0) {
+        if (defined $pid && $pid == 0) {  # (the grandchild leads a process group of its own: stop_early signals it by pid)
+            POSIX::_exit(0) if fork();
             POSIX::setsid();
             open(STDIN, '<', '/dev/null'); open(STDOUT, '>', '/dev/null'); open(STDERR, '>', '/dev/null');
-            POSIX::_exit(0) if fork();
             exec('python3', "$here/latex_report.py", '--early', $jobname, $doc, $seed, $began, $owner) or POSIX::_exit(1);
         }
         waitpid($pid, 0) if $pid;
