@@ -114,7 +114,8 @@
   #texImage { color: #fd6; cursor: help; }
   #texImage[hidden], #updated[hidden] { display: none; }
   #updated { color: #9cf; cursor: help; }
-  #versionInfo { font-size: 11px; opacity: 0.55; }
+  #versionInfo { font-size: 11px; opacity: 0.55; color: inherit; text-decoration: none; }
+  #versionInfo:hover { opacity: 0.9; text-decoration: underline; }
   #banner { position: fixed; top: 32px; right: 12px; z-index: 10; max-width: 60%; padding: 8px 30px 8px 12px;
             background: #5c1f1f; color: #fee; border-radius: 0 0 6px 6px; box-shadow: 0 2px 8px #0008; }
   #banner[hidden] { display: none; }
@@ -402,7 +403,7 @@
     <button id="compare" data-priority="11" title="The paper with the changes since an earlier commit marked (in a new tab)">Compare with an earlier version&hellip;</button>
     <button id="keysBtn" title="Keyboard shortcuts (?)">Keyboard shortcuts</button>
     <button id="welcomeBtn" title="What this is, and how to comment, edit, and find your way">Welcome guide</button>
-    <span id="versionInfo"></span>
+    <a id="versionInfo" href="https://github.com/ellisbrown/latex-live" target="_blank" rel="noopener" title="latex-live on GitHub"></a>
   </div>
   <div id="moreItems"></div>
 </div>
