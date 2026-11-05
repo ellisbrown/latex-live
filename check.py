@@ -52,6 +52,9 @@
    preamble reads; an error in the body is reported at its file and line; forward and inverse search work after a
    pass from the standby (also on the box); killing live.py (kill -9) stops its standbys, and so does stopping it,
    leaving no keeper, container or folder; LATEX_LIVE_STANDBY=0 builds without standbys.
+   And in another thread, the early notes-free pass (early_run), on a paper with notes and line numbers and an
+   instance of its own without the standby: a body edit's early pass is kept, with the PDF (but dates) and SyncTeX
+   of the notes-free pass after the run; a two-pass edit keeps its second pass's; a failed run puts build/clean/ back.
 3. A shared-mode instance (LATEX_LIVE_USERS) on the hub's port + 11 serves a clone of the paper on branch
    "shared" to users of every role, behind a stand-in for an authenticating proxy (an identity
    header), with personal-link tokens, auto-commit, protected text and the editor stand-in. Shared
@@ -164,6 +167,7 @@ PORT = int(os.environ.get("LATEX_LIVE_CHECK_PORT") or free_ports(count=24))  # t
 SHARED_PORT = PORT + 11  # the shared-mode instance's (shared_setup), past the previews' ports
 DECOY_PORT = PORT + 12  # a stand-in for a program that a lock file written in build/ points to (lock_spoof_checks)
 STANDBY_PORT = PORT + 13  # the hub of the warm standby's checks (standby_checks), with state of its own; its preview's follow
+EARLY_PORT = PORT + 16  # the hub of the early notes-free pass's checks (early_checks), with state of its own; its preview's follow
 PUBLIC = "http://paper.invalid:8443"  # its LATEX_LIVE_PUBLIC_URL: the origin browsers would use
 PROXY_HOST = "proxy.invalid"  # its LATEX_LIVE_PROXY_HOST: the Host of the proxy's requests (via_proxy)
 CAPS = ("comment", "edit", "rebuild", "compare", "switch", "openHost", "download")  # what GET me says a user can do
@@ -1142,6 +1146,7 @@ def live_checks(tmp):
             f.write(f"\\documentclass{{article}}\n\\begin{{document}}\nThe {name}.\n\\end{{document}}\n")
     procs, sharing = [start(paper)], []  # (sharing: the shared-mode instance, shared_setup)
     standby = standby_checks(tmp)  # (beside the rest, with an instance of its own)
+    early = in_thread("early notes-free pass checks", early_run, tmp)  # (likewise)
     try:
         sh = shared_setup(tmp, sharing)  # (it builds while the hub's checks run; None without podman or the image)
         build = os.path.join(paper, "build")
@@ -1380,9 +1385,10 @@ def live_checks(tmp):
             shared.join()
             if shared.failed:
                 sys.exit(1)
-        standby.join()
-        if standby.failed:
-            sys.exit(1)
+        for thread in (standby, early):
+            thread.join()
+            if thread.failed:
+                sys.exit(1)
     finally:
         for proc in procs + sharing:
             stop(proc)
@@ -1799,9 +1805,15 @@ def standby_snapshot_checks():
 def standby_checks(tmp):
     """Start the warm standby's checks (latexlive/standby.py) in a thread of their own, with a paper, a state folder
     and an instance of their own, beside the others. Returns the thread; its .failed says whether a check failed."""
+    return in_thread("warm standby checks", standby_run, tmp)
+
+
+def in_thread(name, target, *args):
+    """Run target(*args) in a thread of its own, beside the other checks. Returns the thread; its .failed says
+    whether a check failed."""
     def run():
         try:
-            standby_run(tmp)
+            target(*args)
         except SystemExit:  # (fail said why)
             thread.failed = True
         except BaseException:
@@ -1810,10 +1822,95 @@ def standby_checks(tmp):
                 STOPPING.set()
                 traceback.print_exc()
 
-    thread = threading.Thread(target=run, name="warm standby checks", daemon=True)
+    thread = threading.Thread(target=run, name=name, daemon=True)
     thread.failed = False
     thread.start()
     return thread
+
+
+def early_run(tmp):
+    """The early notes-free pass (latex_report.py run_early), on a paper with notes and line numbers (two notes-free
+    TeX runs), with an instance of its own, without the warm standby (each pass then rewrites the files the early
+    pass starts from): a body edit's early pass is kept, and its PDF and SyncTeX are what the notes-free pass after
+    the run makes; an edit that adds a reference keeps the early pass of its second pass; a failed run drops it and
+    puts build/clean/ back as it was; the next good one is kept again."""
+    paper, state = os.path.join(tmp, "early", "paper"), os.path.join(tmp, "early", "state")
+    image = texlive_image()[1]
+    if not image and not shutil.which("pdflatex"):
+        return print("skip: no TeX Live image and no pdflatex, so the early notes-free pass is not checked", flush=True)
+    write_text(paper, "main.tex", PAPER)
+    write_text(paper, "people.tex", PEOPLE)
+    words = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu".split()
+    body = NOTE_PARAGRAPHS + "\n\n".join(" ".join(words[(i * 5 + j) % 12] for j in range(80)) for i in range(6)) + "\n"
+    write_text(paper, "body.tex", body)
+    make_state(state)
+    env = {**ENV, "LATEX_LIVE_STATE": state, "LATEX_LIVE_STANDBY": "0"}
+    build = os.path.join(paper, "build")
+    outcomes, clean_pdf = os.path.join(build, "clean-early", "outcomes.json"), os.path.join(build, "main-clean.pdf")
+    status_file = os.path.join(build, "main-live.status.json")
+    proc = start(paper, "main", *(() if image else ("--host-tex",)), env=env, port=EARLY_PORT)
+
+    def counts():
+        return _quiet(lambda: read_json_file(outcomes)) or {}
+
+    def clean_files():
+        found = {}
+        for folder, _, names in os.walk(os.path.join(build, "clean")):
+            for name in names:
+                if name != "pid":
+                    found[os.path.relpath(os.path.join(folder, name), build)] = read_bytes(os.path.join(folder, name))
+        return found
+
+    def save(text, how):
+        """Write body.tex and wait until its build and notes-free pass are done, the early one counted as how."""
+        before, built = counts(), mtime_ns(status_file)
+        write_text(paper, "body.tex", text)
+        wait_for(f"the early pass to be {how}", lambda: counts().get(how, 0) > before.get(how, 0) and mtime_ns(status_file) != built,
+                 timeout=180)
+        return read_json_file(status_file)
+
+    try:
+        wait_for("the first notes-free pass", lambda: os.path.isfile(clean_pdf) and os.path.isfile(status_file), timeout=180)
+        published = mtime_ns(clean_pdf)
+        body1 = body.replace("alpha beta", "alpha tapir beta", 1)
+        status = save(body1, "kept")
+        wait_for("the kept early pass's PDF", lambda: mtime_ns(clean_pdf) != published, timeout=120)
+        if not status.get("ok") or "tapir" not in pdf_pages_and_text(clean_pdf)[1]:
+            fail(f"the PDF of a kept early pass: status {status}, text {pdf_pages_and_text(clean_pdf)[1][:200]!r}")
+        copy = f"{paper}-normal"
+        shutil.copytree(paper, copy)
+        prefix = f"{os.path.join(HERE, 'tex-exec')} {texlive_image()[0]} {os.path.realpath(copy)}" if image else ""
+        subprocess.run([sys.executable, "-c", "import latex_report as r; r.seed_notes_free('main-live', 'main'); r.notes_free_pass('main-live', 'main')"],
+                       cwd=copy, env={**ENV, "PYTHONPATH": HERE, "LATEX_LIVE_EXEC": prefix, "max_print_line": "10000"}, timeout=300, check=True)
+        sys.path.insert(0, os.path.join(HERE, "latexlive"))
+        import standby as standby_module  # (masked: a PDF's bytes without its dates and IDs)
+        synctex = lambda root: [line for line in gzip.decompress(read_bytes(os.path.join(root, "build", "clean", "main-clean.synctex.gz")))
+                                .replace(os.path.realpath(root).encode(), b"ROOT").splitlines()
+                                if not line.startswith(b"!")]  # (byte offsets, which the paper folder's name moves)
+        if standby_module.masked(clean_pdf) != standby_module.masked(os.path.join(copy, "build", "main-clean.pdf")):
+            fail("a kept early pass made another PDF than the notes-free pass after the run")
+        if synctex(paper) != synctex(copy):
+            fail("a kept early pass wrote other SyncTeX data than the notes-free pass after the run")
+        ok("a body edit's early notes-free pass is kept: its PDF (but dates) and SyncTeX are the notes-free pass's after the run")
+
+        body2 = body1.replace("alpha tapir", "alpha tapir \\label{early}see \\ref{early} and", 1)
+        status = save(body2, "kept")
+        resolved = lambda: "see 1 and" in " ".join(pdf_pages_and_text(clean_pdf)[1].split())
+        if not status.get("ok") or not wait_for("the notes-free PDF of an edit that adds a reference", resolved, timeout=60):
+            fail(f"an edit that adds a reference, early pass kept: {status}")
+        ok("an edit that adds a reference keeps the early pass of its second pass, and the reference resolves")
+
+        wait_for("its result", lambda: mtime_ns(os.path.join(build, "clean", "main-clean.status.json")) > mtime_ns(clean_pdf), timeout=30)
+        files, published = clean_files(), read_bytes(clean_pdf)
+        status = save(body2.replace("tapir", "tapir \\undefinedcontrolsequence", 1), "dropped")
+        if status.get("ok") or clean_files() != files or read_bytes(clean_pdf) != published:
+            fail(f"a failed run: status {status}, build/clean/ put back: {clean_files() == files}")
+        ok("a failed run drops its early pass and puts build/clean/ back as it was, keeping the notes-free PDF")
+        status = save(body2.replace("tapir", "okapi", 1), "kept")
+        wait_for("the notes-free PDF after the fix", lambda: "okapi" in pdf_pages_and_text(clean_pdf)[1], timeout=60)
+        ok("the next good run keeps its early pass again")
+    finally:
+        stop(proc)
 
 
 def standby_run(tmp):

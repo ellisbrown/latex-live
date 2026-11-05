@@ -25,6 +25,7 @@ it would be for submission. That pass records its result in
 build/clean/<doc>-clean.status.json, for the viewer's banner.
 """
 
+import fcntl
 import json
 import os
 import re
@@ -215,7 +216,7 @@ def start_notes_free_build(root, doc):
         with open(os.path.join(out, "pid")) as f:
             pid = int(f.read())
         command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
-        if "--notes-free" in command and doc in command:
+        if ("--notes-free" in command or "--early" in command) and doc in command:  # (an early pass kept: run_early)
             os.killpg(pid, signal.SIGTERM)
     except (OSError, ValueError):
         pass
@@ -227,13 +228,301 @@ def start_notes_free_build(root, doc):
         f.write(str(proc.pid))
 
 
+SEED_EXTS = (".aux", ".bbl", ".brf", ".out", ".toc")  # (what the notes-free pass reads of the main build; .brf: hyperref's back-references)
+
+
 def seed_notes_free(root, doc, out=None):
     """Copy this run's .aux, .bbl and the like into build/clean/ (or out) for the notes-free pass to read."""
     out = out or os.path.join(BUILD, "clean")
     os.makedirs(out, exist_ok=True)
-    for ext in (".aux", ".bbl", ".brf", ".out", ".toc"):  # (.brf: hyperref's back-references)
+    for ext in SEED_EXTS:
         if os.path.exists(os.path.join(BUILD, root + ext)):
             shutil.copyfile(os.path.join(BUILD, root + ext), os.path.join(out, f"{doc}-clean{ext}"))
+
+
+# The early notes-free pass. The notes-free pass needs the main build's .aux and the like (SEED_EXTS), which only
+# the run's last pass settles, so it would start only once the run has ended, and the notes-free view would show a
+# change one pass later than the view with notes. Instead, latexmkrc copies those files to build/clean-early/ before
+# each pass of the main build (the files that pass reads), and starts run_early beside it, which runs the
+# notes-free pass from them in build/clean/ (in place, as the normal one), and waits before it publishes anything.
+# The run's last pass reads what the run ends with, so its early pass is the very pass that the end-of-run report
+# would start, provided nothing else that pass reads differs: then the report keeps it (keep_early), and it
+# publishes; else the report stops it, puts build/clean/ back as it was, and starts the notes-free pass as before.
+EARLY = os.path.join(BUILD, "clean-early")
+NAMES_LIMIT = 20000  # (the most names in the paper's folders that an early pass watches; past that, none starts)
+
+
+def early_lock():
+    """build/clean-early/lock, held (flock) while an early pass starts and while the report decides on it."""
+    os.makedirs(EARLY, exist_ok=True)
+    lock = open(os.path.join(EARLY, "lock"), "a+")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    return lock
+
+
+def paper_names():
+    """{folder: sorted names} for the paper's folders (not the build folder, nor dot folders), through links to
+    folders too, each real folder once; None past NAMES_LIMIT names. A name that appears or goes there while an
+    early pass runs may change what TeX finds (\\IfFileExists, say), so the pass is then not kept."""
+    names, count, seen = {}, 0, set()
+    for folder, dirs, files in os.walk(".", followlinks=True):
+        real = os.path.realpath(folder)
+        if real in seen:
+            dirs[:] = []
+            continue
+        seen.add(real)
+        rel = os.path.normpath(folder)
+        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and os.path.normpath(os.path.join(rel, d)) != os.path.normpath(BUILD))
+        names[rel] = sorted(dirs + files)
+        count += len(names[rel])
+        if count > NAMES_LIMIT:
+            return None
+    return names
+
+
+def paper_inputs(root):
+    """The files in the paper (not in the build folder) that the main build's last pass read (its .fls)."""
+    found = set()
+    try:
+        with open(os.path.join(BUILD, f"{root}.fls"), errors="surrogateescape") as f:
+            for line in f:
+                if line.startswith("INPUT "):
+                    path = os.path.normpath(line[6:].rstrip("\n"))
+                    if not os.path.isabs(path) and not path.startswith(("..", BUILD + os.sep)):
+                        found.add(path)
+    except OSError:
+        pass
+    return sorted(found)
+
+
+def changed_since(path, t0):
+    """Whether a file may have changed at or after t0 (ns), or is gone: its mtime or ctime is not clearly before
+    it (file times come from a coarse clock, and in whole seconds on some file systems)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return True
+    margin = 50_000_000 if st.st_mtime_ns % 1_000_000_000 else 2_000_000_000
+    return max(st.st_mtime_ns, st.st_ctime_ns) >= t0 - margin
+
+
+def group_alive(pgid):
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def stop_early(early):
+    """Stop an early pass (its process group: its TeX run too), waiting until it is gone, and put build/clean/
+    back as it was before the pass started (from build/clean-early/stash/). The caller holds early_lock."""
+    pid = early.get("pid")
+    if isinstance(pid, int) and group_alive(pid):
+        for sig, wait in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
+            try:
+                os.killpg(pid, sig)
+            except OSError:
+                pass
+            end = time.monotonic() + wait
+            while group_alive(pid) and time.monotonic() < end:
+                time.sleep(0.01)
+            if not group_alive(pid):
+                break
+    if early.get("label") and not early.get("texDone") and shutil.which("podman"):  # (its TeX run's container, which may outlive its podman client)
+        try:
+            ids = subprocess.run(["podman", "ps", "-aq", "--filter", f"label=latex-live.early={early['label']}"], capture_output=True,
+                                 text=True, timeout=30).stdout.split()
+            if ids:
+                subprocess.run(["podman", "rm", "-f", "-t", "0", *ids], capture_output=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    out, stash = os.path.join(BUILD, "clean"), os.path.join(EARLY, "stash")
+    if os.path.isdir(stash):
+        shutil.rmtree(out, ignore_errors=True)
+        shutil.copytree(stash, out, symlinks=True)
+    for name in ("stash", early.get("seed") or "", "early.json", "names.json"):
+        path = os.path.join(EARLY, name) if name else None
+        if path and os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+        elif path and os.path.exists(path):
+            os.remove(path)
+
+
+def read_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def read_early():
+    """The early pass's record (build/clean-early/early.json: pid, seed, started, label, state), or None."""
+    early = read_json(os.path.join(EARLY, "early.json"))
+    return early if isinstance(early, dict) else None
+
+
+def count_early(how, why=None):
+    """Record what became of an early pass (build/clean-early/outcomes.json: kept, dropped, and why the last
+    was dropped), for check.py and for people."""
+    path = os.path.join(EARLY, "outcomes.json")
+    try:
+        with open(path) as f:
+            outcomes = json.load(f)
+    except (OSError, ValueError):
+        outcomes = {}
+    outcomes[how] = outcomes.get(how, 0) + 1
+    outcomes["last"] = {"how": how, "why": why, "time": time.time()}
+    write_json(path, outcomes)
+
+
+def run_early(root, doc, seed, began, owner):
+    """The early notes-free pass beside a pass of the main build (latexmkrc; see EARLY): seed is the folder in
+    build/clean-early/ with the files that pass reads (SEED_EXTS), began when latexmk began the pass (µs), owner
+    latexmk's pid. Starts only when no other notes-free pass runs (one still running from an earlier build goes on,
+    and the end-of-run report replaces it, as before), but stops the early pass of an earlier pass of the build,
+    whose run went on (it read other files). Runs in place in build/clean/, from a copy of it as it was (to put
+    back), and publishes only once the end-of-run report keeps it (keep_early); stops, putting build/clean/ back,
+    if latexmk has gone."""
+    seed_dir = os.path.join(EARLY, seed)
+    out = os.path.join(BUILD, "clean")
+    with early_lock():
+        early = read_early()
+        try:
+            if os.stat(os.path.join(BUILD, f"{root}.status.json")).st_mtime_ns > int(began) * 1000:
+                early = "ended"  # (the run ended before this got here: nothing to do)
+        except OSError:
+            pass
+        if early == "ended" or not has_notes(input_tex_files(root, doc)):
+            shutil.rmtree(seed_dir, ignore_errors=True)
+            return None
+        if early and early.get("state") == "running":
+            stop_early(early)  # (an earlier pass's: that pass's files changed)
+        elif running_notes_free(doc):
+            shutil.rmtree(seed_dir, ignore_errors=True)
+            return None
+        names = paper_names()
+        if names is None:
+            shutil.rmtree(seed_dir, ignore_errors=True)
+            return None
+        stash = os.path.join(EARLY, "stash")
+        shutil.rmtree(stash, ignore_errors=True)
+        if os.path.isdir(out):
+            shutil.copytree(out, stash, symlinks=True)
+        else:
+            os.makedirs(stash)
+        os.makedirs(out, exist_ok=True)
+        for ext in SEED_EXTS:
+            if os.path.exists(os.path.join(seed_dir, f"{doc}-clean{ext}")):
+                shutil.copyfile(os.path.join(seed_dir, f"{doc}-clean{ext}"), os.path.join(out, f"{doc}-clean{ext}"))
+        started = time.time_ns()
+        label = f"{os.getpid()}-{started}"  # (its TeX run's container: stop_early)
+        write_json(os.path.join(EARLY, "names.json"), names)
+        write_json(os.path.join(EARLY, "early.json"), {"pid": os.getpid(), "seed": seed, "started": started, "label": label,
+                                                       "state": "running"})
+        with open(os.path.join(out, "pid"), "w") as f:
+            f.write(str(os.getpid()))
+    note_time(root, "clean-early")
+
+    def kept():
+        """Wait for the end-of-run report's word: whether this pass was kept. If latexmk has gone, or after ten
+        minutes, put build/clean/ back and stop."""
+        with early_lock():  # (its TeX runs have ended: no container to stop, stop_early)
+            early = read_early()
+            if early and early.get("pid") == os.getpid():
+                write_json(os.path.join(EARLY, "early.json"), {**early, "texDone": True})
+        end = time.monotonic() + 600
+        while True:
+            early = read_early() or {}
+            if early.get("pid") != os.getpid():
+                return False  # (stopped, and something else in its place: the report stops this one meanwhile)
+            if early.get("state") == "kept":
+                return True
+            if time.monotonic() > end or not process_alive(int(owner)):
+                with early_lock():
+                    if (read_early() or {}).get("pid") == os.getpid():
+                        stop_early({**early, "pid": None})  # (puts build/clean/ back; this process then ends)
+                return False
+            time.sleep(0.01)
+
+    def publish(pdf):  # (as the normal pass does, but dated now: its TeX run may have ended a while before it was kept)
+        dest = os.path.join(BUILD, f"{doc}-clean.pdf")
+        os.replace(pdf, dest)
+        os.utime(dest)
+        return True
+
+    notes_free_pass(root, doc, env={**os.environ, "LATEX_LIVE_EARLY_LABEL": label}, publish=publish, decide=kept)
+
+
+def process_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def running_notes_free(doc):
+    """Whether a notes-free pass of doc runs (build/clean/pid), as started by start_notes_free_build or kept."""
+    try:
+        with open(os.path.join(BUILD, "clean", "pid")) as f:
+            pid = int(f.read())
+        command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+    except (OSError, ValueError):
+        return False
+    return ("--notes-free" in command or "--early" in command) and doc in command
+
+
+def keep_early(root, doc, drop=False):
+    """The end-of-run report: keep the early notes-free pass of the run's last pass, so that it publishes, if it
+    read what the pass that the report would start reads: the files of the main build it was started from are the
+    ones the run ended with (SEED_EXTS), no file of the paper that the build read changed after it started, and no
+    name appeared or went in the paper's folders. Returns whether it kept one; else (and with drop) stops any early
+    pass, putting build/clean/ back as it was."""
+    with early_lock():
+        early = read_early()
+        if not early or early.get("state") != "running":
+            return False
+        why = "the run failed, or has no notes" if drop else None
+        if why is None and not process_alive(early.get("pid") or 0):
+            why = "it stopped"
+        if why is None:
+            seed = os.path.join(EARLY, early.get("seed") or "")
+            for ext in SEED_EXTS:
+                ours, final = os.path.join(seed, f"{doc}-clean{ext}"), os.path.join(BUILD, f"{root}{ext}")
+                if os.path.exists(ours) != os.path.exists(final) or os.path.exists(final) and not same_file(ours, final):
+                    why = f"the run ended with another {ext}"
+                    break
+        if why is None:
+            changed = next((p for p in paper_inputs(root) if changed_since(p, early["started"])), None)
+            if changed:
+                why = f"{changed} changed after it started"
+        if why is None and paper_names() != read_json(os.path.join(EARLY, "names.json")):
+            why = "a file appeared or went in the paper's folders"
+        if why is None:
+            early["state"] = "kept"
+            write_json(os.path.join(EARLY, "early.json"), early)
+            shutil.rmtree(os.path.join(EARLY, early["seed"]), ignore_errors=True)
+            count_early("kept")
+            note_time(root, "clean-kept")
+            return True
+        stop_early(early)
+        count_early("dropped", why)
+        note_time(root, "clean-dropped")
+        return False
+
+
+def same_file(a, b):
+    try:
+        with open(a, "rb") as f, open(b, "rb") as g:
+            return f.read() == g.read()
+    except OSError:
+        return False
 
 
 def uses_lineno(aux):
@@ -254,13 +543,15 @@ def tex_format(log):
     return m.group(1) if m else None
 
 
-def notes_free_pass(root, doc, env=None, out=None, publish=None):
+def notes_free_pass(root, doc, env=None, out=None, publish=None, decide=None):
     """The notes-free pass (start_notes_free_build): publish build/<doc>-clean.pdf, and record the
     result, with the first errors on failure, in build/clean/<doc>-clean.status.json; also returns it.
     env: the TeX runs' environment (default: this process's), LATEX_LIVE_EXEC included; each run stops
     after 10 minutes (then the status has "timeout"). out: the folder it builds in (default
     build/clean/); publish(pdf): instead of moving the PDF to build/, what publishes it, returning
-    whether it did (live.py's shared mode: only for the newest pass).
+    whether it did (live.py's shared mode: only for the newest pass). decide(): called once the TeX runs
+    have ended, whether to go on and record the result (an early pass, run_early: whether it was kept);
+    if not, nothing is published or recorded, and None returned.
 
     The pass reads the main build's .aux. If that came from another TeX installation (e.g. the
     host's, while the TeX Live image was missing), its package data may not load here: then the
@@ -284,6 +575,8 @@ def notes_free_pass(root, doc, env=None, out=None, publish=None):
     if ran and uses_lineno(os.path.join(out, f"{job}.aux")):  # (a second pass reads the first's .aux)
         ran = run()
         note_time(root, "clean-tex")
+    if decide is not None and not decide():
+        return None
     stamp = time.strftime("%H:%M:%S")
     if ran is None:
         return {"ok": False, "time": stamp, "timeout": True,
@@ -360,6 +653,8 @@ def publish_dest(root):
 def main():
     if sys.argv[1] == "--notes-free":
         return notes_free_pass(sys.argv[2], sys.argv[3])
+    if sys.argv[1] == "--early":
+        return run_early(*sys.argv[2:7])
     if sys.argv[1] == "--pass":
         root = sys.argv[2]
         note_time(root, "report")
@@ -394,7 +689,10 @@ def main():
     if ok:
         print(f"=== live-reload: published {dest} at {stamp}")
         if has_notes(files):
-            start_notes_free_build(root, doc)
+            if not keep_early(root, doc):
+                start_notes_free_build(root, doc)
+        else:
+            keep_early(root, doc, drop=True)
     else:
         if not report["errors"][0]["file"]:  # no file:line errors parsed; show the tail of the log instead
             print("\n".join(log.splitlines()[-25:]))
@@ -407,6 +705,7 @@ def main():
             rebuild_from_scratch(root)
             why = f"was written by another TeX installation ({previous['tex']})" if other else "was cut off (by an interrupted run?)"
             print(f"=== live-reload: {BUILD}/{root}.aux {why}; rebuilding from scratch")
+        keep_early(root, doc, drop=True)
 
 
 def run_report(root, status, files=None):

@@ -64,9 +64,9 @@ class Runs:
                 lines.append(self.events)
                 self.events = []
             self.events.append(e)
-            names = [n for _, n, _ in self.events]
-            cleaned = "clean-start" in names
-            if (cleaned and e[1] in CLEAN_END) or (not cleaned and e[1] == "run-end"):
+            names = {n for _, n, _ in self.events}
+            cleaned = "clean-start" in names or "clean-kept" in names  # (an early pass kept may publish before the run's end)
+            if "run-end" in names and (not cleaned or names & set(CLEAN_END)):
                 lines.append(self.events)
                 self.events = []
         return lines

@@ -56,6 +56,10 @@ diagnostics, through the task's problem matcher.
 
 Beside the live build, a second build without the notes runs in the
 background. It gives the notes-free view, and the page count without notes.
+It starts beside each pass of the live build, so the notes-free view updates
+about when the live build ends; when the live build ends with other
+cross-references or citations than that pass started from, the build without
+notes runs again after it, and the view updates a little later.
 
 ## Source and PDF: SyncTeX
 

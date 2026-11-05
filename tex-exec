@@ -28,6 +28,9 @@
 # that label, its run's (LATEX_LIVE_RUN) and a deadline (LATEX_LIVE_TIMEOUT seconds, at most 2 hours), so that
 # it stops even if nothing stops it, and it never runs on the host's TeX, which a normal pass would not use
 # once the image is back.
+#
+# An early notes-free pass (latex_report.py run_early) sets LATEX_LIVE_EARLY_LABEL: its container gets that label, so
+# that stopping the pass stops its TeX run too (stopping the podman client alone may leave it running).
 image=$1 root=$2
 shift 2
 if podman image exists "$image"; then
@@ -68,6 +71,9 @@ if podman image exists "$image"; then
             -v "$root:$root:ro" -v "$build:$build" -e openin_any=p -e openout_any=p -e shell_escape=f "$@"
     else
         set -- -v "$root:$root" "$image" "$@"
+        if [ -n "$LATEX_LIVE_EARLY_LABEL" ]; then
+            set -- --label "latex-live.early=$LATEX_LIVE_EARLY_LABEL" "$@"
+        fi
         if [ -n "$LATEX_LIVE_STANDBY_LABEL" ]; then
             timeout=${LATEX_LIVE_TIMEOUT:-3600}
             case $timeout in ''|*[!0-9]*) timeout=3600 ;; esac
