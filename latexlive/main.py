@@ -24,6 +24,7 @@ from .navigation import open_in_editor
 from .shared_build import start_shared_build
 from .shared_watch import watch_build_size
 from .status import code_updated
+from .timing import start_timing
 from .tools import container_exec, image_pulled, stop_containers
 from .web import DualStackServer, LoopbackServer
 
@@ -235,6 +236,7 @@ def main():
     server.lock = lock
     set_doc(server, doc)
     record_port(server)
+    start_timing(server)
     if config.SHARED:  # (what the last run left uncommitted is committed before the first request: start_commits)
         start_commits(server)
         threading.Thread(target=server.serve_forever, daemon=True).start()

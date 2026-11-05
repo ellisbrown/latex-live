@@ -24,6 +24,7 @@ from . import config
 from .files import aux_tree, fls_file, pdf_path, project_tex_files, read_build, read_capped
 from .latex import RERUN_RE
 from .shared_watch import shared_deps, shared_inputs, shared_missing
+from .timing import note
 from .tools import LIVE_SPAWN, RUN_SEQ, SPAWNS, container_argv, image_pulled, stop_containers
 
 
@@ -79,6 +80,9 @@ def shared_build(server):
         server.shared["wanted"].clear()
         server.shared["force"] = False
         last_start = time.monotonic()
+        newest = max(((st[0], path) for path, st in now.items() if st), default=None)  # (the save, for the run's timing)
+        if newest:
+            note(server, "saved", os.path.relpath(newest[1], server.paper_root), when=newest[0] / 1e9)
         try:
             shared_run(server)
         except Exception:  # (said, and the next change tries again)
@@ -162,6 +166,7 @@ def shared_run(server):
     doc, job = pdf[:-4], f"{pdf[:-4]}-live"
     out = lambda ext: os.path.join(config.BUILD, job + ext)  # (relative to the paper root, as the tools see it)
     server.shared["building"] = True
+    note(server, "run")
     began, gen = time.time_ns(), server.shared["gen"]  # (in its status: the run reflects the files as they were then)
     failed = {}  # (bibtex, biber or makeindex: why it failed, in this run)
     try:
@@ -174,6 +179,7 @@ def shared_run(server):
         ok = False
 
         def tool(name, state_key, state, argv, log_ext, **where):
+            note(server, name)
             done = shared_tool(server, argv, kind=name, **where)
             failed[name] = None if done else tool_failure(name, out(log_ext))
             if done and server.shared["gen"] == gen:  # (failed: it runs again on the next pass and the next run)
@@ -182,13 +188,16 @@ def shared_run(server):
 
         for passes in range(1, 7):
             before = read_build(out(".aux"))
+            note(server, "pass")
             ok = shared_tool(server, tex)
+            note(server, "pass-end")
             if server.shared["force"]:  # (a rebuild stopped it: shared_build starts again)
                 return
             if not ok:
                 break
             latex_report.keep_inputs(job)
             shared_publish(server, job)
+            note(server, "published")
             aux, log, bcf = read_build(out(".aux")), read_build(out(".log")), read_build(out(".bcf"))
             auxes, ran = aux_tree(aux), False
             server.shared["deps"] = shared_deps(server, auxes, bcf)
@@ -234,6 +243,7 @@ def shared_run(server):
                     pass
             server.shared["wanted"].set()
         server.shared["status"] = {**status, "began": began}
+        note(server, "status")
         stamp = status["time"]
         print(f"=== live-reload: published {pdf} at {stamp}" if ok else f"=== live-reload: BUILD FAILED at {stamp}; kept the previous {pdf}",
               flush=True)
@@ -244,6 +254,7 @@ def shared_run(server):
                                    "errors": [{"file": None, "line": None, "msg": str(e)}]}
     finally:
         server.shared["building"] = False
+        note(server, "run-end")
 
 
 def shared_publish(server, job):
@@ -271,6 +282,7 @@ def shared_notes_free(server, job, doc):
     sys.path.insert(0, config.HERE)
     import latex_report
     stop_containers(kind="clean")
+    note(server, "clean-start")
     with server.shared["clean_lock"]:
         server.shared["clean_seq"] += 1
         seq = server.shared["clean_seq"]
@@ -306,6 +318,7 @@ def shared_notes_free(server, job, doc):
         with server.shared["clean_lock"]:
             if seq == server.shared["clean_seq"] and not status.get("superseded"):
                 server.shared["clean"] = status
+                note(server, "clean-published" if status.get("ok") else "clean-failed")
         shutil.rmtree(out, ignore_errors=True)
 
     threading.Thread(target=run, daemon=True).start()

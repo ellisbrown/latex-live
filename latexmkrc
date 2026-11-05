@@ -33,7 +33,24 @@ $pre_tex_code = '\\def\\latexlivelayout{\\typeout{latex-live layout:'
 # when it can, else as before, with the same arguments and $exec (which it reads from the environment).
 my $pass = $ENV{LATEX_LIVE_STANDBY_OWNER} ? "python3 -I '$here/latexlive/standby.py'" : $exec;
 $pdflatex = "touch $build/%R.building; $pass pdflatex -synctex=1 -file-line-error -halt-on-error %O %P && python3 '$here/latex_report.py' --pass %R";
-$bibtex = "$exec bibtex %O %S";
+# LATEX_LIVE_TIMING=1 (live.py; latexlive/timing.py): note when each run and pass begins, when a pass's command
+# returns and latexmk has read what it wrote, when the run ends, and when bibtex starts, in build/<job>.timing.
+# The hooks need latexmk 4.80 or later; with an older one, only the other processes' notes are there.
+my $timing = ($ENV{LATEX_LIVE_TIMING} // '') eq '1';
+if ($timing && defined &add_hook) {
+    require Time::HiRes;
+    for my $hook (['compile_begin', 'run'], ['before_xlatex', 'pass'], ['after_xlatex', 'pass-end'],
+                  ['after_xlatex_analysis', 'analyzed'], ['compile_end', 'run-end']) {
+        my $event = $hook->[1];
+        add_hook($hook->[0], sub {
+            if (open(my $f, '>>', "$build/$jobname.timing")) { printf $f "%.6f %s\n", Time::HiRes::time(), $event; close $f; }
+            return 0;
+        });
+    }
+}
+require File::Spec;  # (bibtex runs in the build folder: an absolute path)
+$bibtex = ($timing ? "perl -MTime::HiRes=time -e 'printf qq(%.6f bibtex\\n), time' >> '" . File::Spec->rel2abs($build) . "/'%R.timing; " : '')
+    . "$exec bibtex %O %S";
 $out_dir = $build;
 $view = 'none';     # live.py's viewer reloads itself when the PDF changes
 $sleep_time = 0.25; # watch poll interval (s; latexmk 4.x takes fractions)

@@ -291,6 +291,13 @@ are in [shared-mode.md](shared-mode.md#settings).
   A waiting standby holds about 100-150 MB of memory (pdflatex, its podman
   client and its keeper). It runs only in the TeX Live image (or with `--host-tex` on the
   host's TeX), and not in shared mode.
+- `LATEX_LIVE_TIMING=1`: measure where the time goes between a save and the
+  page in the viewer. After each build, the task's output gets a line
+  `=== latex-live timing: ...` with each phase of the build (latexmk starting
+  the run, each pass, the warm standby, publishing the PDF, the end of the run,
+  the pass without notes), in milliseconds after the save; and the viewer logs
+  in the browser's console, for each new PDF, how long it took to notice it,
+  fetch it, and draw its first page. Off by default.
 - `LATEX_LIVE_HOST`: also print a direct viewer URL on this host name, e.g.
   the name a tunnel exposes.
 - `LATEX_LIVE_PORT`: the hub's port (see [Ports and the token](#ports-and-the-token)).

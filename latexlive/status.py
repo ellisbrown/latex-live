@@ -65,6 +65,8 @@ def status(server, pdf_name, push=False):
     info["push"] = base_status(server, pdf_name, "push", build=push and not config.SHARED)
     info["texImage"] = image_problem(server)
     info["latexLive"] = {"version": config.VERSION, "updated": code_updated()}
+    if config.TIMING:  # (the viewer logs how long each new PDF took to reach the screen: this clock tells it when it was published)
+        info["timing"] = {"now": time.time()}
     return info
 
 
