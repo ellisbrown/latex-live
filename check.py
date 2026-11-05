@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Smoke test for latex-live: python3 check.py (about a minute; needs TeX, as live.py does).
 
-1. The Python compiles without warnings (and with Python 3.9, if there is one), and the viewer's
-   script parses (with Node, if there is one).
+1. The Python compiles without warnings (and with Python 3.9, if there is one); the viewer's import
+   map is valid JSON, comes before its module code, and maps every bare module name that the viewer
+   and the vendored editor (codemirror/) import to a file here; the viewer's script parses (with
+   Node, if there is one).
    The review copy's layout keeps notes in order, apart, and on their pages, and continues the ones
    that don't fit after the paper; its matching tells apart two authors' notes with the same text,
    and gives no note the record of a protected marker that holds its text. The downloads read TeX's
@@ -22,6 +24,13 @@
      ones with every note in a gutter (none overlapping, the protected marker and the resolved
      note left out), and its last pass loads no package that the paper's TeX wrote; a document
      without notes gets a clear failure, not a file;
+   - the browser editor: /me answers, its modules are served, SyncTeX answers as JSON without
+     opening the editor (a stand-in that logs its arguments); its files API lists and refuses
+     the right files (../, absolute paths, .git, build/, a link out of the paper, a new file, too
+     big, not UTF-8), reads, saves, merges a stale save, writes nothing on a conflict, asks for the
+     base text it lacks, survives a save whose answer got lost, and keeps CRLF line ends and the
+     file's mode; status ?open= follows the open file; the hub takes a save above the other
+     actions' size limit;
    - a second document runs in its own process behind the same port, and /papers links both;
    - a second instance for the same document says it is already running; --replace takes over,
      and so does any new instance when the running one no longer answers; the hub moves to
@@ -32,6 +41,7 @@ Exits non-zero on the first failure.
 
 import glob
 import gzip
+import hashlib
 import http.client
 import json
 import os
@@ -46,6 +56,7 @@ import tempfile
 import threading
 import time
 import types
+import urllib.parse
 import urllib.request
 import zlib
 
@@ -99,6 +110,12 @@ words after it.\footnote{A footnote \eb{a note in a footnote}.} \ifnum0=1 \eb{a 
 """
 
 
+IMPORT_RES = (re.compile(r"""^\s*(?:import|export)\s[^;'"]*?\bfrom\s*["']([^"']+)["']""", re.M),
+              re.compile(r"""^\s*import\s*["']([^"']+)["']""", re.M),
+              re.compile(r"""\bimport\(\s*["']([^"']+)["']\s*\)"""))
+JS_TYPE_RE = re.compile(r"(?:text|application)/(?:x-)?javascript\b")
+
+
 LOGS = []  # the instances' output, shown on failure
 # For the instances: their own token and instance list (live_checks), and a protected marker.
 ENV = dict(os.environ, LATEX_LIVE_PROTECTED=r"\\eb\{human-written\}")
@@ -145,11 +162,11 @@ def static_checks():
             fail(f"{name} does not compile with Python 3.9:\n{r.stderr}")
     if oldest:
         ok("it compiles with Python 3.9 too")
+    with open(os.path.join(HERE, "viewer.html")) as f:
+        scripts = viewer_scripts(f.read())
     node = shutil.which("node")
     if not node:
         return print("skip: no node, so the viewer's script is not checked", flush=True)
-    with open(os.path.join(HERE, "viewer.html")) as f:
-        scripts = re.findall(r'<script(?: type="module")?>(.*?)</script>', f.read(), re.S)
     with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False) as f:
         f.write("\n".join(scripts))
     r = subprocess.run([node, "--check", f.name], capture_output=True, text=True)
@@ -369,6 +386,48 @@ def waiting_download_checks():
     ok("the downloads wait while the document builds, and start once the run ends (with --no-build, at once)")
 
 
+def viewer_scripts(page):
+    """The viewer's inline module code, once its import map checks out: valid JSON, ahead of the module
+    code, every target a file here given relative to the viewer (so that it also resolves under the hub's
+    prefix), and every bare module name that the viewer or a vendored editor module imports mapped."""
+    scripts, imports = [], None
+    for m in re.finditer(r"<script\b([^>]*)>(.*?)</script>", page, re.S):
+        attrs, code = m.group(1), m.group(2)
+        kind = re.search(r"""\btype\s*=\s*["']?([^"'\s>]+)""", attrs)
+        kind = kind.group(1) if kind else ""
+        if kind == "importmap":
+            if scripts:
+                fail("the viewer's import map comes after its module code, so browsers would ignore it")
+            try:
+                imports = json.loads(code)["imports"]
+            except (ValueError, KeyError, TypeError) as e:
+                fail(f"the viewer's import map is not JSON with an imports object ({type(e).__name__}: {e})")
+            if not isinstance(imports, dict):
+                fail("the viewer's import map has no imports object")
+        elif kind in ("", "module"):
+            scripts.append(code)
+        else:
+            fail(f"check.py does not check the viewer's <script{attrs}>")
+    if imports is None:
+        fail("the viewer has no import map (a script of type importmap), which the browser editor's modules need")
+    for name, target in imports.items():
+        path = urllib.parse.urlsplit(target).path if isinstance(target, str) else ""
+        real = os.path.normpath(os.path.join(HERE, path))
+        if not path.startswith("./") or not real.startswith(HERE + os.sep) or not os.path.isfile(real):
+            fail(f"the viewer's import map sends {name} to {target!r}, not to a file here given as ./...")
+    code = {"viewer.html": "\n".join(scripts)}
+    for path in sorted(glob.glob(os.path.join(HERE, "codemirror", "*.js"))):
+        with open(path, encoding="utf-8") as f:
+            code[os.path.relpath(path, HERE)] = f.read()
+    for name, text in code.items():
+        names = {m.group(1) for pattern in IMPORT_RES for m in pattern.finditer(text)}
+        for spec in sorted(n for n in names if not n.startswith((".", "/")) and not re.match(r"[A-Za-z][A-Za-z0-9+.-]*:", n)):
+            if spec not in imports:
+                fail(f"{name} imports {spec}, which the viewer's import map does not map")
+    ok(f"the viewer's import map maps every module that the viewer and its editor import ({len(imports)} names)")
+    return scripts
+
+
 def layout_checks():
     """The review copy's gutters (live.place_notes, live.review_layout), on made-up notes."""
     sys.path.insert(0, HERE)
@@ -530,6 +589,8 @@ def live_checks(tmp):
     for name in ("appendix", "extra"):
         with open(os.path.join(paper, f"{name}.tex"), "w") as f:
             f.write(f"\\documentclass{{article}}\n\\begin{{document}}\nThe {name}.\n\\end{{document}}\n")
+    editor_files(paper, state)
+    ENV["LATEX_LIVE_EDITOR"], editor_log = editor_stub(tmp)
     procs = [start(paper)]
     try:
         build = os.path.join(paper, "build")
@@ -656,6 +717,7 @@ def live_checks(tmp):
             fail("the download without notes has its line numbers in other places than the notes-free view")
         ok("the download without notes is an exact build (line numbers too), made once per build")
         review_checks(build, token)
+        editor_checks(paper, state, token, own, editor_log)
 
         procs.append(start(paper, "appendix"))  # (a second document of the same paper, in its own process)
         wait_for("appendix.pdf through the hub", lambda: _quiet(lambda: get("/status/appendix.pdf", token, "appendix")["version"]))
@@ -750,6 +812,222 @@ def live_checks(tmp):
     if left:
         fail(f"stopped instances are still listed: {left}")
     ok("stopped instances are no longer listed")
+
+
+def editor_files(paper, state):
+    """Files for editor_checks beside the scratch paper's sources: .bib files it lists (one in a folder, one
+    with CRLF line ends and mode 0640), and ones it must not offer: not UTF-8, too big, a dot file, and a
+    link to the token, outside the paper."""
+    os.makedirs(os.path.join(paper, "sub"))
+    for name, data in (("refs.bib", b"@misc{one, title = {One}}\n"), ("sub/refs.bib", b"@misc{two, title = {Two}}\n"),
+                       ("crlf.bib", b"@misc{three,\r\n  title = {Three}}\r\n"), ("latin.bib", "@misc{caf\u00e9}\n".encode("latin-1")),
+                       ("big.bib", b"%" * (5 << 20) + b"\n"), (".private.bib", b"@misc{hidden}\n")):
+        with open(os.path.join(paper, name), "wb") as f:
+            f.write(data)
+    os.chmod(os.path.join(paper, "crlf.bib"), 0o640)
+    os.symlink(os.path.join(state, "token"), os.path.join(paper, "leak.bib"))
+
+
+def editor_stub(tmp):
+    """A stand-in for the editor's command-line tool (LATEX_LIVE_EDITOR) that only logs its arguments, one
+    call per line: (its path, the log's)."""
+    stub, log = os.path.join(tmp, "editor.sh"), os.path.join(tmp, "editor.log")
+    with open(stub, "w") as f:
+        f.write(f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\n")
+    os.chmod(stub, 0o755)
+    return stub, log
+
+
+def editor_calls(log):
+    try:
+        with open(log) as f:
+            return f.read().splitlines()
+    except FileNotFoundError:
+        return []
+
+
+def read_bytes(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def version_of(data):
+    """A file version as the editor API gives it: the first 20 hex digits of the sha256 of its bytes."""
+    return hashlib.sha256(data).hexdigest()[:20]
+
+
+def with_paragraph(text, i, new):
+    """body.tex's text with its i-th paragraph (one line each, between blank lines) replaced."""
+    lines = text.split("\n")
+    lines[2 * i] = new
+    return "\n".join(lines)
+
+
+def post_length(port, path, length, token):
+    """The status of a POST that announces length bytes but sends none, so the server must refuse it from
+    the header alone (None: no answer within 10 s)."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    try:
+        conn.putrequest("POST", path)
+        for key, value in (("Cookie", f"latex_live={token}"), ("Content-Type", "application/json"), ("Content-Length", str(length))):
+            conn.putheader(key, value)
+        conn.endheaders()
+        return conn.getresponse().status
+    except (OSError, http.client.HTTPException):
+        return None
+    finally:
+        conn.close()
+
+
+def editor_checks(paper, state, token, own, editor_log):
+    """The browser editor, through the hub: /me, its modules, SyncTeX as JSON (which opens nothing), the
+    files API (listing, reading, saving, merging, conflicts, refusals), status ?open=, and the POST size
+    limits for a source file's save."""
+    def send(path, body=None):
+        status, _, data = request(f"{hub['base']}main{path}", method="POST" if body is not None else "GET", body=body, cookie=token)
+        try:
+            return status, json.loads(data)
+        except ValueError:
+            return status, {"raw": data[:200]}
+
+    def expect(path, body, wanted, what):
+        status, answer = send(path, body)
+        if status not in ((wanted,) if isinstance(wanted, int) else wanted):
+            fail(f"{what}: {status} {str(answer)[:300]}, not {wanted}")
+        return answer
+
+    def save(body, wanted, what):
+        return expect("/file", body, wanted, what)
+
+    me = expect("/me", None, 200, "GET me")
+    if me.get("role") != "owner" or (me.get("can") or {}).get("edit") is not True:
+        fail(f"GET me does not say that the owner may edit: {me}")
+    status, headers, data = request(f"{hub['base']}main/codemirror/view.js", token)
+    kind = next((value for key, value in headers.items() if key.lower() == "content-type"), "")
+    if status != 200 or data != read_bytes(os.path.join(HERE, "codemirror", "view.js")) or not JS_TYPE_RE.match(kind):
+        fail(f"/codemirror/view.js through the hub: {status} {kind}")
+    ok("GET me says the owner may edit; the editor's modules are served as JavaScript")
+
+    box = expect("/forward?file=body.tex&line=5", None, 200, "forward search for body.tex:5")
+    found = None
+    for share in (0.5, 0.3, 0.7):
+        query = f"file=main.pdf&page={box['page']}&x={box['x'] + box['w'] * share:.2f}&y={box['y'] + box['h'] / 2:.2f}&json=1"
+        found = expect(f"/synctex?{query}", None, 200, "synctex with json=1")
+        if found.get("file") == "body.tex" and isinstance(found.get("line"), int) and abs(found["line"] - 5) <= 3:
+            break
+    else:
+        fail(f"synctex with json=1 maps no point of body.tex:5 back to it: {found}")
+    if editor_calls(editor_log):
+        fail(f"synctex with json=1 opened the editor: {editor_calls(editor_log)}")
+    expect(f"/synctex?{query.replace('&json=1', '')}", None, 200, "plain synctex")
+    calls = wait_for("plain synctex to run the editor stand-in", lambda: editor_calls(editor_log), timeout=10)
+    if len(calls) != 1 or not calls[0].startswith("-g ") or "/body.tex:" not in calls[0]:
+        fail(f"plain synctex ran the editor stand-in with {calls}, not -g .../body.tex:N")
+    ok("SyncTeX answers JSON with the file and line, without opening the editor; plain synctex still opens it")
+
+    path, crlf_path = os.path.join(paper, "body.tex"), os.path.join(paper, "crlf.bib")
+    os.makedirs(os.path.join(paper, "build"), exist_ok=True)
+    with open(os.path.join(paper, "build", "stray.bib"), "w") as f:
+        f.write("@misc{stray}\n")
+    listing = expect("/files", None, 200, "GET files")
+    paths = [f.get("path") for f in listing.get("files") or []]
+    if listing.get("main") != "main.tex" or paths[:1] != ["main.tex"] or paths[1:] != sorted(paths[1:]):
+        fail(f"GET files does not list main.tex first, then the rest by path: {listing}")
+    missing = [p for p in ("body.tex", "refs.bib", "sub/refs.bib", "crlf.bib", "latin.bib") if p not in paths]
+    offered = [p for p in paths if p.startswith(("build/", ".git/")) or p in (".private.bib", "leak.bib", "big.bib", "appendix.tex")]
+    if missing or offered:
+        fail(f"GET files: missing {missing}, offering {offered}: {paths}")
+    ok("GET files lists the paper's sources and .bib files (main.tex first), not build/, .git, dot files, links out, big files"
+       " or other documents")
+
+    disk = read_bytes(path)
+    got = expect("/file?path=body.tex", None, 200, "GET file body.tex")
+    if (got.get("text"), got.get("version"), got.get("eol")) != (disk.decode(), version_of(disk), "\n"):
+        fail(f"GET file body.tex: {str(got)[:300]}")
+    new = with_paragraph(got["text"], 3, "Paragraph three, saved by the editor.")
+    saved = save({"path": "body.tex", "base": got["version"], "text": new}, 200, "a save on the current version")
+    if read_bytes(path).decode() != new or saved.get("version") != version_of(new.encode()) or saved.get("merged"):
+        fail(f"a save on the current version: {str(saved)[:300]}")
+    base = expect("/file?path=body.tex", None, 200, "GET file body.tex")
+    put(path, with_paragraph(base["text"], 20, "Paragraph twenty, changed on disk meanwhile."))
+    older = with_paragraph(base["text"], 1, "Paragraph one, saved from an older copy.")
+    merged = save({"path": "body.tex", "base": base["version"], "text": older}, 200, "a save on an older version")
+    disk = read_bytes(path).decode()
+    if (merged.get("merged") is not True or merged.get("text") != disk or "Paragraph twenty, changed" not in disk
+            or "Paragraph one, saved from an older copy." not in disk):
+        fail(f"a save on an older version did not merge with the change on disk: {str(merged)[:300]}")
+    base = expect("/file?path=body.tex", None, 200, "GET file body.tex")
+    theirs = with_paragraph(base["text"], 1, "Paragraph one, changed on disk (theirs).")
+    mine = with_paragraph(base["text"], 1, "Paragraph one, changed in the browser (mine).")
+    put(path, theirs)
+    clash = save({"path": "body.tex", "base": base["version"], "text": mine}, 409, "a save that conflicts with the file on disk")
+    marked = str(clash.get("merged"))
+    if (read_bytes(path).decode() != theirs or clash.get("conflict") is not True or clash.get("text") != theirs
+            or "<<<<<<< saved meanwhile" not in marked or ">>>>>>> your edit" not in marked or "|||||||" in marked):
+        fail(f"a conflicting save wrote, or answered otherwise than with both texts and git's merge: {str(clash)[:300]}")
+    save({"path": "body.tex", "base": clash["version"], "text": mine, "force": True}, 200, "the same save with force")
+    if read_bytes(path).decode() != mine:
+        fail("a save with force did not write the text")
+    copy = with_paragraph(mine, 18, "Paragraph eighteen, changed on disk before the copy.")
+    put(path, copy)  # (a version the server never served or wrote)
+    put(path, with_paragraph(copy, 22, "Paragraph twenty-two, changed on disk after the copy."))
+    edit = with_paragraph(copy, 3, "Paragraph three, saved again from that copy.")
+    stale = save({"path": "body.tex", "base": version_of(copy.encode()), "text": edit}, 409, "a save on a version the server never saw")
+    if stale.get("stale") is not True or stale.get("text") != read_bytes(path).decode():
+        fail(f"a save on an unknown version: {str(stale)[:300]}")
+    again = save({"path": "body.tex", "base": version_of(copy.encode()), "base_text": copy, "text": edit}, 200,
+                 "the same save with its base text")
+    text = read_bytes(path).decode()
+    if again.get("merged") is not True or any(t not in text for t in ("eighteen, changed", "twenty-two, changed", "three, saved again")):
+        fail(f"a save with its base text did not merge: {str(again)[:300]}")
+    base = expect("/file?path=body.tex", None, 200, "GET file body.tex")
+    save({"path": "body.tex", "base": base["version"], "text": with_paragraph(base["text"], 7, "Seven, saved once.")}, 200,
+         "a save (whose answer the editor never gets)")
+    more = with_paragraph(base["text"], 7, "Seven, saved once, then typed on.")
+    save({"path": "body.tex", "base": base["version"], "text": more}, 200, "the next save of that line, from the version before")
+    if read_bytes(path).decode() != more:
+        fail("the save after one whose answer got lost did not write its text")
+    ok("a save writes; a stale save merges; a conflict writes nothing and answers both texts; force writes; an unknown base"
+       " asks for its text; a save whose answer got lost doesn't conflict with the next one")
+
+    crlf = expect("/file?path=crlf.bib", None, 200, "GET file crlf.bib")
+    raw = read_bytes(crlf_path)
+    if crlf.get("eol") != "\r\n" or crlf.get("text") != raw.decode().replace("\r\n", "\n"):
+        fail(f"GET file of a CRLF file: {crlf}")
+    edited = crlf["text"].replace("Three", "Four")
+    save({"path": "crlf.bib", "base": crlf["version"], "text": edited}, 200, "a save of a CRLF file")
+    if read_bytes(crlf_path) != edited.replace("\n", "\r\n").encode() or os.stat(crlf_path).st_mode & 0o777 != 0o640:
+        fail(f"a save of a CRLF file did not keep its line ends and mode: {read_bytes(crlf_path)!r}")
+    expect("/file?path=latin.bib", None, 415, "GET file of a file that is not UTF-8")
+    token_file = os.path.join(state, "token")
+    for name in ("../state/token", token_file, ".git/config", "build/main-live.log", "build/stray.bib", "leak.bib", "big.bib",
+                 ".private.bib", "appendix.tex", "nope.tex", "%2e%2e/state/token"):
+        expect("/file?path=" + urllib.parse.quote(name, safe="%"), None, 404, f"GET file {name!r} (not editable)")
+    before = {p: read_bytes(p) for p in (token_file, os.path.join(paper, ".git", "config"), os.path.join(paper, "build", "stray.bib"))}
+    for name in ("../state/token", token_file, "leak.bib", ".git/config", "build/stray.bib", "big.bib", "new.tex", "sub/new.bib"):
+        expect("/file", {"path": name, "base": "0" * 20, "text": "Overwritten.\n", "force": True}, 404, f"POST file {name!r}")
+    if (any(read_bytes(p) != data for p, data in before.items()) or os.path.exists(os.path.join(paper, "new.tex"))
+            or os.path.exists(os.path.join(paper, "sub", "new.bib")) or os.path.getsize(os.path.join(paper, "big.bib")) != (5 << 20) + 1):
+        fail("a refused save changed or made a file")
+    ok("CRLF files keep their line ends (and saves the mode); files that are not UTF-8 get 415; other paths get 404")
+
+    def opened(name):
+        source = expect("/status/main.pdf?open=" + urllib.parse.quote(name, safe=""), None, 200, f"status ?open={name}").get("source")
+        return (source.get("path"), source.get("version")) if isinstance(source, dict) else (None, None)
+
+    put(path, with_paragraph(read_bytes(path).decode(), 5, "Paragraph five, changed on disk while open."))
+    if opened("body.tex") != ("body.tex", version_of(read_bytes(path))) or opened("leak.bib")[1] or opened("../state/token")[1]:
+        fail("status ?open= does not give an open file's version as on disk, or gives one for a file the editor doesn't open")
+    status, _, data = request(f"{hub['base']}main/file", method="POST", cookie=token,
+                              body={"path": "body.tex", "base": "0" * 20, "text": "x" * (1 << 20)})
+    if status != 409 or not _quiet(lambda: json.loads(data)["stale"]):
+        fail(f"a 1 MiB save through the hub: {status} {data[:200]!r} (want 409 stale: within the 8 MB limit for files)")
+    for where, port, path_, length in (("the hub", hub["port"], f"{hub['base']}main/file", 9 << 20),
+                                       ("the hub", hub["port"], f"{hub['base']}main/note", 100_001),
+                                       ("the preview's own port", own, "/file", 9 << 20)):
+        if (status := post_length(port, path_, length, token)) != 413:
+            fail(f"a {length}-byte POST {path_} on {where}: {status}, not 413")
+    ok("status ?open= follows the open file; a 1 MiB save goes through the hub, and bodies past the limits are refused")
 
 
 def written_pages(log):

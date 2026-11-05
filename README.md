@@ -26,8 +26,20 @@ The plan below makes it a general tool.
   the toolbar runs latexmk again from the top, e.g. after another build
   (`make`) replaced the PDF and SyncTeX no longer matched it.
 - **SyncTeX both ways.** Double-click the PDF to open the source line in VS
-  Code (`code -g`). `forward.py FILE LINE` scrolls the viewer to a source line
-  and highlights it.
+  Code (`code -g`), or in the browser editor while that is open. `forward.py
+  FILE LINE`, or Show in PDF in the browser editor, scrolls the viewer to a
+  source line and highlights it.
+- **Edit in the browser.** ✎ Source (or E) opens the LaTeX beside the PDF. A
+  file menu lists the paper's `.tex`, `.bib`, `.sty` and `.cls` files by
+  folder, with a filter. Edits save by themselves a moment after you stop
+  typing (Cmd/Ctrl+S saves at once), and the PDF rebuilds. If the file changed
+  meanwhile (saved in another editor or tab, or a note from the viewer), your
+  edits are merged with that change. Where both changed the same lines, the
+  editor shows both versions between `<<<<<<<` and `>>>>>>>` lines and saves
+  again once you have settled them; or you keep your version or the other
+  whole. A file that changes on disk reloads in place. Edits that could not be
+  saved yet stay in the browser and are offered back when you open the file
+  again.
 - **Notes on/off.** A second, notes-free build shows the paper as submitted.
   The notes-free view is the default. It puts each inline note in a margin
   bubble, wired to a caret in the text where the note sits. Hover a bubble to
@@ -46,10 +58,11 @@ The plan below makes it a general tool.
   ```
   ✕ (delete) appears only on notes written from the same tab, as an undo.
   A note never lands inside a heading, another note, or text marked as
-  protected (`LATEX_LIVE_PROTECTED`), and a protected marker can't be changed
-  from the viewer. Characters pdflatex can't set (✓, →, emoji) are refused.
-  If the file is open with unsaved changes in your editor, save it first:
-  otherwise, saving later offers to overwrite the note.
+  protected (`LATEX_LIVE_PROTECTED`), and the note buttons can't change a
+  protected marker (the browser editor edits any text). Characters pdflatex
+  can't set (✓, →, emoji) are refused. If the file is open with unsaved
+  changes in your editor, save it first: otherwise, saving later offers to
+  overwrite the note. The browser editor merges the note in by itself.
 - **Page-limit badge.** Main-text pages against the venue limit, measured with
   and without notes. The limit comes from the venue style (ICLR, NeurIPS and
   COLM: 9 pages; ICML, CVPR and ICCV: 8) or `--page-limit`.
@@ -172,8 +185,9 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
   - `LATEX_LIVE_HOST`: also print a direct viewer URL on this hostname, e.g.
     the name a tunnel exposes.
   - `LATEX_LIVE_EDITOR`: the editor command that double-click opens the
-    source in (`<editor> -g FILE:LINE`), e.g. `cursor`. Without it, latex-live
-    uses `code`, and only from a VS Code terminal. On a Mac, Cursor's local
+    source in while the browser editor is closed (`<editor> -g FILE:LINE`),
+    e.g. `cursor`. Without it, latex-live uses `code`, and only from a VS Code
+    terminal (elsewhere, the browser editor opens instead). On a Mac, Cursor's local
     terminals don't have the variable VS Code terminals set, so set this to
     the `cursor` symlink to the app (`/usr/local/bin/cursor`); Cursor's bundled
     `code` script doesn't reach the open window.
@@ -181,7 +195,7 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
     stay as written, e.g. `\\ch\{human-written\}` at the end of a paragraph
     or inside a caption. Notes written from the viewer (replies too) go after
     the paragraph or caption it marks, and the marker itself can't be edited,
-    resolved, or deleted there.
+    resolved, or deleted there. The browser editor doesn't guard it.
 - **Versions:** releases are tagged `v<VERSION>` (see `VERSION`; `live.py
   --version` prints it), with notes on the GitHub releases page. To pin one,
   check out its tag; to follow development, track `main`. After the checkout
@@ -190,12 +204,16 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
 - **Contributing:** see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow,
   how the pieces fit together, and the rules.
 - **Smoke test:** `python3 check.py` (about a minute, with TeX as above)
-  compiles the Python, parses the viewer's script (with Node), and runs an
-  instance on a scratch two-column paper with git history: build, notes-free
-  pass, the copy with notes in the margin, endpoints, SyncTeX, both change
+  compiles the Python, checks the viewer's import map and parses its script
+  (with Node), and runs an instance on a scratch two-column paper with git
+  history: build, notes-free pass, the copy with notes in the margin,
+  endpoints, SyncTeX, the browser editor's files and saves, both change
   baselines, and taking over an instance. Run it before pushing.
 - **PDF.js:** vendored in `pdfjs/` (4.10.38 legacy build, Apache-2.0; see
   `pdfjs/LICENSE`).
+- **CodeMirror:** vendored in `codemirror/` for the browser editor (CodeMirror
+  6 and the packages it uses, as published on npm, MIT; see
+  `codemirror/VERSION` and `codemirror/LICENSE`).
 
 ## Portability gaps
 

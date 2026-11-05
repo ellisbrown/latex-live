@@ -34,12 +34,13 @@ describes what it does, and [SETUP.md](SETUP.md) describes how to install it.
 
 | File | Role |
 |---|---|
-| `live.py` | The server, run from a paper root. It runs `latexmk -pvc` and serves the viewer, the PDFs, and JSON endpoints: status, outline, notes, checks, figures, SyncTeX, diffs, and the change baselines. It also writes notes into the sources (`POST /note`), rebuilds (`POST /rebuild`), and builds the downloads without notes (`/export`: an exact build in `build/export/<doc>/`) and with notes in the margin (`/review`, in `build/review/<doc>/`: the export's pages placed on wider ones, with the notes typeset where a probe pass of the export records them). One instance per document, with a lock in `build/<doc>-live.lock`; running instances list themselves in `~/.config/latex-live/instances/`, beside the token. Each instance has its own port (from 44101); the one holding `hub.lock` also serves the hub on 44100, which forwards `/p/<paper>/<doc>/…` to the right instance (`HubHandler`), so users forward one port. |
+| `live.py` | The server, run from a paper root. It runs `latexmk -pvc` and serves the viewer, the PDFs, and JSON endpoints: status, outline, notes, checks, figures, SyncTeX, diffs, the change baselines, and the browser editor's files (`/files`, `/file`). It also writes notes into the sources (`POST /note`), saves the browser editor's files, merged with `git merge-file` when they changed meanwhile (`POST /file`), rebuilds (`POST /rebuild`), and builds the downloads without notes (`/export`: an exact build in `build/export/<doc>/`) and with notes in the margin (`/review`, in `build/review/<doc>/`: the export's pages placed on wider ones, with the notes typeset where a probe pass of the export records them). One instance per document, with a lock in `build/<doc>-live.lock`; running instances list themselves in `~/.config/latex-live/instances/`, beside the token. Each instance has its own port (from 44101); the one holding `hub.lock` also serves the hub on 44100, which forwards `/p/<paper>/<doc>/…` to the right instance (`HubHandler`), so users forward one port. |
 | `latexmkrc` | The latexmk configuration: builds into `build/` as job `<doc>-live`, prints the page layout into the log, and runs `latex_report.py` after each run. |
 | `latex_report.py` | The post-build hook. It publishes `<doc>.pdf` atomically, only from successful passes (each pass, so a second one doesn't hold up the first), writes `status.json` and `file:line` diagnostics, and starts the background notes-free pass (`build/<doc>-clean.pdf`). |
 | `tex-exec` | Runs a TeX tool in the TeX Live image (rootless podman), or on the host while the image is missing. |
 | `forward.py` | Forward search: maps a source line to a spot in the PDF and writes `build/<job>.forward.json` for the viewer. |
-| `viewer.html` | The whole viewer in one file (PDF.js from `pdfjs/`). It polls `/status` four times a second. |
+| `viewer.html` | The whole viewer in one file (PDF.js from `pdfjs/`, and the browser editor's CodeMirror from `codemirror/`). It polls `/status` four times a second. |
+| `codemirror/` | CodeMirror 6 for the browser editor: each package's published ES module, unmodified, which `viewer.html` loads through its import map. `codemirror/VERSION` lists the packages and versions. Update it as `pdfjs/`, by replacing the files with newer published ones (`npm pack`), and keep the import map in step (`check.py` checks it). |
 | `check.py` | The smoke test. |
 
 `viewer.html` is served from the checkout on each request, so a viewer change
@@ -49,7 +50,7 @@ shows on reload. `latex_report.py` and `forward.py` run anew each time.
 ## Rules
 
 - **Python's standard library only**, and no build step. The viewer stays one
-  self-contained file, and PDF.js stays vendored.
+  self-contained file, and PDF.js and CodeMirror stay vendored.
 - **Start latexmk only from the main thread.** Its parent-death signal fires
   when the thread that started it exits. Request handlers hand such work to the
   main loop (`on_main_thread`).
