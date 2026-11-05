@@ -728,8 +728,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 body = json.dumps(note_authors(self.server.paper_root, doc_pdf)).encode()
             elif path.startswith("/check/"):
                 body = json.dumps(cached_checks(self.server, doc_pdf)).encode()
-            elif path.startswith("/graphics/"):
-                body = json.dumps(graphics(self.server.paper_root, doc_pdf)).encode()
+            elif path.startswith("/graphics/"):  # (figure files, where in the sources, git's state: not in the PDF)
+                body = json.dumps([] if below_editor else graphics(self.server.paper_root, doc_pdf)).encode()
             elif path.startswith("/margin/"):
                 found = margin_notes(self.server.paper_root, doc_pdf)
                 body = json.dumps(shown_notes(self.server, doc_pdf, found) if below_editor else found).encode()
@@ -762,7 +762,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif path == "/open":
             self.send_text(*open_source(self.server.paper_root, query))
         elif path == "/forward":
-            self.send_json(*forward_request(self.server, query))
+            self.send_json(*forward_request(self.server, query, self.principal))
         elif path == "/commits":
             self.send_json(200, commits(self.server.paper_root))
         elif path == "/export":
@@ -1693,9 +1693,11 @@ def shared_result(server, key, compute):
     return entry["value"]
 
 
-def forward_request(server, query):
+def forward_request(server, query, user=None):
     """/forward?file=<relative path>&line=N[&clean=1]: forward search for the viewer's lists. The same
-    lookup is made once per build: requests for it while it runs wait for its answer (shared_result)."""
+    lookup is made once per build: requests for it while it runs wait for its answer (shared_result).
+    In shared mode, below editor, only for the notes the PDF shows them (shown_notes), whose rows are
+    what they click: other lines would tell them which source files exist, and where."""
     paper_root = server.paper_root
     try:
         src, line = os.path.realpath(os.path.join(paper_root, query["file"][0])), int(query["line"][0])
@@ -1703,6 +1705,11 @@ def forward_request(server, query):
         return 400, {"error": "expected file, line"}
     if not src.startswith(os.path.realpath(paper_root) + os.sep):
         return 404, {"error": "not a file in the paper"}
+    if SHARED and user is not None and not at_least(user, "editor"):
+        pdf = server.default_pdf
+        shown = shown_notes(server, pdf, notes(paper_root, pdf) + margin_notes(paper_root, pdf))
+        if not any(n.get("line") == line and os.path.realpath(os.path.join(paper_root, n.get("file") or "")) == src for n in shown):
+            return 404, {"error": "that line is not in the PDF"}  # (as for any line not in it: no hint either way)
     clean = query.get("clean") == ["1"]
     pattern = os.path.join("clean", "*-clean.synctex.gz") if clean else "*-live.synctex.gz"
     builds = tuple(sorted((path, mtime(path)) for path in glob.glob(os.path.join(glob.escape(os.path.join(paper_root, BUILD)), pattern))))

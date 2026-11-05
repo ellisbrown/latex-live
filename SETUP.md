@@ -476,8 +476,9 @@ saved then, merged with your changes.
   below the copy's paper folder and typeset it. Keep nothing in the copy that
   they shouldn't see. Commenters write plain text only. Viewers and
   commenters see the current PDF and what it shows: the notes it shows, not
-  the build's error messages, the earlier versions (baselines, diff) or
-  where in the sources a figure is (see the README's Shared mode). Editors can also
+  the build's error messages, the earlier versions (baselines, diff),
+  the figure files or where in the sources a figure is, and forward search
+  goes only to the notes they see (see the README's Shared mode). Editors can also
   compare with any commit that the copy's branch builds on, so its whole
   history is visible to them: share a branch whose history you are happy to
   show (e.g. one squashed commit on top of what you would publish).

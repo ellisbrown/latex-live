@@ -16,8 +16,9 @@
 # ($LATEX_LIVE_INSTANCE), the run ($LATEX_LIVE_RUN, e.g. main-12) and its kind (main), so that live.py
 # can stop it; and TeX gets no shell escape, and no files outside its working directory and the TeX
 # tree (openin_any=p). The paper's dot entries, at any depth (.git, whose config may hold a remote's
-# credentials, .env, chapters/.private/, ...), are hidden: an empty folder or file over each, since
-# biber and latexdiff ignore openin_any. A dot entry that is a symbolic link is left: in the
+# credentials, .env, chapters/.private/, ...), are hidden (podman's mask: they read as empty, and one
+# deleted meanwhile is skipped rather than made again in the paper), since biber and latexdiff
+# ignore openin_any. A dot entry that is a symbolic link is left: in the
 # container, where the paper is the only folder mounted, it leads into the paper, which shows nothing
 # hidden, or into the image. A name with a newline, ':' or ',' can't be hidden this way, so the run
 # is refused.
@@ -47,17 +48,14 @@ if podman image exists "$image"; then
             exit 1
         fi
         set -f
-        saved=$IFS IFS=$nl
+        saved=$IFS IFS=$nl mask=
         for entry in $dots; do
             case $entry in "$root"/*) ;; *) echo "=== latex-live: a dot entry can't be hidden; not running $2" >&2; exit 1 ;; esac
-            if [ -d "$entry" ]; then
-                set -- --tmpfs "$entry:ro,size=4k,notmpcopyup" "$@"
-            elif [ -e "$entry" ]; then
-                set -- -v "/dev/null:$entry:ro" "$@"
-            fi
+            mask=${mask:+$mask:}$entry
         done
         IFS=$saved
         set +f
+        if [ -n "$mask" ]; then set -- --security-opt "mask=$mask" "$@"; fi
         set -- --cap-drop=all --security-opt=no-new-privileges --pids-limit=512 --memory=4g --cpus=2 \
             --ulimit fsize=1073741824:1073741824 --timeout="$timeout" --entrypoint= \
             --label "latex-live.instance=$LATEX_LIVE_INSTANCE" --label "latex-live.run=$run" \

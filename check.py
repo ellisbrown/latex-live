@@ -102,7 +102,6 @@ import gzip
 import hashlib
 import http.client
 import ipaddress
-import contextlib
 import json
 import os
 import re
@@ -1636,9 +1635,12 @@ def tex_exec_check(tmp):
     want = ("--cap-drop=all", "--security-opt=no-new-privileges", "--pids-limit=512", "--memory=4g", "--cpus=2",
             "fsize=1073741824:1073741824", "--timeout=60", "latex-live.instance=check-1", "latex-live.run=main-7",
             "latex-live.kind=main", f"{root}:{root}:ro", f"{root}/out:{root}/out", "openin_any=p", "openout_any=p",
-            "shell_escape=f", f"{root}/.git:ro,size=4k,notmpcopyup", f"/dev/null:{root}/.env:ro",
-            f"/dev/null:{root}/sub/.secret.bib:ro", f"{root}/sub/deeper/.private:ro,size=4k,notmpcopyup")
+            "shell_escape=f")
+    hidden = {f"{root}/.git", f"{root}/.env", f"{root}/sub/.secret.bib", f"{root}/sub/deeper/.private"}  # (podman's mask)
     args = confined.stdout.splitlines()
+    masks = [set(a[len("mask="):].split(":")) for a in args if a.startswith("mask=")]
+    if masks != [hidden]:
+        fail(f"tex-exec with LATEX_LIVE_SANDBOX=1 masks {masks}, not the paper's dot entries {hidden}")
     if (confined.returncode or not all(w in args for w in want) or f"{root}:{root}" in args
             or args[-3:] != ["localhost/latex-live-check:none", "pdflatex", "x.tex"]):
         fail(f"tex-exec with LATEX_LIVE_SANDBOX=1 runs podman with {args} (exit {confined.returncode}), not with all of {want}"
@@ -1763,6 +1765,11 @@ def expect_dict(result, status, what):
 def as_viewer(path):
     """A GET for the viewer vw through the proxy (JSON, or text)."""
     return expect(via_proxy("vw", path), 200, f"GET {path} for a viewer")
+
+
+def as_editor(path):
+    """A GET for the editor ed through the proxy (JSON, or text): forward search for any line is theirs."""
+    return expect(via_proxy("ed", path), 200, f"GET {path} for the editor")
 
 
 def check_me(me, what, role, defined=True, **fields):
@@ -2059,7 +2066,7 @@ def identity_checks(sh):
 
 READS = ("/viewer.html?file=main.pdf", "/pdf/main.pdf", "/pdf/main-clean.pdf", "/status/main.pdf",
          "/outline/main.pdf", "/notes/main.pdf", "/authors/main.pdf", "/graphics/main.pdf", "/margin/main.pdf", "/floats/main.pdf",
-         "/forward?file=main.tex&line=9", "/docs", "/me", "/pdfjs/build/pdf.min.mjs")
+         "/docs", "/me", "/pdfjs/build/pdf.min.mjs")
 
 
 def role_checks(sh):
@@ -2089,9 +2096,20 @@ def role_checks(sh):
             for kind in ("pdf", "status"):
                 expect(via_proxy(uid, f"/{kind}/{name}"), 403, f"GET {kind} {name} for {uid} (an earlier version: editors only)")
         expect(via_proxy(uid, "/baseline", "POST", {"kind": "head"}), 403, f"POST baseline for {uid} (editors only)")
+        if expect(via_proxy(uid, "/graphics/main.pdf"), 200, f"GET graphics for {uid}") != []:
+            fail(f"/graphics for {uid} lists the figure files and where the sources include them")
+        note = next(n for n in json.loads(seen[uid]) if "An owner note to resolve" in n.get("text", ""))
+        expect(via_proxy(uid, f"/forward?file={urllib.parse.quote(note['file'])}&line={note['line']}"), 200,
+               f"forward search for {uid} to a note the PDF shows (the notes list's rows)")
+        for query in ("file=main.tex&line=9", f"file={urllib.parse.quote(note['file'])}&line={note['line'] + 1}", "file=nope.tex&line=1"):
+            refused = via_proxy(uid, f"/forward?{query}")
+            if refused[0] != 404 or b"that line is not in the PDF" not in refused[2]:
+                fail(f"forward search for {uid} to a line that is no note's ({query}): {refused[0]} {refused[2][:120]!r}")
     expect(via_proxy("ed", "/status/main-diff.pdf"), 200, "GET status main-diff.pdf for the editor")
+    as_editor("/forward?file=main.tex&line=9")
     ok("viewers and commenters see the current PDF and what it shows: not notes in false branches, the baselines and diff,"
-       " the build's error messages, nor the figures' labels and source lines; editors see them")
+       " the build's error messages, the figures' labels and source lines, nor the figure files; their forward search"
+       " goes only to the notes they see; editors see all of it")
     home = via_proxy("vw", "/")
     location = header(home, "Location") or ""
     if home[0] != 302 or not location.endswith("viewer.html?file=main.pdf") or "/p/" in location:
@@ -2192,13 +2210,13 @@ def role_checks(sh):
     ok("POST bodies: 100 000 bytes for actions, 8 MB for a file's save; a bad Content-Length is refused before reading")
 
     text = read_text(os.path.join(root, "body.tex"))
-    page, x, y = text_point(as_viewer, "body.tex", line_of(text, "Quokka narwhal"))
+    page, x, y = text_point(as_editor, "body.tex", line_of(text, "Quokka narwhal"))
     query = f"/synctex?file=main.pdf&page={page}&x={x:.2f}&y={y:.2f}"
     for result, who in ((via_proxy("vw", query), "a viewer"), (via_proxy("ed", query), "the editor"),
                         (with_token(owner, query), "the owner")):
         if expect_dict(result, 200, f"GET synctex without json=1 for {who} (JSON in shared mode)").get("file") != "body.tex":
             fail(f"GET synctex without json=1 for {who}: {result[2][:200]!r}")
-    box = as_viewer("/forward?file=generated.inc&line=1")
+    box = as_editor("/forward?file=generated.inc&line=1")
     for share in (0.5, 0.3, 0.7):
         found = expect_dict(via_proxy("vw", f"/synctex?file=main.pdf&page={box['page']}&x={box['x'] + box['w'] * share:.2f}"
                                             f"&y={box['y'] + box['h'] / 2:.2f}&json=1"), 200, "synctex for generated text")
@@ -2406,7 +2424,7 @@ def note_checks(sh):
     wait_for("the shared copy's build to catch up", lambda: settled(sh), timeout=120)
     text = read_text(path)
     first, second = line_of(text, "Quokka narwhal"), line_of(text, "Walrus yak")
-    at_first = text_point(as_viewer, "body.tex", first)
+    at_first = text_point(as_editor, "body.tex", first)
 
     def add(point, selection, words, macro):
         return {"action": "add", "page": point[0], "x": point[1], "y": point[2], "selection": selection, "text": words, "macro": macro}
@@ -2436,7 +2454,7 @@ def note_checks(sh):
     two = note_ok(sh, "cm", add(at_first, "tapir gecko", "CM note one", "cm"), "a commenter adding a note")
     if two.get("macro") != "cm" or "\\cm{CM note one}" not in read_text(path):
         fail(f"the commenter's new note is not \\cm{{CM note one}} in body.tex: {two}")
-    kept = note_ok(sh, "cm", add(text_point(as_viewer, "body.tex", second), "ibex okapi", "CM on protected", "cm"),
+    kept = note_ok(sh, "cm", add(text_point(as_editor, "body.tex", second), "ibex okapi", "CM on protected", "cm"),
                    "a commenter's note on protected text")
     text = read_text(path)
     if kept.get("protected") is not True or not 0 <= text.find("\\eb{as written}") < text.find("\\cm{CM on protected}"):
@@ -2964,13 +2982,13 @@ def rebuild_stop_checks(sh):
                               env={**ENV, "LATEX_LIVE_SANDBOX": "1", "LATEX_LIVE_REQUIRE_IMAGE": "1",
                                    "LATEX_LIVE_INSTANCE": f"{pid}-dotcheck"})
     finally:
-        # (A container that a build started meanwhile may still mount over them: podman makes an empty file or
-        # folder where one is gone. Removed again once no container of the instance runs.)
-        for _ in range(2):
-            with contextlib.suppress(FileNotFoundError):
-                os.remove(os.path.join(root, nested[0]))
-            shutil.rmtree(os.path.join(root, "sub", ".private"), ignore_errors=True)
-            wait_for("the instance's containers to finish", lambda: not instance_containers(pid), timeout=120, step=0.5)
+        os.remove(os.path.join(root, nested[0]))
+        shutil.rmtree(os.path.join(root, "sub", ".private"))
+    # (a container that a build started meanwhile masks them too; podman's mask skips a path that is gone, rather
+    # than making an empty file or folder in its place, as a mount over it would)
+    wait_for("the instance's containers to finish", lambda: not instance_containers(pid), timeout=120, step=0.5)
+    if os.path.lexists(os.path.join(root, nested[0])) or os.path.lexists(os.path.join(root, "sub", ".private")):
+        fail("a dot entry deleted while a container hid it came back in the paper")
     if marker in seen.stdout + seen.stderr or "@misc{five}" in seen.stdout:
         fail("a shared-mode container can read the paper's .git (or another dot entry, at any depth): biber, which ignores"
              " openin_any, would too")

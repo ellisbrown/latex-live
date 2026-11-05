@@ -294,8 +294,9 @@ Viewers and commenters see the current PDF and what it shows, nothing more:
 the notes the PDF shows (not those in `\iffalse` or a switch that is off, nor
 any while `\todotxt` hides them), whether the build failed and how many errors
 it had (not the messages, which quote the sources), the figures without their
-labels and source lines, and SyncTeX's lines without the names of files the
-editor doesn't open. The earlier versions (the baselines and the diff) are for
+labels and source lines (and not the list of figure files, which marks changed
+figures), forward search only to the notes they see, and SyncTeX's lines
+without the names of files the editor doesn't open. The earlier versions (the baselines and the diff) are for
 editors and the owner. The download with notes in the margin shows every note
 outside a false branch, as it always did, even while `\todotxt` hides them in
 the PDF.
