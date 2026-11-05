@@ -11,7 +11,9 @@ the viewer reloads once, on a complete file. Then prints errors and undefined
 refs/citations, and overfull hboxes (as info) as
 `/abs/path.tex:LINE: error|warning|info: msg` lines, which a tasks.json problem
 matcher turns into Problems-panel entries. Also writes build/<root>.status.json
-for the browser viewer's build-status banner.
+for the browser viewer's build-status banner, and after each successful pass keeps
+the list of files it read (build/<root>.fls.done), from which live.py lists the
+browser editor's files.
 
 When the sources have inline notes (macros that go through \todotxt), a
 successful run also starts a background pass without them
@@ -100,6 +102,19 @@ def overfull_boxes(log):
             elif ch == ")" and stack:
                 stack.pop()
     return boxes
+
+
+def keep_inputs(root):
+    """Copy this successful pass's list of the files it read, build/<root>.fls, to build/<root>.fls.done,
+    in one step. live.py lists the browser editor's files from that copy: pdflatex rewrites the .fls
+    itself during every pass, so mid-build it lacks the files read later. A failed run keeps the copy
+    of the last good pass, which matches the published PDF."""
+    fls = os.path.join(BUILD, f"{root}.fls")
+    try:
+        shutil.copyfile(fls, fls + ".done.tmp")
+        os.replace(fls + ".done.tmp", fls + ".done")
+    except OSError:
+        pass
 
 
 def write_json(path, value):
@@ -279,6 +294,7 @@ def main():
         root = sys.argv[2]
         try:
             if os.path.isfile(os.path.join(BUILD, f"{root}.pdf")):
+                keep_inputs(root)
                 publish(root, publish_dest(root)[1])
         except OSError:
             pass  # the end-of-run report publishes it anyway
@@ -333,6 +349,7 @@ def main():
     except (OSError, ValueError):
         pass
     if ok:  # (before the status, which ends "building": live.py's downloads then use this PDF)
+        keep_inputs(root)
         publish(root, dest)
     write_status(root, {"ok": ok, "time": stamp, "errors": summary,
                         "warnings": len(seen) + len(set(MULTI_RE.findall(flat))), "overfull": len(boxes),

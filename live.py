@@ -40,6 +40,8 @@ Usage (from a paper root):  live.py [<doc>[.tex] | PATH] [--port 44100] [--page-
   the same folder) prints the running viewer's URL and exits, or with --replace
   stops the first and runs instead; one that no longer answers is replaced. /papers
   lists every running instance on the machine.
+- The LaTeX can also be edited in the viewer, beside the PDF (the browser editor): a save
+  is merged with what was saved to the file meanwhile (git merge-file).
 """
 
 import argparse
@@ -65,6 +67,7 @@ import secrets
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tarfile
@@ -145,7 +148,8 @@ class DualStackServer(http.server.ThreadingHTTPServer):
     def server_bind(self):
         self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)  # accept IPv4 too
         super().server_bind()
-STATIC = {"/viewer.html"}  # plus everything under /pdfjs/
+STATIC = {"/viewer.html"}  # plus everything under /pdfjs/ and /codemirror/
+POST_LIMIT, POST_LIMITS = 100_000, {"/file": 8_000_000}  # bytes of a POST body (the browser editor saves whole files)
 
 
 def content_length(headers):
@@ -158,7 +162,7 @@ def content_length(headers):
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     timeout = 60  # (a client that stops sending mid-request frees its thread)
-    extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map, ".mjs": "text/javascript"}
+    extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map, ".mjs": "text/javascript", ".js": "text/javascript"}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=HERE, **kwargs)
@@ -213,8 +217,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return self.send_error(404)
             pdf = pdf_path(self.server.paper_root, name)
             doc_pdf = re.sub(r"(-head|-push)?-(clean|diff|head|push|export|review)\.pdf$", ".pdf", name)  # the document a derived PDF belongs to
-            if path.startswith("/status/"):  # (?base=push: a viewer shows changes since the last push)
-                body = json.dumps(status(self.server, name, urllib.parse.parse_qs(url.query).get("base") == ["push"])).encode()
+            query = urllib.parse.parse_qs(url.query)
+            if path.startswith("/status/"):  # (?base=push: a viewer shows changes since the last push; ?open=: its editor's file)
+                info = status(self.server, name, query.get("base") == ["push"])
+                if "open" in query:
+                    info["source"] = source_status(self.server, query["open"][0])
+                body = json.dumps(info).encode()
             elif path.startswith("/outline/"):
                 body = json.dumps(toc_outline(self.server.paper_root, doc_pdf, name.endswith("-clean.pdf"))).encode()
             elif path.startswith("/notes/"):
@@ -240,8 +248,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
-        elif path == "/synctex":
-            self.send_text(*synctex_edit(self.server.paper_root, urllib.parse.parse_qs(url.query)))
+        elif path == "/me":
+            self.send_json(200, me())
+        elif path == "/synctex":  # (json=1: just where it is, for the browser editor; else it opens the editor here)
+            query = urllib.parse.parse_qs(url.query)
+            if query.get("json") == ["1"]:
+                self.send_json(*synctex_lookup(self.server, query))
+            else:
+                self.send_text(*synctex_edit(self.server.paper_root, query))
+        elif path == "/files":
+            self.send_json(200, files_listing(self.server))
+        elif path == "/file":
+            self.send_json(*file_request(self.server, urllib.parse.parse_qs(url.query)))
         elif path == "/open":
             self.send_text(*open_source(self.server.paper_root, urllib.parse.parse_qs(url.query)))
         elif path == "/forward":
@@ -262,14 +280,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json(200, {"doc": self.server.default_pdf[:-4], "docs": root_docs(self.server.paper_root)})
         elif path == "/switch":
             self.send_json(*request_switch(self.server, urllib.parse.parse_qs(url.query)))
-        elif path in STATIC or (path.startswith("/pdfjs/") and ".." not in path and not path.endswith("/")):
+        elif path in STATIC or (path.startswith(("/pdfjs/", "/codemirror/")) and ".." not in path and not path.endswith("/")):
             super().do_GET()
         else:
             self.send_error(404)
 
     def do_POST(self):
-        """Actions (POST /note, /rebuild). Only with the cookie, which SameSite=Strict keeps off other
-        sites' requests, and a JSON body, which other sites can't send without asking first."""
+        """Actions (POST /note, /file, /rebuild). Only with the cookie, which SameSite=Strict keeps off
+        other sites' requests, and a JSON body, which other sites can't send without asking first."""
         path = urllib.parse.urlsplit(self.path).path
         if not self.authorize({}):
             return self.send_error(403, "open the viewer URL with ?t=<token> first")
@@ -278,14 +296,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self.send_error(415, "expected a JSON body")
         length = content_length(self.headers)
-        if not 0 <= length <= 100_000:
+        if not 0 <= length <= POST_LIMITS.get(path, POST_LIMIT):
             return self.send_error(413 if length > 0 else 400)
         try:
             req = json.loads(self.rfile.read(length) or b"{}")
-        except ValueError:
+        except (ValueError, RecursionError):
             return self.send_error(400, "bad JSON")
         if path == "/note" and isinstance(req, dict):
             self.send_json(*note_request(self.server, req))
+        elif path == "/file" and isinstance(req, dict):
+            self.send_json(*save_request(self.server, req))
         elif path == "/rebuild":
             self.send_json(*on_main_thread(self.server, rebuild_doc))
         else:
@@ -1471,6 +1491,270 @@ def change_note(src, rel, raw, line, macro, action, req, kinds):
     return 200, out
 
 
+# The browser editor: GET /files lists the sources it opens, GET /file reads one, and POST /file
+# saves one, merged (git merge-file) with what was saved meanwhile since the version the edits
+# started from. A file's version is a hash of its bytes; the editor works with \n line ends, and a
+# file that uses \r\n gets them back on save. Saves go through write_source under NOTE_LOCK, as
+# notes do, so the two never overwrite each other.
+EDITABLE_EXTS = (".tex", ".bib", ".sty", ".cls")
+EDITABLE_SIZE = 4_000_000  # bytes (a save sends the text, and sometimes the base text too: POST_LIMITS)
+MERGE_LABELS = ("saved meanwhile", "base", "your edit")  # (git's conflict markers name the two sides)
+
+
+def me():
+    """GET /me: who the viewer's user is and what they may do: the owner, who may do everything. The
+    viewer shows the browser editor only when this answers (an older server has no editor)."""
+    return {"role": "owner", "can": {"edit": True}}
+
+
+def fls_file(paper_root, pdf_name):
+    """The list of files the last successful pass of the published <doc>.pdf read: the copy of its
+    recorder file (.fls) that latex_report.py keeps, build/<doc>-live.fls.done. pdflatex rewrites the
+    .fls itself during every pass, so mid-build it lacks the files read later (the editor's files
+    would come and go); before the first successful pass, it is all there is."""
+    done = job_file(paper_root, pdf_name, ".fls.done")
+    return done if os.path.isfile(done) else job_file(paper_root, pdf_name, ".fls")
+
+
+def editable_real(paper_root, rel):
+    """The real path of rel, a path relative to the paper root, if the browser editor may open it,
+    else None: an existing regular .tex, .bib, .sty or .cls file of at most 4 MB in the paper root,
+    not in the build directory, in .git or in another folder whose name starts with a dot, and not a
+    dot file; all of that also once symbolic links are resolved (a link to a file elsewhere is not)."""
+    if not isinstance(rel, str) or not rel or "\0" in rel or os.path.isabs(rel):
+        return None
+    root = os.path.realpath(paper_root)
+    real = os.path.realpath(os.path.join(root, rel))
+    for path in (os.path.normpath(rel), os.path.relpath(real, root)):
+        parts = path.split(os.sep)
+        if (any(part.startswith(".") for part in parts) or os.path.splitext(path)[1].lower() not in EDITABLE_EXTS
+                or path == BUILD or path.startswith(os.path.join(BUILD, ""))):
+            return None
+    try:
+        st = os.stat(real)
+    except (OSError, ValueError):
+        return None
+    return real if stat.S_ISREG(st.st_mode) and st.st_size <= EDITABLE_SIZE else None
+
+
+def editable_files(server, fresh=True):
+    """The files the browser editor opens, {path relative to the paper root: real path}, the main file
+    first, then by path: those of the document's files that editable_real allows, which are the files
+    its last build read (fls_file), its main file, the .bib files in the paper root and in the folders
+    in it (as find_bib_entry looks for them), and the files its \\input and \\include commands name
+    (source_tree, so they show before the first build). Without fresh, a list up to 2 s old does
+    (status polls)."""
+    cached = server.editable
+    if not fresh and cached and time.monotonic() - cached[0] < 2 and cached[1] == server.default_pdf:
+        return cached[2]
+    root, doc = server.paper_root, server.default_pdf[:-4]
+    main = f"{doc}.tex"
+    names = [main, *project_inputs(root, fls_file(root, server.default_pdf))]
+    names += [os.path.relpath(p, root) for pattern in ("*.bib", os.path.join("*", "*.bib"))
+              for p in glob.glob(os.path.join(glob.escape(root), pattern))]
+    names += [os.path.relpath(os.path.normpath(p), root) for p in source_tree(root, doc)]
+    found = {}
+    for rel in sorted({os.path.normpath(name) for name in names}, key=lambda rel: (rel != main, rel)):
+        if real := editable_real(root, rel):
+            found[rel] = real
+    server.editable = (time.monotonic(), server.default_pdf, found)
+    return found
+
+
+def files_listing(server):
+    """GET /files: {"files": [{"path", "size"}], "main"}, the files the browser editor opens."""
+    files = []
+    for rel, real in editable_files(server).items():
+        try:
+            files.append({"path": rel, "size": os.stat(real).st_size})
+        except OSError:
+            pass
+    return {"files": files, "main": f"{server.default_pdf[:-4]}.tex"}
+
+
+def file_version(data):
+    """A source file's version: the first 20 hex digits of the SHA-256 of its bytes."""
+    return hashlib.sha256(data).hexdigest()[:20]
+
+
+def editor_text(raw):
+    """(text, eol): a source file's text as the browser editor has it, with \\n line ends, and the line
+    end the file uses, \\r\\n if most of its lines end so (a save puts it back), else \\n."""
+    crlf = raw.count("\r\n")
+    return raw.replace("\r\n", "\n"), "\r\n" if crlf and 2 * crlf >= raw.count("\n") else "\n"
+
+
+def remember_version(server, rel, version, text):
+    """Keep text as version of rel, the last 8 versions of each file the editor read or saved, so that
+    a save from an older version can be merged with what was saved since (save_request). At most
+    64 MB in all: the oldest go first."""
+    with server.versions_lock:
+        kept = server.versions  # {(rel, version): text}, oldest first
+        kept.pop((rel, version), None)
+        kept[(rel, version)] = text
+        for key in [key for key in kept if key[0] == rel][:-8]:
+            del kept[key]
+        while len(kept) > 1 and sum(map(len, kept.values())) > 64_000_000:
+            kept.popitem(last=False)
+
+
+def source_status(server, rel):
+    """status?open=<rel>: {"path", "version"} of a file the browser editor has open, so that it sees a
+    change on disk within one poll; None if the editor doesn't open that path. The version is cached
+    by the file's (path, mtime, size, inode): an atomic replace (write_source) is a new inode."""
+    rel = os.path.normpath(rel or ".")
+    real = editable_files(server, fresh=False).get(rel) and editable_real(server.paper_root, rel)
+    if not real:
+        return None
+    try:
+        return {"path": rel, "version": cached_version(real)}
+    except OSError:
+        return None
+
+
+def cached_version(path, cache={}):
+    """file_version of the file at path, read again only when its stat changes (see source_status)."""
+    st = os.stat(path)
+    if (version := cache.get((path, st.st_mtime_ns, st.st_size, st.st_ino))) is not None:
+        return version
+    with open(path, "rb") as f:
+        st, data = os.fstat(f.fileno()), f.read()  # (the stat of the bytes read, should the file change now)
+    if len(cache) >= 64:
+        cache.clear()
+    version = cache[(path, st.st_mtime_ns, st.st_size, st.st_ino)] = file_version(data)
+    return version
+
+
+def file_request(server, query):
+    """GET /file?path=<rel>: {"path", "text" (\\n line ends), "version", "eol"} of a file the browser
+    editor opens; 404 for any other path, whether or not it exists, and 415 for a file that is not
+    UTF-8."""
+    rel = os.path.normpath(query.get("path", [""])[0] or ".")
+    real = editable_files(server).get(rel)
+    if not real:
+        return 404, {"error": "not a file the editor opens"}
+    try:
+        with open(real, "rb") as f:
+            data = f.read()
+        text, eol = editor_text(data.decode("utf-8"))
+    except OSError:
+        return 404, {"error": "not a file the editor opens"}
+    except UnicodeDecodeError:
+        return 415, {"error": f"{rel} is not UTF-8, so the editor can't open it"}
+    version = file_version(data)
+    remember_version(server, rel, version, text)
+    return 200, {"path": rel, "text": text, "version": version, "eol": eol}
+
+
+def save_request(server, req):
+    """POST /file {path, base, text, base_text?, force?}: save a file from the browser editor. Returns
+    (status, JSON).
+
+    base is the version the edits in text (the whole new text, \\n line ends) started from. If the
+    file is still at base, or with force, text is written. Otherwise the edits are merged with what
+    was saved since (merge_texts), from base's text: base_text, or the server's copy of that version
+    (remember_version). Then 200 {"version", "merged", "text"}: text is what is now in the file when
+    that is not the text sent (merged: true); 409 {"conflict": true, "version", "text", "merged"} when
+    both changed the same lines, with nothing written (the file's version and text, and git's merge
+    with conflict markers); or 409 {"stale": true, "version", "text"} without base's text: send it
+    again with base_text."""
+    rel, text, base, base_text, force = (req.get(key) for key in ("path", "text", "base", "base_text", "force"))
+    if not (isinstance(rel, str) and isinstance(text, str) and isinstance(base, (str, type(None)))
+            and isinstance(base_text, (str, type(None))) and isinstance(force, (bool, type(None)))):
+        return 400, {"error": "expected path, base and text (and maybe base_text, force)"}
+    rel = os.path.normpath(rel or ".")
+    real = editable_files(server).get(rel)
+    if not real:
+        return 404, {"error": "not a file the editor opens"}
+    try:
+        text, base_text = (t if t is None else t.replace("\r\n", "\n") for t in (text, base_text))
+        if len(text.encode("utf-8")) > EDITABLE_SIZE:
+            return 413, {"error": "the editor saves files of up to 4 MB"}
+        if base_text is not None:
+            base_text.encode("utf-8")
+    except UnicodeEncodeError:
+        return 400, {"error": "the text is not valid Unicode"}
+    for _ in range(3):  # (again when another program writes the file between our read and write)
+        try:
+            with NOTE_LOCK:
+                return save_file(server, rel, real, text, base, base_text, bool(force))
+        except SourceChanged:
+            continue
+        except UnicodeDecodeError:
+            return 415, {"error": f"{rel} is not UTF-8, so the editor can't save it"}
+        except OSError as e:
+            return 500, {"error": f"could not save {rel}: {e.strerror or e}"}
+    return 409, {"error": f"{rel} keeps changing on disk; try again"}
+
+
+def save_file(server, rel, real, sent, base, base_text, force):
+    """save_request's read, merge and write of rel (at real) with the text sent, under NOTE_LOCK:
+    (status, JSON).
+
+    When the merge from base conflicts but the file is just as the last save of rel left it, the
+    answer to that save got lost (the editor then keeps the older base), and the new text builds on
+    what was sent then: it is merged from that text instead, so that the editor's own save doesn't
+    count as someone else's change."""
+    with open(real, "rb") as f:
+        data = f.read()
+    raw = data.decode("utf-8")
+    current, eol = editor_text(raw)
+    version = file_version(data)
+    remember_version(server, rel, version, current)
+    text = sent
+    if not force and base != version:
+        with server.versions_lock:
+            base_text = server.versions.get((rel, base)) if base_text is None else base_text
+        if base_text is None:
+            return 409, {"stale": True, "version": version, "text": current,
+                         "error": f"{rel} changed meanwhile, and the text your edits started from is not known here"}
+        own = server.last_saves.get(rel)  # (the version the last save left, and that of the text it sent)
+        try:
+            conflicts, text = merge_texts(current, base_text, sent)
+            if conflicts and own and own[0] == version:
+                with server.versions_lock:
+                    sent_then = current if own[1] == version else server.versions.get((rel, own[1]))
+                if sent_then is not None:
+                    conflicts, text = merge_texts(current, sent_then, sent)
+        except (OSError, RuntimeError, UnicodeDecodeError, subprocess.SubprocessError) as e:
+            return 422, {"error": f"could not merge your edits with the changes saved meanwhile ({e})"}
+        if conflicts:
+            return 409, {"conflict": True, "version": version, "text": current, "merged": text,
+                         "error": f"your edits and the changes saved meanwhile touch the same lines of {rel}"}
+    new = text.replace("\n", eol) if eol != "\n" else text
+    encoded = new.encode("utf-8")
+    if len(encoded) > EDITABLE_SIZE:
+        return 413, {"error": "the editor saves files of up to 4 MB"}
+    new_version = file_version(encoded)
+    if new != raw:
+        write_source(real, raw, new)
+    remember_version(server, rel, new_version, text)
+    sent_version = new_version
+    if text != sent:  # (merged: keep the text sent too, should the answer get lost)
+        sent_version = file_version((sent.replace("\n", eol) if eol != "\n" else sent).encode("utf-8"))
+        remember_version(server, rel, sent_version, sent)
+    server.last_saves[rel] = (new_version, sent_version)
+    return 200, {"version": new_version, "merged": text != sent, **({"text": text} if text != sent else {})}
+
+
+def merge_texts(current, base, new):
+    """Merge the edits from base to new into current (git merge-file, on files in a private temporary
+    folder): (the number of conflicts, the merged text, with git's conflict markers where both sides
+    changed the same lines: the two sides only, whatever style the user's git config asks for, which
+    the editor's conflict handling expects). RuntimeError if git can't merge them (e.g. binary data)."""
+    with tempfile.TemporaryDirectory(prefix="latex-live-merge-") as tmp:
+        paths = [os.path.join(tmp, name) for name in ("current", "base", "new")]
+        for path, text in zip(paths, (current, base, new)):
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+        labels = [arg for label in MERGE_LABELS for arg in ("-L", label)]
+        r = subprocess.run(["git", "-c", "merge.conflictStyle=merge", "merge-file", "-p", "-q", *labels, *paths],
+                           capture_output=True, cwd=tmp, timeout=60)
+    if not 0 <= r.returncode <= 127:  # (git's count of conflicts stops at 127; it fails with 255)
+        raise RuntimeError(r.stderr.decode(errors="replace").strip() or f"git merge-file failed ({r.returncode})")
+    return r.returncode, r.stdout.decode("utf-8")
+
+
 def pdf_pages_text(pdf):
     """Plain text of each page (pdftotext), or [] without poppler."""
     try:
@@ -2421,12 +2705,10 @@ def open_in_vscode(src, line, paper_root):
     return 200, where
 
 
-def inverse_search(paper_root, name, page, x, y, clean):
-    """PDF position -> (source path, line), or (status, message) when there is none.
-
-    name: the published PDF; x, y in PDF points from the page's top-left; clean for a position
-    in the notes-free PDF.
-    """
+def synctex_input(paper_root, name, page, x, y, clean):
+    """PDF position -> (the input file as SyncTeX recorded it, line), or (status, message) when there
+    is none. name: the published PDF; x, y in PDF points from the page's top-left; clean for a
+    position in the notes-free PDF."""
     if not name.endswith(".pdf") or os.path.basename(name) != name:
         return 400, "bad file"
     job = clean_file if clean else job_file
@@ -2437,10 +2719,52 @@ def inverse_search(paper_root, name, page, x, y, clean):
     if "Input" not in result:
         missing = synctex_unavailable()
         return (503, missing) if missing else (404, "no source location here")
-    src, line = os.path.normpath(result["Input"]), max(1, int(result["Line"]))
+    return os.path.normpath(result["Input"]), max(1, int(result["Line"]))
+
+
+def inverse_search(paper_root, name, page, x, y, clean):
+    """PDF position -> (source path, line), or (status, message) when there is none (synctex_input)."""
+    found = synctex_input(paper_root, name, page, x, y, clean)
+    if isinstance(found[0], int):
+        return found
+    src, line = found
     if src.startswith(os.path.join(paper_root, BUILD) + os.sep):  # generated, e.g. the table of contents
         return 404, f"generated text ({os.path.basename(src)}); no source line"
     return src, line
+
+
+def synctex_lookup(server, query):
+    """/synctex?file&page&x&y[&clean=1]&json=1: inverse search for the browser editor, which opens
+    nothing here. Returns (status, {"file": the source's path in the editor's list (editable_files),
+    "line"}), or {"file": None, "reason"} (200) for a spot whose source the editor doesn't open: a
+    class file of TeX's, generated text in the build directory."""
+    try:
+        name = query["file"][0]
+        page, x, y = int(query["page"][0]), float(query["x"][0]), float(query["y"][0])
+    except (KeyError, ValueError):
+        return 400, {"error": "expected file, page, x, y"}
+    found = synctex_input(server.paper_root, name, page, x, y, query.get("clean") == ["1"])
+    if isinstance(found[0], int):
+        return found[0], {"error": found[1]}
+    src, line = found
+    root = os.path.realpath(server.paper_root)
+    path = os.path.realpath(os.path.join(root, src))
+    if path.startswith(os.path.realpath(os.path.join(root, BUILD)) + os.sep):
+        return 200, {"file": None, "reason": f"generated text ({os.path.basename(src)}); no source line"}
+    if not path.startswith(root + os.sep):
+        return 200, {"file": None, "reason": f"{os.path.basename(src)} is not one of the paper's files"}
+    rel = next((rel for rel, real in editable_files(server, fresh=False).items() if real == path), None)
+    if not rel:
+        return 200, {"file": None, "reason": f"{os.path.basename(src)} is not one of the files the editor opens"}
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        lines = max(1, data.count(b"\n") + (not data.endswith(b"\n")))
+    except OSError:
+        lines = line
+    if line > lines:  # (SyncTeX names lines past the end now and then, e.g. in a table built by macros)
+        return 200, {"file": rel, "line": lines, "note": f"SyncTeX said line {line} of {rel}, which has {lines}: its last line instead"}
+    return 200, {"file": rel, "line": line}
 
 
 def synctex_edit(paper_root, query):
@@ -3618,6 +3942,9 @@ def serve(paper_root, default_pdf, port, page_limit):
     server.image_checked, server.image_note = 0, None
     server.latexmk, server.lock, server.stopping, server.retried = None, None, False, -60
     server.requests = queue.Queue()  # document switches and rebuilds, for the main thread (on_main_thread)
+    server.editable = None  # (editable_files)
+    server.versions, server.versions_lock = collections.OrderedDict(), threading.Lock()  # (remember_version)
+    server.last_saves = {}  # (save_file)
     server.token = load_token()
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
@@ -3817,7 +4144,7 @@ class HubHandler(Handler):
         preview checks that it is that paper (X-Latex-Live-Paper): a port that its preview gave
         up and another paper's took since the last look answers 421, and the hub looks again."""
         length = content_length(self.headers)
-        if not 0 <= length <= 100_000:  # (the previews' own limit for a POST)
+        if not 0 <= length <= POST_LIMITS.get(urllib.parse.urlsplit(path).path, POST_LIMIT):  # (the previews' own limits)
             return self.send_error(413 if length > 0 else 400)
         body = self.rfile.read(length) if length else None
         headers = {k: v for k, v in self.headers.items() if k.lower() in ("content-type", "range", "if-range")}
