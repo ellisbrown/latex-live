@@ -5114,7 +5114,7 @@ def serve(paper_root, default_pdf, port, page_limit):
     # sources' stat it built from, and the requests to build again (POST /rebuild, at most every 20 s for coauthors).
     server.shared = {"building": False, "status": None, "clean": None, "published": None, "wanted": threading.Event(),
                      "force": False, "rebuilt": -60, "proc": None, "clean_seq": 0, "bib": None, "biber": None, "idx": None,
-                     "retried": -60}
+                     "failed": {}, "retried": -60}
     server.token = load_token()
     return server
 
@@ -5740,9 +5740,25 @@ def read_build(path, limit=64 << 20):
         return ""
 
 
+def aux_tree(aux):
+    """The text of a job's .aux (aux) and of the .aux files it reads in build/ (\\@input, as \\include
+    writes one per chapter), as bibtex reads them: at most 200 files, none outside build/."""
+    texts, todo, seen = [aux], [aux], set()
+    while todo and len(seen) < 200:
+        for name in re.findall(r"^\\@input\{([^{}]+)\}", todo.pop(), re.M):
+            path = os.path.normpath(os.path.join(BUILD, name))
+            if path in seen or not path.startswith(BUILD + os.sep) or len(seen) >= 200:
+                continue
+            seen.add(path)
+            texts.append(text := read_build(path))
+            todo.append(text)
+    return "\n".join(texts)
+
+
 def bib_state(server, aux):
-    """What a bibtex run depends on: the .aux's citation, bibliography and style lines, and the stat of
-    the .bib files it names in the paper (in_paper), to tell whether bibtex needs to run again."""
+    """What a bibtex run depends on: the citation, bibliography and style lines of the .aux files (aux:
+    aux_tree's), and the stat of the .bib files they name in the paper (in_paper), to tell whether bibtex
+    needs to run again."""
     root, stats = server.paper_root, []
     for names in re.findall(r"^\\bibdata\{(.*)\}$", aux, re.M):
         for name in names.split(","):
@@ -5796,24 +5812,38 @@ def shared_run(server):
             latex_report.keep_inputs(job)
             shared_publish(server, job)
             aux, log = read_build(out(".aux")), read_build(out(".log"))
-            ran = False
-            if "\\bibdata" in aux and (state := bib_state(server, aux)) != server.shared["bib"]:
-                ran = shared_tool(server, ["bibtex", f"{BUILD}/{job}"])
-                server.shared["bib"] = state  # (failed or not: again once what it reads changes, or on a rebuild)
-            elif (bcf := read_build(out(".bcf"))) and ((state := biber_state(server, bcf)) != server.shared["biber"]
-                                                      or re.search(r"Please \(?re\)?run Biber", log)):
-                ran = shared_tool(server, ["biber", f"--output-directory={BUILD}", job])
-                server.shared["biber"] = state
+            auxes, failed, ran = aux_tree(aux), server.shared["failed"], False
+
+            def tool(name, argv, log_ext):  # (failed or not, it runs again once what it reads changes, or on a rebuild)
+                done = shared_tool(server, argv)
+                failed[name] = None if done else f"{name} failed; see {BUILD}/{job}{log_ext}"
+                return done
+
+            if "\\bibdata" in auxes:
+                if (state := bib_state(server, auxes)) != server.shared["bib"]:
+                    ran = tool("bibtex", ["bibtex", f"{BUILD}/{job}"], ".blg")
+                    server.shared["bib"] = state
+            elif (bcf := read_build(out(".bcf"))):
+                if (state := biber_state(server, bcf)) != server.shared["biber"] or re.search(r"Please \(?re\)?run Biber", log):
+                    ran = tool("biber", ["biber", f"--output-directory={BUILD}", job], ".blg")
+                    server.shared["biber"] = state
+            else:
+                for name in ("bibtex", "biber"):
+                    failed.pop(name, None)
             idx = read_build(out(".idx"))
             if idx and (state := hashlib.sha256(idx.encode()).hexdigest()) != server.shared["idx"]:
                 server.shared["idx"] = state
-                ran = shared_tool(server, ["makeindex", "-o", out(".ind"), out(".idx")]) or ran
+                ran = tool("makeindex", ["makeindex", "-o", out(".ind"), out(".idx")], ".ilg") or ran
+            elif not idx:
+                failed.pop("makeindex", None)
             if server.shared["force"]:
                 return
             if not ran and not RERUN_RE.search(log) and aux == before:
                 break
         files = [os.path.relpath(p, root) for p in project_tex_files(root, fls_file(root, pdf))]
         ok, status, log, _ = latex_report.run_report(job, "ok" if ok else "fail", files)
+        if ok and (tools := [msg for msg in server.shared["failed"].values() if msg]):  # (a stale bibliography or index)
+            ok, status = False, {**status, "ok": False, "errors": [{"file": None, "line": None, "msg": msg} for msg in tools]}
         if not ok and latex_report.damaged_aux(log, job) and time.monotonic() - server.shared["retried"] > 60:
             server.shared["retried"] = time.monotonic()  # (a run stopped part way cut off an .aux: once more without them)
             for ext in latex_report.AUX_EXTS:
