@@ -10,7 +10,8 @@
    In shared mode, the downloads built on request say plainly that the TeX Live image is missing, the
    review copy reads its notes from the files of the last good build (only the paper's own), and
    the inputs kept for its probe leave out symbolic links; shared mode's builder prints the page
-   layout as latexmkrc does, and runs biber again when a data source changes.
+   layout as latexmkrc does, runs biber again when a data source changes, and reads a chapter's .aux
+   for bibtex.
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a git
    repository with a pushed commit and a local one) gets a live.py instance, with the hub on port
    44180 (or the first free block of 13 ports above it; LATEX_LIVE_CHECK_PORT sets it), state of its own
@@ -78,7 +79,7 @@
      to its last line; diffs only against commits that HEAD builds on; editors' rebuilds at most
      every 20 s;
    - a rebuild stops the run in progress and its container (a pass kept busy for a minute); removing
-     a file the build reads rebuilds it; the status ignores a status, a .building marker and a record of what was published forged in
+     a file the build reads rebuilds it; a bibtex failure fails the build; the status ignores a status, a .building marker and a record of what was published forged in
      build/; a second instance asks the port in a forged lock file without its token;
    - auto-commit: each user's edits are committed as that user (by the owner) once they are
      quiet, or at the owner's POST commit, only the files the server wrote, on the shared branch
@@ -696,7 +697,21 @@ def shared_build_checks():
         put(os.path.join(root, "refs.bib"), "@misc{a, title = {A}}\n")
         if live.biber_state(server, bcf) == before:
             fail("shared mode's builder would not run biber again after a change to a .bib file the .bcf names")
-    ok("shared mode's builder prints the page layout as latexmkrc does, and runs biber again when a data source changes")
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as root:
+        cwd = os.getcwd()
+        os.chdir(root)
+        try:
+            for name, text in (("main-live.aux", "\\relax\n\\@input{chapter.aux}\n\\@input{../outside.aux}\n"),
+                               ("chapter.aux", "\\relax\n\\citation{late}\n"), ("../outside.aux", "\\citation{outside}\n")):
+                os.makedirs(os.path.dirname(os.path.join(live.BUILD, name)) or live.BUILD, exist_ok=True)
+                put(os.path.join(live.BUILD, name), text)
+            tree = live.aux_tree(read_text(os.path.join(live.BUILD, "main-live.aux")))
+        finally:
+            os.chdir(cwd)
+        if "\\citation{late}" not in tree or "outside" in tree.replace("../outside.aux", ""):
+            fail(f"shared mode's builder doesn't read a chapter's .aux for bibtex (or reads one outside build/): {tree!r}")
+    ok("shared mode's builder prints the page layout as latexmkrc does, runs biber again when a data source changes, and"
+       " bibtex when a chapter's .aux changes")
 
 
 def viewer_scripts(page):
@@ -2695,6 +2710,21 @@ def rebuild_stop_checks(sh):
              timeout=120)
     ok(f"removing a file the build reads rebuilds the shared copy (which then fails: {str(gone.get('errors'))[:60]}), and"
        " restoring it builds again")
+
+    bib = os.path.join(root, BIBDATA_NAME + ".bib")
+    kept = read_bytes(bib)
+    put(bib, "@misc{probe, title = {Probe}\n")  # (no closing brace: bibtex fails)
+    try:
+        broken = wait_for("a build whose bibtex fails", lambda: "bibtex failed" in json.dumps((shared_status(sh).get("build") or {})
+                                                                                           .get("errors")) and shared_status(sh)["build"],
+                          timeout=60, step=0.5)
+    finally:
+        put_bytes(bib, kept)
+    wait_for("the shared copy's build to settle", lambda: settled(sh) and (shared_status(sh).get("build") or {}).get("ok"),
+             timeout=120)
+    if broken.get("ok") is not False:
+        fail(f"a build whose bibtex failed reports success: {broken}")
+    ok("a build whose bibtex fails reports it, and builds again once the .bib is fixed")
     lock_spoof_checks(sh)
 
 
