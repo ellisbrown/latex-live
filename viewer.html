@@ -1273,7 +1273,9 @@ async function saveSource({ keepalive = false } = {}) {
   clearTimeout(retryTimer);
   const target = ed, text = cmView.state.doc.toString();
   if (!ed.dirty) return showSaveState();
-  if (text === ed.base) { // (nothing to save, e.g. a conflict resolved to the file as it is)
+  // Nothing to save (e.g. a conflict resolved to the file as it is, or an undo back to it), unless a save
+  // may have reached the server unanswered: the file may then hold that save's text, so this goes too.
+  if (text === ed.base && !ed.uncertain) {
     ed.dirty = false;
     if (!hasConflictMarks(text)) endConflict();
     keepUnsaved(true);
@@ -1287,6 +1289,7 @@ async function saveSource({ keepalive = false } = {}) {
   busy = { kind: "save", since: CM.ChangeSet.empty(text.length), done: new Promise((resolve) => (done = resolve)) };
   lastSaveAt = Date.now();
   showSaveState();
+  target.uncertain = true; // (until the server's answer says what the file holds)
   try {
     let body = { path: target.path, base: target.baseVersion, text, editor: EDITOR_ID };
     if (keepalive && fitsKeepalive({ ...body, base_text: target.base })) body = { ...body, base_text: target.base }; // (no second try once the page is gone)
@@ -1307,9 +1310,9 @@ async function saveSource({ keepalive = false } = {}) {
     if (r.ok) {
       const now = typeof res.text === "string" ? res.text : text;
       if (now === text || applyRemote(text, now, since)) { // (merged with changes made meanwhile)
-        Object.assign(ed, { base: now, baseVersion: res.version, dirty: !since.empty, markers: false, error: null });
+        Object.assign(ed, { base: now, baseVersion: res.version, dirty: !since.empty, markers: false, error: null, uncertain: false });
       } else { // (edits typed meanwhile touch the lines merged in: the server merges them, on the next save)
-        Object.assign(ed, { base: text, baseVersion: null, dirty: true, markers: false, error: null });
+        Object.assign(ed, { base: text, baseVersion: null, dirty: true, markers: false, error: null, uncertain: false });
       }
       sourceEpoch++;
       endConflict();
@@ -1317,7 +1320,7 @@ async function saveSource({ keepalive = false } = {}) {
     } else if (r.status === 409 && res.conflict && typeof res.merged === "string") {
       if (applyRemote(text, res.merged, since)) {
         conflict = {};
-        Object.assign(ed, { base: res.text, baseVersion: res.version, dirty: true, markers: true, error: null });
+        Object.assign(ed, { base: res.text, baseVersion: res.version, dirty: true, markers: true, error: null, uncertain: false });
         sourceEpoch++;
         if (!editorShown()) showEditor(true, { focus: false }); // (e.g. the save on closing the pane: show what happened)
         showConflict();
@@ -3382,7 +3385,9 @@ $("docPick").onchange = async (e) => {
   const value = e.target.value;
   e.target.value = docFile.slice(0, -4);
   if (value === "papers") return window.open(hubBase ? "/papers" : "papers", "latex-live-papers");
-  await flushSource(); // (the source pane saves first)
+  if (!(await flushSource())) { // (the source pane saves first; with edits it can't save, nothing switches)
+    return setStatus(`${ed.path} is not saved yet${ed.markers ? " (settle its conflicts first)" : ""}, so nothing switched`, "error");
+  }
   if (value.startsWith("open:")) return (location.href = viewerOf(otherPreviews[+value.slice(5)]));
   setStatus(`switching to ${value}.tex…`, "busy");
   const r = await fetch(`switch?${new URLSearchParams({ doc: value })}`);

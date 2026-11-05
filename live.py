@@ -1693,11 +1693,12 @@ def save_file(server, rel, real, sent, base, base_text, force, editor=None):
     """save_request's read, merge and write of rel (at real) with the text sent, under NOTE_LOCK:
     (status, JSON).
 
-    When the merge from base conflicts but the file is just as this editor's (the viewer page's
-    own name for its saves) last save of rel left it, the answer to that save got lost (the editor
-    then keeps the older base), and the new text builds on what was sent then: it is merged from
-    that text instead, so that the editor's own save doesn't count as someone else's change. Another
-    page's save never counts as this one's."""
+    When the file is just as this editor's (the viewer page's own name for its saves) last save of
+    rel left it, though the edits start from another version, the answer to that save got lost (the
+    editor then keeps the older base), and the new text builds on what was sent then: it is merged
+    from that text instead, so that the editor's own save doesn't count as someone else's change, and
+    an edit undone since (back to the older base) is undone in the file too. Another page's save never
+    counts as this one's."""
     with open(real, "rb") as f:
         data = f.read()
     raw = data.decode("utf-8")
@@ -1706,19 +1707,16 @@ def save_file(server, rel, real, sent, base, base_text, force, editor=None):
     remember_version(server, rel, version, current)
     text = sent
     if not force and base != version:
+        own = editor and server.last_saves.get((rel, editor))  # (the version it left, and that of the text sent)
         with server.versions_lock:
             base_text = server.versions.get((rel, base)) if base_text is None else base_text
+            if own and own[0] == version:  # (this editor's last save, whose answer got lost)
+                base_text = current if own[1] == version else server.versions.get((rel, own[1]), base_text)
         if base_text is None:
             return 409, {"stale": True, "version": version, "text": current,
                          "error": f"{rel} changed meanwhile, and the text your edits started from is not known here"}
-        own = editor and server.last_saves.get((rel, editor))  # (the version it left, and that of the text sent)
         try:
             conflicts, text = merge_texts(current, base_text, sent)
-            if conflicts and own and own[0] == version:
-                with server.versions_lock:
-                    sent_then = current if own[1] == version else server.versions.get((rel, own[1]))
-                if sent_then is not None:
-                    conflicts, text = merge_texts(current, sent_then, sent)
         except (OSError, RuntimeError, UnicodeDecodeError, subprocess.SubprocessError) as e:
             return 422, {"error": f"could not merge your edits with the changes saved meanwhile ({e})"}
         if conflicts:
