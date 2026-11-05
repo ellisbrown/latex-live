@@ -18,7 +18,7 @@ def least_role(method, path):
     text, which only editors see (shared_pdfs, viewer_status)."""
     if method == "GET" and path.startswith("/check/"):  # (the checks quote the sources' comments and hidden text)
         return "editor"
-    if method == "GET" and path.startswith(READ_PATHS + ("/pdfjs/", "/codemirror/")):
+    if method == "GET" and path.startswith(READ_PATHS + STATIC_DIRS):
         return "viewer"
     if method == "GET":
         return {"/": "viewer", "/me": "viewer", "/docs": "viewer", "/forward": "viewer", "/synctex": "viewer",
@@ -71,3 +71,4 @@ def viewer_status(info):
 
 
 READ_PATHS = ("/pdf/", "/status/", "/outline/", "/notes/", "/check/", "/graphics/", "/margin/", "/floats/", "/authors/")
+STATIC_DIRS = ("/pdfjs/", "/codemirror/", "/viewer/")  # (the folders of the viewer's own files: handler.static_file)

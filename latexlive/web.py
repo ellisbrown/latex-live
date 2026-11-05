@@ -80,7 +80,8 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
     """What every request of an instance and of the hub goes through: who is asking (authorize), and
     sending the answer. Without a route of its own (Handler, HubHandler), it answers nothing."""
     timeout = 60  # (a client that stops sending mid-request frees its thread)
-    extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map, ".mjs": "text/javascript", ".js": "text/javascript"}
+    extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map, ".mjs": "text/javascript", ".js": "text/javascript",
+                      ".css": "text/css"}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=config.HERE, **kwargs)
@@ -160,7 +161,7 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
         if getattr(self, "set_cookie", None):  # (Secure where the browser reaches it over https: shared mode's public URL)
             secure = "; Secure" if config.SHARED and (config.PUBLIC_ORIGIN or "").startswith("https:") and "loopback" not in getattr(self, "hosts", ()) else ""
             self.send_header("Set-Cookie", f"latex_live={self.set_cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000{secure}")
-        if self.path.startswith("/viewer.html"):  # revalidate, so an update shows on the next reload
+        if self.path.startswith(("/viewer.html", "/viewer/")):  # revalidate, so an update shows on the next reload
             self.send_header("Cache-Control", "no-cache")
         self.send_header("X-Content-Type-Options", "nosniff")
         if config.SHARED:  # (no other site may frame the viewer, nor learn its URL; VS Code's Simple Browser frames an owner's own)
