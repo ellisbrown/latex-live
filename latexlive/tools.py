@@ -5,6 +5,7 @@ shared instance's containers."""
 import contextlib
 import itertools
 import os
+import signal
 import resource
 import shlex
 import shutil
@@ -51,19 +52,22 @@ LIVE_SPAWN = threading.BoundedSemaphore(1)
 RUN_SEQ = itertools.count(1)  # (run_tool: each run's own container label)
 
 
-def run_tool(argv, cwd, timeout=600, kind="tool", env=None, capture=0, slot=None, preexec_fn=None):
+def run_tool(argv, cwd, timeout=600, kind="tool", env=None, capture=0, slot=None, preexec_fn=None, group=False):
     """Run a tool (argv: with its container's prefix, tex-exec or podman, if any) in a slot (SPAWNS, or
     slot), with stdin and stderr closed and stdout discarded, or with capture, its first capture bytes
     kept: (its exit status, or None once it ran past timeout seconds; its output). In shared mode its
     container gets a label of its own (LATEX_LIVE_RUN) and the same deadline (LATEX_LIVE_TIMEOUT, which
     tex-exec gives podman), and past the timeout it is removed before the slot is let go: stopping the
-    podman client alone would leave it running."""
+    podman client alone would leave it running. With group, it runs in a process group of its own, all of
+    which is stopped past the timeout (a shell that runs tools in turn: stopping the shell would leave the
+    one it runs, and its hold on the output)."""
     label = f"{kind}-{next(RUN_SEQ)}"
     env = {**(os.environ if env is None else env), "LATEX_LIVE_RUN": label, "LATEX_LIVE_TIMEOUT": str(int(timeout))}
     out = bytearray()
     with slot or SPAWNS:
         proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE if capture else subprocess.DEVNULL, preexec_fn=preexec_fn)
+                                stdout=subprocess.PIPE if capture else subprocess.DEVNULL, preexec_fn=preexec_fn,
+                                start_new_session=group)
         reader = None
         if capture:
             def read():  # (all of it is read, so that the tool never waits on a full pipe; the first capture bytes kept)
@@ -74,6 +78,11 @@ def run_tool(argv, cwd, timeout=600, kind="tool", env=None, capture=0, slot=None
         try:
             code = proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
+            if group:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    pass
             proc.kill()
             proc.wait()
             stop_containers(label)

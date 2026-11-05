@@ -42,7 +42,7 @@ def run_synctexes(paper_root, runs):
             return [[] for _ in runs]
         cmd = [*container_argv(paper_root), *cmd]
     try:
-        code, out = run_tool(cmd, paper_root, timeout=60, kind="synctex", capture=4 << 20)
+        code, out = run_tool(cmd, paper_root, timeout=60, kind="synctex", capture=4 << 20, group=True)  # (a batch: a shell)
     except OSError:
         return [[] for _ in runs]
     found = [[]] if len(runs) == 1 else []
