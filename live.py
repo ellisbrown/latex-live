@@ -70,8 +70,6 @@ import math
 import os
 import queue
 import re
-import resource
-import shlex
 import shutil
 import signal
 import socket
@@ -95,7 +93,17 @@ from latexlive import config  # noqa: E402
 from latexlive.auth import (  # noqa: E402
     LOOPBACK_ORIGIN_RE, ROLES, USER_ID_RE, host_kinds, is_loopback, load_token, load_users, owner_name,
     owner_principal, peer_uid, principal, same_secret, users, users_owner)
+from latexlive.files import (  # noqa: E402
+    aux_tree, child_aux, clean_file, file_hash, fls_file, in_paper, job_file, mtime, open_output, pdf_path,
+    project_inputs, project_tex_files, read_build, read_capped, read_json, read_output, too_big)
+from latexlive.git import commits, git_busy, git_operation, git_read_env, pushed_commit  # noqa: E402
+from latexlive.latex import (  # noqa: E402
+    DOCCLASS_RE, INPUT_RE, RERUN_RE, blank_comments, brace_group, false_blocks, paper_root_of, pick_doc,
+    project_macros, read_tex, root_docs, source_tree, tex_to_text)
 from latexlive.roles import READ_PATHS, allowed, at_least, least_role, shared_pdfs, viewer_status  # noqa: E402
+from latexlive.tools import (  # noqa: E402
+    LIVE_SPAWN, RUN_SEQ, SPAWNS, container_argv, container_exec, image_problem, image_pulled, pdf_pages_text, pdf_tool,
+    run_tool, stop_containers, synctex_unavailable, tex_argv)
 
 
 def me(server, user):
@@ -573,81 +581,6 @@ def bad_link_page(owner):
 <p>It may be old, or your access may have ended. Ask {html.escape(owner)} for a new one.</p>"""
 
 
-def image_pulled():
-    """Whether podman has the TeX Live image (~30 ms). Checked per use, not once: it can be removed
-    (e.g. by a cleanup job) or pulled while the server runs."""
-    return bool(shutil.which("podman")) and subprocess.run(["podman", "image", "exists", config.TEXLIVE_IMAGE]).returncode == 0
-
-
-def synctex_unavailable():
-    """Why SyncTeX can't run (no host synctex, and no TeX Live image to run it in), else None."""
-    if shutil.which("synctex") or image_pulled():
-        return None
-    return config.IMAGE_MISSING if shutil.which("podman") else "no synctex: install TeX Live (MacTeX on macOS)"
-
-
-def image_problem(server):
-    """For the viewer: IMAGE_MISSING while builds or SyncTeX need the image and it is missing, or why
-    SyncTeX can't run on a host-TeX setup; else None. Checked at most every 5 s (the viewer polls
-    twice a second)."""
-    if not server.tex_exec and shutil.which("synctex"):
-        return None
-    if time.time() - server.image_checked > 5:
-        server.image_checked = time.time()
-        server.image_note = synctex_unavailable() if not server.tex_exec else None if image_pulled() else config.IMAGE_MISSING
-    return server.image_note
-
-
-# At most this many SyncTeX runs and builds made on request at once (run_synctex, the downloads, the
-# baselines, the diff): each request may start one, often a container, and in shared mode any coauthor
-# can send requests, so they must not pile up on the owner's machine. In shared mode, where live.py also
-# runs the build itself, one of the four slots is the live build's own (LIVE_SPAWN, shared_tool), so that
-# downloads can't keep it waiting; the notes-free pass takes one of the other three. Nothing that holds
-# a slot waits for anything a waiter holds: a slot is taken around one tool run, with no lock held.
-SPAWNS = threading.BoundedSemaphore(3 if config.SHARED else 4)
-LIVE_SPAWN = threading.BoundedSemaphore(1)
-RUN_SEQ = itertools.count(1)  # (run_tool: each run's own container label)
-
-
-def run_tool(argv, cwd, timeout=600, kind="tool", env=None, capture=0, slot=None, preexec_fn=None):
-    """Run a tool (argv: with its container's prefix, tex-exec or podman, if any) in a slot (SPAWNS, or
-    slot), with stdin and stderr closed and stdout discarded, or with capture, its first capture bytes
-    kept: (its exit status, or None once it ran past timeout seconds; its output). In shared mode its
-    container gets a label of its own (LATEX_LIVE_RUN) and the same deadline (LATEX_LIVE_TIMEOUT, which
-    tex-exec gives podman), and past the timeout it is removed before the slot is let go: stopping the
-    podman client alone would leave it running."""
-    label = f"{kind}-{next(RUN_SEQ)}"
-    env = {**(os.environ if env is None else env), "LATEX_LIVE_RUN": label, "LATEX_LIVE_TIMEOUT": str(int(timeout))}
-    out = bytearray()
-    with slot or SPAWNS:
-        proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE if capture else subprocess.DEVNULL, preexec_fn=preexec_fn)
-        reader = None
-        if capture:
-            def read():  # (all of it is read, so that the tool never waits on a full pipe; the first capture bytes kept)
-                for chunk in iter(lambda: proc.stdout.read(1 << 16), b""):
-                    out.extend(chunk[:max(0, capture - len(out))])
-            reader = threading.Thread(target=read, daemon=True)
-            reader.start()
-        try:
-            code = proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-            stop_containers(label)
-            code = None
-        if reader:
-            reader.join(10)
-            proc.stdout.close()
-    return code, out.decode("utf-8", errors="replace")
-
-
-def tex_argv(server, *argv):
-    """argv for a TeX tool as the server runs it: through its tex_exec (tex-exec in the TeX Live image,
-    confined in shared mode), or on the host when that is empty (--host-tex)."""
-    return [*shlex.split(server.tex_exec or ""), *argv]
-
-
 def run_synctex(paper_root, *args):
     """Run `synctex <args>` and return its result records (dicts of the Key:value lines).
 
@@ -675,61 +608,6 @@ def run_synctex(paper_root, *args):
     return records
 
 
-def job_file(paper_root, pdf_name, ext):
-    """build/<doc>-live<ext> for the published <doc>.pdf."""
-    return os.path.join(paper_root, config.BUILD, f"{pdf_name[:-4]}-live{ext}")
-
-
-def fls_file(paper_root, pdf_name):
-    """The list of files the last successful pass of the published <doc>.pdf read: the copy of its
-    recorder file (.fls) kept after each successful pass (latex_report.py, or shared_build),
-    build/<doc>-live.fls.done. pdflatex rewrites the .fls itself during every pass, so mid-build it
-    lacks the files read later (notes, note macros, the editor's files would come and go); before the
-    first successful pass, it is all there is."""
-    done = job_file(paper_root, pdf_name, ".fls.done")
-    return done if os.path.isfile(done) else job_file(paper_root, pdf_name, ".fls")
-
-
-def clean_file(paper_root, pdf_name, ext):
-    """build/clean/<doc>-clean<ext>: the notes-free pass (latex_report.py; its PDF moves to build/)."""
-    return os.path.join(paper_root, config.BUILD, "clean", f"{pdf_name[:-4]}-clean{ext}")
-
-
-def open_output(path):
-    """A file of the build's, open for reading in binary, or None if there is none or it is not a regular
-    file. In shared mode, never through a symbolic link: the build folder is written in containers that
-    run the coauthors' sources."""
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | (os.O_NOFOLLOW if config.SHARED else 0))
-    except OSError:
-        return None
-    f = open(fd, "rb")
-    if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
-        f.close()
-        return None
-    return f
-
-
-def read_capped(path, limit=config.READ_LIMIT, whole=False):
-    """A file's text (bytes that don't decode replaced), at most its first limit bytes (with whole: None
-    for a longer file), or None if there is none (open_output)."""
-    f = open_output(path)
-    if f is None:
-        return None
-    with f:
-        data = f.read(limit + 1)
-    if len(data) > limit:
-        if whole:
-            return None
-        data = data[:limit]
-    return data.decode("utf-8", errors="replace")
-
-
-def fls_inputs(fls):
-    """The INPUT lines of a recorder file (.fls) that pdflatex wrote, as given (read_capped)."""
-    return [line[6:].strip() for line in (read_capped(fls) or "").splitlines()[:config.RECORD_LIMIT] if line.startswith("INPUT ")]
-
-
 def synctex_records(synctex_gz):
     """The lines of a build's SyncTeX file, decompressed as they are read, up to SYNCTEX_LIMIT bytes and
     RECORD_LIMIT lines in all (a file the paper's TeX made could hold far more); none if there is no file."""
@@ -755,14 +633,6 @@ def to_int(text, default=None):
         return int(text)
     except (TypeError, ValueError):
         return default
-
-
-def pdf_path(paper_root, name):
-    """Published <doc>.pdf in the paper root; derived <doc>-clean.pdf / -diff.pdf / -head.pdf /
-    -head-clean.pdf / -push.pdf / -push-clean.pdf / -export.pdf / -review.pdf in build/."""
-    if re.search(r"-(clean|diff|head|push|export|review)\.pdf$", name):
-        return os.path.join(paper_root, config.BUILD, name)
-    return os.path.join(paper_root, config.PUBLISH, name)
 
 
 BIB_SPAN_LOCK = threading.Lock()  # (bib_span: one lookup per build, however many viewers poll at once)
@@ -805,84 +675,6 @@ def refs_start(paper_root, pdf_name, clean=False):
     span = bib_span(paper_root, (f(paper_root, pdf_name, ".synctex.gz"), f(paper_root, pdf_name, ".bbl"),
                                  f(paper_root, pdf_name, ".pdf")))
     return span and span[0]
-
-
-def read_json(path):
-    """A small JSON file of the build's (status, forward search), or None (also past JSON_LIMIT)."""
-    text = read_capped(path, config.JSON_LIMIT, whole=True)
-    try:
-        return json.loads(text) if text is not None else None
-    except (ValueError, RecursionError):
-        return None
-
-
-def mtime(path):
-    return os.stat(path).st_mtime_ns if os.path.exists(path) else 0
-
-
-DOCCLASS_RE = re.compile(r"^[^%\n]*\\documentclass\b", re.M)
-
-
-def root_docs(paper_root):
-    """The root documents in the paper root: the .tex files with a \\documentclass that is not commented out."""
-    docs = []
-    for name in sorted(os.listdir(paper_root)) if os.path.isdir(paper_root) else ():
-        if name.endswith(".tex"):
-            try:
-                with open(os.path.join(paper_root, name), errors="replace") as f:
-                    if DOCCLASS_RE.search(f.read(65536)):
-                        docs.append(name[:-4])
-            except OSError:
-                pass
-    return docs
-
-
-def paper_root_of(path):
-    """The paper root for a file, e.g. the editor's current one: its folder if that holds a root
-    document, else the nearest folder above that does (not past the top of its git checkout, or
-    outside one, more than three folders up)."""
-    folder = os.path.dirname(os.path.abspath(path))
-    while not os.path.isdir(folder):
-        folder = os.path.dirname(folder)
-    r = subprocess.run(["git", "-C", folder, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
-    top = os.path.realpath(r.stdout.strip()) if r.returncode == 0 else None
-    for _ in range(100 if top else 4):
-        if root_docs(folder):
-            return folder
-        if os.path.realpath(folder) == top or folder == os.path.dirname(folder):
-            break
-        folder = os.path.dirname(folder)
-    return None
-
-
-def source_tree(paper_root, doc):
-    """The .tex files that doc reads through \\input and \\include, from the source (no build needed); in
-    shared mode, only the paper's own (in_paper), at most 500."""
-    seen, todo = set(), [os.path.join(paper_root, f"{doc}.tex")]
-    while todo and len(seen) < 500:
-        path = os.path.normpath(todo.pop())
-        if path in seen or not os.path.isfile(path) or config.SHARED and not in_paper(paper_root, path):
-            continue
-        seen.add(path)
-        for m in INPUT_RE.finditer(read_tex(path)):
-            name = m.group(1).strip()
-            todo.append(os.path.join(paper_root, name if name.endswith(".tex") else name + ".tex"))
-    return seen
-
-
-def pick_doc(paper_root, docs):
-    """The root document whose sources were edited last. On a tie (the newest file is shared, e.g.
-    a preamble), the one last built here."""
-    try:
-        with open(os.path.join(paper_root, config.BUILD, "latex-live-doc")) as f:
-            last = f.read().strip()
-    except OSError:
-        last = None
-
-    def edited(doc):
-        return max((os.path.getmtime(path) for path in source_tree(paper_root, doc)), default=0)
-
-    return max(docs, key=lambda doc: (edited(doc), doc == last))
 
 
 LAYOUT_RE = re.compile(r"^latex-live layout: (.+)$", re.M)
@@ -995,79 +787,6 @@ def code_updated(started={}):
 
 
 TOC_LEVELS = {"part": 0, "chapter": 0, "section": 1, "subsection": 2, "subsubsection": 3, "paragraph": 4}
-TEX_SYMBOLS = {"Delta": "Δ", "alpha": "α", "beta": "β", "gamma": "γ", "times": "×", "&": "&", "%": "%", "_": "_", "xspace": " ",
-               "ldots": "…", "dots": "…"}
-MACRO_DEF_RE = re.compile(r"\\(?:(?:re|provide)?newcommand\*?|DeclareRobustCommand\*?)\s*\{?\\([a-zA-Z@]+)\}?\s*(?=\{)|\\def\\([a-zA-Z@]+)(?=\{)")
-INPUT_RE = re.compile(r"\\(?:input|include|subfile)\s*\{([^{}]+)\}")
-
-
-def brace_group(text, i):
-    """The balanced {...} group starting at text[i] == "{": (content, index after it)."""
-    depth = 0
-    for j in range(i, len(text)):
-        if text[j - 1] != "\\":
-            depth += {"{": 1, "}": -1}.get(text[j], 0)
-        if depth == 0:
-            return text[i + 1:j], j + 1
-    return "", len(text)
-
-
-def project_macros(paper_root, fls):
-    """Zero-argument macro definitions from the project's .tex files (those the build read).
-
-    Definitions are read in TeX's order, from the root file (the first one read) down through
-    \\input/\\include, so a redefinition wins as in TeX, e.g. one in the root after \\input{preamble}.
-    Files not reached that way only add macros that are still undefined.
-    """
-    macros = {}
-    paths = [os.path.normpath(os.path.join(paper_root, p)) for p in fls_inputs(fls) if p.endswith(".tex")]
-    paths = [p for p in dict.fromkeys(paths) if in_paper(paper_root, p)]
-    done = set()
-
-    def read(path, define):
-        done.add(path)
-        try:
-            with open(path, errors="replace") as f:
-                text = re.sub(r"(?<!\\)%.*\n?[ \t]*", "", f.read())  # (a comment also eats the line break)
-        except OSError:
-            return
-        pos = 0
-        for m in [*INPUT_RE.finditer(text), None]:
-            for d in MACRO_DEF_RE.finditer(text, pos, m.start() if m else len(text)):
-                body, _ = brace_group(text, d.end())
-                if "#" not in body:
-                    define(d.group(1) or d.group(2), body)
-            if m:
-                pos = m.end()
-                child = os.path.normpath(os.path.join(paper_root, m.group(1).strip()))
-                child = next((c for c in (child, child + ".tex") if c in paths and c not in done), None)
-                if child:
-                    read(child, define)
-
-    if paths:
-        read(paths[0], macros.__setitem__)
-    for path in paths:
-        if path not in done:
-            read(path, macros.setdefault)
-    return macros
-
-
-def tex_to_text(tex, macros, depth=0, typeset=False):
-    """Rough plain text for a TeX snippet: expand project macros, keep a few symbols, drop other commands.
-    \texorpdfstring gives its bookmark form, or with typeset=True the typeset one."""
-    while (i := tex.find("\\texorpdfstring")) >= 0:
-        typeset_text, k = brace_group(tex, tex.find("{", i))
-        pdf_text, k = brace_group(tex, tex.find("{", k))
-        tex = tex[:i] + (typeset_text if typeset else pdf_text) + tex[k:]
-    if typeset:  # conditionals: the \else branch (e.g. a glyph's non-bold form)
-        tex = re.sub(r"\\if\w*(?:[^\\]|\\(?!else|fi\b))*?\\else((?:[^\\]|\\(?!fi\b))*)\\fi\b", lambda m: m.group(1).strip(), tex)
-
-    def macro(m):
-        name = m.group(1)
-        if name in macros and depth < 6:
-            return tex_to_text(macros[name], macros, depth + 1, typeset)
-        return TEX_SYMBOLS.get(name, "")
-    return re.sub(r"\\([a-zA-Z@]+|.)\s*", macro, tex).replace("{", "").replace("}", "")
 
 
 def contents_lines(text):
@@ -1102,17 +821,6 @@ def written_contents(aux, ext, depth=0, budget=None):
             budget[1] -= 1
             found += written_contents(child, ext, depth + 1, budget)
     return found
-
-
-def child_aux(folder, name):
-    """The .aux file that \\@input{name} in an .aux in folder names, if it is in folder or below it (not
-    an absolute path, nor .. out of it, nor through a link: the paper's TeX writes the name), else None."""
-    path = os.path.normpath(os.path.join(folder, name))
-    if os.path.isabs(name) or not path.startswith(os.path.join(os.path.normpath(folder), "")):
-        return None
-    if os.path.realpath(path) != os.path.join(os.path.realpath(folder), os.path.relpath(path, folder)):  # (a link on the way)
-        return None
-    return path
 
 
 def numbered(arg, macros):
@@ -1350,39 +1058,6 @@ def forward_request(server, query, user=None):
     if missing := synctex_unavailable():
         return 503, {"error": missing}
     return 404, {"error": "that line is not in the PDF"}
-
-
-def in_paper(paper_root, path):
-    """Whether path (absolute, normalized) is one of the paper's own files: in the paper root, and not in
-    the build directory, whose files the build generates. (The .fls a build writes can name any path.)
-    In shared mode, also once symbolic links are resolved: coauthors write notes into these files, so a
-    link to a file elsewhere is not one (the owner's own previews keep such links, as they always did);
-    and not a dot file or a file in a dot folder, which TeX doesn't read there (openin_any=p), however a
-    file list that the paper's TeX forged names it."""
-    if not path.startswith(os.path.join(paper_root, "")) or path.startswith(os.path.join(paper_root, config.BUILD, "")):
-        return False
-    if not config.SHARED:
-        return True
-    real, root = os.path.realpath(path), os.path.realpath(paper_root)
-    dotted = any(part.startswith(".") for rel in (os.path.relpath(path, paper_root), os.path.relpath(real, root))
-                 for part in rel.split(os.sep))
-    return (real.startswith(os.path.join(root, "")) and not real.startswith(os.path.join(os.path.realpath(os.path.join(root, config.BUILD)), ""))
-            and not dotted)
-
-
-def project_tex_files(paper_root, fls):
-    """The project's .tex files that the build read, in reading order (not generated ones in build/)."""
-    paths = [os.path.normpath(os.path.join(paper_root, os.path.normpath(p))) for p in dict.fromkeys(fls_inputs(fls)) if p.endswith(".tex")]
-    return [p for p in dict.fromkeys(paths) if in_paper(paper_root, p)]
-
-
-def read_tex(path):
-    """File text with comments blanked (line numbers kept)."""
-    try:
-        with open(path, errors="replace") as f:
-            return re.sub(r"(?<!\\)%.*", "", f.read())
-    except OSError:
-        return ""
 
 
 NOTE_DEF_RE = re.compile(r"\\(?:re|provide)?newcommand\*?\s*\{?\\([a-zA-Z]+)\}?\s*\[1\]\s*(?=\{)")
@@ -1727,15 +1402,6 @@ def enclosing_group(text, lo, pos):
         elif text[j] == "}" and stack:
             stack.pop()
     return stack[-1] if stack else None
-
-
-def blank_comments(raw):
-    """raw with its comments blanked, at the same length (indexes carry over). A line that is all
-    comment keeps a \x7f: it doesn't end a paragraph in TeX."""
-    def blank(m):
-        whole = not raw[raw.rfind("\n", 0, m.start()) + 1:m.start()].strip()
-        return ("\x7f" if whole else " ") + " " * (len(m.group()) - 1)
-    return re.sub(r"(?<!\\)%.*", blank, raw)
 
 
 def safe_site(raw, pos, note_macros=()):
@@ -2458,45 +2124,6 @@ def commit_at_exit(server):
               flush=True)
 
 
-GIT_OPERATIONS = (("MERGE_HEAD", "a merge"), ("rebase-merge", "a rebase"), ("rebase-apply", "a rebase"),
-                  ("CHERRY_PICK_HEAD", "a cherry-pick"), ("REVERT_HEAD", "a revert"))
-
-
-def git_dir(server):
-    """The paper's git directory (asked once), or None outside a git checkout."""
-    if server.git_dir is None:
-        try:
-            r = subprocess.run(["git", "-C", server.paper_root, "rev-parse", "--absolute-git-dir"], capture_output=True,
-                               encoding="utf-8", errors="surrogateescape", timeout=60)
-        except OSError:  # (no git)
-            server.git_dir = ""
-        except subprocess.SubprocessError:  # (asked again next time)
-            return None
-        else:
-            server.git_dir = r.stdout.strip() if r.returncode == 0 else ""
-    return server.git_dir or None
-
-
-def git_operation(server):
-    """The operation git is in the middle of in the paper's checkout: "a merge", "a rebase", "a
-    cherry-pick" or "a revert"; else None."""
-    folder = git_dir(server)
-    return next((what for name, what in GIT_OPERATIONS if folder and os.path.exists(os.path.join(folder, name))), None)
-
-
-def git_busy(server):
-    """Why git can't take a commit now: an operation in progress (git_operation), or another git
-    command holding the index; else None."""
-    folder = git_dir(server)
-    if not folder:
-        return "the paper is not in a git checkout"
-    if what := git_operation(server):
-        return f"git is in the middle of {what}; edits are committed once it is done"
-    if os.path.exists(os.path.join(folder, "index.lock")):
-        return "git is busy (another git command holds index.lock); edits are committed once it is done"
-    return None
-
-
 def commit_pending(server, ids=None, only=None):
     """Commit the pending writes of the users in ids (default: everyone's; of the file only, if
     given), one commit per user (commit_files). The caller holds NOTE_LOCK. While git is busy
@@ -2551,12 +2178,6 @@ def commit_notice(server, message):
         print(f"=== latex-live: {message}", flush=True)
 
 
-def git_read_env():
-    """The environment for git commands that only read: without optional locks, so that they never hold
-    the index while the server commits (commit_files)."""
-    return {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
-
-
 def commit_files(server, user, paths):
     """Commit paths ({path relative to the paper root: (kind, sequence number)}) as user, as they are
     in the working tree and nothing else (git commit --only; the committer is the owner), leaving
@@ -2607,28 +2228,6 @@ def committer(server):
     return tuple(found)
 
 
-def pdf_pages_text(pdf):
-    """Plain text of each page (pdftotext), or [] without poppler."""
-    out = pdf_tool(["pdftotext", "-q", pdf, "-"])
-    return out.split("\f") if out else []
-
-
-def pdf_tool(argv, timeout=60):
-    """What a poppler tool (pdfinfo, pdffonts, pdfimages, pdftotext) prints about a PDF the build made, or
-    "" without poppler, or once it has run for timeout seconds; at most OUTPUT_LIMIT bytes of it. In shared
-    mode, where the paper's TeX made the PDF and poppler parses it on this machine, also with at most 1 GB of
-    memory and that much CPU time."""
-    def limits():
-        resource.setrlimit(resource.RLIMIT_AS, (1 << 30, 1 << 30))
-        resource.setrlimit(resource.RLIMIT_CPU, (timeout, timeout))
-    try:
-        code, out = run_tool(argv, None, timeout, kind="poppler", capture=config.OUTPUT_LIMIT, slot=contextlib.nullcontext(),
-                             preexec_fn=limits if config.SHARED else None)
-    except OSError:
-        return ""
-    return out if code is not None else ""
-
-
 def find_bib_entry(paper_root, key):
     """(relative .bib path, line) of @type{key, in the paper's .bib files, or None."""
     pat = re.compile(r"@\w+\s*\{\s*%s\s*," % re.escape(key))
@@ -2653,17 +2252,6 @@ GRAPHIC_EXTS = (".pdf", ".png", ".jpg", ".jpeg", ".eps", ".svg")
 INCLUDE_RE = re.compile(r"\\(includegraphics|includesvg)\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}|\\(input|include)\s*\{([^}]*)\}")
 
 
-def project_inputs(paper_root, fls):
-    """Project files the build read (relative paths, not generated ones in build/)."""
-    paths = [os.path.normpath(p) for p in fls_inputs(fls)]
-    found = []
-    for p in dict.fromkeys(paths):
-        full = os.path.normpath(os.path.join(paper_root, p))
-        if in_paper(paper_root, full) and os.path.isfile(full):
-            found.append(os.path.relpath(full, paper_root))
-    return list(dict.fromkeys(found))
-
-
 def include_sites(paper_root, pdf_name):
     """Where each included graphic or \\input file is included: {relative path: (tex file, line)}."""
     fls = fls_file(paper_root, pdf_name)
@@ -2680,15 +2268,6 @@ def include_sites(paper_root, pdf_name):
             if target and target not in sites:
                 sites[target] = (os.path.relpath(path, paper_root), text.count("\n", 0, m.start()) + 1)
     return sites
-
-
-def file_hash(path, cache={}):
-    st = os.stat(path)
-    key = (path, st.st_mtime_ns, st.st_size)
-    if key not in cache:
-        with open(path, "rb") as f:
-            cache[key] = hashlib.sha1(f.read()).hexdigest()[:16]
-    return cache[key]
 
 
 def graphics(paper_root, pdf_name):
@@ -3102,7 +2681,8 @@ ARCHIVE_EXTS = (".tar.gz", ".tgz", ".zip")
 COMMENT_RE = re.compile(r"(?<!\\)(?:\\\\)*%(.*)")  # (also right after a \\ line break)
 PERSONAL_PATH_RE = re.compile(r"(?<![\w.~])/(?:home|Users|checkpoint)/[^\s{}]*|(?<![\w~])~/[^\s{}]*"
                               r"|(?<![\w\\])[A-Za-z]:[\\/](?:[\w .-]+[\\/])+[^\s{}]*|\b(?i:file):/[^\s{}]*")
-IF_RE = re.compile(r"\\newif\s*\\if[a-zA-Z@]*|\\ifthenelse\b|\\(if[a-zA-Z@]*|fi)(?![a-zA-Z@])")
+
+
 LEFTOVER_RE = re.compile(r"\.(?:aux|log|out|toc|lof|lot|fls|fdb_latexmk|synctex(?:\.gz)?|blg|bcf|run\.xml|brf|nav|snm|vrb|xdv|dvi)$"
                          r"|(?:^|/)(?:\.DS_Store|\._[^/]*|__MACOSX/.*|\.git/.*)$")
 
@@ -3162,23 +2742,6 @@ def pdf_strings(data, cache={}):
                 out.append(pdf_tool(cmd, timeout=30))
         cache[key] = "\n".join(out)
     return cache[key]
-
-
-def false_blocks(text):
-    """(start, end) of each \\iffalse ... \\fi block in comment-blanked text (to the end if unclosed)."""
-    blocks, depth, start = [], 0, None
-    for m in IF_RE.finditer(text):
-        if not m.group(1):
-            continue
-        if start is None:
-            if m.group(1) == "iffalse":
-                start, depth = m.start(), 1
-        else:
-            depth += -1 if m.group(1) == "fi" else 1
-            if depth == 0:
-                blocks.append((start, m.end()))
-                start = None
-    return blocks + ([(start, len(text))] if start is not None else [])
 
 
 def ago(t):
@@ -3682,16 +3245,6 @@ def synctex_edit(paper_root, query):
     return open_in_vscode(*found, paper_root)
 
 
-def commits(paper_root):
-    """Recent commits for the viewer's compare menu."""
-    out = subprocess.run(["git", "-C", paper_root, "log", "-n", "40", "--date=format:%b %d %H:%M",
-                          "--format=%h%x09%ad%x09%an%x09%s"], capture_output=True, text=True).stdout
-    dirty = bool(subprocess.run(["git", "-C", paper_root, "status", "--porcelain", "--untracked-files=no"], capture_output=True,
-                                text=True, env=git_read_env()).stdout.strip())
-    return {"dirty": dirty, "commits": [dict(zip(("rev", "date", "author", "subject"), l.split("\t", 3)))
-                                        for l in out.splitlines()]}
-
-
 def build_running(server, pdf_name):
     """Whether latexmk (in shared mode, shared_build) is building pdf_name now: its passes may still publish
     it before the run ends."""
@@ -3859,24 +3412,6 @@ def exact_export(server, pdf, keep=None):
 
 
 AUX_SKIP = (".pdf", ".log", ".synctex.gz", ".blg", ".fls")  # (what a pass writes but doesn't read)
-
-
-def read_output(paper_root, path, encoding=None):
-    """A file that TeX or BibTeX wrote (a log, an .aux, a .bbl), read whole for the downloads: its text (bytes
-    that don't decode replaced), or None if there is none. Raises RuntimeError past OUTPUT_LIMIT."""
-    try:
-        with open(path, encoding=encoding, errors="replace") as f:
-            text = f.read(config.OUTPUT_LIMIT + 1)
-    except OSError:
-        return None
-    if len(text) > config.OUTPUT_LIMIT:
-        raise RuntimeError(too_big(os.path.relpath(path, paper_root), config.OUTPUT_LIMIT))
-    return text
-
-
-def too_big(name, limit, what=""):
-    """What a download says when a file of TeX's output is past its limit (read_output, run_probe, synctex_pages)."""
-    return f"{name} is over {limit >> 20} MB{what}, more than the downloads read (does the paper write to it in a loop?)"
 
 
 def keep_inputs(out):
@@ -4742,33 +4277,6 @@ def build_diff(server, sha):
         server.diff = {**server.diff, "state": "failed", "time": time.strftime("%H:%M:%S"), "msg": str(e)[:300]}
 
 
-def pushed_commit(paper_root):
-    """The last pushed commit that HEAD builds on, and the remote branch it went to: (sha, ref),
-    else (None, None). The candidates are the branch's push and upstream branches and every
-    remote's branch of the same name (for a branch never pushed, or a detached HEAD, each remote's
-    default branch); the one whose merge base with HEAD is nearest to HEAD wins. The merge base,
-    not the remote branch itself, so that others' work fetched since doesn't show as deletions.
-    Remote-tracking branches move on push and fetch, so this needs no network."""
-    def git(*args):
-        r = subprocess.run(["git", "-C", paper_root, *args], capture_output=True, text=True)
-        return r.stdout.strip() if r.returncode == 0 else ""
-
-    branch = git("symbolic-ref", "-q", "--short", "HEAD")
-    remotes = git("remote").split()
-    refs = [ref for spec in ("@{push}", "@{upstream}") if (ref := git("rev-parse", "--abbrev-ref", spec))]
-    refs += [f"{remote}/{branch}" for remote in remotes
-             if branch and git("rev-parse", "-q", "--verify", f"refs/remotes/{remote}/{branch}")]
-    if not refs:
-        refs = [ref for remote in remotes if (ref := git("symbolic-ref", "-q", "--short", f"refs/remotes/{remote}/HEAD"))]
-    best = None
-    for ref in dict.fromkeys(refs):
-        base = git("merge-base", "HEAD", ref)
-        ahead = git("rev-list", "--count", f"{base}..HEAD") if base else ""
-        if ahead.isdigit() and (best is None or int(ahead) < best[0]):
-            best = (int(ahead), base, ref)
-    return (best[1], best[2]) if best else (None, None)
-
-
 def base_status(server, pdf_name, kind, build=True):
     """A baseline the viewer diffs against to mark changes: PDFs of the document as committed at
     HEAD ("head") or at the last push ("push", pushed_commit), rebuilt whenever that commit moves
@@ -5488,22 +4996,6 @@ def rebuild_doc(server):
     return 202, {"doc": server.default_pdf[:-4]}
 
 
-def container_argv(paper_root):
-    """Argument list that runs a tool in the TeX Live image (for subprocess, with cwd = paper root). In
-    shared mode, through tex-exec, which confines it there (LATEX_LIVE_SANDBOX) and never falls back to
-    the host's TeX (LATEX_LIVE_REQUIRE_IMAGE)."""
-    if config.SHARED:
-        return [os.path.join(config.HERE, "tex-exec"), config.TEXLIVE_IMAGE, os.path.realpath(paper_root)]
-    return ["podman", "run", "--rm", "--init", "--pull=never", "--network=none", "--security-opt", "label=disable",
-            "-v", f"{paper_root}:{paper_root}", "-w", os.path.realpath(paper_root), "-e", "max_print_line", config.TEXLIVE_IMAGE]
-
-
-def container_exec(paper_root):
-    """Command prefix that runs a TeX tool in the TeX Live image (see tex-exec), or on the host
-    while the image is missing."""
-    return f"'{os.path.join(config.HERE, 'tex-exec')}' {config.TEXLIVE_IMAGE} '{paper_root}'"
-
-
 # Shared mode builds without latexmk (shared_build). latexmk is Perl that runs on the host, and it
 # parses the files that the paper's TeX writes (.aux, .bcf, .log): it hands \bibdata names from the
 # .aux to a shell command (its kpsewhich), so coauthors who write the paper could run commands on this
@@ -5516,7 +5008,8 @@ LAYOUT_TEX = (r"\def\latexlivelayout{\typeout{latex-live layout:"
               r" \the\paperwidth,\the\paperheight,\the\hoffset,\the\oddsidemargin,\the\voffset,\the\topmargin,"
               r"\the\headheight,\the\headsep,\the\textwidth,\the\textheight,\the\columnwidth,\the\baselineskip}}"
               r"\ifdefined\AddToHook\AddToHook{begindocument/end}{\latexlivelayout}\else\AtBeginDocument{\latexlivelayout}\fi")
-RERUN_RE = re.compile(r"Rerun to get|may have changed\. Rerun|Please rerun|rerunfilecheck Warning")
+
+
 BIBDATA_RE = re.compile(r"^\\(?:citation|bibdata|bibstyle)\{.*\}$", re.M)
 
 
@@ -5714,28 +5207,6 @@ def watch_build_size(server):
         time.sleep(1)
 
 
-def read_build(path, limit=config.READ_LIMIT):
-    """A file a TeX tool wrote in build/, as text (its first limit bytes: read_capped), or "" if there is none."""
-    return read_capped(path, limit) or ""
-
-
-def aux_tree(aux, folder=None):
-    """The text of a job's .aux (aux) and of the .aux files it reads in build/ (\\@input, as \\include
-    writes one per chapter), as bibtex reads them: at most 200 files, AUX_BUDGET bytes in all, none
-    outside build/ (child_aux), or outside folder if given."""
-    texts, todo, seen, budget = [aux], [aux], set(), config.AUX_BUDGET - len(aux)
-    while todo and len(seen) < 200 and budget > 0:
-        for name in re.findall(r"^\\@input\{([^{}]+)\}", todo.pop(), re.M):
-            path = child_aux(folder or config.BUILD, name)
-            if not path or path in seen or len(seen) >= 200 or budget <= 0:
-                continue
-            seen.add(path)
-            texts.append(text := read_build(path, min(config.READ_LIMIT, budget)))
-            budget -= len(text)
-            todo.append(text)
-    return "\n".join(texts)
-
-
 def dep_stats(paths):
     """The stat (mtime, size) of each of paths that exists, to tell whether a tool needs to run again."""
     stats = []
@@ -5930,22 +5401,6 @@ def shared_notes_free(server, job, doc):
         shutil.rmtree(out, ignore_errors=True)
 
     threading.Thread(target=run, daemon=True).start()
-
-
-def stop_containers(run=None, kind=None):
-    """Stop this shared instance's containers (tex-exec labels them with INSTANCE), or one run's (its
-    LATEX_LIVE_RUN label, e.g. "main-12"), or those of one kind of run ("main", "clean"), at once. Once
-    the podman client is stopped, a container keeps running; this stops the container itself."""
-    if not config.SHARED:
-        return
-    filters = ["--filter", f"label=latex-live.instance={config.INSTANCE}"]
-    filters += ["--filter", f"label=latex-live.run={run}"] if run else ["--filter", f"label=latex-live.kind={kind}"] if kind else []
-    try:
-        ids = subprocess.run(["podman", "ps", "-q", *filters], capture_output=True, text=True, timeout=30).stdout.split()
-        if ids:
-            subprocess.run(["podman", "rm", "-f", "-t", "0", *ids], capture_output=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        pass
 
 
 def shared_rebuild_request(server, user):
