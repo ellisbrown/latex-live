@@ -37,8 +37,8 @@ $pdflatex = "touch $build/%R.building; $pass pdflatex -synctex=1 -file-line-erro
 # returns and latexmk has read what it wrote, when the run ends, and when bibtex starts, in build/<job>.timing.
 # The hooks need latexmk 4.80 or later; with an older one, only the other processes' notes are there.
 my $timing = ($ENV{LATEX_LIVE_TIMING} // '') eq '1';
+require Time::HiRes;
 if ($timing && defined &add_hook) {
-    require Time::HiRes;
     for my $hook (['compile_begin', 'run'], ['before_xlatex', 'pass'], ['after_xlatex', 'pass-end'],
                   ['after_xlatex_analysis', 'analyzed'], ['compile_end', 'run-end']) {
         my $event = $hook->[1];
@@ -47,6 +47,34 @@ if ($timing && defined &add_hook) {
             return 0;
         });
     }
+}
+# Before each pass of live.py's build: copy the files of the main build that the notes-free pass reads (SEED_EXTS in
+# latex_report.py) as this pass is about to read them, and start latex_report.py --early beside the pass, which runs
+# the notes-free pass from them; the end-of-run report keeps it if the run ends with those files (see EARLY there).
+# (Detached, as latex_report.py starts the notes-free pass: latexmk doesn't wait for it.)
+if ($ENV{LATEX_LIVE_DOC} && defined &add_hook) {
+    require File::Copy;
+    require POSIX;
+    add_hook('before_xlatex', sub {
+        my $doc = $ENV{LATEX_LIVE_DOC};
+        my $began = int(Time::HiRes::time() * 1e6);
+        my $seed = "seed-$began-$$";
+        mkdir "$build/clean-early";
+        mkdir "$build/clean-early/$seed" or return 0;
+        for my $ext ('.aux', '.bbl', '.brf', '.out', '.toc') {
+            File::Copy::copy("$build/$jobname$ext", "$build/clean-early/$seed/$doc-clean$ext") if -e "$build/$jobname$ext";
+        }
+        my $owner = $$;
+        my $pid = fork();
+        if (defined $pid && $pid == 0) {
+            POSIX::setsid();
+            open(STDIN, '<', '/dev/null'); open(STDOUT, '>', '/dev/null'); open(STDERR, '>', '/dev/null');
+            POSIX::_exit(0) if fork();
+            exec('python3', "$here/latex_report.py", '--early', $jobname, $doc, $seed, $began, $owner) or POSIX::_exit(1);
+        }
+        waitpid($pid, 0) if $pid;
+        return 0;
+    });
 }
 require File::Spec;  # (bibtex runs in the build folder: an absolute path)
 $bibtex = ($timing ? "perl -MTime::HiRes=time -e 'printf qq(%.6f bibtex\\n), time' >> '" . File::Spec->rel2abs($build) . "/'%R.timing; " : '')
