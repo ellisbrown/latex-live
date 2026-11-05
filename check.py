@@ -357,6 +357,7 @@ def static_checks():
     failed_export_checks()
     bib_span_checks()
     waiting_download_checks()
+    tool_timeout_checks()
     standby_snapshot_checks()
     code_updated_checks()
     static_file_checks()
@@ -1753,6 +1754,20 @@ def standby_normal_pass(paper, image):
     subprocess.run([*prefix, "pdflatex", "-synctex=1", "-file-line-error", "-halt-on-error", "-interaction=batchmode", "-recorder",
                     "-jobname=main-live", "-output-directory=build", source], cwd=copy, capture_output=True, timeout=120, env=ENV)
     return pdf_pages_and_text(os.path.join(copy, "build", "main-live.pdf"))
+
+
+def tool_timeout_checks():
+    """A tool run in a process group of its own (latexlive.tools.run_tool with group: a shell running tools in
+    turn, as the batched SyncTeX lookups do) is stopped whole past its timeout, rather than the shell alone,
+    whose child would hold the output (and the slot) until it ended."""
+    sys.path.insert(0, HERE)
+    from latexlive import tools
+    began = time.monotonic()
+    code, _ = tools.run_tool(["sh", "-c", "for n in 1 2; do sleep 20; done"], tempfile.gettempdir(), timeout=1, kind="check",
+                             capture=1000, group=True)
+    if code is not None or time.monotonic() - began > 5:
+        fail(f"a shell's tool run past its timeout: exit {code} after {time.monotonic() - began:.1f} s (not stopped whole)")
+    ok("a tool run in a process group of its own is stopped whole past its timeout")
 
 
 def standby_snapshot_checks():
