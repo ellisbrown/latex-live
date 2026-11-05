@@ -1,92 +1,32 @@
-import * as pdfjsLib from "../pdfjs/build/pdf.min.mjs";
-globalThis.pdfjsLib = pdfjsLib; // pdf_viewer.mjs reads the library from the global
-pdfjsLib.GlobalWorkerOptions.workerSrc = "./pdfjs/build/pdf.worker.min.mjs";
-const { EventBus, PDFViewer, PDFLinkService, PDFFindController, FindState, LinkTarget } =
-  await import("../pdfjs/web/pdf_viewer.mjs");
+// The viewer's script (viewer.html loads it), as far as it is not in the modules it imports yet.
 
-const $ = (id) => document.getElementById(id);
-// Under the hub (one port for every preview): "/p/<paper id>/". Settings tied to a paper are kept
-// per paper then, since every paper shares the hub's origin.
-const hubBase = location.pathname.match(/^\/p\/[^/]+\//)?.[0] || "";
-// Someone new to latex-live in this browser: nothing remembered yet (read before anything is written).
-const firstVisit = !Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).some((k) => k?.startsWith("latex-live:"));
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const el = (tag, props = {}, ...children) => { const e = Object.assign(document.createElement(tag), props); e.append(...children); return e; };
+import {
+  $, ACCESS_ENDED, building, cleanFile, docFile, editorShown, el, file, firstVisit, hubBase, isDiff, liveStatus, setStatus,
+  SIGNED_OUT, sleep, UNREACHABLE,
+} from "./page.js";
+import { fitsKeepalive, postJSON, readBody, signInPage, unreachable } from "./net.js";
+import { diffWords, lineHunks } from "./diff.js";
+import { dropKept, EDITOR_ID, keptKey, latestKept, newSaveId, readKept } from "./drafts.js";
+import {
+  authors, canComment, canOpenFile, editable, editorAllowed, isCollaborator, loadAuthors, loadMe, me, notSetUp, opensAt,
+  opensInBrowser, opensSources, openTitles, openWhere, ownerName, setWho, who, whoLabel,
+} from "./role.js";
+import {
+  assets, container, doc, docSeq, eventBus, leaveDocument, linkService, pagesReady, pdfjsLib, refit, showDocument, shownVariant,
+  viewer,
+} from "./pdfview.js";
+import { find, resetFind } from "./search.js";
+import {
+  behind, buildFailed, buildVersion, rebuild, rebuildAt, seeBuild, setBuildVersion, setShown, shown, wrote,
+} from "./build.js";
+import { fitEditor, GUTTER, setGutter, setSide, setTab, setToggle, sideOpen, tab } from "./layout.js";
+import { area, areaFraction, columnAt, columnMid, norm, pageText, setArea, textLines } from "./pagetext.js";
+import { hidePreview } from "./preview.js";
+import { ahead, back, flash, goToPage, reveal, travel } from "./navigation.js";
+import { cutOn, drawAllMarks, marks, setCutOn, showUnresolved } from "./marks.js";
 
-// Who is asking (live.py /me). In shared mode (LATEX_LIVE_USERS) a collaborator has a role and
-// comments as themselves; otherwise it is the owner, who may do everything. A server older than
-// this viewer has no /me: the owner then, as before, without the browser editor (and with the GET
-// forms of switch, diff and open, the only ones it knows).
-const ALL_CAN = { comment: true, edit: true, rebuild: true, compare: true, switch: true, openHost: true, download: true };
-let me = { id: "", name: "", macro: "", role: "owner", shared: false, owner: "", legacy: true, can: ALL_CAN };
-const isCollaborator = () => me.shared && me.role !== "owner";
-const ownerName = () => me.owner || "the owner";
-// What the status line says when the server can't be asked: it refused (403: the access ended), a
-// page came back instead of an answer (a proxy's sign-in page), or nothing came back (offline, or the
-// server, proxy or hub can't reach the preview just now).
-const ACCESS_ENDED = "Access ended — see the message";
-const SIGNED_OUT = "Your sign-in may have expired — reload the page";
-const UNREACHABLE = "Can't reach the preview server — retrying…";
-const file = new URLSearchParams(location.search).get("file");
-const isDiff = file.endsWith("-diff.pdf");
-const docFile = file.replace(/-(clean|diff)\.pdf$/, ".pdf"); // the document a derived PDF belongs to
-const cleanFile = docFile.replace(/\.pdf$/, "-clean.pdf");
 // Which build to show: "notes" (the live build) or "clean" (the notes-free build, when there is one).
 let view = localStorage.getItem("latex-live:view") === "notes" ? "notes" : "clean"; // notes-free unless chosen otherwise
-let shownVariant = null; // the one on screen
-const viewKey = `latex-live:${hubBase}${file}`;
-document.title = isDiff ? `diff: ${docFile}` : file;
-
-const container = $("viewerContainer");
-const eventBus = new EventBus();
-const linkService = new PDFLinkService({ eventBus, externalLinkTarget: LinkTarget.BLANK });
-const findController = new PDFFindController({ eventBus, linkService });
-const viewer = new PDFViewer({ container, eventBus, linkService, findController });
-linkService.setViewer(viewer);
-
-// Scroll/zoom state survives PDF reloads, refreshing this tab, and restarting the browser.
-let restore = JSON.parse(localStorage.getItem(viewKey) || "null");
-const saveView = () => localStorage.setItem(viewKey, JSON.stringify(
-  { scale: viewer.currentScaleValue, top: container.scrollTop, left: container.scrollLeft }));
-container.addEventListener("scroll", saveView, { passive: true });
-
-let pagesReady = false;
-eventBus.on("pagesinit", () => {
-  viewer.currentScaleValue = restore?.scale ?? "page-width";
-  if (restore) { container.scrollTop = restore.top; container.scrollLeft = restore.left; }
-  pagesReady = true;
-});
-// Before the next document replaces the one on screen: its view, to restore, and its pages not ready.
-function leaveDocument() {
-  if (doc) restore = { scale: viewer.currentScaleValue, top: container.scrollTop, left: container.scrollLeft };
-  pagesReady = false;
-}
-eventBus.on("pagechanging", (e) => { $("page").value = e.pageNumber; });
-eventBus.on("scalechanging", (e) => { showZoom(e); saveView(); });
-
-// The zoom menu shows the fit in use with its percentage, a listed percentage, or the zoom as it is.
-const ZOOM_FITS = { "page-width": "Fit width", "page-fit": "Fit page" };
-function showZoom({ scale, presetValue }) {
-  const options = [...$("zoomPick").options], pct = `${Math.round(scale * 100)}%`;
-  for (const o of options) if (ZOOM_FITS[o.value]) o.textContent = ZOOM_FITS[o.value];
-  const shown = options.find((o) => ZOOM_FITS[o.value] && o.value === presetValue) || options.find((o) => Math.abs(o.value - scale) < 1e-3);
-  if (shown && ZOOM_FITS[shown.value]) shown.textContent = `${ZOOM_FITS[shown.value]} (${pct})`;
-  options.at(-1).textContent = pct;
-  $("zoomPick").value = shown ? shown.value : "custom";
-}
-
-const refit = () => {
-  const v = viewer.currentScaleValue;
-  if (isNaN(+v)) viewer.currentScaleValue = v; // re-fit named scales to the new size
-};
-const goToPage = (n) => { remember(); viewer.currentPageNumber = Math.min(viewer.pagesCount, Math.max(1, n)); };
-$("prev").onclick = () => { viewer.currentPageNumber = Math.max(1, viewer.currentPageNumber - 1); };
-$("next").onclick = () => { viewer.currentPageNumber = Math.min(viewer.pagesCount, viewer.currentPageNumber + 1); };
-$("page").onchange = (e) => { viewer.currentPageNumber = Math.min(viewer.pagesCount, Math.max(1, +e.target.value || 1)); };
-$("zoomIn").onclick = () => viewer.increaseScale();
-$("zoomOut").onclick = () => viewer.decreaseScale();
-$("zoomPick").onchange = (e) => { viewer.currentScaleValue = e.target.value; e.target.blur(); };
-window.addEventListener("resize", refit);
 
 // The ⋯ menu: dark mode and Compare, plus the toolbar's controls that don't fit (fitBar).
 function showMore(open) {
@@ -153,11 +93,10 @@ $("downloadPdf").onclick = () => {
   // ("-with-notes" when the paper has notes, so a version without them too: the Notes switch shows then)
   saveFile(`pdf/${encodeURIComponent(shown)}?v=${buildVersion}`, isDiff ? file : `${docName()}${$("notesView").hidden ? "" : "-with-notes"}.pdf`);
 };
-// The server builds them in the background: ask until it is done, showing its progress, then save.
+
 // The server builds them from the PDF as last built (and waits for a build in progress first): ask until it is
 // done, showing its progress (poll leaves the status line to it meanwhile: liveStatus), then save. Right after
 // this tab writes a note, wait for the build that the write starts, which the server can't know of yet.
-const building = new Set();
 async function downloadBuilt(endpoint, built, saveAs, what, done) {
   showMore(false);
   showDownloads(false);
@@ -289,30 +228,14 @@ const textChanged = new MutationObserver(fitBar);
 for (const node of [$("status"), $("pages")]) textChanged.observe(node, { childList: true, characterData: true, subtree: true });
 document.fonts?.ready.then(fitBar);
 
-// Dark mode, the sidebar, and its tab are remembered across sessions.
-function setToggle(name, on) {
-  document.body.classList.toggle(name, on);
-  localStorage.setItem(`latex-live:${name}`, on ? "1" : "");
-}
+// Dark mode (remembered: setToggle).
 $("dark").onclick = () => { setToggle("dark", !document.body.classList.contains("dark")); $("dark").classList.toggle("on"); };
 if (localStorage.getItem("latex-live:dark")) { document.body.classList.add("dark"); $("dark").classList.add("on"); }
 
-let tab = localStorage.getItem("latex-live:tab") || "outline";
-if (isDiff && (tab === "notes" || tab === "checks" || tab === "figures")) tab = "outline";
 for (const name of ["notes", "checks", "figures"]) document.querySelector(`#tabs [data-tab=${name}]`).hidden = isDiff;
 $("toggleSide").onclick = () => showSide($("side").hidden);
 for (const b of document.querySelectorAll("#tabs button")) b.onclick = () => showTab(b.dataset.tab);
-function setSide(on) {
-  $("side").hidden = !on;
-  $("toggleSide").classList.toggle("on", on);
-  setToggle("side", on);
-  fitEditor(); // (the source beside the PDF leaves the PDF some room)
-  refit();
-}
-function setTab(name) {
-  tab = name;
-  localStorage.setItem("latex-live:tab", name);
-}
+
 function showSide(on) {
   setSide(on);
   if (on) showTab(tab);
@@ -323,7 +246,7 @@ function showTab(name) {
   for (const p of document.querySelectorAll(".panel")) p.hidden = p.id !== name;
   refreshTab();
 }
-const sideOpen = (name) => !$("side").hidden && tab === name;
+
 function refreshTab() {
   if (!doc) return;
   if (sideOpen("thumbs")) renderThumbs();
@@ -346,68 +269,6 @@ $("notesView").onclick = () => {
   poll();
 };
 showNotesButton();
-
-// Back/forward after following a link (a \ref, a citation, the outline) or a forward search.
-// Positions are PDF coordinates, so they survive zoom changes and reloads.
-const back = [], ahead = [];
-let here = null;
-eventBus.on("updateviewarea", (e) => { here = e.location; });
-const position = () => here && { page: here.pageNumber, left: here.left, top: here.top };
-function remember() {
-  if (!here) return;
-  back.push(position());
-  ahead.length = 0;
-  updateHistory();
-}
-function travel(from, to) {
-  if (!from.length) return;
-  to.push(position());
-  const p = from.pop();
-  viewer.scrollPageIntoView({ pageNumber: p.page, destArray: [null, { name: "XYZ" }, p.left, p.top, null] });
-  updateHistory();
-}
-function updateHistory() { $("back").disabled = !back.length; $("forward").disabled = !ahead.length; }
-const goToDestination = linkService.goToDestination.bind(linkService);
-linkService.goToDestination = (dest) => { remember(); hidePreview(); return goToDestination(dest); };
-$("back").onclick = () => travel(back, ahead);
-$("forward").onclick = () => travel(ahead, back);
-container.addEventListener("mouseup", (e) => { // mouse side buttons
-  if (e.button === 3) travel(back, ahead);
-  else if (e.button === 4) travel(ahead, back);
-});
-
-// Search (PDF.js's find controller: searches every page, not just the rendered ones).
-let lastQuery = null;
-function resetFind() {
-  lastQuery = null;
-  $("findCount").textContent = "";
-}
-function find(findPrevious = false) {
-  const query = $("find").value;
-  if (!query) return clearFind();
-  eventBus.dispatch("find", { source: window, type: query === lastQuery ? "again" : "", query, findPrevious,
-                              caseSensitive: false, entireWord: false, highlightAll: true, matchDiacritics: false });
-  lastQuery = query;
-}
-function clearFind() {
-  $("find").value = "";
-  $("findCount").textContent = "";
-  lastQuery = null;
-  eventBus.dispatch("findbarclose", { source: window });
-}
-function showFindCount({ current, total }) {
-  $("findCount").textContent = total ? `${current} / ${total}` : "";
-}
-eventBus.on("updatefindmatchescount", (e) => showFindCount(e.matchesCount));
-eventBus.on("updatefindcontrolstate", (e) => {
-  $("findCount").classList.toggle("none", e.state === FindState.NOT_FOUND);
-  if (e.state === FindState.NOT_FOUND) $("findCount").textContent = "no match";
-  else showFindCount(e.matchesCount);
-});
-$("find").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") { e.preventDefault(); find(e.shiftKey); }
-  else if (e.key === "Escape") { clearFind(); $("find").blur(); }
-});
 
 window.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;
@@ -442,73 +303,6 @@ window.addEventListener("keydown", (e) => {
     else if (isCollaborator() && !isDiff) setStatus(`Editing the source isn't part of your access (${me.role}): ask ${ownerName()} if you need it`, "error");
   }
 });
-
-// Trackpad pinch (Chromium reports it as ctrl+wheel) and ctrl/cmd+scroll zoom the PDF around the
-// cursor instead of zooming the whole page. updateScale rounds to 0.01, so accumulate small
-// pinch steps until they change the scale (as PDF.js's own viewer does).
-let pinchFactor = 1;
-container.addEventListener("wheel", (e) => {
-  if (!(e.ctrlKey || e.metaKey)) return;
-  e.preventDefault();
-  const px = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? e.deltaY * 30 : e.deltaY;
-  pinchFactor *= Math.exp(-Math.max(-25, Math.min(25, px)) / 100); // clamp mouse-wheel notches
-  const current = viewer.currentScale;
-  const next = Math.round(current * pinchFactor * 100) / 100;
-  if (next === current) return;
-  viewer.updateScale({ scaleFactor: next / current, drawingDelay: 400, origin: [e.clientX, e.clientY] });
-  // Keep the rounding remainder, unless the scale hit its min/max limit.
-  pinchFactor = viewer.currentScale === next ? (current * pinchFactor) / next : 1;
-}, { passive: false });
-
-// Briefly highlight a rectangle [x1, y1, x2, y2] (PDF coordinates, y up) on a page.
-function flash(pageNumber, rect, cls = "") {
-  const pageView = viewer.getPageView(pageNumber - 1);
-  if (!pageView) return;
-  const [a, b, c, d] = pageView.viewport.convertToViewportRectangle(rect);
-  const div = el("div", { className: `sync-flash ${cls}` });
-  Object.assign(div.style, { left: `${Math.min(a, c)}px`, top: `${Math.min(b, d)}px`,
-                             width: `${Math.abs(c - a)}px`, height: `${Math.abs(d - b)}px` });
-  pageView.div.append(div);
-  setTimeout(() => div.remove(), 2600);
-}
-
-// Scroll so that a rectangle (PDF coordinates) is a third of the way down the view, and flash it.
-function reveal(pageNumber, rect) {
-  const pageView = viewer.getPageView(pageNumber - 1);
-  if (!pageView) return;
-  remember();
-  viewer.scrollPageIntoView({ pageNumber, destArray: [null, { name: "XYZ" }, null, rect[3], null] });
-  container.scrollTop -= container.clientHeight / 3;
-  flash(pageNumber, rect);
-}
-
-// Persistent marks over pages: {page: [{rect (PDF coordinates), cls, title}]}. PDF.js empties a
-// page's div when it re-renders it (zoom, reload), so they are redrawn on every "pagerendered".
-const marks = { changes: new Map(), unresolved: new Map(), cut: new Map() };
-let cutOn = !!localStorage.getItem("latex-live:cut"); // (the cut marks show: ✂ in the toolbar)
-function setCutOn(on) { cutOn = on; }
-function drawMarks(pageNumber) {
-  const pageView = viewer.getPageView(pageNumber - 1);
-  if (!pageView?.div || !pageView.pdfPage) return;
-  pageView.div.querySelector(".ll-marks")?.remove();
-  const list = [...(marks.changes.get(pageNumber) || []), ...(marks.unresolved.get(pageNumber) || []),
-                ...(cutOn ? marks.cut.get(pageNumber) || [] : [])];
-  if (!list.length) return;
-  const [vx, vy, vw, vh] = pageView.pdfPage.view;
-  const W = vw - vx, H = vh - vy;
-  const layer = el("div", { className: "ll-marks" });
-  for (const m of list) {
-    const [x0, y0, x1, y1] = m.rect;
-    const div = el("div", { className: m.cls });
-    if (m.label) div.dataset.label = m.label;
-    Object.assign(div.style, { left: `${(x0 - vx) / W * 100}%`, top: `${(vh - y1) / H * 100}%`,
-                               width: `${(x1 - x0) / W * 100}%`, height: `${(y1 - y0) / H * 100}%` });
-    layer.append(div);
-  }
-  pageView.div.append(layer);
-}
-const drawAllMarks = () => { for (let n = 1; n <= (doc?.numPages || 0); n++) drawMarks(n); };
-eventBus.on("pagerendered", (e) => drawMarks(e.pageNumber));
 
 // SyncTeX inverse search: double-click a spot on a page to open its source line in VS Code, or in
 // the source pane beside the PDF when that is open (a collaborator who may edit, or an owner whose
@@ -577,21 +371,10 @@ async function showSource(file, line, openIfMissing = false) {
   if (openIfMissing && canOpenFile(file)) return openSource(file, line);
   setStatus(body.error, "error");
 }
+
 // Open a source line: in the source pane beside the PDF when that is open (for a collaborator who
 // may edit, or the owner of a shared preview without VS Code: always), else in the host's editor
 // (the owner's VS Code, live.py /open), or the pane when that does not open.
-const editable = (path) => /\.(tex|bib|sty|cls)$/i.test(path); // (what live.py /files lists)
-const opensInBrowser = () => editorAllowed() && (editorShown() || (me.shared && !me.can.openHost));
-const canOpenFile = (path) => me.can.openHost || (editorAllowed() && editable(path));
-const opensSources = () => me.can.openHost || editorAllowed();
-const openWhere = () => (opensInBrowser() ? "the source pane" : "VS Code");
-// A link to a source line says where it opens; openTitles updates that when the pane opens or closes.
-function opensAt(node, where) {
-  node.dataset.opens = where;
-  node.title = `Open ${where} in ${openWhere()}`;
-  return node;
-}
-const openTitles = () => { for (const node of document.querySelectorAll("[data-opens]")) node.title = `Open ${node.dataset.opens} in ${openWhere()}`; };
 async function openSource(file, line) {
   if (opensInBrowser() && editable(file)) return showEditor(true, { path: file, line });
   if (!me.can.openHost) return setStatus(`${file} can't be opened here`, "error");
@@ -606,47 +389,21 @@ async function openSource(file, line) {
     setStatus(`${err.message || err}`, "error");
   }
 }
-const KEEPALIVE = 60000; // (a keepalive request outlives the page, for a body of up to 64 KB)
-const fitsKeepalive = (body) => new TextEncoder().encode(JSON.stringify(body)).length < KEEPALIVE;
-const postJSON = (path, body, keepalive = false) => {
-  const data = JSON.stringify(body);
-  return fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: data,
-                       keepalive: keepalive && new TextEncoder().encode(data).length < KEEPALIVE });
-};
-// This page's own name (for the edits it keeps: keptKey), and the name its saves go by, so that live.py
-// knows which saves are its own (save_file). A restored draft starts a new name for the saves
-// (restoreKept): it is not built on this page's last save, so that save must count as anyone's.
-const newSaveId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-const EDITOR_ID = newSaveId();
-let saveId = EDITOR_ID;
-// A response's body: its JSON, or {error} with a plain-text or HTML error's message (and html: true
-// for a page, which may also be a proxy's sign-in page rather than the server's answer).
-async function readBody(r) {
-  const text = await r.text();
-  try { return JSON.parse(text); } catch { /* not JSON */ }
-  const page = /^\s*</.test(text) && new DOMParser().parseFromString(text, "text/html");
-  const message = page ? [...page.querySelectorAll("p")].map((p) => p.textContent).find((s) => s.startsWith("Message: "))?.slice(9) : text.trim();
-  return { error: message || `failed (${r.status})`, ...(page ? { html: true } : {}) };
-}
-// Whether an answer came from something other than the server, as when a proxy whose sign-in has
-// expired redirects to its sign-in page: a redirect, a 401 (live.py sends none), or a page that
-// claims success.
-const signInPage = (r, body) => r.redirected || r.status === 401 || (r.ok && !!body.html);
-// Whether the server, the proxy or the hub couldn't reach the preview just now (worth sending again
-// as it is): 502-504, or the hub's 404 for a preview that is not running (e.g. restarting).
-const unreachable = (r, body) => (r.status >= 502 && r.status <= 504 && !body.retry) || (r.status === 404 && /^no preview of /.test(body.error || ""));
 
-// The live build's state on the status line (poll, load), unless a download that the server builds is in
-// progress: that has the line meanwhile (downloadBuilt), rather than the two taking turns.
-function liveStatus(text, cls = "", title = text) {
-  if (building.size) return;
-  setStatus(text, cls);
-  $("status").title = title;
-}
-function setStatus(text, cls = "") {
-  $("status").textContent = $("status").title = text; // (the title: the whole text when it is cut off)
-  $("status").className = cls;
-}
+// The LaTeX source beside the PDF (✎ Source, or E), for editors and the owner: live.py /files and
+// /file, in CodeMirror (codemirror/, through the import map), loaded on first use. Edits save by
+// themselves 1.5 s after the last change, and at once on Cmd/Ctrl+S, a file switch, closing the
+// pane, and leaving the page. live.py merges a save with changes made to the file meanwhile (by
+// someone else, or a note written from the viewer); edits typed while a save is on its way are
+// rebased onto its answer, unless they touch the lines it changed (then the server merges them
+// too, on the next save). A file that changes on disk reloads in place (status ?open=). Until a
+// save goes through, this browser keeps the unsaved text (keepUnsaved), so that it survives a crash
+// or a reload.
+
+// The name this page's saves go by (EDITOR_ID), so that live.py knows which saves are its own (save_file). A
+// restored draft starts a new name for the saves (restoreKept): it is not built on this page's last save, so that
+// save must count as anyone's.
+let saveId = EDITOR_ID;
 
 // Build-status banner: shows the first errors of a failed build, or else of a failed notes-free
 // pass (the notes-free view and its page count are then out of date); click one to open it in the
@@ -699,17 +456,6 @@ function showAccessEnded() {
   banner.hidden = false;
 }
 
-// Rebuild (live.py /rebuild): latexmk again from the top, e.g. when another build replaced the PDF
-// and with it the match to SyncTeX, so double-click and forward search work again.
-let rebuildAt = 0; // (poll leaves "rebuilding…" up until latexmk reports the build)
-async function rebuild() {
-  rebuildAt = Date.now();
-  setStatus("rebuilding…", "busy");
-  const r = await fetch("rebuild", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null);
-  if (!r?.ok) setStatus(r ? (await readBody(r)).error : "rebuild failed: can't reach the preview server", "error");
-}
-$("rebuild").onclick = rebuild;
-
 // Controls follow the role (once /me has answered): a collaborator comments only as themselves,
 // and sees no controls for what their role can't do (live.py refuses those anyway).
 const ROLES = { viewer: "you can read the paper", commenter: "you can read the paper and comment on it",
@@ -726,53 +472,7 @@ function applyRole() {
   document.querySelector("#tabs [data-tab=checks]").hidden = isDiff || me.can.checks === false;
   if (me.can.checks === false && tab === "checks") showTab("outline");
 }
-// Why a collaborator whose role may comment can't, or null: the paper defines no note macro of theirs
-// (/me macroDefined; from an older server, the note macros /authors lists, when it lists any).
-function notSetUp() {
-  if (!isCollaborator() || me.role === "viewer") return null;
-  const listed = authors.some((a) => a.macro === me.macro);
-  if (me.macro && (listed || (me.macroDefined ?? !authors.length))) return null;
-  return me.macro ? `Commenting isn't set up for you yet: the paper has no \\${me.macro} note macro. Ask ${ownerName()} to add it.`
-                  : `Commenting isn't set up for you yet: you have no note macro. Ask ${ownerName()} to give you one.`;
-}
-// Whether this user can write notes here (and so sees the controls for it).
-const canComment = () => !isDiff && !!me.can.comment && !notSetUp() && (isCollaborator() ? !!who : authors.length > 0);
-// /me, asked once at the start. Until the server answers, ask again; a 404 is a server older than
-// this viewer; a 403 means the access ended (returns false then: start says so).
-async function loadMe() {
-  for (let attempt = 1, wait = 1000; ; attempt++, wait = Math.min(2 * wait, 10000)) {
-    let answered = false; // (the server answers, just not /me)
-    try {
-      const r = await fetch("me", { cache: "no-store" }).catch(() => { throw new Error(UNREACHABLE); });
-      const body = await readBody(r);
-      if (r.status === 403) return false;
-      if (signInPage(r, body)) throw new Error(SIGNED_OUT);
-      if (unreachable(r, body)) throw new Error(UNREACHABLE);
-      if (r.status === 404) return true;
-      answered = true;
-      if (!r.ok || typeof body.role !== "string") throw new Error(`who you are: ${r.status}`);
-      me = { ...me, ...body, legacy: false, can: { ...(body.shared ? {} : ALL_CAN), ...body.can } };
-      return true;
-    } catch (err) {
-      if (answered && attempt >= 3) return true; // (the owner, as before)
-      const message = `${err.message || err}`;
-      setStatus([UNREACHABLE, SIGNED_OUT].includes(message) ? message : `${message} (retrying)`, "error");
-    }
-    await sleep(wait);
-  }
-}
 
-// The LaTeX source beside the PDF (✎ Source, or E), for editors and the owner: live.py /files and
-// /file, in CodeMirror (codemirror/, through the import map), loaded on first use. Edits save by
-// themselves 1.5 s after the last change, and at once on Cmd/Ctrl+S, a file switch, closing the
-// pane, and leaving the page. live.py merges a save with changes made to the file meanwhile (by
-// someone else, or a note written from the viewer); edits typed while a save is on its way are
-// rebased onto its answer, unless they touch the lines it changed (then the server merges them
-// too, on the next save). A file that changes on disk reloads in place (status ?open=). Until a
-// save goes through, this browser keeps the unsaved text (keepUnsaved), so that it survives a crash
-// or a reload.
-const editorAllowed = () => !isDiff && !me.legacy && !!me.can.edit;
-const editorShown = () => !$("editorPane").hidden;
 let cmView = null; // the open file's editor (CodeMirror's view)
 let CM = null, cmLoading = null, cmExtensions = null; // CodeMirror, once loaded (loadEditor)
 let srcFiles = null; // live.py /files: {files: [{path, size}], main}
@@ -1227,46 +927,6 @@ function lineChanges(a, b) {
   return { changes: CM.ChangeSet.of(hunks.map(([a0, a1, b0, b1]) => ({ from: at[a0], to: at[a1], insert: B.slice(b0, b1).join("") })), a.length, "\n"),
            rough: !!hunks.rough };
 }
-// Myers' diff of two lists of lines, as hunks [a0, a1, b0, b1]: A[a0..a1) became B[b0..b1). Past
-// 1000 edits (between the common start and end), one hunk for everything in between (marked rough).
-function lineHunks(A, B) {
-  let s = 0, ea = A.length, eb = B.length;
-  while (s < ea && s < eb && A[s] === B[s]) s++;
-  while (ea > s && eb > s && A[ea - 1] === B[eb - 1]) { ea--; eb--; }
-  const N = ea - s, M = eb - s;
-  if (!N || !M) return N || M ? [[s, ea, s, eb]] : [];
-  const ids = new Map(), id = (line) => ids.get(line) ?? ids.set(line, ids.size).get(line); // (lines as numbers)
-  const a = Int32Array.from(A.slice(s, ea), id), b = Int32Array.from(B.slice(s, eb), id);
-  const LIMIT = 1000, off = LIMIT + 2, v = new Int32Array(2 * off + 1), trace = [];
-  let D = -1;
-  outer: for (let d = 0; d <= LIMIT; d++) {
-    trace.push(v.slice(off - d - 1, off + d + 2)); // v[k] for k in [-d-1, d+1], before step d
-    for (let k = -d; k <= d; k += 2) {
-      let x = k === -d || (k !== d && v[off + k - 1] < v[off + k + 1]) ? v[off + k + 1] : v[off + k - 1] + 1;
-      let y = x - k;
-      while (x < N && y < M && a[x] === b[y]) { x++; y++; }
-      v[off + k] = x;
-      if (x >= N && y >= M) { D = d; break outer; }
-    }
-  }
-  if (D < 0) return Object.assign([[s, ea, s, eb]], { rough: true });
-  const edits = []; // [x, y, inserted]: B[y] went in before A[x], or A[x] went out (before B[y])
-  for (let d = D, x = N, y = M; d > 0; d--) {
-    const t = trace[d], at = (k) => t[k + d + 1], k = x - y;
-    const prevK = k === -d || (k !== d && at(k - 1) < at(k + 1)) ? k + 1 : k - 1;
-    const prevX = at(prevK), prevY = prevX - prevK;
-    while (x > prevX && y > prevY) { x--; y--; }
-    edits.push([prevX, prevY, x === prevX]);
-    x = prevX; y = prevY;
-  }
-  const hunks = [];
-  for (const [x, y, inserted] of edits.reverse()) {
-    const last = hunks.at(-1);
-    if (last && last[1] === s + x && last[3] === s + y) last[inserted ? 3 : 1]++;
-    else hunks.push([s + x, s + x + (inserted ? 0 : 1), s + y, s + y + (inserted ? 1 : 0)]);
-  }
-  return hunks;
-}
 
 // The notice above the text: a conflict and the two ways out of it, the lines that "Keep theirs" left
 // out, edits that can't be saved (to copy), or edits kept from an earlier visit (to restore). One at
@@ -1356,26 +1016,6 @@ async function keepSide(side) {
   await saveSource();
 }
 
-// Unsaved edits survive the page (a crash, or a reload while offline or signed out): the open file's
-// text, with the version and text the edits started from, is kept in localStorage (per paper, file
-// and page: two tabs on one file keep theirs apart) until a save goes through. Opening that file
-// again offers to restore the newest, through the usual merging save.
-const keptPrefix = (path) => `latex-live:${hubBase}unsaved:${path}#`;
-const keptKey = (path, page = EDITOR_ID) => keptPrefix(path) + page;
-function parseKept(key) {
-  try {
-    const kept = JSON.parse(localStorage.getItem(key) || "null");
-    return kept && typeof kept.path === "string" && typeof kept.text === "string" && typeof kept.base === "string" ? { ...kept, key } : null;
-  } catch {
-    return null;
-  }
-}
-// The kept edits whose keys start with prefix, newest first ({..., key}).
-const allKept = (prefix) => Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i))
-  .filter((k) => k?.startsWith(prefix)).map(parseKept).filter(Boolean).sort((a, b) => b.time - a.time);
-const readKept = (path) => allKept(keptPrefix(path)).find((kept) => kept.path === path) || null;
-const dropKept = (path, key = keptKey(path)) => localStorage.removeItem(key); // (this page's, unless key says whose)
-const latestKept = () => allKept(`latex-live:${hubBase}unsaved:`)[0] || null;
 let keepTimer = null;
 function keepUnsaved(now = false) {
   clearTimeout(keepTimer);
@@ -1424,46 +1064,6 @@ async function restoreKept(kept) {
   }
   saveSource();
 }
-
-// The pane's width: as dragged last (else about a third of the window), but leaving the PDF readable
-// beside it: room for the margin bubbles' gutters as shown, and about 500 px for the page, which "Fit
-// width" then shows at half its size or more. Where opening the pane leaves it less than its least
-// width, the sidebar makes way (and the status line says so).
-let editorWidth = +localStorage.getItem("latex-live:editorWidth") || 0;
-const PDF_ROOM = 500, EDITOR_MIN = 280;
-function fitEditor(opening = false) {
-  const gutters = GUTTER * (+container.classList.contains("gutter") + +container.classList.contains("gutter-left"));
-  const room = () => innerWidth - ($("side").hidden ? 0 : 290) - gutters - PDF_ROOM;
-  if (opening && room() < EDITOR_MIN && !$("side").hidden) {
-    setSide(false);
-    setStatus("closed the sidebar to make room for the source");
-  }
-  const width = Math.round(Math.max(EDITOR_MIN, Math.min(room(), editorWidth || innerWidth * 0.35)));
-  document.body.style.setProperty("--editor-w", `${width}px`);
-  return width;
-}
-$("editorGrip").addEventListener("pointerdown", (e) => {
-  if (e.button !== 0) return;
-  e.preventDefault();
-  const grip = e.currentTarget;
-  grip.setPointerCapture(e.pointerId);
-  document.body.classList.add("resizing");
-  let frame = 0;
-  const move = (ev) => {
-    editorWidth = innerWidth - ev.clientX;
-    fitEditor();
-    frame ||= requestAnimationFrame(() => { frame = 0; refit(); });
-  };
-  grip.addEventListener("pointermove", move);
-  grip.addEventListener("lostpointercapture", () => {
-    grip.removeEventListener("pointermove", move);
-    document.body.classList.remove("resizing");
-    editorWidth = fitEditor();
-    localStorage.setItem("latex-live:editorWidth", editorWidth);
-    refit();
-  }, { once: true });
-});
-window.addEventListener("resize", () => { if (editorShown()) { fitEditor(); refit(); } });
 
 // The file picker: the editable sources (live.py /files), grouped by folder, with a filter.
 async function showFileMenu(open) {
@@ -1633,7 +1233,6 @@ function nest(entries) {
 }
 
 // A .toc entry without an anchor: go to its page label, then to the line that holds its title.
-const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 async function goToHeading(entry) {
   const p = await headingPos(doc, entry);
   if (p) linkService.goToDestination([p.index, { name: "XYZ" }, null, p.H - p.top + 4, null]);
@@ -1663,82 +1262,6 @@ async function headingPos(d, entry, from = null) {
     if (line) return { index: i, H, top: line.top - 10, x: line.left, found: true };
   }
   return { index, H: (await d.getPage(index + 1)).view[3], top: 0, found: false };
-}
-
-// Page text, cached per document: items {str, x, top (baseline, points from the page top), w, h}
-// without the submission line numbers (in the left margin, or beside both columns).
-const textCache = new WeakMap();
-function pageText(d, n) {
-  if (!textCache.has(d)) textCache.set(d, new Map());
-  const cache = textCache.get(d);
-  if (!cache.has(n)) cache.set(n, (async () => {
-    const page = await d.getPage(n);
-    const [, , W, H] = page.view;
-    const { items } = await page.getTextContent();
-    return { W, H, items: items.filter((i) => i.str.trim())
-      .map((i) => ({ str: i.str, x: i.transform[4], top: H - i.transform[5], w: i.width,
-                     h: i.height || Math.hypot(i.transform[2], i.transform[3]) }))
-      .filter((i) => !lineNumber(i, W)) };
-  })());
-  return cache.get(n);
-}
-
-// The page's text area, in points from the top, and its line spacing: from the build's log (live.py).
-// Until a build reports it, 1in margins on US letter with 11pt lines.
-let area = { top: 72, bottom: 720, leading: 11, H: 792 };
-function setArea(layout) { area = layout; }
-// The text columns, [left, right] in points (one, or two with columns = 2); null until a build reports them.
-function columnBoxes() {
-  if (!area.width) return null;
-  const { left, width, colwidth } = area;
-  return area.columns === 2 ? [[left, left + colwidth], [left + width - colwidth, left + width]] : [[left, left + width]];
-}
-const columnMid = () => (area.columns === 2 ? area.left + area.width / 2 : null);
-const columnAt = (x) => (columnMid() === null || x < columnMid() ? 1 : 2);
-// A submission line number: a bare number outside the text columns (before a build reports them,
-// in the left margin, as in ICLR's template).
-function lineNumber(i, W) {
-  if (!/^\d{1,4}$/.test(i.str.trim())) return false;
-  const boxes = columnBoxes();
-  return boxes ? !boxes.some(([l, r]) => i.x >= l - 2 && i.x + i.w <= r + 2) : i.x < W * 0.15;
-}
-// How far into a page's text a point is, from 0 to 1: by height, and with two columns, the left one first.
-function areaFraction(top, x) {
-  const f = Math.min(1, Math.max(0, (top - area.top) / (area.bottom - area.top)));
-  return columnMid() === null || x == null ? f : columnAt(x) === 1 ? f / 2 : 0.5 + f / 2;
-}
-
-// Text lines of a page (pieces joined by baseline), without the running header and footer, in
-// reading order. Each line's col is 1 (or 2: the right column, with two columns), or 0 for a line
-// across both columns (a title, a figure* caption); lines go column by column between those.
-async function textLines(d, pageNumber) {
-  const { W, H, items } = await pageText(d, pageNumber);
-  const mid = columnMid();
-  const colOf = (i) => (mid === null ? 1 : i.x < mid - 2 && i.x + i.w > mid + 2 ? 0 : i.x + i.w / 2 < mid ? 1 : 2);
-  const lines = [];
-  for (const col of mid === null ? [1] : [0, 1, 2]) {
-    let last = null;
-    for (const i of items.filter((i) => colOf(i) === col).sort((a, b) => a.top - b.top)) {
-      if (last && i.top - last.top < 2) last.parts.push(i);
-      else lines.push((last = { top: i.top, col, parts: [i] }));
-    }
-  }
-  for (const l of lines) {
-    l.parts.sort((a, b) => a.x - b.x);
-    l.str = l.parts.map((p) => p.str.trim()).join(" ");
-    l.left = l.parts[0].x;
-    l.right = Math.max(...l.parts.map((p) => p.x + p.w));
-  }
-  const kept = lines.filter((l) => l.top > area.top - 3 && l.top < area.bottom + 12).sort((a, b) => a.top - b.top); // (the page number sits lower)
-  if (mid === null) return { W, H, lines: kept };
-  const ordered = [], left = kept.filter((l) => l.col === 1), right = kept.filter((l) => l.col === 2);
-  for (const across of [...kept.filter((l) => l.col === 0), null]) {
-    const until = across ? across.top : Infinity;
-    while (left.length && left[0].top < until) ordered.push(left.shift());
-    while (right.length && right[0].top < until) ordered.push(right.shift());
-    if (across) ordered.push(across);
-  }
-  return { W, H, lines: ordered };
 }
 
 // Main-text length, against the page limit when there is one. Main text runs from the page labeled
@@ -1996,23 +1519,11 @@ async function drawFloat(d, card, f) {
 // text. live.py (/margin) gives, per note, where its source line landed (SyncTeX) and the typeset
 // words around it; those words, found in the page text, put the caret between two words. Hover a
 // bubble or caret to follow the wire; click to open the source.
-const GUTTER = 250;
 let marginOn = localStorage.getItem("latex-live:margin") !== "0";
 let marginAnchors = new Map(); // page -> [{note, x, top}] (points from the page's top-left, baseline)
 function resetMargin() { marginAnchors = new Map(); } // (a new document: loadMargin anchors its notes)
 const leftOfPage = (a) => columnMid() !== null && columnAt(a.x) === 1; // a note in the left column
-// Fitting the page width leaves room for the gutters: PDF.js measures the container's clientWidth.
-const clientWidthOf = Object.getOwnPropertyDescriptor(Element.prototype, "clientWidth").get;
-Object.defineProperty(container, "clientWidth", { get() {
-  return clientWidthOf.call(this) - (this.classList.contains("gutter") ? GUTTER : 0) - (this.classList.contains("gutter-left") ? GUTTER : 0);
-} });
-function setGutter(on, left = false) {
-  if (container.classList.contains("gutter") === on && container.classList.contains("gutter-left") === left) return;
-  container.classList.toggle("gutter", on);
-  container.classList.toggle("gutter-left", left);
-  if (editorShown()) fitEditor(); // (the source pane leaves the gutters room too)
-  refit();
-}
+
 // The gutters the notes need: right, and left too for notes in a left column.
 function fitGutters() {
   const all = [...marginAnchors.values()].flat();
@@ -2172,35 +1683,13 @@ eventBus.on("pagerendered", (e) => drawMargin(e.pageNumber));
 // and the note appears. In the margin and the sidebar, notes get ✓ (resolve: commented out under a
 // "% RESOLVED <date> (<initials>): <reason>" line), others' notes ↩ (reply), your own ✎ (edit), and
 // the ones written from this tab ✕ (delete, as an undo; this tab remembers them by file, macro, and text).
-let who = localStorage.getItem(`latex-live:${hubBase}who`) || "", authors = [];
 const written = new Set(JSON.parse(sessionStorage.getItem(`latex-live:${hubBase}written`) || "[]"));
 const writtenKey = (file, macro, tex) => JSON.stringify([file, macro, tex]);
 function markWritten(key, on) {
   on ? written.add(key) : written.delete(key);
   sessionStorage.setItem(`latex-live:${hubBase}written`, JSON.stringify([...written]));
 }
-// How the user's notes are labeled, in the toolbar and on the comment button alike: as /authors labels
-// their note macro (the initials it prints), else, for a collaborator, by their name.
-function setWho(macro) { who = macro; }
-const whoLabel = () => authors.find((a) => a.macro === who)?.author || (isCollaborator() ? me.name || me.id : who);
-async function loadAuthors() {
-  authors = await (await fetch(`authors/${encodeURIComponent(docFile)}`)).json();
-  if (isCollaborator() && me.macroDefined === false && me.role !== "viewer" && authors.some((a) => a.macro === me.macro)) {
-    me.macroDefined = true; // (the paper has defined it since /me answered; live.py checks again for each note)
-    me.can.comment = true;
-  }
-  const pick = $("whoPick");
-  if (isCollaborator()) { // (who you are comes from the server: a label, not a choice)
-    pick.replaceChildren(el("option", { value: who, textContent: `Commenting as ${whoLabel()}`, selected: true }));
-    pick.disabled = true;
-    pick.title = `Your notes are signed \\${who} (${me.name || me.id}): select text in the PDF, then press C or click the 💬 button that appears beside it`;
-    pick.hidden = !canComment();
-    return;
-  }
-  pick.replaceChildren(el("option", { value: "", textContent: "💬 Comment as…" }),
-                       ...authors.map((a) => el("option", { value: a.macro, textContent: `💬 ${a.author}`, selected: a.macro === who })));
-  pick.hidden = isDiff || !authors.length;
-}
+
 $("whoPick").onchange = (e) => {
   setWho(e.target.value);
   localStorage.setItem(`latex-live:${hubBase}who`, who);
@@ -2470,82 +1959,7 @@ async function docWords(d) {
   }
   return words;
 }
-// Myers diff of string arrays: {inserted: indices into b, deletedAt: indices into b before which
-// words of a were removed}, or null when there are too many changes to show usefully.
-// Words: {inserted: indices into b, deletedAt: indices into b before which words of a went}.
-// Myers' diff; one too large for it (many edits against HEAD) is split at anchors (words that
-// occur once in each, in the same order) and diffed piece by piece.
-function diffWords(a, b, depth = 0) {
-  let s = 0;
-  while (s < a.length && s < b.length && a[s] === b[s]) s++;
-  let ea = a.length, eb = b.length;
-  while (ea > s && eb > s && a[ea - 1] === b[eb - 1]) { ea--; eb--; }
-  const A = a.slice(s, ea), B = b.slice(s, eb);
-  const r = myers(A, B) || (depth < 3 && byAnchors(A, B, depth)) || replaced(A, B);
-  return { inserted: r.inserted.map((j) => s + j), deletedAt: [...new Set(r.deletedAt)].map((j) => s + j) };
-}
-function replaced(A, B) { // no alignment found: all of B is new
-  return { inserted: B.map((_, j) => j), deletedAt: A.length ? [0] : [] };
-}
-function byAnchors(A, B, depth) {
-  const count = (xs) => xs.reduce((m, x) => m.set(x, (m.get(x) || 0) + 1), new Map());
-  const ca = count(A), cb = count(B), inB = new Map();
-  B.forEach((x, j) => { if (ca.get(x) === 1 && cb.get(x) === 1) inB.set(x, j); });
-  const pairs = [];
-  A.forEach((x, i) => { if (inB.has(x)) pairs.push([i, inB.get(x)]); });
-  // The longest run of pairs increasing in B too (patience sorting).
-  const tails = [], prev = [];
-  pairs.forEach(([, j], p) => {
-    let lo = 0, hi = tails.length;
-    while (lo < hi) { const mid = (lo + hi) >> 1; if (pairs[tails[mid]][1] < j) lo = mid + 1; else hi = mid; }
-    prev[p] = lo ? tails[lo - 1] : -1;
-    tails[lo] = p;
-  });
-  if (!tails.length) return null;
-  const anchors = [];
-  for (let p = tails.at(-1); p >= 0; p = prev[p]) anchors.push(pairs[p]);
-  anchors.reverse().push([A.length, B.length]);
-  const inserted = [], deletedAt = [];
-  let i0 = 0, j0 = 0;
-  for (const [i, j] of anchors) {
-    const r = diffWords(A.slice(i0, i), B.slice(j0, j), depth + 1);
-    inserted.push(...r.inserted.map((k) => j0 + k));
-    deletedAt.push(...r.deletedAt.map((k) => j0 + k));
-    i0 = i + 1; j0 = j + 1;
-  }
-  return { inserted, deletedAt };
-}
-function myers(A, B) {
-  const N = A.length, M = B.length;
-  const inserted = [], deletedAt = [];
-  if (!N || !M) return replaced(A, B);
-  const LIMIT = 3000, off = LIMIT + 2, trace = [];
-  const v = new Int32Array(2 * off + 1);
-  let D = -1;
-  outer: for (let d = 0; d <= LIMIT; d++) {
-    trace.push(v.slice(off - d - 1, off + d + 2)); // v[k] for k in [-d-1, d+1], before step d
-    for (let k = -d; k <= d; k += 2) {
-      let x = k === -d || (k !== d && v[off + k - 1] < v[off + k + 1]) ? v[off + k + 1] : v[off + k - 1] + 1;
-      let y = x - k;
-      while (x < N && y < M && A[x] === B[y]) { x++; y++; }
-      v[off + k] = x;
-      if (x >= N && y >= M) { D = d; break outer; }
-    }
-  }
-  if (D < 0) return null;
-  let x = N, y = M;
-  for (let d = D; d > 0; d--) {
-    const t = trace[d], at = (k) => t[k + d + 1];
-    const k = x - y;
-    const prevK = k === -d || (k !== d && at(k - 1) < at(k + 1)) ? k + 1 : k - 1;
-    const prevX = at(prevK), prevY = prevX - prevK;
-    while (x > prevX && y > prevY) { x--; y--; }
-    if (x === prevX) inserted.push(prevY); // B[prevY] was inserted
-    else deletedAt.push(y);                // A[prevX] was deleted before B[y]
-    x = prevX; y = prevY;
-  }
-  return { inserted: inserted.reverse(), deletedAt: [...new Set(deletedAt)].reverse() };
-}
+
 let changeList = [], changeIndex = -1;
 function showChanges(oldWords, newWords, figures, against) {
   marks.changes.clear();
@@ -2843,126 +2257,6 @@ $("nextCut").onclick = () => goToCut(1);
 $("prevCut").onclick = () => goToCut(-1);
 $("cut").hidden = isDiff;
 
-// Unresolved references and citations render as "??": outline them in red.
-function showUnresolved(words) {
-  marks.unresolved.clear();
-  for (const w of words) {
-    if (!w.s.includes("??")) continue;
-    if (!marks.unresolved.has(w.page)) marks.unresolved.set(w.page, []);
-    marks.unresolved.get(w.page).push({ rect: [w.rect[0] - 1, w.rect[1] - 1, w.rect[2] + 1, w.rect[3] + 1], cls: "unres" });
-  }
-}
-
-// Hover previews: hovering an internal link (\ref, \cref, a citation) shows the part of the page
-// it points to: a figure or table down to the end of its caption, a bibliography entry, the
-// start of a section, or a few lines at an equation.
-const preview = $("preview");
-let hoverTimer = null, hideTimer = null, hoverLink = null, previewToken = 0;
-container.addEventListener("mouseover", (e) => {
-  const a = e.target.closest?.(".annotationLayer a[href^='#']");
-  if (!a || a === hoverLink) return;
-  hoverLink = a;
-  clearTimeout(hoverTimer);
-  clearTimeout(hideTimer);
-  hoverTimer = setTimeout(() => showPreview(a).catch((err) => console.warn(err)), 250);
-});
-container.addEventListener("mouseout", (e) => {
-  const a = e.target.closest?.(".annotationLayer a");
-  if (!a || (e.relatedTarget && (a.contains(e.relatedTarget) || preview.contains(e.relatedTarget)))) return;
-  hoverLink = null;
-  clearTimeout(hoverTimer);
-  hideTimer = setTimeout(hidePreview, 200);
-});
-preview.addEventListener("mouseenter", () => clearTimeout(hideTimer));
-preview.addEventListener("mouseleave", () => { hideTimer = setTimeout(hidePreview, 200); });
-container.addEventListener("scroll", () => hidePreview(), { passive: true });
-function hidePreview() {
-  previewToken++;
-  hoverLink = null;
-  clearTimeout(hoverTimer);
-  preview.hidden = true;
-}
-async function showPreview(a) {
-  const token = ++previewToken;
-  const hash = unescape(a.getAttribute("href").slice(1)); // PDFLinkService.getDestinationHash escapes
-  let dest = null, name = null;
-  if (hash.startsWith("[")) { try { dest = JSON.parse(hash); } catch { return; } }
-  else { name = hash; dest = await doc.getDestination(hash); }
-  if (!Array.isArray(dest)) return;
-  const index = typeof dest[0] === "object" && dest[0] ? await doc.getPageIndex(dest[0]) : dest[0];
-  if (!(index >= 0)) return;
-  const page = await doc.getPage(index + 1);
-  const [, , W, H] = page.view;
-  const kind = dest[1]?.name;
-  const destY = kind === "XYZ" ? dest[3] : kind === "FitH" || kind === "FitBH" ? dest[2] : null;
-  const top = destY == null ? area.top : H - destY;
-  const [t0, t1, x0, x1] = await previewRegion(name?.split(".")[0] || "", index + 1, top, kind === "XYZ" ? dest[2] : null, W, H);
-  const span = columnMid() === null ? x1 - x0 : Math.max(x1 - x0, area.width + 16); // (a column at the scale of a full-width preview)
-  const scale = Math.min(620 / span, (window.innerWidth - 40) / (x1 - x0), (window.innerHeight * 0.6) / (t1 - t0));
-  const dpr = window.devicePixelRatio || 1;
-  const viewport = page.getViewport({ scale: scale * dpr, offsetX: -x0 * scale * dpr, offsetY: -t0 * scale * dpr });
-  const canvas = el("canvas", { width: Math.ceil((x1 - x0) * scale * dpr), height: Math.ceil((t1 - t0) * scale * dpr) });
-  Object.assign(canvas.style, { width: `${(x1 - x0) * scale}px`, height: `${(t1 - t0) * scale}px` });
-  await page.render({ canvasContext: canvas.getContext("2d"), viewport, annotationMode: pdfjsLib.AnnotationMode.DISABLE }).promise;
-  if (token !== previewToken) return;
-  preview.replaceChildren(canvas, el("div", { className: "hint", textContent: `page ${index + 1} · click to go there` }));
-  preview.onclick = () => linkService.goToDestination(dest);
-  preview.hidden = false;
-  const r = a.getBoundingClientRect(), pw = preview.offsetWidth, ph = preview.offsetHeight;
-  preview.style.left = `${Math.max(8, Math.min(window.innerWidth - pw - 8, r.left - 40))}px`;
-  preview.style.top = `${r.bottom + 6 + ph < window.innerHeight ? r.bottom + 6 : Math.max(40, r.top - ph - 6)}px`;
-}
-// The region to show, [top, bottom, left, right] in points from the page's top-left. With two
-// columns, a target in a column (by its destination's x) shows that column, measured by its lines
-// alone; a full-width one (a figure* or table*, or a line across both columns) the whole width.
-const CAPTION = /^(Figure|Fig\.|Table)\s*[A-Z]?\d+\s*[:.]/;
-async function previewRegion(kind, pageNumber, top, x, W, H) {
-  const all = (await textLines(doc, pageNumber)).lines.slice().sort((a, b) => a.top - b.top);
-  const body = all.filter((l) => l.str.length > 20);
-  let left = Math.max(0, Math.min(...body.map((l) => l.left), W * 0.2) - 8);
-  let right = Math.min(W, Math.max(...body.map((l) => l.right), W * 0.8) + 8);
-  let col = columnMid() === null || x == null ? null : columnAt(x); // null: the whole page, as with one column
-  const across = (l) => l && (l.col === 0 || all.some((m) => m.col === 0 && Math.abs(m.top - l.top) < 2));
-  const at = all.find((l) => l.top > top - 2); // the target's line
-  if (col && at && at.top - top < 20 && at.col === 0) col = 0;
-  if (col && (kind === "figure" || kind === "table")) {
-    // A float anchors at its top left, so a figure* is in the left column by x: its caption (the
-    // first below, in that column or across both) runs across both columns.
-    if (across(all.find((l) => l.top > top - 2 && (l.col === col || l.col === 0) && CAPTION.test(l.str)))) col = 0;
-  }
-  if (col) [left, right] = [columnBoxes()[col - 1][0] - 8, columnBoxes()[col - 1][1] + 8];
-  // (A full-width caption's short last line sits in the left column.)
-  const lines = col === null ? all : col ? all.filter((l) => l.col === col) : all.filter((l) => l.col !== 2);
-  const below = lines.filter((l) => l.top > top - 2);
-  const paragraphEnd = (i, gap) => { // last line of the block starting at below[i]
-    while (i + 1 < below.length && below[i + 1].top - below[i].top < gap) i++;
-    return below[i].top;
-  };
-  let t0 = top - 4, t1 = top + 140;
-  if (kind === "cite" && below.length) {
-    // One entry: continuation lines are indented (hanging indent) until the next entry starts. (The
-    // anchor sits about a line above the entry: level with the end of the one before, at tight spacing.)
-    let i = Math.max(0, below.findIndex((l) => l.top > top + 2));
-    const first = below[i];
-    while (i + 1 < below.length && below[i + 1].left > first.left + 2 && below[i + 1].top - below[i].top < 20) i++;
-    t0 = first.top - first.parts[0].h - 3;
-    t1 = below[i].top + 4;
-  } else if (kind === "figure" || kind === "table") {
-    const i = below.findIndex((l) => CAPTION.test(l.str));
-    t0 = top - 2;
-    t1 = i >= 0 ? paragraphEnd(i, 16) + 4 : top + H * 0.45;
-    if (kind === "table" && i >= 0 && below[i].top - top < 30) t1 = paragraphEnd(i, 19) + 4; // caption above the table
-  } else if (kind === "equation" || kind === "AMS") {
-    t0 = top - 6; t1 = top + 44;
-  } else if (/section|paragraph|appendix|chapter|part/.test(kind)) {
-    t0 = top - 2; t1 = top + 110;
-  }
-  const band = col ? all.find((l) => l.col === 0 && l.top > top + 2) : null; // (a column ends above a full-width float)
-  if (band) t1 = Math.min(t1, band.top - band.parts[0].h - 2);
-  t1 = Math.min(H, Math.max(t1, t0 + 20), t0 + H * 0.75);
-  return [Math.max(0, t0), t1, left, right];
-}
-
 // Compare: latexdiff against a commit (live.py builds <doc>-diff.pdf), shown in its own tab.
 $("compare").onclick = async () => {
   const panel = $("comparePanel");
@@ -3008,41 +2302,9 @@ function showDiffInfo(d) {
   info.hidden = false;
 }
 
-const assets = {
-  // Absolute URLs: the worker would resolve relative ones against pdfjs/build/.
-  cMapUrl: new URL("pdfjs/cmaps/", location.href).href,
-  cMapPacked: true,
-  standardFontDataUrl: new URL("pdfjs/standard_fonts/", location.href).href,
-  get isEvalSupported() { return !me.shared; }, // (in shared mode, no code compiled from a PDF that coauthors' TeX made)
-};
-let doc = null; // the document on screen
-let docSeq = 0;
-// The next document on screen (variant: "notes" or "clean"), each with a number of its own (docSeq).
-function showDocument(next, variant) {
-  viewer.setDocument(next);
-  linkService.setDocument(next);
-  doc?.destroy();
-  doc = next;
-  shownVariant = variant;
-  docSeq++;
-}
-let shown = null; // the build on screen: its version (clean:<version> for the notes-free build)
-function setShown(want) { shown = want; }
 let loading = false;
 let baselineAsked = 0; // (when this tab last asked for a baseline: POST /baseline)
 let forwardSeq = null;
-let buildVersion = null;
-function setBuildVersion(version) { buildVersion = version; }
-// Whether a build is adding a change that this tab wrote (a note: wroteAt) and hasn't started yet, for
-// downloadBuilt: until a build starts, for 2 seconds at most (latexmk looks for changes four times a second).
-let buildRunning = false, buildStarted = 0, buildFailed = false, wroteAt = 0;
-function seeBuild(running, failed) {
-  if (running && !buildRunning) buildStarted = Date.now();
-  buildRunning = running;
-  buildFailed = failed; // (the last build that finished: the PDF is then the one before)
-}
-const wrote = () => { wroteAt = Date.now(); };
-const behind = () => wroteAt > buildStarted && Date.now() - wroteAt < 2000;
 
 async function load(name, version, variant, info) {
   // Fetch and parse the new PDF before swapping, so the old one stays visible meanwhile.
@@ -3163,6 +2425,7 @@ async function poll() {
     polling = loading = false;
   }
 }
+// The sidebar, as it was left.
 if (localStorage.getItem("latex-live:side")) showSide(true);
 // Main document: the paper's root .tex files. Picking one makes the server build it instead, and
 // every open viewer follows (poll), once the source pane has saved.
