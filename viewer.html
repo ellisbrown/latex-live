@@ -1172,7 +1172,7 @@ async function openFile(path, line = 0) {
   if (!r?.ok || typeof f.text !== "string" || typeof f.version !== "string") {
     const why = !r || unreachable(r, f) ? "can't reach the preview server" : r.status === 404 ? "not a source file that can be edited here" : r.status === 415 ? "not UTF-8 text" : f.error;
     const kept = r?.status === 404 && !unreachable(r, f) && readKept(path);
-    if (kept) showGone(path, kept.text); // (edits kept from earlier, to a file the paper no longer has)
+    if (kept) showGone(path, kept.text, kept.key); // (edits kept from earlier, to a file the paper no longer has)
     return setStatus(`${path}: ${why}`, "error");
   }
   while (busy) await busy.done; // (e.g. a reload of the file open now)
@@ -1384,9 +1384,9 @@ function refuseSave(status, why) {
                           "leave:", { copy: cmView.state.doc.toString() });
   }
 }
-function showGone(path, text) {
+function showGone(path, text, key = keptKey(path)) {
   showNotice("gone", `${path} is no longer part of the paper (it was renamed or removed, or is no longer \\input), so your edits to it ` +
-                     "can't be saved there. Copy them from below; you can open another file meanwhile.", { copy: text, onClose: () => dropKept(path) });
+                     "can't be saved there. Copy them from below; you can open another file meanwhile.", { copy: text, onClose: () => dropKept(path, key) });
 }
 // Save now, and wait for it (before a file or document switch): whether all is saved then (a file
 // gone from the paper counts: its text is in the notice, to copy).
@@ -1606,24 +1606,25 @@ async function keepSide(side) {
 }
 
 // Unsaved edits survive the page (a crash, or a reload while offline): the open file's
-// text, with the version and text the edits started from, is kept in localStorage (per paper and
-// file) until a save goes through. Opening that file again offers to restore them, through the usual
-// merging save.
-const keptKey = (path) => `latex-live:${hubBase}unsaved:${path}`;
-function readKept(path) {
+// text, with the version and text the edits started from, is kept in localStorage (per paper, file
+// and page: two tabs on one file keep theirs apart) until a save goes through. Opening that file
+// again offers to restore the newest, through the usual merging save.
+const keptPrefix = (path) => `latex-live:${hubBase}unsaved:${path}#`;
+const keptKey = (path, page = EDITOR_ID) => keptPrefix(path) + page;
+function parseKept(key) {
   try {
-    const kept = JSON.parse(localStorage.getItem(keptKey(path)) || "null");
-    return kept && typeof kept.text === "string" && typeof kept.base === "string" ? kept : null;
+    const kept = JSON.parse(localStorage.getItem(key) || "null");
+    return kept && typeof kept.path === "string" && typeof kept.text === "string" && typeof kept.base === "string" ? { ...kept, key } : null;
   } catch {
     return null;
   }
 }
-const dropKept = (path) => localStorage.removeItem(keptKey(path));
-function latestKept() {
-  const prefix = keptKey(""), keys = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i));
-  const all = keys.filter((k) => k?.startsWith(prefix)).map((k) => readKept(k.slice(prefix.length))).filter(Boolean);
-  return all.sort((a, b) => b.time - a.time)[0] || null;
-}
+// The kept edits whose keys start with prefix, newest first ({..., key}).
+const allKept = (prefix) => Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i))
+  .filter((k) => k?.startsWith(prefix)).map(parseKept).filter(Boolean).sort((a, b) => b.time - a.time);
+const readKept = (path) => allKept(keptPrefix(path)).find((kept) => kept.path === path) || null;
+const dropKept = (path, key = keptKey(path)) => localStorage.removeItem(key); // (this page's, unless key says whose)
+const latestKept = () => allKept(`latex-live:${hubBase}unsaved:`)[0] || null;
 let keepTimer = null;
 function keepUnsaved(now = false) {
   clearTimeout(keepTimer);
@@ -1644,11 +1645,11 @@ function keepUnsaved(now = false) {
 function offerKept(f) {
   const kept = readKept(f.path);
   if (!kept) return;
-  if (kept.text === f.text) return dropKept(f.path); // (they were saved after all, e.g. by the save on leaving the page)
+  if (kept.text === f.text) return dropKept(f.path, kept.key); // (they were saved after all, e.g. by the save on leaving the page)
   const when = new Date(kept.time).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
   showNotice("restore", `This browser kept edits to ${f.path} from ${when} that were not saved. Restore them? They are merged with what was saved since.`,
              { buttons: [["Restore", "Put them back in the text, and save them merged with the changes saved since", () => restoreKept(kept)],
-                         ["Discard", "Forget them", () => { dropKept(kept.path); hideNotice("restore"); }]] });
+                         ["Discard", "Forget them", () => { dropKept(kept.path, kept.key); hideNotice("restore"); }]] });
 }
 async function restoreKept(kept) {
   if (ed?.path !== kept.path) return;
@@ -1660,6 +1661,8 @@ async function restoreKept(kept) {
   Object.assign(ed, { base: kept.base, baseVersion: kept.baseVersion ?? null }); // (the edits, against what they started from)
   sourceEpoch++;
   replaceSource(kept.text);
+  keepUnsaved(true); // (kept as this page's edits now, before the earlier page's copy goes)
+  if (kept.key !== keptKey(kept.path)) dropKept(kept.path, kept.key);
   if (conflict) {
     ed.markers = true;
     showConflict();
