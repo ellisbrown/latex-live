@@ -140,6 +140,16 @@ def say(message):
     print(f"=== latex-live: {message}", flush=True)
 
 
+def note_time(p, event, detail=""):
+    """With LATEX_LIVE_TIMING=1, note when a phase of pass p happened, in B/<job>.timing (latexlive/timing.py)."""
+    if p.env.get("LATEX_LIVE_TIMING") == "1" and p.job:
+        try:
+            with open(p.file(".timing"), "a") as f:
+                f.write(f"{time.time():.6f} {event}{' ' + detail if detail else ''}\n")
+        except OSError:
+            pass
+
+
 def read_json(path):
     try:
         with open(path) as f:
@@ -980,12 +990,16 @@ def take(p, records, key, sb, lines, line):
         why = "its release failed"
     elif why is not None and fd is not None:
         os.close(fd)  # (its \read finds the FIFO's end, and TeX stops)
+    if why is None:
+        note_time(p, "released")
     start_standby(p, records, key, lines, line)  # (for the next pass)
     if why is None:
         code = wait_done(sb)
+        note_time(p, "tex-end")
         why = after_release(p, sb, record, code, root_stamp)
         if why is None:
             finish(p, sb)
+            note_time(p, "moved")
             show_output(sb)
             remove(sb.dir)
             records.last("standby")
@@ -1014,6 +1028,7 @@ def beside(p, records, key, sb, lines, line):
             why = "its release failed"
     start_standby(p, records, key, lines, line)  # (for the next pass)
     status = normal.wait()
+    note_time(p, "tex-end")
     records.last("verify", why)
     if why is not None or status != 0:
         sb.stop()
@@ -1072,6 +1087,8 @@ def run_pass(argv):
         else:
             sb.stop()  # (only one waits; one whose preamble read a file that has changed since is no use)
     if taken is not None:
+        note_time(p, "standby", "verified" if records.find("verified", key) else "verify")
+
         def stopped(*_):
             taken.stop()
             sys.exit(143)
@@ -1085,11 +1102,13 @@ def run_pass(argv):
         refused = records.find("refused", key)
         fresh = start_standby(p, records, key, lines, line)
         if fresh is not None and not records.find("verified", key) and fresh.claim(os.getpid()):
+            note_time(p, "standby", "verify")
             code = take(p, records, key, fresh, lines, line)  # (verified on this pass, beside it: see take)
             records.save()
             sys.exit(code)
         records.last("normal", refused["reason"] if refused else "no standby was waiting")
         records.save()
+    note_time(p, "standby", "normal")
     p.run_plain()
 
 

@@ -5,7 +5,7 @@ import {
 } from "./page.js";
 import { postJSON, readBody, unreachable } from "./net.js";
 import { isCollaborator, loadAuthors, me } from "./role.js";
-import { assets, leaveDocument, pdfjsLib, showDocument, shownVariant } from "./pdfview.js";
+import { assets, eventBus, leaveDocument, pdfjsLib, showDocument, shownVariant } from "./pdfview.js";
 import { resetFind } from "./search.js";
 import { rebuildAt, seeBuild, setBuildVersion, setShown, shown } from "./build.js";
 import { setGutter } from "./layout.js";
@@ -47,9 +47,32 @@ let loading = false;
 let baselineAsked = 0; // (when this tab last asked for a baseline: POST /baseline)
 let forwardSeq = null;
 
-async function load(name, version, variant, info) {
+// With LATEX_LIVE_TIMING=1 (info.timing: the server's clock when it answered), log in the console how long a new PDF
+// took from its publish to the screen: until this tab's poll got the answer that showed it (on the server's clock), the
+// answer's trip, fetching and parsing it, swapping it in, and drawing its first page. at: when, on this machine's clock.
+function timeLoad(name, version, info, asked, answered) {
+  if (!info.timing) return () => {};
+  const waited = Math.round(info.timing.now * 1000 - Number(version) / 1e6);
+  const marks = { asked, answered };
+  return (mark) => {
+    marks[mark] = performance.now();
+    if (mark !== "shown") return;
+    const drawn = (e) => {
+      eventBus.off("pagerendered", drawn);
+      const now = performance.now(), ms = (a, b) => Math.round(marks[b] - marks[a]);
+      console.log(`latex-live timing: ${name}: published→answered ${waited} ms, answer ${ms("asked", "answered")} ms, `
+                  + `fetch+parse ${ms("answered", "parsed")} ms, swap ${ms("parsed", "shown")} ms, `
+                  + `page ${e.pageNumber} drawn ${Math.round(now - marks.shown)} ms; published→drawn `
+                  + `${waited + Math.round(now - marks.answered)} ms; at ${Date.now()}`);
+    };
+    eventBus.on("pagerendered", drawn);
+  };
+}
+
+async function load(name, version, variant, info, timed = () => {}) {
   // Fetch and parse the new PDF before swapping, so the old one stays visible meanwhile.
   const next = await pdfjsLib.getDocument({ url: `pdf/${encodeURIComponent(name)}?v=${version}`, ...assets }).promise;
+  timed("parsed");
   // Text changes only within one build (the notes-free one differs from the live one everywhere).
   const oldWords = variant === shownVariant && wordsPromise && await wordsPromise.catch(() => null);
   leaveDocument();
@@ -57,6 +80,7 @@ async function load(name, version, variant, info) {
   if (variant !== "clean") setGutter(false);
   else if (marginOn && !isDiff) setGutter(true, area.columns === 2); // (dropped again if no notes need them)
   hidePreview();
+  timed("shown");
   showDocument(next, variant);
   showMarginButton();
   marks.cut.clear();
@@ -94,6 +118,7 @@ export async function poll() {
   if (loading || polling) return;
   polling = true;
   const epoch = sourceEpoch;
+  const asked = performance.now();
   try {
     const query = new URLSearchParams();
     const against = changesOn ? baseKind() : null; // (the server builds the push baseline only when asked)
@@ -110,6 +135,7 @@ export async function poll() {
                       : r.status === 404 ? "server is older than this viewer: restart the LaTeX build task" : `status ${r.status}`);
     }
     const info = await r.json();
+    const answered = performance.now();
     if (pollFailed) setStatus(""); // (it answers again)
     pollFailed = false;
     sourceStatus(info.source, epoch);
@@ -140,7 +166,8 @@ export async function poll() {
     const want = clean ? `clean:${clean.version}` : info.version;
     if (want !== shown) {
       loading = true;
-      await load(clean ? cleanFile : file, clean ? clean.version : info.version, clean ? "clean" : "notes", info);
+      const [name, version] = clean ? [cleanFile, clean.version] : [file, info.version];
+      await load(name, version, clean ? "clean" : "notes", info, timeLoad(name, version, info, asked, answered));
       setShown(want);
     }
     updateChanges();

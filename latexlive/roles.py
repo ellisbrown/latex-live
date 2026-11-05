@@ -65,7 +65,7 @@ def viewer_status(info):
         n = len(b.get("errors") or [])
         return {"ok": b.get("ok"), "time": b.get("time"), "began": b.get("began"),
                 "errors": [{"file": None, "line": None, "msg": f"{n} error{'' if n == 1 else 's'} (editors see them)"}] if n else []}
-    keep = ("version", "building", "forward", "pageLimit", "refs", "layout", "doc", "overwritten", "clean", "texImage", "latexLive")
+    keep = ("version", "building", "forward", "pageLimit", "refs", "layout", "doc", "overwritten", "clean", "texImage", "latexLive", "timing")
     return {**{key: info[key] for key in keep if key in info}, "build": build(info.get("build")),
             "cleanBuild": build(info.get("cleanBuild"))}
 

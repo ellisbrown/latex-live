@@ -128,6 +128,10 @@ INSTANCE = f"{os.getpid()}-{secrets.token_hex(4)}"  # (tex-exec labels a shared 
 # of the live build. On unless LATEX_LIVE_STANDBY=0; never in shared mode, which builds without latexmk.
 STANDBY = os.environ.get("LATEX_LIVE_STANDBY", "").strip() != "0"
 
+# LATEX_LIVE_TIMING=1: print when each phase of each build happened, from the save to the published PDFs, and have
+# the viewer log when it noticed, fetched, parsed and drew each new PDF in the browser's console (timing).
+TIMING = os.environ.get("LATEX_LIVE_TIMING", "").strip() == "1"
+
 
 # LATEX_LIVE_PROTECTED, a regular expression, marks text that must stay as written, e.g.
 # r"\\ch\{human-written\}" at the end of a paragraph or inside a caption: a note written from the viewer

@@ -46,7 +46,8 @@
      container or a folder behind.
    Beside these, in a thread of its own, the warm standby (standby_checks) on a paper and an instance of its own,
    whose preamble reads a file and typesets a box: once a body edit runs from the standby, its PDF has a normal
-   pass's pages and text; both passes of an edit that adds a reference run from it; a preamble edit runs normally
+   pass's pages and text; both passes of an edit that adds a reference run from it (and with LATEX_LIVE_TIMING=1,
+   its timing line names each phase in order, and /status gives the server's clock); a preamble edit runs normally
    (verifying a new standby beside it) and the next edits use the standby, and so does a change to the file the
    preamble reads; an error in the body is reported at its file and line; forward and inverse search work after a
    pass from the standby (also on the box); killing live.py (kill -9) stops its standbys, and so does stopping it,
@@ -1754,7 +1755,7 @@ def standby_run(tmp):
     write_text(paper, "macros.tex", "\\newcommand\\macro{Macro version one}\n")
     write_text(paper, "body.tex", STANDBY_BODY)
     token = make_state(state)
-    env = {**ENV, "LATEX_LIVE_STATE": state}
+    env = {**ENV, "LATEX_LIVE_STATE": state, "LATEX_LIVE_TIMING": "1"}  # (and each build's timing line: timing_check)
     build = os.path.join(paper, "build")
     status_file, records = os.path.join(build, "main-live.status.json"), os.path.join(build, "standby", "main-live.json")
     procs = [start(paper, "main", *extra, env=env, port=STANDBY_PORT)]
@@ -1805,6 +1806,7 @@ def standby_run(tmp):
         if ran.get("standby", 0) < 2 or set(ran) != {"standby"} or "See Section 2." not in text():
             fail(f"an edit that adds a reference: passes {ran}, text {text()[:300]!r}")
         ok("both passes of an edit that adds a reference run from the warm standby, and the reference resolves")
+        timing_check(procs[0].log, own, token)
 
         ran, _ = save("main.tex", STANDBY_PAPER.replace("Boxed in the preamble", "Boxed again"))
         if ran.get("standby") or not ran.get("verify") or "Boxed again" not in text():
@@ -1870,6 +1872,32 @@ def standby_run(tmp):
     finally:
         for proc in procs:
             stop(proc)
+
+
+def timing_check(log, port, token):
+    """With LATEX_LIVE_TIMING=1, each build prints a line of its phases, counted from the save (here the last
+    one: two passes from the warm standby), and /status gives the server's clock for the viewer's own part."""
+    def lines():
+        with open(log, errors="replace") as f:
+            return [l for l in f.read().splitlines() if l.startswith("=== latex-live timing: main (ms after the save of body.tex): ")]
+    end = time.monotonic() + 10  # (the line comes a moment after the build: its last event is noted after the status)
+    while not (line := next((l for l in lines()[::-1] if l.count(", pass ") == 2 and "released" in l), None)) and time.monotonic() < end:
+        time.sleep(0.1)
+    if not line:
+        fail(f"no timing line of a build of two passes; the last: {(lines() or [None])[-1]}")
+    events = re.findall(r"([a-z-]+(?:\([^)]*\))?) (-?\d+)(?:,|$)", line.split("): ", 1)[1])
+    names = [name for name, _ in events]
+    want = ["run", "pass", "standby(verified)", "released", "tex-end", "moved", "report", "published", "pass-end", "analyzed"]
+    if names[:len(want)] != want or names.count("published") != 2 or names[-2:] != ["status", "run-end"] \
+            or [int(ms) for _, ms in events] != sorted(int(ms) for _, ms in events) or int(events[0][1]) < 0:
+        fail(f"the timing line of a build of two passes from the warm standby: {line}")
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    conn.request("GET", "/status/main.pdf", headers={"Cookie": f"latex_live={token}"})
+    now = json.loads(conn.getresponse().read()).get("timing", {}).get("now")
+    conn.close()
+    if not isinstance(now, float) or abs(now - time.time()) > 5:
+        fail(f"/status with LATEX_LIVE_TIMING=1 gives no server clock: {now}")
+    ok("LATEX_LIVE_TIMING=1 prints each build's phases from the save (two passes from the warm standby), and /status the clock")
 
 
 def texlive_image():

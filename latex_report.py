@@ -45,6 +45,39 @@ FILE_TOKEN_RE = re.compile(r"[^\s()]+")
 LOG_LIMIT = 64 << 20  # (the most of a log read: the paper decides how much TeX writes)
 
 
+def note_time(root, event, detail="", when=None):
+    """With LATEX_LIVE_TIMING=1, note when a phase of job root's build happened, in build/<root>.timing, which
+    live.py reads (latexlive/timing.py); not in shared mode, which notes them itself (and reads nothing back
+    from build/)."""
+    if os.environ.get("LATEX_LIVE_TIMING") == "1" and not os.environ.get("LATEX_LIVE_USERS"):
+        try:
+            with open(os.path.join(BUILD, f"{root}.timing"), "a") as f:
+                f.write(f"{time.time() if when is None else when:.6f} {event}{' ' + detail if detail else ''}\n")
+        except OSError:
+            pass
+
+
+def newest_source(root):
+    """(mtime, path) of the newest file in the paper that the last pass read (its .fls), or None: the save
+    that started the run, for its timing."""
+    newest = None
+    try:
+        with open(os.path.join(BUILD, f"{root}.fls"), errors="surrogateescape") as f:
+            paths = {os.path.normpath(line[6:].rstrip("\n")) for line in f if line.startswith("INPUT ")}
+    except OSError:
+        return None
+    for path in paths:
+        if os.path.isabs(path) or path.startswith(BUILD + os.sep) or path.startswith(".."):
+            continue
+        try:
+            when = os.stat(path).st_mtime
+        except OSError:
+            continue
+        if newest is None or when > newest[0]:
+            newest = (when, path)
+    return newest
+
+
 def emit(path, line, severity, msg):
     print(f"{os.path.abspath(path)}:{line}: {severity}: {msg}")
 
@@ -187,6 +220,7 @@ def start_notes_free_build(root, doc):
     except (OSError, ValueError):
         pass
     seed_notes_free(root, doc)
+    note_time(root, "clean-start")
     proc = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--notes-free", root, doc], start_new_session=True,
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     with open(os.path.join(out, "pid"), "w") as f:
@@ -246,8 +280,10 @@ def notes_free_pass(root, doc, env=None, out=None, publish=None):
             return None
 
     ran = run()
+    note_time(root, "clean-tex")
     if ran and uses_lineno(os.path.join(out, f"{job}.aux")):  # (a second pass reads the first's .aux)
         ran = run()
+        note_time(root, "clean-tex")
     stamp = time.strftime("%H:%M:%S")
     if ran is None:
         return {"ok": False, "time": stamp, "timeout": True,
@@ -258,6 +294,7 @@ def notes_free_pass(root, doc, env=None, out=None, publish=None):
         elif not publish(os.path.join(out, f"{job}.pdf")):
             return {"ok": False, "time": stamp, "superseded": True, "errors": []}
         write_status(job, {"ok": True, "time": stamp}, out)
+        note_time(root, "clean-published")
         return {"ok": True, "time": stamp}
 
     def read(path):
@@ -282,6 +319,7 @@ def notes_free_pass(root, doc, env=None, out=None, publish=None):
         rebuild_from_scratch(root)
         status["msg"] = f"the main build used another TeX installation ({main_format}); rebuilding it"
     write_status(job, status, out)
+    note_time(root, "clean-failed")
     return status
 
 
@@ -324,14 +362,19 @@ def main():
         return notes_free_pass(sys.argv[2], sys.argv[3])
     if sys.argv[1] == "--pass":
         root = sys.argv[2]
+        note_time(root, "report")
         try:
             if os.path.isfile(os.path.join(BUILD, f"{root}.pdf")):
                 keep_inputs(root)
-                publish(root, publish_dest(root)[1])
+                if publish(root, publish_dest(root)[1]):
+                    note_time(root, "published")
         except OSError:
             pass  # the end-of-run report publishes it anyway
         return
     root, status = sys.argv[1], sys.argv[2]
+    note_time(root, "end-report", status)
+    if os.environ.get("LATEX_LIVE_TIMING") == "1" and (newest := newest_source(root)):
+        note_time(root, "saved", newest[1], when=newest[0])
     doc, dest = publish_dest(root)
     stamp = time.strftime("%H:%M:%S")
     ok, report, log, files = run_report(root, status)
@@ -343,8 +386,10 @@ def main():
         pass
     if ok:  # (before the status, which ends "building": live.py's downloads then use this PDF)
         keep_inputs(root)
-        publish(root, dest)
+        if publish(root, dest):
+            note_time(root, "published")
     write_status(root, report)
+    note_time(root, "status")
 
     if ok:
         print(f"=== live-reload: published {dest} at {stamp}")
