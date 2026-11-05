@@ -387,6 +387,8 @@ def run_early(root, doc, seed, began, owner):
     whose run went on (it read other files). Runs in place in build/clean/, from a copy of it as it was (to put
     back), and publishes only once the end-of-run report keeps it (keep_early); stops, putting build/clean/ back,
     if latexmk has gone."""
+    if os.getpgrp() != os.getpid():  # (its own process group, its TeX run's too, which stop_early signals by its pid)
+        os.setsid()
     seed_dir = os.path.join(EARLY, seed)
     out = os.path.join(BUILD, "clean")
     with early_lock():
