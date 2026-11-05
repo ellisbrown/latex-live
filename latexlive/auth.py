@@ -23,6 +23,9 @@ def load_token():
     if token:
         return token
     if os.path.exists(config.TOKEN_FILE):  # (never an empty token: it would let every request in)
+        token = (config.read_text(config.TOKEN_FILE) or "").strip()  # (another instance may have linked it in just now)
+        if token:
+            return token
         sys.exit(f"latex-live: {config.TOKEN_FILE} is empty; delete it and start again")
     os.makedirs(config.STATE, mode=0o700, exist_ok=True)
     token = (config.read_text(os.path.join(config.HERE, "token")) or "").strip() or secrets.token_urlsafe(16)
