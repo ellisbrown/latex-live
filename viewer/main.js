@@ -50,15 +50,18 @@ const saveView = () => localStorage.setItem(viewKey, JSON.stringify(
   { scale: viewer.currentScaleValue, top: container.scrollTop, left: container.scrollLeft }));
 container.addEventListener("scroll", saveView, { passive: true });
 
-let pagesReady = false, pendingForward = null;
+let pagesReady = false;
 eventBus.on("pagesinit", () => {
   viewer.currentScaleValue = restore?.scale ?? "page-width";
   if (restore) { container.scrollTop = restore.top; container.scrollLeft = restore.left; }
   pagesReady = true;
-  if (pendingForward) showForward(pendingForward); // arrived while this document was loading
-  pendingForward = null;
 });
-eventBus.on("pagechanging", (e) => { $("page").value = e.pageNumber; markCurrentThumb(e.pageNumber); });
+// Before the next document replaces the one on screen: its view, to restore, and its pages not ready.
+function leaveDocument() {
+  if (doc) restore = { scale: viewer.currentScaleValue, top: container.scrollTop, left: container.scrollLeft };
+  pagesReady = false;
+}
+eventBus.on("pagechanging", (e) => { $("page").value = e.pageNumber; });
 eventBus.on("scalechanging", (e) => { showZoom(e); saveView(); });
 
 // The zoom menu shows the fit in use with its percentage, a listed percentage, or the zoom as it is.
@@ -299,17 +302,23 @@ if (isDiff && (tab === "notes" || tab === "checks" || tab === "figures")) tab = 
 for (const name of ["notes", "checks", "figures"]) document.querySelector(`#tabs [data-tab=${name}]`).hidden = isDiff;
 $("toggleSide").onclick = () => showSide($("side").hidden);
 for (const b of document.querySelectorAll("#tabs button")) b.onclick = () => showTab(b.dataset.tab);
-function showSide(on) {
+function setSide(on) {
   $("side").hidden = !on;
   $("toggleSide").classList.toggle("on", on);
   setToggle("side", on);
   fitEditor(); // (the source beside the PDF leaves the PDF some room)
   refit();
+}
+function setTab(name) {
+  tab = name;
+  localStorage.setItem("latex-live:tab", name);
+}
+function showSide(on) {
+  setSide(on);
   if (on) showTab(tab);
 }
 function showTab(name) {
-  tab = name;
-  localStorage.setItem("latex-live:tab", name);
+  setTab(name);
   for (const b of document.querySelectorAll("#tabs button")) b.classList.toggle("on", b.dataset.tab === name);
   for (const p of document.querySelectorAll(".panel")) p.hidden = p.id !== name;
   refreshTab();
@@ -369,6 +378,10 @@ container.addEventListener("mouseup", (e) => { // mouse side buttons
 
 // Search (PDF.js's find controller: searches every page, not just the rendered ones).
 let lastQuery = null;
+function resetFind() {
+  lastQuery = null;
+  $("findCount").textContent = "";
+}
 function find(findPrevious = false) {
   const query = $("find").value;
   if (!query) return clearFind();
@@ -472,6 +485,8 @@ function reveal(pageNumber, rect) {
 // Persistent marks over pages: {page: [{rect (PDF coordinates), cls, title}]}. PDF.js empties a
 // page's div when it re-renders it (zoom, reload), so they are redrawn on every "pagerendered".
 const marks = { changes: new Map(), unresolved: new Map(), cut: new Map() };
+let cutOn = !!localStorage.getItem("latex-live:cut"); // (the cut marks show: ✂ in the toolbar)
+function setCutOn(on) { cutOn = on; }
 function drawMarks(pageNumber) {
   const pageView = viewer.getPageView(pageNumber - 1);
   if (!pageView?.div || !pageView.pdfPage) return;
@@ -493,7 +508,7 @@ function drawMarks(pageNumber) {
   pageView.div.append(layer);
 }
 const drawAllMarks = () => { for (let n = 1; n <= (doc?.numPages || 0); n++) drawMarks(n); };
-eventBus.on("pagerendered", (e) => { drawMarks(e.pageNumber); drawMargin(e.pageNumber); });
+eventBus.on("pagerendered", (e) => drawMarks(e.pageNumber));
 
 // SyncTeX inverse search: double-click a spot on a page to open its source line in VS Code, or in
 // the source pane beside the PDF when that is open (a collaborator who may edit, or an owner whose
@@ -538,7 +553,13 @@ container.addEventListener("dblclick", async (e) => {
 });
 
 // SyncTeX forward search (forward.py, or a note or check in the sidebar): scroll to the source
-// line's boxes ({page, x, y, w, h}, points from the page's top-left) and highlight them.
+// line's boxes ({page, x, y, w, h}, points from the page's top-left) and highlight them; one that
+// arrives while the document is loading, once its pages are ready.
+let pendingForward = null;
+eventBus.on("pagesinit", () => {
+  if (pendingForward) showForward(pendingForward); // arrived while this document was loading
+  pendingForward = null;
+});
 function showForward(t) {
   if (!pagesReady) return (pendingForward = t);
   const pageView = viewer.getPageView(t.page - 1);
@@ -694,7 +715,7 @@ $("rebuild").onclick = rebuild;
 const ROLES = { viewer: "you can read the paper", commenter: "you can read the paper and comment on it",
                 editor: "you can comment and edit the LaTeX source", owner: "this preview is yours" };
 function applyRole() {
-  if (isCollaborator()) who = me.macro || "";
+  if (isCollaborator()) setWho(me.macro || "");
   $("rebuild").hidden = isDiff || !me.can.rebuild;
   $("compare").hidden = !me.can.compare;
   $("editBtn").hidden = !editorAllowed();
@@ -717,17 +738,14 @@ function notSetUp() {
 // Whether this user can write notes here (and so sees the controls for it).
 const canComment = () => !isDiff && !!me.can.comment && !notSetUp() && (isCollaborator() ? !!who : authors.length > 0);
 // /me, asked once at the start. Until the server answers, ask again; a 404 is a server older than
-// this viewer; a 403 means the access ended (returns false then).
+// this viewer; a 403 means the access ended (returns false then: start says so).
 async function loadMe() {
   for (let attempt = 1, wait = 1000; ; attempt++, wait = Math.min(2 * wait, 10000)) {
     let answered = false; // (the server answers, just not /me)
     try {
       const r = await fetch("me", { cache: "no-store" }).catch(() => { throw new Error(UNREACHABLE); });
       const body = await readBody(r);
-      if (r.status === 403) {
-        showAccessEnded();
-        return false;
-      }
+      if (r.status === 403) return false;
       if (signInPage(r, body)) throw new Error(SIGNED_OUT);
       if (unreachable(r, body)) throw new Error(UNREACHABLE);
       if (r.status === 404) return true;
@@ -755,8 +773,10 @@ async function loadMe() {
 // or a reload.
 const editorAllowed = () => !isDiff && !me.legacy && !!me.can.edit;
 const editorShown = () => !$("editorPane").hidden;
-let CM = null, cmLoading = null, cmView = null, cmExtensions = null; // CodeMirror, once loaded
+let cmView = null; // the open file's editor (CodeMirror's view)
+let CM = null, cmLoading = null, cmExtensions = null; // CodeMirror, once loaded (loadEditor)
 let srcFiles = null; // live.py /files: {files: [{path, size}], main}
+function setSrcFiles(list) { srcFiles = list; }
 // The open file: {path, base (its text as the server has it, at version baseVersion; null when that
 // version is not known, so that the server merges from base), dirty (edits not saved yet), markers
 // (conflict markers in the text), error ({short, why}: why the last save was refused), gone (the file
@@ -772,7 +792,8 @@ let offline = null, offlineSince = 0, retryDelay = 2000, noticeTimer = null;
 let sourceEpoch = 0; // (bumped whenever the open file's version changes: a status answer from before is stale)
 let conflict = null; // a conflict of this session, not resolved yet: {by: who saved the other side, if live.py says}
 
-function loadEditor() {
+// (save and edited: what Cmd/Ctrl+S and every change to the text call, saveSource and sourceEdited)
+function loadEditor({ save, edited }) {
   cmLoading ??= (async () => {
     const [state, view, commands, language, search, autocomplete, { stex }, { tags: t }] = await Promise.all([
       import("@codemirror/state"), import("@codemirror/view"), import("@codemirror/commands"), import("@codemirror/language"),
@@ -824,10 +845,10 @@ function loadEditor() {
       view.highlightActiveLine(), commands.history(), language.bracketMatching(), autocomplete.closeBrackets(),
       search.search({ top: true }), language.StreamLanguage.define(stex), language.syntaxHighlighting(colors),
       EditorView.lineWrapping, EditorView.contentAttributes.of({ spellcheck: "true" }), theme, flashed,
-      view.keymap.of([{ key: "Mod-s", run: () => { saveSource(); return true; }, preventDefault: true },
+      view.keymap.of([{ key: "Mod-s", run: () => { save(); return true; }, preventDefault: true },
                       ...autocomplete.closeBracketsKeymap, ...commands.defaultKeymap, ...search.searchKeymap,
                       ...commands.historyKeymap, commands.indentWithTab]),
-      EditorView.updateListener.of(sourceEdited),
+      EditorView.updateListener.of(edited),
     ];
     CM = { EditorState: state.EditorState, ChangeSet: state.ChangeSet, Transaction: state.Transaction, EditorView,
            Decoration: view.Decoration, flashLines, remoteLine: view.Decoration.line({ class: "cm-remote" }) };
@@ -853,7 +874,7 @@ async function showEditor(on, { path = null, line = 0, focus = true } = {}) {
   }
   if (!on) return;
   try {
-    await loadEditor();
+    await loadEditor({ save: saveSource, edited: sourceEdited });
     let hint = false;
     if (!path && !ed) [path, hint] = await firstFile();
     if (path) await openFile(path, line);
@@ -1025,7 +1046,7 @@ async function saveSource({ keepalive = false } = {}) {
     backOnline();
     const { since } = busy;
     busy = null;
-    if (r.ok) wroteAt = Date.now(); // (a build comes: behind)
+    if (r.ok) wrote(); // (a build comes: behind)
     if (ed !== target) return;
     if (r.ok) {
       const now = typeof res.text === "string" ? res.text : text;
@@ -1414,7 +1435,7 @@ function fitEditor(opening = false) {
   const gutters = GUTTER * (+container.classList.contains("gutter") + +container.classList.contains("gutter-left"));
   const room = () => innerWidth - ($("side").hidden ? 0 : 290) - gutters - PDF_ROOM;
   if (opening && room() < EDITOR_MIN && !$("side").hidden) {
-    showSide(false);
+    setSide(false);
     setStatus("closed the sidebar to make room for the source");
   }
   const width = Math.round(Math.max(EDITOR_MIN, Math.min(room(), editorWidth || innerWidth * 0.35)));
@@ -1452,7 +1473,7 @@ async function showFileMenu(open) {
   renderFileList();
   $("fileFilter").focus();
   const r = await fetch("files", { cache: "no-store" }).catch(() => null);
-  if (r?.ok) srcFiles = await r.json();
+  if (r?.ok) setSrcFiles(await r.json());
   if (!$("fileMenu").hidden) renderFileList(r?.ok ? null : "The list of files did not load.");
 }
 function renderFileList(problem = null) {
@@ -1665,6 +1686,7 @@ function pageText(d, n) {
 // The page's text area, in points from the top, and its line spacing: from the build's log (live.py).
 // Until a build reports it, 1in margins on US letter with 11pt lines.
 let area = { top: 72, bottom: 720, leading: 11, H: 792 };
+function setArea(layout) { area = layout; }
 // The text columns, [left, right] in points (one, or two with columns = 2); null until a build reports them.
 function columnBoxes() {
   if (!area.width) return null;
@@ -1837,6 +1859,7 @@ function markCurrentThumb(n) {
   t?.classList.add("current");
   t?.scrollIntoView({ block: "nearest" });
 }
+eventBus.on("pagechanging", (e) => markCurrentThumb(e.pageNumber));
 // Pages past the limit are shaded red, down to where the main text ends; the last allowed page
 // gets a red underline.
 function markThumbLimit() {
@@ -1976,6 +1999,7 @@ async function drawFloat(d, card, f) {
 const GUTTER = 250;
 let marginOn = localStorage.getItem("latex-live:margin") !== "0";
 let marginAnchors = new Map(); // page -> [{note, x, top}] (points from the page's top-left, baseline)
+function resetMargin() { marginAnchors = new Map(); } // (a new document: loadMargin anchors its notes)
 const leftOfPage = (a) => columnMid() !== null && columnAt(a.x) === 1; // a note in the left column
 // Fitting the page width leaves room for the gutters: PDF.js measures the container's clientWidth.
 const clientWidthOf = Object.getOwnPropertyDescriptor(Element.prototype, "clientWidth").get;
@@ -2141,6 +2165,7 @@ function drawMargin(pageNumber) {
   }
 }
 const drawAllMargins = () => { for (let n = 1; n <= (doc?.numPages || 0); n++) drawMargin(n); };
+eventBus.on("pagerendered", (e) => drawMargin(e.pageNumber));
 
 // Comments: select text in the PDF, then 💬 (or press C), and a note of the author picked in the
 // toolbar goes into the source right after the selected words (live.py /note); latexmk rebuilds
@@ -2156,6 +2181,7 @@ function markWritten(key, on) {
 }
 // How the user's notes are labeled, in the toolbar and on the comment button alike: as /authors labels
 // their note macro (the initials it prints), else, for a collaborator, by their name.
+function setWho(macro) { who = macro; }
 const whoLabel = () => authors.find((a) => a.macro === who)?.author || (isCollaborator() ? me.name || me.id : who);
 async function loadAuthors() {
   authors = await (await fetch(`authors/${encodeURIComponent(docFile)}`)).json();
@@ -2176,7 +2202,7 @@ async function loadAuthors() {
   pick.hidden = isDiff || !authors.length;
 }
 $("whoPick").onchange = (e) => {
-  who = e.target.value;
+  setWho(e.target.value);
   localStorage.setItem(`latex-live:${hubBase}who`, who);
   renderNotes();
   drawAllMargins();
@@ -2298,7 +2324,7 @@ async function postNote(body) {
     if (r.status === 503 && res.retry) return `${ownerName()} is still updating the shared copy: try again in a minute ${kept}`;
     if (unreachable(r, res)) return `Can't reach the preview server: try again in a moment ${kept}`;
     if (!r.ok || typeof res.source !== "string") return res.error || `failed (${r.status})`;
-    wroteAt = Date.now(); // (a build comes: behind)
+    wrote(); // (a build comes: behind)
     const old = writtenKey(body.source, body.macro, body.tex);
     if (body.action === "add" || body.action === "reply") markWritten(writtenKey(res.source, res.macro, res.tex), true);
     else if (written.has(old)) {
@@ -2556,9 +2582,18 @@ let changesOn = localStorage.getItem("latex-live:changesOn") === "1";
 $("changesBtn").classList.toggle("on", changesOn);
 let headInfo = null;       // status().head
 let pushInfo = null;       // status().push: null without a remote-tracking branch to compare with (or from an older server)
+function setBaselines(head, push) { headInfo = head; pushInfo = push; }
 let prevBuildWords = null; // words of the build shown before this one (same variant)
 let figuresPromise = null; // {build, head, push}: changed figures of the shown PDF
-let docSeq = 0, changesKey = null, baseCache = null;
+let wordsPromise = null;   // words of the shown PDF
+// The document just shown (oldWords: those of the one before, when it was of the same variant): its words
+// and its changed figures, to compare.
+function trackDocument(next, variant, oldWords) {
+  prevBuildWords = oldWords || null;
+  wordsPromise = docWords(next);
+  figuresPromise = isDiff ? null : changedFigures(next, variant).catch((e) => { console.warn(e); return { build: [], head: [], push: [] }; });
+}
+let changesKey = null, baseCache = null;
 function commitBase() {
   const kind = baseKind();
   const info = { head: headInfo, push: pushInfo }[kind];
@@ -2699,7 +2734,7 @@ $("clearChanges").onclick = () => { marks.changes.clear(); changeList = []; $("c
 // Where to cut: paragraphs whose last line holds only a word or two, and large empty bands in the
 // text column (around figures and tables, or a page that ends early), in the main text of the PDF
 // as shown. Each spot estimates the lines it would give back.
-let cutOn = !!localStorage.getItem("latex-live:cut"), cutList = [], cutIndex = -1;
+let cutList = [], cutIndex = -1;
 const cutCache = new WeakMap();
 function cutSpots(d, r) {
   if (!cutCache.has(d)) cutCache.set(d, findCutSpots(d, r));
@@ -2803,7 +2838,7 @@ function goToCut(step) {
   $("cutCount").textContent = `${cutIndex + 1} / ${cutList.length}: ${s.label}`;
   reveal(s.page, s.rect);
 }
-$("cut").onclick = () => { cutOn = !cutOn; localStorage.setItem("latex-live:cut", cutOn ? "1" : ""); updateCut(); };
+$("cut").onclick = () => { setCutOn(!cutOn); localStorage.setItem("latex-live:cut", cutOn ? "1" : ""); updateCut(); };
 $("nextCut").onclick = () => goToCut(1);
 $("prevCut").onclick = () => goToCut(-1);
 $("cut").hidden = isDiff;
@@ -2980,13 +3015,24 @@ const assets = {
   standardFontDataUrl: new URL("pdfjs/standard_fonts/", location.href).href,
   get isEvalSupported() { return !me.shared; }, // (in shared mode, no code compiled from a PDF that coauthors' TeX made)
 };
-let doc = null;
-let shown = null;
+let doc = null; // the document on screen
+let docSeq = 0;
+// The next document on screen (variant: "notes" or "clean"), each with a number of its own (docSeq).
+function showDocument(next, variant) {
+  viewer.setDocument(next);
+  linkService.setDocument(next);
+  doc?.destroy();
+  doc = next;
+  shownVariant = variant;
+  docSeq++;
+}
+let shown = null; // the build on screen: its version (clean:<version> for the notes-free build)
+function setShown(want) { shown = want; }
 let loading = false;
 let baselineAsked = 0; // (when this tab last asked for a baseline: POST /baseline)
 let forwardSeq = null;
-let wordsPromise = null;
 let buildVersion = null;
+function setBuildVersion(version) { buildVersion = version; }
 // Whether a build is adding a change that this tab wrote (a note: wroteAt) and hasn't started yet, for
 // downloadBuilt: until a build starts, for 2 seconds at most (latexmk looks for changes four times a second).
 let buildRunning = false, buildStarted = 0, buildFailed = false, wroteAt = 0;
@@ -2995,6 +3041,7 @@ function seeBuild(running, failed) {
   buildRunning = running;
   buildFailed = failed; // (the last build that finished: the PDF is then the one before)
 }
+const wrote = () => { wroteAt = Date.now(); };
 const behind = () => wroteAt > buildStarted && Date.now() - wroteAt < 2000;
 
 async function load(name, version, variant, info) {
@@ -3002,29 +3049,20 @@ async function load(name, version, variant, info) {
   const next = await pdfjsLib.getDocument({ url: `pdf/${encodeURIComponent(name)}?v=${version}`, ...assets }).promise;
   // Text changes only within one build (the notes-free one differs from the live one everywhere).
   const oldWords = variant === shownVariant && wordsPromise && await wordsPromise.catch(() => null);
-  if (doc) restore = { scale: viewer.currentScaleValue, top: container.scrollTop, left: container.scrollLeft };
-  pagesReady = false;
-  marginAnchors = new Map();
+  leaveDocument();
+  resetMargin();
   if (variant !== "clean") setGutter(false);
   else if (marginOn && !isDiff) setGutter(true, area.columns === 2); // (dropped again if no notes need them)
   hidePreview();
-  viewer.setDocument(next);
-  linkService.setDocument(next);
-  doc?.destroy();
-  doc = next;
-  shownVariant = variant;
+  showDocument(next, variant);
   showMarginButton();
   marks.cut.clear();
-  lastQuery = null; // the find controller starts over with the new document
-  $("findCount").textContent = "";
+  resetFind(); // the find controller starts over with the new document
   $("count").textContent = next.numPages;
   const time = new Date().toLocaleTimeString();
   liveStatus(`✓ ${time.replace(/\s*[AP]M$/i, "")}`, "fresh", `Updated at ${time}`);
   setTimeout(() => $("status").classList.remove("fresh"), 1500);
-  prevBuildWords = oldWords || null;
-  wordsPromise = docWords(next);
-  figuresPromise = isDiff ? null : changedFigures(next, variant).catch((e) => { console.warn(e); return { build: [], head: [], push: [] }; });
-  docSeq++;
+  trackDocument(next, variant, oldWords);
   wordsPromise.then(showUnresolved).catch((e) => console.warn(e));
   updateChanges();
   renderOutline().catch(() => {});
@@ -3074,7 +3112,7 @@ async function poll() {
     sourceStatus(info.source, epoch);
     if (!isDiff) seeBuild(!!info.building, info.build?.ok === false);
     if (!isDiff && info.doc && info.doc !== docFile) return openDoc(info.doc); // the server builds another document now
-    if (info.layout) area = info.layout;
+    if (info.layout) setArea(info.layout);
     showBuild(info.building ? null : info.build, info.building ? null : info.cleanBuild, info.building ? null : info.overwritten);
     showDiffInfo(info.diff);
     $("texImage").hidden = !info.texImage; // builds fall back to the host's TeX; SyncTeX may not work
@@ -3085,13 +3123,12 @@ async function poll() {
     if (info.building) liveStatus(isDiff ? "building diff…" : "building…", "busy");
     else if ($("status").className === "busy" && Date.now() - rebuildAt > 4000) liveStatus(info.build?.ok === false ? "build failed" : "", info.build?.ok === false ? "error" : "");
     if (!info.version) return info.building || liveStatus(`waiting for ${file}…`);
-    buildVersion = info.version;
-    headInfo = info.head || null;
+    setBuildVersion(info.version);
+    setBaselines(info.head || null, info.push || null);
     if (me.shared && (against === "head" || against === "push") && info[against]?.state === "waiting" && Date.now() - baselineAsked > 3000) {
       baselineAsked = Date.now(); // (in shared mode a GET builds nothing: the baseline is asked for with a POST)
       postJSON("baseline", { kind: against }).catch(() => {});
     }
-    pushInfo = info.push || null;
     $("notesView").hidden = isDiff || !info.clean?.version;
     // (only a paper with notes has a version without them, or notes for the margin; and only a role that may download them sees them)
     $("downloadClean").hidden = $("downloadReview").hidden = isDiff || !info.clean?.version || !me.can.download;
@@ -3101,7 +3138,7 @@ async function poll() {
     if (want !== shown) {
       loading = true;
       await load(clean ? cleanFile : file, clean ? clean.version : info.version, clean ? "clean" : "notes", info);
-      shown = want;
+      setShown(want);
     }
     updateChanges();
     if (!isDiff && !measuring) { // the page count of the build that is not on screen
@@ -3190,7 +3227,7 @@ $("docPick").onchange = async (e) => {
 // documents (the owner's menu), the authors, the status poll, the source pane if it was open (or on
 // a file with unsaved edits this browser kept, to restore), and the welcome guide when it is due.
 async function start() {
-  if (!(await loadMe())) return;
+  if (!(await loadMe())) return showAccessEnded();
   applyRole();
   if (me.can.switch) {
     loadDocs().catch(() => {});
