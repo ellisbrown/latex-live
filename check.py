@@ -696,23 +696,22 @@ def confinement_checks():
 
 
 def shared_build_checks():
-    """Shared mode's builder (live.shared_run) prints the page layout as latexmk does: live.LAYOUT_TEX is
+    """Shared mode's builder (shared_build.shared_run) prints the page layout as latexmk does: shared_build.LAYOUT_TEX is
     latexmkrc's $pre_tex_code."""
     sys.path.insert(0, HERE)
-    import live
-    from latexlive import config, files
+    from latexlive import config, files, shared_build
     with open(os.path.join(HERE, "latexmkrc")) as f:
         rc = re.search(r"^\$pre_tex_code = (.*?);$", f.read(), re.S | re.M).group(1)
     code = "".join(re.sub(r"\\([\\'])", r"\1", part) for part in re.findall(r"'((?:[^'\\]|\\.)*)'", rc))
-    if code != live.LAYOUT_TEX:
-        fail(f"live.LAYOUT_TEX is not latexmkrc's $pre_tex_code:\n{live.LAYOUT_TEX}\n{code}")
+    if code != shared_build.LAYOUT_TEX:
+        fail(f"shared_build.LAYOUT_TEX is not latexmkrc's $pre_tex_code:\n{shared_build.LAYOUT_TEX}\n{code}")
     with tempfile.TemporaryDirectory(prefix="latex-live-check-") as root:
         server = types.SimpleNamespace(paper_root=root)
         bcf = '<bcf:datasource type="file" datatype="bibtex" glob="false">refs.bib</bcf:datasource>'
         put(os.path.join(root, "refs.bib"), "@misc{a}\n")
-        before = live.biber_state(server, bcf)
+        before = shared_build.biber_state(server, bcf)
         put(os.path.join(root, "refs.bib"), "@misc{a, title = {A}}\n")
-        if live.biber_state(server, bcf) == before:
+        if shared_build.biber_state(server, bcf) == before:
             fail("shared mode's builder would not run biber again after a change to a .bib file the .bcf names")
     with tempfile.TemporaryDirectory(prefix="latex-live-check-") as root:
         cwd = os.getcwd()
@@ -740,8 +739,7 @@ def shared_parsing_checks():
     .aux and .bcf name, at any depth and even before they exist, are what bibtex's and biber's states depend on and
     what the builder watches."""
     sys.path.insert(0, HERE)
-    import live
-    from latexlive import config, document, files, synctex
+    from latexlive import config, document, files, shared_build, shared_watch, synctex
     saved = (config.SHARED, config.SYNCTEX_LIMIT, config.RECORD_LIMIT)
     tmp = tempfile.mkdtemp(prefix="latex-live-check-")
     cwd = os.getcwd()
@@ -792,16 +790,16 @@ def shared_parsing_checks():
         for name in ("deep/er/refs.bib", "styles/local.bst"):
             put(os.path.join(root, name), "% x\n")
         auxes = "\\bibdata{deep/er/refs,later/refs,../outside,/etc/passwd}\n\\bibstyle{styles/local}\n"
-        deps = sorted(os.path.relpath(p, os.path.realpath(root)) for p in live.shared_deps(server, auxes, ""))
+        deps = sorted(os.path.relpath(p, os.path.realpath(root)) for p in shared_watch.shared_deps(server, auxes, ""))
         if deps != ["deep/er/refs.bib", "later/refs.bib", "styles/local.bst"]:
             fail(f"the bibliographies and styles an .aux names, for the builder to watch: {deps}")
-        before = live.bib_state(server, auxes)
+        before = shared_build.bib_state(server, auxes)
         put(os.path.join(root, "styles/local.bst"), "% changed\n")
-        if live.bib_state(server, auxes) == before:
+        if shared_build.bib_state(server, auxes) == before:
             fail("shared mode's builder would not run bibtex again after a change to the .bst the .aux names")
-        before = live.bib_state(server, auxes)
+        before = shared_build.bib_state(server, auxes)
         put(os.path.join(root, "later/refs.bib"), "@misc{x}\n")
-        if live.bib_state(server, auxes) == before:
+        if shared_build.bib_state(server, auxes) == before:
             fail("shared mode's builder would not run bibtex again once a .bib the .aux names appears")
     finally:
         os.chdir(cwd)
