@@ -282,14 +282,14 @@ are in [shared-mode.md](shared-mode.md#settings).
   Cursor's bundled `code` script doesn't reach the open window.
 - `LATEX_LIVE_STANDBY=0`: turn off the warm standby. By default each preview
   keeps a pdflatex run waiting that has read the paper's preamble already, so
-  a save waits only for the body: about a third less time for a typical
-  paper. The PDF, the errors and SyncTeX are what a normal build gives. After
+  a save waits only for the body: a quarter to a third less time for a
+  typical paper. The PDF, the errors and SyncTeX are what a normal build gives. After
   a change to the preamble, or to a file it reads, the next pass runs
   normally while a new standby is checked against it, and the passes after
   that use the standby. A pass that can't use the standby runs normally, and
   the task's output says why once (`=== latex-live: ... warm standby ...`).
-  A waiting standby holds about 120 MB of memory (pdflatex and its podman
-  client). It runs only in the TeX Live image (or with `--host-tex` on the
+  A waiting standby holds about 100-150 MB of memory (pdflatex, its podman
+  client and its keeper). It runs only in the TeX Live image (or with `--host-tex` on the
   host's TeX), and not in shared mode.
 - `LATEX_LIVE_HOST`: also print a direct viewer URL on this host name, e.g.
   the name a tunnel exposes.
