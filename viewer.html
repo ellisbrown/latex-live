@@ -1,9 +1,11 @@
 <!doctype html>
 <!-- latex-live PDF viewer: reloads the PDF in place whenever live.py reports a new version;
      double-click jumps to the source line (SyncTeX: in VS Code, or in the editor beside the PDF
-     when that is open), and forward.py jumps here from a source line. The LaTeX can be edited
-     beside the PDF (✎ Source, CodeMirror from codemirror/): it saves by itself, and live.py
-     merges edits made elsewhere meanwhile. Also: build-status banner, page-limit check (with and without the inline
+     when that is open), and forward.py jumps here from a source line. Editors (and the owner) can
+     open the LaTeX beside the PDF (✎ Source, CodeMirror from codemirror/): it saves by itself,
+     and live.py merges edits made at the same time. In shared mode (LATEX_LIVE_USERS) everyone
+     sees what their role allows (live.py /me), and a welcome guide explains the basics.
+     Also: build-status banner, page-limit check (with and without the inline
      notes), search, back/forward, hover previews of references, highlights of what changed in
      the last build (text and regenerated figures), a "where to cut" overlay, a switch to the
      notes-free build (with the notes as bubbles in a margin, wired to where they sit), and a
@@ -16,6 +18,8 @@
 <head>
 <meta charset="utf-8">
 <title>latex-live</title>
+<!-- (a tab icon of its own, so the browser doesn't ask the server for /favicon.ico) -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='3' y='1' width='10' height='14' rx='1' fill='%23fcfcf7' stroke='%23323639'/%3E%3Cpath d='M5 5h6M5 8h6M5 11h4' stroke='%232f6fb0'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="pdfjs/web/pdf_viewer.css">
 <!-- The editor's modules (codemirror/, vendored as published): each bare name they import, mapped to
      its file. Relative to this page, so they also load under the hub's /p/<paper>/<doc>/. -->
@@ -82,11 +86,19 @@
                   background: #2a2d2f; border-radius: 0 0 6px 6px; box-shadow: 0 4px 12px #000a; }
   #downloadMenu button { text-align: left; }
   #downloadMenu[hidden], #downloadClean[hidden], #downloadReview[hidden] { display: none; }
-  #keys { position: fixed; top: 60px; left: 50%; transform: translateX(-50%); z-index: 14; padding: 12px 16px;
-          background: #2a2d2f; color: #ddd; border-radius: 6px; box-shadow: 0 6px 20px #000c; font-size: 13px; }
-  #keys[hidden], #keysEdit[hidden] { display: none; }
-  #keys .head { font-weight: 600; margin-bottom: 8px; }
-  #keys .close { float: right; cursor: pointer; opacity: 0.7; margin-left: 16px; }
+  #keys, #welcome { position: fixed; top: 60px; left: 50%; transform: translateX(-50%); z-index: 14; padding: 12px 16px;
+                    background: #2a2d2f; color: #ddd; border-radius: 6px; box-shadow: 0 6px 20px #000c; font-size: 13px; }
+  #keys[hidden], #welcome[hidden], #keysEdit[hidden] { display: none; }
+  :is(#keys, #welcome) .head { font-weight: 600; margin-bottom: 8px; }
+  :is(#keys, #welcome) .close { float: right; cursor: pointer; opacity: 0.7; margin-left: 16px; }
+  /* ✕ buttons: just the glyph (they are buttons for the keyboard and screen readers). */
+  :is(#keys, #welcome, #banner, #notice, #editorHint) button.close { background: none; border: 0; padding: 0 2px; color: inherit;
+                                                                      font: inherit; line-height: inherit; cursor: pointer; opacity: 0.7; }
+  :is(#keys, #welcome, #banner, #notice, #editorHint) button.close:hover { opacity: 1; background: none; }
+  #keys .head button.welcome { margin-left: 14px; padding: 0; border: 0; background: none; font: inherit; font-weight: normal;
+                               font-size: 12px; color: #9cf; cursor: pointer; }
+  #keys .head button.welcome:hover { text-decoration: underline; }
+  #keys tr[hidden] { display: none; }
   #keys td { padding: 3px 14px 3px 0; vertical-align: top; }
   #keys td:first-child { white-space: nowrap; }
   kbd { display: inline-block; min-width: 1em; padding: 0 4px; border: 1px solid #666; border-bottom-width: 2px;
@@ -221,6 +233,7 @@
   #marginBtn[hidden] { display: none; }
   /* Comments: who you are (toolbar), a button by the selection, and a box to write or edit a note in. */
   #whoPick { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 4px; cursor: pointer; }
+  #whoPick:disabled { appearance: none; background: none; color: #ccc; cursor: default; opacity: 1; } /* (shared mode: a label, you comment as yourself) */
   #whoPick[hidden], #commentBtn[hidden], #notePop[hidden], #notePop .latex[hidden] { display: none; }
   #commentBtn { position: fixed; z-index: 12; padding: 3px 9px; border: 0; border-radius: 3px; background: #2f6fb0;
                 color: #fff; font: 12px system-ui, sans-serif; cursor: pointer; box-shadow: 0 2px 6px #0008; }
@@ -249,8 +262,21 @@
   #preview canvas { display: block; }
   #preview .hint { font-size: 10px; color: #888; text-align: right; margin-top: 2px; }
 
-  #editBtn[hidden] { display: none; }
+  /* Who you are, in shared mode (live.py /me): name and role, right of the spacer. */
+  #me { padding: 1px 8px; border-radius: 9px; background: #3d4245; color: #ddd; font-size: 12px; cursor: default; }
+  #me[hidden], #editBtn[hidden] { display: none; }
   #moreMenu #editBtn .txt { display: none; } /* (the menu shows its data-label instead) */
+  /* The welcome guide: like the shortcuts list, with a few short sections for the role at hand. */
+  #welcome { width: min(520px, calc(100vw - 40px)); max-height: calc(100vh - 90px); overflow: auto; box-sizing: border-box; line-height: 1.45; }
+  #welcome h4 { margin: 12px 0 2px; font-size: 13px; color: #fff; }
+  #welcome p { margin: 0; }
+  #welcome .review { margin-top: 4px; }
+  #welcome .again { margin-top: 12px; font-size: 12px; opacity: 0.7; }
+  #welcome .row { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+  #welcome .row label { margin-right: auto; cursor: pointer; opacity: 0.85; }
+  #welcome button { background: #2f6fb0; color: #fff; border: 0; border-radius: 3px; padding: 4px 16px; cursor: pointer; font: inherit; }
+  #welcome [hidden] { display: none; }
+
   /* The LaTeX source beside the PDF (✎ Source): a header with the file picker, the save state and
      Show in PDF over CodeMirror, and a handle on its left edge to resize it. Always dark, as the
      rest of the chrome is. */
@@ -268,10 +294,6 @@
                 background: #323639; border-bottom: 1px solid #1d1f20; white-space: nowrap; }
   :is(#editorHead, #notice) button { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 8px; cursor: pointer; font: inherit; }
   :is(#editorHead, #notice) button:hover { background: #5b6164; }
-  /* ✕ buttons: just the glyph (they are buttons for the keyboard and screen readers). */
-  :is(#notice, #editorHint) button.close { background: none; border: 0; padding: 0 2px; color: inherit; font: inherit; line-height: inherit;
-                                           cursor: pointer; opacity: 0.7; }
-  :is(#notice, #editorHint) button.close:hover { opacity: 1; background: none; }
   #filePick { min-width: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; }
   #saveState { margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; opacity: 0.75; }
   #saveState.dirty, #saveState.busy { color: #fd6; opacity: 1; }
@@ -310,7 +332,7 @@
 </head>
 <body>
 <div id="bar">
-  <button id="toggleSide" title="Sidebar: outline, pages, notes, checks, figures">&#9776;</button>
+  <button id="toggleSide" title="Sidebar: outline, pages, notes, checks, figures" aria-label="Sidebar">&#9776;</button>
   <select id="docPick" data-priority="4" title="Main document: build another root .tex file" hidden></select>
   <span id="historyNav" class="grp" data-priority="3" data-label="History">
     <button id="back" title="Back (Alt+&larr; or Cmd+[)" disabled>&larr;</button>
@@ -342,10 +364,10 @@
     <span id="findCount"></span>
   </span>
   <button id="notesView" data-priority="5" hidden>Notes</button>
-  <button id="marginBtn" data-priority="2" data-label="Margin bubbles" hidden>&#128172;</button>
+  <button id="marginBtn" data-priority="2" data-label="Margin bubbles" aria-label="Margin bubbles" hidden>&#128172;</button>
   <select id="whoPick" data-priority="1" title="Who you are, for comments: select text in the PDF, then 💬 (or C) adds your note to the source" hidden></select>
   <span id="cutGroup" class="grp" data-priority="6">
-    <button id="cut" data-label="Space hints" title="Where to cut: short last lines of paragraphs and large empty gaps in the main text">&#9986;</button>
+    <button id="cut" data-label="Space hints" title="Where to cut: short last lines of paragraphs and large empty gaps in the main text" aria-label="Space hints">&#9986;</button>
     <span id="cutNav" class="navgroup" hidden title="Space to reclaim in the main text of the PDF as shown">
       <span id="cutCount"></span>
       <button id="prevCut" title="Previous spot">&lsaquo;</button>
@@ -353,7 +375,7 @@
     </span>
   </span>
   <span id="changesGroup" class="grp" data-priority="9">
-    <button id="changesBtn" data-label="Change highlights" title="Highlight changes against the last commit, the last push, or the previous build (d; off by default)">&Delta;</button>
+    <button id="changesBtn" data-label="Change highlights" title="Highlight changes against the last commit, the last push, or the previous build (d; off by default)" aria-label="Change highlights">&Delta;</button>
     <span id="diffInfo" hidden></span>
     <span id="changes" class="navgroup" hidden title="What changed, against the last commit, the last push, or the previous build: text in green (red bars mark deletions), changed figures outlined">
       <span id="changeCount"></span>
@@ -366,18 +388,20 @@
   <button id="downloadBtn" data-priority="4.5" data-label="Download" aria-haspopup="menu" aria-expanded="false" title="Download the PDF"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" style="vertical-align: -1px"><path d="M6 1v6.5M3.2 4.8 6 7.6l2.8-2.8M1.5 9.5v1h9v-1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
   <button id="editBtn" data-priority="9.5" data-label="Source" title="The LaTeX source beside the PDF: edits save by themselves, and the PDF rebuilds (E)" hidden>&#9998;<span class="txt"> Source</span></button>
   <span id="spacer"></span>
+  <span id="me" hidden></span>
   <span id="texImage" hidden>&#9888; TeX image missing</span>
   <span id="updated" hidden title="latex-live changed on disk (e.g. after a git pull); this preview still runs the version it started with. Restart the preview task (and then reload) to use the new one.">&#10227; restart to update</span>
-  <button id="more" title="More: dark mode, compare with a commit, and what doesn't fit in the toolbar">&#8943;</button>
-  <button id="rebuild" title="Rebuild: run latexmk again from the top (e.g. after another build replaced the PDF)">&#8635;</button>
+  <button id="more" title="More: dark mode, compare with an earlier version, and what doesn't fit in the toolbar" aria-label="More">&#8943;</button>
+  <button id="rebuild" title="Rebuild the PDF from scratch (e.g. after another build replaced it)" aria-label="Rebuild the PDF" hidden>&#8635;</button>
   <span id="pages"></span>
   <span id="status">loading&hellip;</span>
 </div>
 <div id="moreMenu" hidden>
   <div id="moreFixed">
     <button id="dark" title="Dark mode (inverts the PDF)">&#9680; Dark mode</button>
-    <button id="compare" data-priority="11" title="latexdiff against a git commit (opens in a new tab)">Compare with a commit&hellip;</button>
+    <button id="compare" data-priority="11" title="The paper with the changes since an earlier commit marked (in a new tab)">Compare with an earlier version&hellip;</button>
     <button id="keysBtn" title="Keyboard shortcuts (?)">Keyboard shortcuts</button>
+    <button id="welcomeBtn" title="What this is, and how to comment, edit, and find your way">Welcome guide</button>
     <span id="versionInfo"></span>
   </div>
   <div id="moreItems"></div>
@@ -388,7 +412,7 @@
   <button id="downloadReview" role="menuitem" hidden title="Save a copy for co-authors: the pages as submitted, with each note beside its column, numbered where it sits in the text (the exact build, then a pass to place the notes)">PDF with notes in the margin</button>
 </div>
 <div id="keys" hidden>
-  <div class="head">Keyboard shortcuts <span class="close" title="Close (Esc)">&#10005;</span></div>
+  <div class="head">Keyboard shortcuts <button class="close" title="Close (Esc)" aria-label="Close">&#10005;</button><button class="welcome">Welcome guide</button></div>
   <table>
     <tr><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>F</kbd></td><td>search; <kbd>Enter</kbd> / <kbd>Shift</kbd> <kbd>Enter</kbd> next / previous match, <kbd>Esc</kbd> clear</td></tr>
     <tr><td><kbd>Ctrl</kbd> <kbd>+</kbd> / <kbd>Ctrl</kbd> <kbd>&minus;</kbd></td><td>zoom in / out</td></tr>
@@ -396,11 +420,45 @@
     <tr><td><kbd>Alt</kbd> <kbd>&larr;</kbd> / <kbd>Alt</kbd> <kbd>&rarr;</kbd></td><td>back / forward after a link (also <kbd>Cmd</kbd> <kbd>[</kbd> / <kbd>Cmd</kbd> <kbd>]</kbd>)</td></tr>
     <tr><td><kbd>d</kbd></td><td>change highlights on / off</td></tr>
     <tr><td><kbd>,</kbd> / <kbd>.</kbd></td><td>previous / next change</td></tr>
-    <tr><td><kbd>c</kbd></td><td>comment on the selected text</td></tr>
+    <tr id="keysComment"><td><kbd>c</kbd></td><td>comment on the selected text</td></tr>
     <tr id="keysEdit" hidden><td><kbd>e</kbd></td><td>the LaTeX source beside the PDF (<kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>S</kbd> there saves at once)</td></tr>
-    <tr><td>double-click</td><td id="keysDblclick">open the source line in the editor (SyncTeX)</td></tr>
+    <tr id="keysDblclickRow"><td>double-click</td><td id="keysDblclick">open the source line</td></tr>
     <tr><td><kbd>?</kbd></td><td>this list</td></tr>
   </table>
+</div>
+<div id="welcome" role="dialog" aria-modal="true" aria-labelledby="welcomeTitle" hidden>
+  <div class="head"><span id="welcomeTitle">Welcome</span> <button class="close" title="Close (Esc)" aria-label="Close">&#10005;</button></div>
+  <p>This is a live PDF of the paper: it rebuilds by itself a few seconds after anyone changes its LaTeX source.</p>
+  <section data-part="comment">
+    <h4>Comment</h4>
+    <p class="how"><span data-part="pick">Pick who you are in the toolbar (&#128172; Comment as&hellip;), then select text in the PDF and press
+      <kbd>C</kbd> or click the &#128172; button that appears beside it.</span><span data-part="locked">Select text in the PDF, then press
+      <kbd>C</kbd> or click the &#128172; button that appears beside it.</span> Your note goes into the source and, once the PDF rebuilds,
+      shows in the margin with your initials<span class="initials"></span>. Hover over a note to reply &#8617;, resolve &#10003;,
+      or edit your own &#9998;.</p>
+    <p class="missing" hidden></p>
+  </section>
+  <section data-part="edit">
+    <h4>Edit</h4>
+    <p>&#9998; Source (or <kbd>E</kbd>) opens the LaTeX beside the PDF, and double-clicking the PDF jumps to its source line.
+      Changes save by themselves and the PDF rebuilds; errors appear in red and link to their line.</p>
+  </section>
+  <section>
+    <h4>Find your way</h4>
+    <p>&#9776; opens the sidebar: the outline, the pages, the notes, checks, and the figures and tables. Search with
+      <kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>F</kbd>. <i>Notes: off</i> shows the paper as it would be submitted, with the notes as
+      bubbles in the margin; <i>Notes: on</i> puts them back in the text. <kbd>?</kbd> lists the keyboard shortcuts.
+      The download button (in the toolbar, or <i>Download</i> under &#8943;) saves the paper with any notes
+      in it<span data-part="download">, or without them, as it would be submitted</span>.</p>
+    <p class="review" data-part="download">To read the notes away from here, <i>PDF with notes in the margin</i> saves the pages
+      as submitted with each note beside its spot.</p>
+  </section>
+  <section data-part="shared">
+    <h4>Where changes go</h4>
+    <p><span class="changes">Your edits and notes are</span> saved to a shared copy of the paper; <span class="owner"></span> merges them into the main version.</p>
+  </section>
+  <p class="again">Open this guide again from &#8943; &rsaquo; Welcome guide.</p>
+  <div class="row"><label><input type="checkbox" checked> Don't show this again</label><button class="ok">Got it</button></div>
 </div>
 <div id="banner" hidden></div>
 <div id="comparePanel" hidden></div>
@@ -462,11 +520,25 @@ const $ = (id) => document.getElementById(id);
 // Under the hub (one port for every preview): "/p/<paper id>/". Settings tied to a paper are kept
 // per paper then, since every paper shares the hub's origin.
 const hubBase = location.pathname.match(/^\/p\/[^/]+\//)?.[0] || "";
-const el = (tag, props = {}, ...children) => { const e = Object.assign(document.createElement(tag), props); e.append(...children); return e; };
+// Someone new to latex-live in this browser: nothing remembered yet (read before anything is written).
+const firstVisit = !Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).some((k) => k?.startsWith("latex-live:"));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-// What the server can do (live.py /me): a server older than this viewer has no /me, and no browser
-// editor (legacy).
-let me = { legacy: true, can: {} };
+const el = (tag, props = {}, ...children) => { const e = Object.assign(document.createElement(tag), props); e.append(...children); return e; };
+
+// Who is asking (live.py /me). In shared mode (LATEX_LIVE_USERS) a collaborator has a role and
+// comments as themselves; otherwise it is the owner, who may do everything. A server older than
+// this viewer has no /me: the owner then, as before, without the browser editor (and with the GET
+// forms of switch, diff and open, the only ones it knows).
+const ALL_CAN = { comment: true, edit: true, rebuild: true, compare: true, switch: true, openHost: true, download: true };
+let me = { id: "", name: "", macro: "", role: "owner", shared: false, owner: "", legacy: true, can: ALL_CAN };
+const isCollaborator = () => me.shared && me.role !== "owner";
+const ownerName = () => me.owner || "the owner";
+// What the status line says when the server can't be asked: it refused (403: the access ended), a
+// page came back instead of an answer (a proxy's sign-in page), or nothing came back (offline, or the
+// server, proxy or hub can't reach the preview just now).
+const ACCESS_ENDED = "Access ended — see the message";
+const SIGNED_OUT = "Your sign-in may have expired — reload the page";
+const UNREACHABLE = "Can't reach the preview server — retrying…";
 const file = new URLSearchParams(location.search).get("file");
 const isDiff = file.endsWith("-diff.pdf");
 const docFile = file.replace(/-(clean|diff)\.pdf$/, ".pdf"); // the document a derived PDF belongs to
@@ -532,17 +604,19 @@ function showMore(open) {
 }
 const revealControl = (node) => { if ($("moreMenu").contains(node)) showMore(true); }; // (before focusing a control there)
 $("more").onclick = () => showMore($("moreMenu").hidden);
-// The shortcuts list (?), with the rows for what this server can do.
+// The shortcuts list (?), with only the rows for what this user can do.
 function showKeys(open) {
   if (open) {
+    $("keysComment").hidden = !canComment();
     $("keysEdit").hidden = !editorAllowed();
+    $("keysDblclickRow").hidden = isDiff || !opensSources();
     $("keysDblclick").textContent = `open the source line in ${openWhere()}`;
   }
   $("keys").hidden = !open;
 }
 $("keysBtn").onclick = () => { showMore(false); showKeys(true); };
 $("keys").querySelector(".close").onclick = () => showKeys(false);
-document.addEventListener("mousedown", (e) => {
+document.addEventListener("mousedown", (e) => { // (not the welcome guide: it closes with its own buttons, or Esc)
   if (!$("moreMenu").hidden && !$("moreMenu").contains(e.target) && !$("more").contains(e.target)) showMore(false);
   if (!$("keys").hidden && !$("keys").contains(e.target)) showKeys(false);
   if (!$("fileMenu").hidden && !$("fileMenu").contains(e.target) && !$("filePick").contains(e.target)) $("fileMenu").hidden = true;
@@ -550,7 +624,9 @@ document.addEventListener("mousedown", (e) => {
 
 // Downloads: the PDF as built (notes included); without notes, from an exact build that the server
 // makes on request (live.py start_export; once per build of the document); or that build with the
-// notes in its margins (live.py start_review), for co-authors who don't run latex-live.
+// notes in its margins (live.py start_review), for co-authors who don't run latex-live. In shared mode
+// the last two are for whoever's role may (me.can.download): it is the shared document, as every
+// coauthor reads it. They are asked for with a POST, whose Origin the server checks there (it builds).
 function saveFile(url, name) {
   const a = el("a", { href: url, download: name });
   document.body.append(a);
@@ -583,7 +659,8 @@ $("downloadPdf").onclick = () => {
   showMore(false);
   showDownloads(false);
   const shown = isDiff ? file : docFile; // (a comparison tab saves the comparison)
-  saveFile(`pdf/${encodeURIComponent(shown)}?v=${buildVersion}`, isDiff ? file : `${docName()}${$("downloadClean").hidden ? "" : "-with-notes"}.pdf`);
+  // ("-with-notes" when the paper has notes, so a version without them too: the Notes switch shows then)
+  saveFile(`pdf/${encodeURIComponent(shown)}?v=${buildVersion}`, isDiff ? file : `${docName()}${$("notesView").hidden ? "" : "-with-notes"}.pdf`);
 };
 // The server builds them in the background: ask until it is done, showing its progress, then save.
 // The server builds them from the PDF as last built (and waits for a build in progress first): ask until it is
@@ -601,14 +678,18 @@ async function downloadBuilt(endpoint, built, saveAs, what, done) {
       await new Promise((r) => setTimeout(r, 250));
     }
     for (;;) {
-      const e = await (await fetch(endpoint)).json();
+      const r = await postJSON(endpoint, {}).catch(() => null);
+      const e = r ? await readBody(r) : {};
+      if (!r || unreachable(r, e)) return setStatus("download failed: can't reach the preview server", "error");
+      if (signInPage(r, e)) return setStatus(SIGNED_OUT, "error"); // (a proxy's sign-in page, not the server's answer)
+      if (!r.ok && !e.state) return setStatus(`download failed: ${e.error}`, "error"); // (refused: e.g. the access ended)
       if (e.state === "done") {
         saveFile(`pdf/${encodeURIComponent(built)}?v=${e.version}`, saveAs);
         return setStatus(`saved ${saveAs} (${done(e)}${buildFailed ? "; of the last build that worked" : ""})`, "fresh");
       }
       if (e.state === "failed") return setStatus(`couldn't build the PDF ${what}: ${e.msg}`, "error");
       setStatus(`building the PDF ${what}${e.step ? `: ${e.step}` : ""}…`, "busy");
-      await new Promise((r) => setTimeout(r, 1000));
+      await sleep(1000);
     }
   } catch (err) {
     setStatus(`download failed: ${err.message || err}`, "error");
@@ -621,6 +702,63 @@ $("downloadClean").onclick = () => downloadBuilt("export", `${docName()}-export.
 $("downloadReview").onclick = () => downloadBuilt("review", `${docName()}-review.pdf`, `${docName()}-with-margin-notes.pdf`,
   "with notes in the margin", (e) => [`${e.notes} note${e.notes === 1 ? "" : "s"} in the margin`,
     e.approximate && `${e.approximate} placed by source line`, e.continued && `${e.continued} continued after the paper`].filter(Boolean).join(", "));
+
+// The welcome guide: what this is, and how to comment, edit and find your way, for the role at hand.
+// Whether it shows by itself is kept in latex-live:welcome: unset, "later" (it showed by itself and
+// hasn't been put away), or "hidden" (closed with "Don't show this again" checked). It shows by
+// itself while "later", and while unset to collaborators in shared mode and to someone new to
+// latex-live, though not to an owner who has used it before; ? and the ⋯ menu bring it back.
+let welcomeFocus = null; // (what had the focus before the guide opened: it gets it back)
+function showWelcome(open, auto = false) {
+  const w = $("welcome");
+  if (!open) {
+    if (w.hidden) return;
+    localStorage.setItem("latex-live:welcome", w.querySelector("input").checked ? "hidden" : "later");
+    w.hidden = true;
+    welcomeFocus?.focus?.();
+    welcomeFocus = null;
+    return;
+  }
+  const part = (name, on) => { for (const e of w.querySelectorAll(`[data-part=${name}]`)) e.hidden = !on; };
+  const missing = notSetUp();
+  part("comment", me.can.comment || !!missing);
+  part("pick", !isCollaborator());
+  part("locked", isCollaborator());
+  part("edit", editorAllowed());
+  part("download", !!me.can.download);
+  part("shared", isCollaborator() && (me.can.comment || me.can.edit));
+  w.querySelector(".how").hidden = !!missing;
+  w.querySelector(".missing").hidden = !missing;
+  w.querySelector(".missing").textContent = missing || "";
+  const initials = isCollaborator() && authors.find((a) => a.macro === me.macro)?.author;
+  w.querySelector(".initials").textContent = initials ? ` (${initials})` : "";
+  w.querySelector(".changes").textContent = me.can.edit ? "Your edits and notes are" : "Your notes are";
+  w.querySelector(".owner").textContent = ownerName();
+  w.querySelector("input").checked = true;
+  if (auto) localStorage.setItem("latex-live:welcome", "later");
+  showMore(false);
+  showKeys(false);
+  showDownloads(false);
+  if (w.hidden) welcomeFocus = document.activeElement;
+  w.hidden = false;
+  w.querySelector(".ok").focus();
+}
+function welcomeDue() {
+  const state = localStorage.getItem("latex-live:welcome");
+  return !isDiff && me.shared && (state === "later" || (state === null && (isCollaborator() || firstVisit)));
+}
+// Tab and Shift+Tab stay within the guide while it is open.
+function keepFocusIn(box, e) {
+  const stops = [...box.querySelectorAll("button, input, a[href], textarea")].filter((n) => !n.disabled && n.getClientRects().length);
+  const i = stops.indexOf(document.activeElement);
+  if (i >= 0 && !(e.shiftKey ? i === 0 : i === stops.length - 1)) return; // (the browser moves on within it)
+  e.preventDefault(); // (from its last stop, its first; from its first, back to its last; from outside it, in)
+  stops.at(e.shiftKey ? -1 : 0)?.focus();
+}
+$("welcome").querySelector(".close").onclick = () => showWelcome(false);
+$("welcome").querySelector(".ok").onclick = () => showWelcome(false);
+$("welcomeBtn").onclick = () => showWelcome(true);
+$("keys").querySelector(".welcome").onclick = () => showWelcome(true);
 
 // The toolbar keeps to one row: when it overflows, its controls move into the ⋯ menu, lowest
 // data-priority first, and come back once there is room again. It refits when the window
@@ -772,6 +910,11 @@ $("find").addEventListener("keydown", (e) => {
 
 window.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;
+  if (!$("welcome").hidden) { // (while the guide is open, only its own keys)
+    if (e.key === "Escape") showWelcome(false);
+    else if (e.key === "Tab" && !e.defaultPrevented) keepFocusIn($("welcome"), e); // (not a Tab the source pane took, to indent)
+    return;
+  }
   if (e.target.closest?.("#editorPane")) { // (keys typed in the source pane are the editor's: c, d, Cmd+F, ...)
     if (mod && e.key === "s" && !e.defaultPrevented) { e.preventDefault(); saveSource(); } // (e.g. after a click in its header)
     return;
@@ -787,10 +930,16 @@ window.addEventListener("keydown", (e) => {
   else if ((e.altKey && e.key === "ArrowRight") || (e.metaKey && e.key === "]")) { e.preventDefault(); travel(ahead, back); }
   else if (e.key === "Escape") { hidePreview(); $("comparePanel").hidden = true; closeNotePop(); showMore(false); showKeys(false); showDownloads(false); }
   else if (!mod && !e.altKey && e.key === "?") { e.preventDefault(); showKeys($("keys").hidden); }
-  else if (!mod && !e.altKey && e.key === "c" && !$("commentBtn").hidden) { e.preventDefault(); startComment(); }
+  else if (!mod && !e.altKey && e.key === "c") {
+    if (!$("commentBtn").hidden) { e.preventDefault(); startComment(); }
+    else if (isCollaborator() && !isDiff && !canComment()) setStatus(notSetUp() || `Your access is read-only: ask ${ownerName()} if you want to comment`, "error");
+  }
   else if (!mod && !e.altKey && e.key === "d") { e.preventDefault(); toggleChanges(); }
   else if (!mod && !e.altKey && (e.key === "." || e.key === ",")) { e.preventDefault(); goToChange(e.key === "." ? 1 : -1); }
-  else if (!mod && !e.altKey && e.key === "e" && editorAllowed()) { e.preventDefault(); showEditor(!editorShown()); }
+  else if (!mod && !e.altKey && e.key === "e") {
+    if (editorAllowed()) { e.preventDefault(); showEditor(!editorShown()); }
+    else if (isCollaborator() && !isDiff) setStatus(`Editing the source isn't part of your access (${me.role}): ask ${ownerName()} if you need it`, "error");
+  }
 });
 
 // Trackpad pinch (Chromium reports it as ctrl+wheel) and ctrl/cmd+scroll zoom the PDF around the
@@ -859,10 +1008,12 @@ const drawAllMarks = () => { for (let n = 1; n <= (doc?.numPages || 0); n++) dra
 eventBus.on("pagerendered", (e) => { drawMarks(e.pageNumber); drawMargin(e.pageNumber); });
 
 // SyncTeX inverse search: double-click a spot on a page to open its source line in VS Code, or in
-// the source pane beside the PDF when that is open.
+// the source pane beside the PDF when that is open (a collaborator who may edit, or an owner whose
+// preview has no VS Code to open: always there). For someone who can open neither, a double-click
+// just selects a word, as anywhere else (e.g. to comment on it).
 container.addEventListener("dblclick", async (e) => {
   const pageDiv = e.target.closest(".page");
-  if (!pageDiv || e.target.closest(".ll-margin")) return;
+  if (!pageDiv || e.target.closest(".ll-margin") || !opensSources()) return;
   const pageView = viewer.getPageView(+pageDiv.dataset.pageNumber - 1);
   const rect = pageDiv.getBoundingClientRect();
   const [x, y] = pageView.viewport.convertToPdfPoint(
@@ -874,7 +1025,7 @@ container.addEventListener("dblclick", async (e) => {
   const q = new URLSearchParams({ file, page: pageView.id, x: x.toFixed(1), y: top.toFixed(1), ...cleanParam() });
   try {
     let why = null; // (VS Code's failure to open, when the source pane opens instead)
-    if (!opensInBrowser()) { // (the server opens VS Code itself)
+    if (me.legacy || (!me.shared && me.can.openHost && !opensInBrowser())) { // (the server opens VS Code itself, as it always has)
       const r = await fetch(`synctex?${q}`);
       const text = await r.text();
       // 409: found, but VS Code did not open (e.g. not run in a VS Code terminal); the pane, then
@@ -888,7 +1039,7 @@ container.addEventListener("dblclick", async (e) => {
     if (!found.file) return setStatus(found.reason || "no source file here", "error");
     if (why === null) {
       setStatus(`→ ${found.file}:${found.line}`, "fresh");
-      return openSource(found.file, found.line);
+      return canOpenFile(found.file) && openSource(found.file, found.line);
     }
     if (!editable(found.file)) return setStatus(why, "error");
     setStatus(`${found.file}:${found.line} is in the source pane (${why})`);
@@ -914,13 +1065,16 @@ async function showSource(file, line, openIfMissing = false) {
   const r = await fetch(`forward?${new URLSearchParams({ file, line, ...cleanParam() })}`);
   const body = await r.json().catch(() => ({ error: `${file}:${line} is not in the PDF (${r.status})` }));
   if (r.ok) return showForward(body);
-  if (openIfMissing) return openSource(file, line);
+  if (openIfMissing && canOpenFile(file)) return openSource(file, line);
   setStatus(body.error, "error");
 }
-// Open a source line: in the source pane beside the PDF when that is open, else in VS Code (live.py
-// /open), or in the pane when that does not open.
+// Open a source line: in the source pane beside the PDF when that is open (for a collaborator who
+// may edit, or the owner of a shared preview without VS Code: always), else in the host's editor
+// (the owner's VS Code, live.py /open), or the pane when that does not open.
 const editable = (path) => /\.(tex|bib|sty|cls)$/i.test(path); // (what live.py /files lists)
-const opensInBrowser = () => editorAllowed() && editorShown();
+const opensInBrowser = () => editorAllowed() && (editorShown() || (me.shared && !me.can.openHost));
+const canOpenFile = (path) => me.can.openHost || (editorAllowed() && editable(path));
+const opensSources = () => me.can.openHost || editorAllowed();
 const openWhere = () => (opensInBrowser() ? "the source pane" : "VS Code");
 // A link to a source line says where it opens; openTitles updates that when the pane opens or closes.
 function opensAt(node, where) {
@@ -931,8 +1085,9 @@ function opensAt(node, where) {
 const openTitles = () => { for (const node of document.querySelectorAll("[data-opens]")) node.title = `Open ${node.dataset.opens} in ${openWhere()}`; };
 async function openSource(file, line) {
   if (opensInBrowser() && editable(file)) return showEditor(true, { path: file, line });
+  if (!me.can.openHost) return setStatus(`${file} can't be opened here`, "error");
   try {
-    const r = await fetch(`open?${new URLSearchParams({ file, line })}`);
+    const r = me.legacy ? await fetch(`open?${new URLSearchParams({ file, line })}`) : await postJSON("open", { file, line });
     if (r.ok) return;
     const why = (await readBody(r)).error; // e.g. latex-live is not running in a VS Code terminal
     if (!editorAllowed() || !editable(file)) return setStatus(why, "error");
@@ -942,6 +1097,8 @@ async function openSource(file, line) {
     setStatus(`${err.message || err}`, "error");
   }
 }
+const KEEPALIVE = 60000; // (a keepalive request outlives the page, for a body of up to 64 KB)
+const fitsKeepalive = (body) => new TextEncoder().encode(JSON.stringify(body)).length < KEEPALIVE;
 const postJSON = (path, body, keepalive = false) => {
   const data = JSON.stringify(body);
   return fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: data,
@@ -949,19 +1106,22 @@ const postJSON = (path, body, keepalive = false) => {
 };
 // This page's own name for its saves, so that live.py knows which saves are its own (save_file)
 const EDITOR_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-const KEEPALIVE = 60000; // (a keepalive request outlives the page, for a body of up to 64 KB)
-const fitsKeepalive = (body) => new TextEncoder().encode(JSON.stringify(body)).length < KEEPALIVE;
-// A response's body: its JSON, or {error} with a plain-text or HTML error's message.
+// A response's body: its JSON, or {error} with a plain-text or HTML error's message (and html: true
+// for a page, which may also be a proxy's sign-in page rather than the server's answer).
 async function readBody(r) {
   const text = await r.text();
   try { return JSON.parse(text); } catch { /* not JSON */ }
   const page = /^\s*</.test(text) && new DOMParser().parseFromString(text, "text/html");
   const message = page ? [...page.querySelectorAll("p")].map((p) => p.textContent).find((s) => s.startsWith("Message: "))?.slice(9) : text.trim();
-  return { error: message || `failed (${r.status})` };
+  return { error: message || `failed (${r.status})`, ...(page ? { html: true } : {}) };
 }
-// Whether the hub couldn't reach the preview just now (worth sending again as it is): 502-504, or
-// the hub's 404 for a preview that is not running (e.g. restarting).
-const unreachable = (r, body) => (r.status >= 502 && r.status <= 504) || (r.status === 404 && /^no preview of /.test(body.error || ""));
+// Whether an answer came from something other than the server, as when a proxy whose sign-in has
+// expired redirects to its sign-in page: a redirect, a 401 (live.py sends none), or a page that
+// claims success.
+const signInPage = (r, body) => r.redirected || r.status === 401 || (r.ok && !!body.html);
+// Whether the server, the proxy or the hub couldn't reach the preview just now (worth sending again
+// as it is): 502-504, or the hub's 404 for a preview that is not running (e.g. restarting).
+const unreachable = (r, body) => (r.status >= 502 && r.status <= 504 && !body.retry) || (r.status === 404 && /^no preview of /.test(body.error || ""));
 
 // The live build's state on the status line (poll, load), unless a download that the server builds is in
 // progress: that has the line meanwhile (downloadBuilt), rather than the two taking turns.
@@ -979,31 +1139,50 @@ function setStatus(text, cls = "") {
 // pass (the notes-free view and its page count are then out of date); click one to open it in the
 // editor. Failing those, it says when another build (e.g. make) replaced the published PDF.
 let dismissed = null;
+const closeButton = (onclick) => {
+  const b = el("button", { className: "close", textContent: "✕", title: "Close", onclick });
+  b.setAttribute("aria-label", "Close");
+  return b;
+};
 function showBuild(build, notesFree, overwritten) {
   const banner = $("banner");
+  accessClosed = false; // (the server answers again)
   if (!(build && !build.ok) && !isDiff && notesFree && !notesFree.ok) build = { ...notesFree, notesFree: true };
   if (!(build && !build.ok) && !isDiff && overwritten) build = { ok: false, time: overwritten, errors: [], overwritten: true };
   if (!build || build.ok || dismissed === build.time) return (banner.hidden = true);
   banner.replaceChildren();
-  const close = el("span", { className: "close", textContent: "✕" });
-  close.onclick = () => { dismissed = build.time; banner.hidden = true; };
+  banner.dataset.kind = "build";
+  const close = closeButton(() => { dismissed = build.time; banner.hidden = true; });
   banner.append(close, isDiff ? `Diff failed at ${build.time}.`
     : build.notesFree ? `The notes-free build failed at ${build.time}${build.msg ? ` (${build.msg})` : ""}; the notes-free view and its page count are out of date.`
     : build.overwritten ? `Another build (e.g. make) replaced ${docFile} at ${build.time}: the view with notes shows that PDF, and double-click may land on the wrong line.`
     : `Build failed at ${build.time}; showing the last good PDF.`);
   for (const err of build.errors.slice(0, 3)) {
     const line = el("div");
-    if (err.file) {
+    if (err.file && canOpenFile(err.file)) {
       const a = opensAt(el("a", { textContent: `${err.file}:${err.line}` }), `${err.file}:${err.line}`);
       a.onclick = () => openSource(err.file, err.line);
       line.append(a, `  ${err.msg}`);
     } else {
-      line.append(err.msg);
+      line.append(err.file ? `${err.file}:${err.line}  ${err.msg}` : err.msg);
     }
     banner.append(line);
   }
-  if (build.errors.length > 3) banner.append(`(+${build.errors.length - 3} more in the Problems panel)`);
-  if (build.overwritten) banner.append(" ", el("a", { textContent: "Rebuild now", onclick: rebuild }));
+  if (build.errors.length > 3) banner.append(`(+${build.errors.length - 3} more${me.can.openHost ? " in the Problems panel" : ""})`);
+  if (build.overwritten && me.can.rebuild) banner.append(" ", el("a", { textContent: "Rebuild now", onclick: rebuild }));
+  banner.hidden = false;
+}
+// The access ended (403 for status or me): the same banner, with what to try and where unsaved edits
+// are, until the server answers again (closed by hand, it stays closed until then).
+let accessClosed = false;
+function showAccessEnded() {
+  setStatus(ACCESS_ENDED, "error");
+  const banner = $("banner");
+  if (accessClosed || (banner.dataset.kind === "access" && !banner.hidden)) return;
+  banner.replaceChildren(closeButton(() => { accessClosed = true; banner.hidden = true; }),
+    `You no longer have access to this preview, or your sign-in or link expired. Reload the page; if that doesn't help, ask ${ownerName()}.`,
+    ...(ed?.dirty ? [` Your unsaved edits to ${ed.path} are kept in this browser.`] : []));
+  banner.dataset.kind = "access";
   banner.hidden = false;
 }
 
@@ -1014,27 +1193,70 @@ async function rebuild() {
   rebuildAt = Date.now();
   setStatus("rebuilding…", "busy");
   const r = await fetch("rebuild", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => null);
-  if (!r?.ok) setStatus((await r?.json().catch(() => null))?.error || `rebuild failed${r ? ` (${r.status})` : ""}`, "error");
+  if (!r?.ok) setStatus(r ? (await readBody(r)).error : "rebuild failed: can't reach the preview server", "error");
 }
 $("rebuild").onclick = rebuild;
-$("rebuild").hidden = isDiff;
 
-// /me, asked once at the start: a server that answers it has the browser editor. Until it answers,
-// ask again; a 404 is a server older than this viewer.
+// Controls follow the role (once /me has answered): a collaborator comments only as themselves,
+// and sees no controls for what their role can't do (live.py refuses those anyway).
+const ROLES = { viewer: "you can read the paper", commenter: "you can read the paper and comment on it",
+                editor: "you can comment and edit the LaTeX source", owner: "this preview is yours" };
+function applyRole() {
+  if (isCollaborator()) who = me.macro || "";
+  $("rebuild").hidden = isDiff || !me.can.rebuild;
+  $("compare").hidden = !me.can.compare;
+  $("editBtn").hidden = !editorAllowed();
+  $("me").hidden = !me.shared;
+  $("me").textContent = `${me.name || me.id} · ${me.role}`;
+  $("me").title = `Signed in as ${me.id}: ${ROLES[me.role] || me.role}`;
+  $("welcomeBtn").hidden = $("keys").querySelector(".welcome").hidden = !me.shared; // (the guide is for coauthors)
+  document.querySelector("#tabs [data-tab=checks]").hidden = isDiff || me.can.checks === false;
+  if (me.can.checks === false && tab === "checks") showTab("outline");
+}
+// Why a collaborator whose role may comment can't, or null: the paper defines no note macro of theirs
+// (/me macroDefined; from an older server, the note macros /authors lists, when it lists any).
+function notSetUp() {
+  if (!isCollaborator() || me.role === "viewer") return null;
+  const listed = authors.some((a) => a.macro === me.macro);
+  if (me.macro && (listed || (me.macroDefined ?? !authors.length))) return null;
+  return me.macro ? `Commenting isn't set up for you yet: the paper has no \\${me.macro} note macro. Ask ${ownerName()} to add it.`
+                  : `Commenting isn't set up for you yet: you have no note macro. Ask ${ownerName()} to give you one.`;
+}
+// Whether this user can write notes here (and so sees the controls for it).
+const canComment = () => !isDiff && !!me.can.comment && !notSetUp() && (isCollaborator() ? !!who : authors.length > 0);
+// /me, asked once at the start. Until the server answers, ask again; a 404 is a server older than
+// this viewer; a 403 means the access ended (returns false then).
 async function loadMe() {
-  for (let attempt = 1, wait = 1000; attempt <= 5; attempt++, wait *= 2) {
-    const r = await fetch("me", { cache: "no-store" }).catch(() => null);
-    if (r?.status === 404) return;
-    const body = r ? await readBody(r) : {};
-    if (r?.ok && body.can) return void (me = { ...body, legacy: false });
+  for (let attempt = 1, wait = 1000; ; attempt++, wait = Math.min(2 * wait, 10000)) {
+    let answered = false; // (the server answers, just not /me)
+    try {
+      const r = await fetch("me", { cache: "no-store" }).catch(() => { throw new Error(UNREACHABLE); });
+      const body = await readBody(r);
+      if (r.status === 403) {
+        showAccessEnded();
+        return false;
+      }
+      if (signInPage(r, body)) throw new Error(SIGNED_OUT);
+      if (unreachable(r, body)) throw new Error(UNREACHABLE);
+      if (r.status === 404) return true;
+      answered = true;
+      if (!r.ok || typeof body.role !== "string") throw new Error(`who you are: ${r.status}`);
+      me = { ...me, ...body, legacy: false, can: { ...(body.shared ? {} : ALL_CAN), ...body.can } };
+      return true;
+    } catch (err) {
+      if (answered && attempt >= 3) return true; // (the owner, as before)
+      const message = `${err.message || err}`;
+      setStatus([UNREACHABLE, SIGNED_OUT].includes(message) ? message : `${message} (retrying)`, "error");
+    }
     await sleep(wait);
   }
 }
-// The LaTeX source beside the PDF (✎ Source, or E): live.py /files and /file, in CodeMirror
-// (codemirror/, through the import map), loaded on first use. Edits save by themselves 1.5 s after
-// the last change, and at once on Cmd/Ctrl+S, a file switch, closing the pane, and leaving the page.
-// live.py merges a save with changes made to the file meanwhile (in another editor or tab, or a note
-// written from the viewer); edits typed while a save is on its way are
+
+// The LaTeX source beside the PDF (✎ Source, or E), for editors and the owner: live.py /files and
+// /file, in CodeMirror (codemirror/, through the import map), loaded on first use. Edits save by
+// themselves 1.5 s after the last change, and at once on Cmd/Ctrl+S, a file switch, closing the
+// pane, and leaving the page. live.py merges a save with changes made to the file meanwhile (by
+// someone else, or a note written from the viewer); edits typed while a save is on its way are
 // rebased onto its answer, unless they touch the lines it changed (then the server merges them
 // too, on the next save). A file that changes on disk reloads in place (status ?open=). Until a
 // save goes through, this browser keeps the unsaved text (keepUnsaved), so that it survives a crash
@@ -1051,11 +1273,12 @@ let ed = null;
 // A save or reload on its way: {kind, since (the edits typed since it left, a ChangeSet), done (a promise)}.
 let busy = null;
 let saveTimer = null, retryTimer = null, openSeq = 0, lastSaveAt = 0;
-// Saves that failed but may work later: offline is then why ("unreachable": no answer, or the hub
-// couldn't reach the preview; "server": a 5xx, or an answer that is not the server's).
+// Saves that failed but may work later: offline is then why ("unreachable": no answer, or the proxy
+// or hub couldn't reach the preview; "signin": a page came back instead, e.g. a proxy's sign-in page;
+// "updating": the owner is updating the shared copy, live.py's 503 {retry}; "server": another 5xx).
 let offline = null, offlineSince = 0, retryDelay = 2000, noticeTimer = null;
 let sourceEpoch = 0; // (bumped whenever the open file's version changes: a status answer from before is stale)
-let conflict = null; // a conflict of this session, not resolved yet ({})
+let conflict = null; // a conflict of this session, not resolved yet: {by: who saved the other side, if live.py says}
 
 function loadEditor() {
   cmLoading ??= (async () => {
@@ -1170,7 +1393,8 @@ async function openFile(path, line = 0) {
   if (seq !== openSeq) return;
   const f = r ? await readBody(r) : {};
   if (!r?.ok || typeof f.text !== "string" || typeof f.version !== "string") {
-    const why = !r || unreachable(r, f) ? "can't reach the preview server" : r.status === 404 ? "not a source file that can be edited here" : r.status === 415 ? "not UTF-8 text" : f.error;
+    const why = !r || unreachable(r, f) ? "can't reach the preview server" : signInPage(r, f) ? "your sign-in may have expired"
+              : r.status === 404 ? "not a source file that can be edited here" : r.status === 415 ? "not UTF-8 text" : f.error;
     const kept = r?.status === 404 && !unreachable(r, f) && readKept(path);
     if (kept) showGone(path, kept.text, kept.key); // (edits kept from earlier, to a file the paper no longer has)
     return setStatus(`${path}: ${why}`, "error");
@@ -1230,10 +1454,13 @@ function hasConflictMarks(text) {
 }
 // The save state, beside the file's name: "Not saved" says why in its tooltip, and a click on it
 // tries again (on "Conflict", it shows the choices again).
-const OFFLINE_LABELS = { unreachable: "Not saved — offline", server: "Not saved — retrying" };
+const OFFLINE_LABELS = { unreachable: "Not saved — offline", signin: "Not saved — signed out?", server: "Not saved — retrying",
+                         updating: "Owner is updating the copy — retrying" };
 const OFFLINE_TITLES = {
   unreachable: "Can't reach the preview server. Your edits are kept in this browser and save by themselves once it answers; click to try now.",
+  signin: "The preview answered with a web page instead of saving: your sign-in may have expired. Your edits are kept in this browser; reload the page to sign in again.",
   server: "The server could not save just now. Your edits are kept in this browser, and it tries again by itself; click to try now.",
+  updating: "The owner is updating the shared copy of the paper. Your edits are kept in this browser and save by themselves in a moment.",
 };
 function showSaveState() {
   const label = $("saveState");
@@ -1261,7 +1488,7 @@ $("saveState").onclick = () => {
 // now on disk: the text sent, or that merged with changes made meanwhile, which is applied here as
 // someone else's change; or a conflict (409), whose merged text, with git's markers, goes in the
 // editor for the user to resolve. A save counts only once the server's own answer says so (a
-// version): anything else (no answer, the hub unable to reach the preview) keeps the
+// version): anything else (no answer, a page from a proxy, the owner updating the copy) keeps the
 // edits unsaved, to send again; a refusal says why.
 async function saveSource({ keepalive = false } = {}) {
   clearTimeout(saveTimer);
@@ -1299,7 +1526,8 @@ async function saveSource({ keepalive = false } = {}) {
       r = await postJSON("file", { ...body, base_text: target.base }, keepalive);
       res = await readBody(r);
     }
-    const trouble = unreachable(r, res) ? "unreachable" : r.status >= 500 || (r.ok && typeof res.version !== "string") ? "server" : null;
+    const trouble = signInPage(r, res) || (r.ok && typeof res.version !== "string") ? "signin" : r.status === 503 && res.retry ? "updating"
+                  : unreachable(r, res) ? "unreachable" : r.status >= 500 ? "server" : null;
     if (trouble) throw Object.assign(new Error(res.error || `save failed (${r.status})`), { trouble });
     if (r.status === 404 && (await stillListed(target.path))) throw Object.assign(new Error(res.error), { trouble: "server" }); // (not gone after all)
     backOnline();
@@ -1319,7 +1547,7 @@ async function saveSource({ keepalive = false } = {}) {
       hideNotice("refused");
     } else if (r.status === 409 && res.conflict && typeof res.merged === "string") {
       if (applyRemote(text, res.merged, since)) {
-        conflict = {};
+        conflict = { by: typeof res.by === "string" && res.by ? res.by : null };
         Object.assign(ed, { base: res.text, baseVersion: res.version, dirty: true, markers: true, error: null, uncertain: false });
         sourceEpoch++;
         if (!editorShown()) showEditor(true, { focus: false }); // (e.g. the save on closing the pane: show what happened)
@@ -1354,8 +1582,9 @@ async function stillListed(path) {
 function goOffline(why) {
   if (!offline) offlineSince = Date.now();
   offline = why;
-  retryTimer = setTimeout(() => saveSource(), retryDelay);
-  retryDelay = Math.min(2 * retryDelay, 30000);
+  retryTimer = setTimeout(() => saveSource(), why === "updating" ? 2000 : retryDelay);
+  if (why !== "updating") retryDelay = Math.min(2 * retryDelay, 30000);
+  if (why === "signin") setStatus(SIGNED_OUT, "error");
   clearTimeout(noticeTimer);
   noticeTimer = setTimeout(() => {
     if (offline && ed?.dirty && !ed.gone) showNotice("unsaved", OFFLINE_NOTICES[offline](ed.path), { copy: cmView.state.doc.toString() });
@@ -1363,8 +1592,12 @@ function goOffline(why) {
 }
 const OFFLINE_NOTICES = {
   unreachable: (path) => `Still can't reach the preview server, so your edits to ${path} are not saved. They save by themselves once it ` +
-    "answers, and this browser keeps them meanwhile; they are below to copy:",
+    "answers, and this browser keeps them meanwhile. If you were signed out, copy them from below before you reload the page:",
+  signin: (path) => `The preview keeps answering with a web page instead of saving ${path}: your sign-in may have expired. This browser ` +
+    "keeps your edits, and offers to restore them after you reload the page to sign in again; to be safe, copy them from below first:",
   server: (path) => `The server could not save ${path} for a while; it keeps trying. This browser keeps your edits meanwhile, and they are below to copy:`,
+  updating: (path) => `${ownerName()} is updating the shared copy of the paper; your edits to ${path} save by themselves once that is done. ` +
+    "This browser keeps them meanwhile, and they are below to copy:",
 };
 function backOnline() {
   offline = null;
@@ -1384,7 +1617,7 @@ function refuseSave(status, why) {
     showGone(ed.path, cmView.state.doc.toString());
   } else if (status === 403) {
     showNotice("refused", `The preview refused to save ${ed.path} (${why}). This browser keeps your edits; copy them from below before you ` +
-                          "leave:", { copy: cmView.state.doc.toString() });
+                          `leave, and ask ${ownerName()} if you should still have access:`, { copy: cmView.state.doc.toString() });
   }
 }
 function showGone(path, text, key = keptKey(path)) {
@@ -1404,7 +1637,7 @@ async function flushSource() {
 // again, unsaved edits go at once.
 function sourceStatus(source, epoch) {
   if (!ed || busy || ed.gone) return;
-  if (ed.dirty && offline === "unreachable") { // (at most every 2 s, should saves keep failing still)
+  if (ed.dirty && (offline === "unreachable" || offline === "signin")) { // (at most every 2 s, should saves keep failing still)
     if (Date.now() - lastSaveAt > 2000) saveSource();
     return;
   }
@@ -1552,12 +1785,14 @@ $("notice").addEventListener("keydown", (e) => { if (e.key === "Escape") hideNot
 // git's merge with both versions marked: resolve it by hand, or keep one side of every conflict.
 function showConflict() {
   const code = (textContent) => el("code", { textContent });
-  const lead = `The same lines of ${ed.path} changed elsewhere (in another editor or tab, or with a note) while you were editing them here.`;
-  showNotice("conflict", [`${lead} Both versions are in the text now: the other one after `,
+  const own = !!conflict.by && [me.name, me.id].includes(conflict.by); // (who saved the other side is this user: a note of theirs, or another tab)
+  const lead = own ? `You changed the same lines of ${ed.path} elsewhere (with a note, or in another tab) while editing it here.`
+                   : `${conflict.by || "Someone else"} changed the same lines of ${ed.path} while you were editing it.`;
+  showNotice("conflict", [`${lead} Both versions are in the text now: ${own ? "the other one" : "theirs"} after `,
                           code("<<<<<<< saved meanwhile"), ", yours after ", code("======="), ", up to ", code(">>>>>>> your edit"),
                           ". Keep what you want and delete all three marker lines; it saves again once they are gone. Or decide every conflict at once:"],
              { buttons: [["Keep mine", "In each conflict, keep your lines; everything else in the file stays as it is", () => keepSide("mine")],
-                         ["Keep theirs", "In each conflict, keep the other lines; your other edits stay (your lines from the conflicts are shown to copy)", () => keepSide("theirs")]] });
+                         ["Keep theirs", "In each conflict, keep their lines; your other edits stay (your lines from the conflicts are shown to copy)", () => keepSide("theirs")]] });
   const first = cmView.state.doc.toString().search(/^<{7}/m); // (the first conflict in view)
   if (first >= 0) cmView.dispatch({ effects: CM.EditorView.scrollIntoView(first, { y: "nearest" }) });
   setStatus(`${ed.path}: edits conflict, see the source pane`, "error");
@@ -1608,7 +1843,7 @@ async function keepSide(side) {
   await saveSource();
 }
 
-// Unsaved edits survive the page (a crash, or a reload while offline): the open file's
+// Unsaved edits survive the page (a crash, or a reload while offline or signed out): the open file's
 // text, with the version and text the edits started from, is kept in localStorage (per paper, file
 // and page: two tabs on one file keep theirs apart) until a save goes through. Opening that file
 // again offers to restore the newest, through the usual merging save.
@@ -1660,7 +1895,7 @@ async function restoreKept(kept) {
   while (busy) await busy.done;
   if (ed?.path !== kept.path) return;
   hideNotice("restore");
-  conflict = kept.conflict && MARK_ENDS.test(kept.text) ? {} : null;
+  conflict = kept.conflict && MARK_ENDS.test(kept.text) ? { by: kept.conflict.by || null } : null;
   Object.assign(ed, { base: kept.base, baseVersion: kept.baseVersion ?? null }); // (the edits, against what they started from)
   sourceEpoch++;
   replaceSource(kept.text);
@@ -1782,8 +2017,6 @@ document.addEventListener("visibilitychange", () => {
   keepUnsaved(true);
   saveSource();
 });
-
-
 
 // Outline, rebuilt on each reload: the PDF's bookmarks (hyperref), or else the contents entries
 // from live.py (e.g. this ICLR draft, whose restored \addcontentsline skips hyperref). Headings show
@@ -2165,7 +2398,8 @@ function renderNotes() {
     who.style.background = authorColor(n.author);
     const where = opensAt(el("span", { className: "where", textContent: `${n.file.replace(/^.*\//, "")}:${n.line}` }), `${n.file}:${n.line}`);
     where.onclick = (e) => { e.stopPropagation(); openSource(n.file, n.line); };
-    const row = el("div", { className: "note", title: "Show in the PDF" }, who, where, el("div", { className: "text", textContent: n.text || "(empty)" }));
+    const row = el("div", { className: "note", title: "Show in the PDF" }, who, ...(canOpenFile(n.file) ? [where] : []),
+                   el("div", { className: "text", textContent: n.text || "(empty)" }));
     const tools = noteTools(n);
     if (tools) who.after(tools);
     row.onclick = () => showSource(n.file, n.line);
@@ -2213,7 +2447,8 @@ async function renderFloats() {
     const [x0, y0, x1, y1] = f.box;
     crop.style.aspectRatio = `${x1 - x0 + 8} / ${y1 - y0 + 8}`;
     const card = el("div", { className: "float", title: `${name}: show in the PDF` },
-                    el("div", { className: "head" }, el("b", { textContent: name }), where, el("span", { className: "pg", textContent: `p. ${f.label ?? f.page}` })),
+                    el("div", { className: "head" }, el("b", { textContent: name }), ...(canOpenFile(f.file) ? [where] : []),
+                       el("span", { className: "pg", textContent: `p. ${f.label ?? f.page}` })),
                     crop, el("div", { className: "cap", textContent: f.caption }));
     card.dataset.i = i;
     card.onclick = () => {
@@ -2370,8 +2605,9 @@ function drawMargin(pageNumber) {
   pageView.div.append(layer);
   const items = list.map((a) => {
     const n = a.note, color = authorColor(n.author), left = leftOfPage(a);
-    const bubble = opensAt(el("div", { className: `ll-bubble${left ? " left" : ""}` },
-                              el("div", { className: "text" }, el("b", { textContent: n.author }), n.text || "(empty)")), `${n.file}:${n.line}`);
+    const bubble = el("div", { className: `ll-bubble${left ? " left" : ""}`, title: `${n.file}:${n.line}` },
+                      el("div", { className: "text" }, el("b", { textContent: n.author }), n.text || "(empty)"));
+    if (canOpenFile(n.file)) opensAt(bubble, `${n.file}:${n.line}`);
     bubble.style[left ? "borderRightColor" : "borderLeftColor"] = color;
     bubble.querySelector("b").style.color = color;
     const tools = noteTools(n);
@@ -2387,7 +2623,7 @@ function drawMargin(pageNumber) {
     for (const e of [bubble, caret]) {
       e.onmouseenter = () => hot(true);
       e.onmouseleave = () => hot(false);
-      e.onclick = (ev) => { ev.stopPropagation(); openSource(n.file, n.line); };
+      e.onclick = (ev) => { ev.stopPropagation(); if (canOpenFile(n.file)) openSource(n.file, n.line); };
     }
     return { bubble, path, x, y, s, left };
   }).sort((a, b) => a.y - b.y || a.x - b.x);
@@ -2422,10 +2658,23 @@ function markWritten(key, on) {
   on ? written.add(key) : written.delete(key);
   sessionStorage.setItem(`latex-live:${hubBase}written`, JSON.stringify([...written]));
 }
-const authorOf = (macro) => authors.find((a) => a.macro === macro)?.author || macro;
+// How the user's notes are labeled, in the toolbar and on the comment button alike: as /authors labels
+// their note macro (the initials it prints), else, for a collaborator, by their name.
+const whoLabel = () => authors.find((a) => a.macro === who)?.author || (isCollaborator() ? me.name || me.id : who);
 async function loadAuthors() {
   authors = await (await fetch(`authors/${encodeURIComponent(docFile)}`)).json();
+  if (isCollaborator() && me.macroDefined === false && me.role !== "viewer" && authors.some((a) => a.macro === me.macro)) {
+    me.macroDefined = true; // (the paper has defined it since /me answered; live.py checks again for each note)
+    me.can.comment = true;
+  }
   const pick = $("whoPick");
+  if (isCollaborator()) { // (who you are comes from the server: a label, not a choice)
+    pick.replaceChildren(el("option", { value: who, textContent: `Commenting as ${whoLabel()}`, selected: true }));
+    pick.disabled = true;
+    pick.title = `Your notes are signed \\${who} (${me.name || me.id}): select text in the PDF, then press C or click the 💬 button that appears beside it`;
+    pick.hidden = !canComment();
+    return;
+  }
   pick.replaceChildren(el("option", { value: "", textContent: "💬 Comment as…" }),
                        ...authors.map((a) => el("option", { value: a.macro, textContent: `💬 ${a.author}`, selected: a.macro === who })));
   pick.hidden = isDiff || !authors.length;
@@ -2468,7 +2717,7 @@ function showCommentButton() {
   b.hidden = !selectionTarget || !$("notePop").hidden;
   if (b.hidden) return;
   const r = selectionTarget.rect;
-  b.textContent = who ? `💬 ${authorOf(who)}` : "💬 Comment";
+  b.textContent = who ? `💬 ${whoLabel()}` : "💬 Comment";
   b.title = who ? "Add your note after the selected text (C)" : "Pick who you are in the toolbar first";
   Object.assign(b.style, { left: `${Math.min(r.right + 4, innerWidth - b.offsetWidth - 8)}px`, top: `${r.bottom + 4}px` });
 }
@@ -2486,7 +2735,7 @@ function startComment() {
   }
   $("commentBtn").hidden = true;
   const quote = t.text.length > 50 ? `…${t.text.slice(-50)}` : t.text;
-  openNotePop({ head: `${authorOf(who)}, after “${quote}”`, initial: "", rect: t.rect,
+  openNotePop({ head: `${whoLabel()}, after “${quote}”`, initial: "", rect: t.rect,
                 save: (text) => postNote({ action: "add", pdf: docFile, macro: who, page: t.page, x: t.x, y: t.y,
                                            clean: shownVariant === "clean", selection: t.text, text }) });
 }
@@ -2501,6 +2750,7 @@ function openNotePop({ head, initial, rect, save, latex = false, placeholder = "
   pop.querySelector(".hint").textContent = `Enter to save · ${latex ? "Shift+Enter for a new line · " : ""}Esc to cancel`;
   pop.querySelector(".error").textContent = "";
   pop.querySelector(".latex").hidden = !latex;
+  pop.querySelector(".primary").disabled = false;
   field.value = initial;
   popSave = save;
   pop.hidden = false;
@@ -2510,12 +2760,14 @@ function openNotePop({ head, initial, rect, save, latex = false, placeholder = "
   field.focus();
   field.setSelectionRange(field.value.length, field.value.length);
 }
-function closeNotePop() { $("notePop").hidden = true; popSave = null; }
+function closeNotePop() { $("notePop").hidden = true; popSave = null; noteSeq++; }
 async function submitNotePop() {
   const pop = $("notePop"), text = pop.querySelector("textarea").value, button = pop.querySelector(".primary");
   if (!text.trim() || !popSave || button.disabled) return;
+  const save = popSave;
   button.disabled = true;
-  const error = await popSave(text);
+  const error = await save(text);
+  if (popSave !== save) return; // (the box was closed meanwhile, or opened for another note)
   button.disabled = false;
   if (error) pop.querySelector(".error").textContent = error;
   else closeNotePop();
@@ -2528,12 +2780,28 @@ $("notePop").querySelector("textarea").addEventListener("keydown", (e) => {
 $("notePop").querySelector(".primary").onclick = submitNotePop;
 $("notePop").querySelector(".cancel").onclick = closeNotePop;
 
-// Write a note change (live.py /note); returns an error message, or nothing.
+// Write a note change (live.py /note); returns an error message, or nothing. While the owner updates
+// the shared copy (503 with retry), it waits and sends it again, for a minute at most, unless the
+// note box is closed meanwhile.
+let noteSeq = 0; // (bumped when the note box closes: a note still waiting to go is dropped then)
 async function postNote(body) {
+  const seq = noteSeq, kept = "(your text is still here)";
   try {
-    const r = await fetch("note", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const res = await r.json().catch(() => ({ error: `failed (${r.status})` }));
-    if (!r.ok) return res.error || `failed (${r.status})`;
+    let r, res;
+    for (let attempt = 1; ; attempt++) {
+      r = await fetch("note", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => null);
+      if (!r) return `Can't reach the preview server: try again in a moment ${kept}`;
+      res = await readBody(r);
+      if (!(r.status === 503 && res.retry) || attempt >= 30) break;
+      if (!$("notePop").hidden) $("notePop").querySelector(".error").textContent = "Owner is updating the copy — retrying…";
+      setStatus("Owner is updating the copy — retrying…", "busy");
+      await sleep(2000);
+      if (seq !== noteSeq) return "not sent: the note box was closed";
+    }
+    if (signInPage(r, res)) return `The preview answered with a web page: your sign-in may have expired. Copy your text, then reload the page ${kept}`;
+    if (r.status === 503 && res.retry) return `${ownerName()} is still updating the shared copy: try again in a minute ${kept}`;
+    if (unreachable(r, res)) return `Can't reach the preview server: try again in a moment ${kept}`;
+    if (!r.ok || typeof res.source !== "string") return res.error || `failed (${r.status})`;
     wroteAt = Date.now(); // (a build comes: behind)
     const old = writtenKey(body.source, body.macro, body.tex);
     if (body.action === "add" || body.action === "reply") markWritten(writtenKey(res.source, res.macro, res.tex), true);
@@ -2556,7 +2824,7 @@ async function postNote(body) {
 // ✓ on every note, ↩ on others', ✎ on your own, ✕ on the ones written from this tab (none on a
 // marker of protected text).
 function noteTools(n) {
-  if (isDiff || !who || n.protected) return null;
+  if (isDiff || !who || n.protected || !me.can.comment || notSetUp()) return null;
   const target = { pdf: docFile, source: n.file, line: n.line, macro: n.macro, tex: n.tex };
   const where = `${n.file.replace(/^.*\//, "")}:${n.line}`, buttons = [];
   const button = (textContent, title, onclick) => {
@@ -2566,16 +2834,16 @@ function noteTools(n) {
   };
   if (n.macro !== who)
     button("↩", "Reply to this note", (rect) => openNotePop({
-      head: `${authorOf(who)}, replying to ${n.author} (${where})`, initial: "", rect, placeholder: "Your reply",
+      head: `${whoLabel()}, replying to ${n.author} (${where})`, initial: "", rect, placeholder: "Your reply",
       save: (text) => postNote({ action: "reply", ...target, who, text }) }));
-  else
+  else if (n.plain != null || me.can.edit) // (a note with LaTeX in it is edited as LaTeX: editors only)
     button("✎", "Edit this note", (rect) => {
       const latex = n.plain == null; // (TeX beyond escaped characters: edited as LaTeX)
       openNotePop({ head: `Edit ${n.author} note (${where})`, initial: latex ? n.tex : n.plain, latex, rect,
                     save: (text) => postNote({ action: "edit", ...target, ...(latex ? { latex: text } : { text }) }) });
     });
   button("✓", "Resolve: comment it out under a RESOLVED line with your reason", (rect) => openNotePop({
-    head: `Resolve ${n.author} note (${where}) as ${authorOf(who)}: why?`, initial: "", rect,
+    head: `Resolve ${n.author} note (${where}) as ${whoLabel()}: why?`, initial: "", rect,
     placeholder: "What addressed it (one line)", save: (text) => postNote({ action: "resolve", ...target, who, text }) }));
   if (written.has(writtenKey(n.file, n.macro, n.tex)))
     button("✕", "Delete this note (written from this tab)", async () => {
@@ -2643,10 +2911,10 @@ function renderChecks(results) {
         if (it.file) {
           const where = opensAt(el("span", { className: "where", textContent: `  ${it.file.replace(/^.*\//, "")}:${it.line}` }), `${it.file}:${it.line}`);
           where.onclick = (e) => { e.stopPropagation(); openSource(it.file, it.line); };
-          li.append(where);
+          if (canOpenFile(it.file)) li.append(where);
           li.onclick = () => showSource(it.file, it.line, true);
         }
-        if (it.open) { // a related file, e.g. the script that makes a figure
+        if (it.open && canOpenFile(it.open)) { // a related file, e.g. the script that makes a figure
           const script = opensAt(el("span", { className: "where", textContent: `  ↗ ${it.open}` }), it.open);
           script.onclick = (e) => { e.stopPropagation(); openSource(it.open, 1); };
           li.append(script);
@@ -3180,15 +3448,15 @@ $("compare").onclick = async () => {
     div.onclick = () => startDiff(rev);
     return div;
   };
-  panel.replaceChildren(el("div", { className: "head", textContent: "Show changes since… (latexdiff of the .tex files against the working tree; opens a new tab)" }),
+  panel.replaceChildren(el("div", { className: "head", textContent: "Show the changes since… (the paper as it is now, with what changed since that commit marked; in a new tab)" }),
     ...(dirty ? [row("HEAD", "", "uncommitted edits only", "the last commit vs. the working tree")] : []),
     ...commits.map((c) => row(c.rev, c.date, `${c.subject} — ${c.author}`, `${c.rev} ${c.date} ${c.author}: ${c.subject}`)));
 };
 async function startDiff(rev) {
   $("comparePanel").hidden = true;
   await flushSource(); // (the diff is of the files on disk)
-  const r = await fetch(`diff?${new URLSearchParams({ rev })}`);
-  if (!r.ok && r.status !== 409) return setStatus((await r.json()).error, "error");
+  const r = me.legacy ? await fetch(`diff?${new URLSearchParams({ rev })}`) : await postJSON("diff", { rev });
+  if (!r.ok && r.status !== 409) return setStatus((await readBody(r)).error, "error");
   const url = `viewer.html?${new URLSearchParams({ file: docFile.replace(/\.pdf$/, "-diff.pdf") })}`;
   if (isDiff) return; // this tab already shows the diff; it reloads when the new one is built
   if (!window.open(url, "latex-live-diff")) location.href = url;
@@ -3196,7 +3464,7 @@ async function startDiff(rev) {
 if (isDiff) { // (the diff tab's main control, so in the toolbar)
   placeItem($("compare"), true);
   $("compare").textContent = "Compare with…";
-  $("compare").title = "latexdiff against another commit";
+  $("compare").title = "Compare with another commit";
 }
 function showDiffInfo(d) {
   if (!isDiff || !d?.sha) return;
@@ -3214,10 +3482,12 @@ const assets = {
   cMapUrl: new URL("pdfjs/cmaps/", location.href).href,
   cMapPacked: true,
   standardFontDataUrl: new URL("pdfjs/standard_fonts/", location.href).href,
+  get isEvalSupported() { return !me.shared; }, // (in shared mode, no code compiled from a PDF that coauthors' TeX made)
 };
 let doc = null;
 let shown = null;
 let loading = false;
+let baselineAsked = 0; // (when this tab last asked for a baseline: POST /baseline)
 let forwardSeq = null;
 let wordsPromise = null;
 let buildVersion = null;
@@ -3289,12 +3559,19 @@ async function poll() {
   const epoch = sourceEpoch;
   try {
     const query = new URLSearchParams();
-    if (changesOn && changeBase === "push") query.set("base", "push"); // (the server builds that baseline only then)
+    const against = changesOn ? baseKind() : null; // (the server builds the push baseline only when asked)
+    if (against === "push") query.set("base", against);
     if (ed && editorShown()) query.set("open", ed.path); // (and the open source file's version on disk)
     const r = await fetch(`status/${encodeURIComponent(file)}${query.toString() ? `?${query}` : ""}`,
-                          { cache: "no-store", signal: AbortSignal.timeout(10000) });
-    if (r.status === 404) throw new Error("server is older than this viewer: restart the LaTeX build task");
-    if (!r.ok) throw new Error(`status ${r.status}`);
+                          { cache: "no-store", signal: AbortSignal.timeout(10000) })
+      .catch((e) => { throw ["TimeoutError", "AbortError"].includes(e.name) ? e : new Error(UNREACHABLE); });
+    if (r.status === 403) throw new Error(ACCESS_ENDED);
+    if (r.redirected || r.status === 401 || (r.ok && !/json/.test(r.headers.get("Content-Type") || ""))) throw new Error(SIGNED_OUT);
+    if (!r.ok) {
+      const body = await readBody(r);
+      throw new Error(unreachable(r, body) || r.status >= 500 ? UNREACHABLE
+                      : r.status === 404 ? "server is older than this viewer: restart the LaTeX build task" : `status ${r.status}`);
+    }
     const info = await r.json();
     if (pollFailed) setStatus(""); // (it answers again)
     pollFailed = false;
@@ -3307,17 +3584,22 @@ async function poll() {
     $("texImage").hidden = !info.texImage; // builds fall back to the host's TeX; SyncTeX may not work
     $("texImage").title = info.texImage || "";
     $("texImage").textContent = info.texImage?.startsWith("no synctex") ? "⚠ no SyncTeX" : "⚠ TeX image missing";
-    $("updated").hidden = !info.latexLive?.updated;
+    $("updated").hidden = !info.latexLive?.updated || isCollaborator(); // (only the owner can restart the preview)
     $("versionInfo").textContent = info.latexLive ? `latex-live ${info.latexLive.version}` : "";
     if (info.building) liveStatus(isDiff ? "building diff…" : "building…", "busy");
     else if ($("status").className === "busy" && Date.now() - rebuildAt > 4000) liveStatus(info.build?.ok === false ? "build failed" : "", info.build?.ok === false ? "error" : "");
     if (!info.version) return info.building || liveStatus(`waiting for ${file}…`);
     buildVersion = info.version;
     headInfo = info.head || null;
+    if (me.shared && (against === "head" || against === "push") && info[against]?.state === "waiting" && Date.now() - baselineAsked > 3000) {
+      baselineAsked = Date.now(); // (in shared mode a GET builds nothing: the baseline is asked for with a POST)
+      postJSON("baseline", { kind: against }).catch(() => {});
+    }
     pushInfo = info.push || null;
     $("notesView").hidden = isDiff || !info.clean?.version;
-    $("downloadClean").hidden = $("downloadReview").hidden = isDiff || !info.clean?.version; // (only a paper with notes has a version without them)
-    $("downloadPdf").textContent = isDiff ? "This comparison" : $("downloadClean").hidden ? "PDF" : "PDF with notes";
+    // (only a paper with notes has a version without them, or notes for the margin; and only a role that may download them sees them)
+    $("downloadClean").hidden = $("downloadReview").hidden = isDiff || !info.clean?.version || !me.can.download;
+    $("downloadPdf").textContent = isDiff ? "This comparison" : $("notesView").hidden ? "PDF" : "PDF with notes";
     const clean = !isDiff && view === "clean" && info.clean?.version ? info.clean : null;
     const want = clean ? `clean:${clean.version}` : info.version;
     if (want !== shown) {
@@ -3340,8 +3622,10 @@ async function poll() {
       forwardSeq = 0;
     }
   } catch (err) {
-    setStatus(`${["TimeoutError", "AbortError"].includes(err.name) ? "no answer from the preview" : err.message || err} (retrying)`, "error");
+    const message = ["TimeoutError", "AbortError"].includes(err.name) ? "no answer from the preview" : `${err.message || err}`;
     pollFailed = true;
+    if (message === ACCESS_ENDED) showAccessEnded();
+    else setStatus([UNREACHABLE, SIGNED_OUT].includes(message) ? message : `${message} (retrying)`, "error");
   } finally {
     polling = loading = false;
   }
@@ -3395,7 +3679,7 @@ $("docPick").onchange = async (e) => {
   }
   if (value.startsWith("open:")) return (location.href = viewerOf(otherPreviews[+value.slice(5)]));
   setStatus(`switching to ${value}.tex…`, "busy");
-  const r = await fetch(`switch?${new URLSearchParams({ doc: value })}`);
+  const r = me.legacy ? await fetch(`switch?${new URLSearchParams({ doc: value })}`) : await postJSON("switch", { doc: value });
   const body = await r.json().catch(() => ({ error: `switch failed (${r.status})` }));
   if (r.ok) return openDoc(`${value}.pdf`);
   if (body.port) { // (another instance builds it: its viewer, through the hub unless it predates it)
@@ -3405,19 +3689,26 @@ $("docPick").onchange = async (e) => {
   }
   setStatus(body.error, "error");
 };
-loadDocs().catch(() => {});
-setInterval(() => { if (document.activeElement !== $("docPick")) loadDocs().catch(() => {}); }, 15000); // (papers opened since)
-if (!isDiff) loadAuthors().catch(() => {});
 
-poll();
-setInterval(poll, 250);
-// The source pane, once /me says the server has it: open again if it was open (or on a file with
-// unsaved edits this browser kept, to restore).
-loadMe().then(() => {
-  $("editBtn").hidden = !editorAllowed();
+// Start: who is asking first (it decides the controls, and whose notes new ones are), then the
+// documents (the owner's menu), the authors, the status poll, the source pane if it was open (or on
+// a file with unsaved edits this browser kept, to restore), and the welcome guide when it is due.
+async function start() {
+  if (!(await loadMe())) return;
+  applyRole();
+  if (me.can.switch) {
+    loadDocs().catch(() => {});
+    setInterval(() => { if (document.activeElement !== $("docPick")) loadDocs().catch(() => {}); }, 15000); // (papers opened since)
+  }
+  const authorsLoaded = isDiff ? null : loadAuthors().catch(() => {});
+  poll();
+  setInterval(poll, isCollaborator() ? 500 : 250); // (coauthors: half as often, as there may be many)
   const kept = editorAllowed() ? latestKept() : null;
   if (kept || (editorAllowed() && localStorage.getItem("latex-live:editor"))) showEditor(true, { path: kept?.path, focus: false });
-});
+  await authorsLoaded; // (the guide names your initials)
+  if (welcomeDue()) showWelcome(true, true);
+}
+start();
 </script>
 </body>
 </html>

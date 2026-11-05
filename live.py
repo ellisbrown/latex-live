@@ -40,8 +40,15 @@ Usage (from a paper root):  live.py [<doc>[.tex] | PATH] [--port 44100] [--page-
   the same folder) prints the running viewer's URL and exits, or with --replace
   stops the first and runs instead; one that no longer answers is replaced. /papers
   lists every running instance on the machine.
+- Shared mode (LATEX_LIVE_USERS=users.json): coauthors open this instance through an
+  authenticating reverse proxy on this machine, or with personal links, each with
+  the role the users file gives them (viewer, commenter, editor, owner). It serves
+  exactly --port, to this machine only, and stays out of the hub. It builds without
+  latexmk (which parses what TeX writes on the host): live.py runs pdflatex, bibtex,
+  biber and makeindex itself, each in a confined container of the TeX Live image.
 - The LaTeX can also be edited in the viewer, beside the PDF (the browser editor): a save
-  is merged with what was saved to the file meanwhile (git merge-file).
+  is merged with what was saved to the file meanwhile (git merge-file), and in shared mode
+  with LATEX_LIVE_COMMIT=1 each coauthor's edits and notes are committed to git as theirs.
 """
 
 import argparse
@@ -57,12 +64,14 @@ import html
 import http.client
 import http.cookies
 import http.server
+import ipaddress
 import itertools
 import json
 import math
 import os
 import queue
 import re
+import resource
 import secrets
 import shutil
 import signal
@@ -74,7 +83,9 @@ import tarfile
 import tempfile
 import threading
 import time
+import traceback
 import unicodedata
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -89,8 +100,9 @@ BUILD = os.environ.get("LATEX_LIVE_BUILD", "build")
 PUBLISH = "" if BUILD == "build" else BUILD
 # Per-user state, shared by every checkout (a pinned version and a development one see the same
 # token and the same instances): the token, and one <pid>.json per running instance (record_port).
-STATE = os.environ.get("LATEX_LIVE_STATE") or os.path.join(
-    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "latex-live")
+# (Absolute: main changes into the paper root.)
+DEFAULT_STATE = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "latex-live")
+STATE = os.path.abspath(os.environ.get("LATEX_LIVE_STATE") or DEFAULT_STATE)
 TOKEN_FILE = os.path.join(STATE, "token")
 INSTANCES = os.path.join(STATE, "instances")
 OLD_INSTANCES = os.path.join(HERE, "instances")  # (where instances of 0.1.0 list themselves)
@@ -142,22 +154,359 @@ def load_token():
     return load_token()
 
 
+def same_secret(given, secret):
+    """Whether given is the secret, in constant time; False for an empty secret, and for anything
+    hmac.compare_digest can't compare (it raises on non-ASCII text)."""
+    try:
+        return bool(secret) and hmac.compare_digest(given.encode("utf-8", "surrogatepass"), secret.encode("utf-8", "surrogatepass"))
+    except (AttributeError, TypeError, UnicodeError):
+        return False
+
+
+# Shared mode (LATEX_LIVE_USERS, a users file: load_users): this instance serves one paper to its
+# coauthors, each with a role (ROLES), who reach it through an authenticating reverse proxy on this
+# machine that names them in LATEX_LIVE_IDENTITY_HEADER, or with a personal link (their token). It
+# answers on this machine only (LoopbackServer), takes no part in the hub, serves exactly --port, and
+# builds without latexmk, each TeX run in a container of the TeX Live image (shared_build, tex-exec with
+# LATEX_LIVE_SANDBOX). It needs a state folder of its own (LATEX_LIVE_STATE), and on Linux, with the
+# identity header, the proxy's uid. Optional settings:
+# - LATEX_LIVE_PUBLIC_URL: the origin browsers use, e.g. https://paper.example.org or
+#   http://host.example:8443; POSTs must come from it, its host is allowed, and it is printed;
+# - LATEX_LIVE_PROXY_HOST: the exact Host the proxy sends (host or host:port); identity-header
+#   requests must carry it;
+# - LATEX_LIVE_PROXY_UID: trust the identity header only on connections from a socket of this uid;
+# - LATEX_LIVE_COMMIT=1: commit each user's saves and notes to git as theirs (commit_loop), once
+#   they have been quiet for LATEX_LIVE_COMMIT_IDLE seconds (60 by default).
+USERS_FILE = os.path.abspath(os.environ["LATEX_LIVE_USERS"]) if os.environ.get("LATEX_LIVE_USERS") else None  # (main changes into the paper root)
+SHARED = bool(USERS_FILE)
+PUBLIC_URL = os.environ.get("LATEX_LIVE_PUBLIC_URL", "").strip()
+IDENTITY_HEADER = os.environ.get("LATEX_LIVE_IDENTITY_HEADER", "").strip()
+PROXY_HOST = os.environ.get("LATEX_LIVE_PROXY_HOST", "").strip()
+HOST_RE = re.compile(r"(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)(?::[0-9]{1,5})?")  # a Host header's value
+LOOPBACK_NAMES = {"localhost", "127.0.0.1", "::1"}
+LOOPBACK_ORIGIN_RE = re.compile(r"http://(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?")  # (any port: forwards remap it)
+ROLES = ("viewer", "commenter", "editor", "owner")  # each may do what the ones before it may (least_role)
+USER_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,63}")  # (the proxy's name for a user)
+USER_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")  # (a personal link's secret, e.g. secrets.token_urlsafe(18))
+
+
+def public_origin(url):
+    """(origin, host name) of LATEX_LIVE_PUBLIC_URL, the origin as browsers send it (scheme://host,
+    plus :port unless it is the scheme's default); ValueError unless url is a bare http(s) origin."""
+    try:
+        parts = urllib.parse.urlsplit(url[:-1] if url.endswith("/") else url)
+        port = parts.port
+    except ValueError:
+        parts = None
+    if (not parts or parts.scheme not in ("http", "https") or not parts.hostname or "@" in parts.netloc
+            or parts.path or parts.query or parts.fragment):
+        raise ValueError(f"LATEX_LIVE_PUBLIC_URL must be an origin such as https://paper.example.org, not {url!r}")
+    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    default = {"http": 80, "https": 443}[parts.scheme]
+    return f"{parts.scheme}://{host}" + (f":{port}" if port and port != default else ""), parts.hostname
+
+
+SHARED_PROBLEMS = []  # (main stops on these in shared mode; forward.py imports this module, so not here)
+try:
+    PUBLIC_ORIGIN, PUBLIC_HOST = public_origin(PUBLIC_URL) if PUBLIC_URL else (None, None)
+except ValueError as e:
+    PUBLIC_ORIGIN = PUBLIC_HOST = None
+    SHARED_PROBLEMS.append(str(e))
+PROXY_UID = os.environ.get("LATEX_LIVE_PROXY_UID", "").strip() or None
+if PROXY_UID is not None and re.fullmatch(r"[0-9]{1,10}", PROXY_UID):
+    PROXY_UID = int(PROXY_UID)
+elif PROXY_UID is not None:
+    SHARED_PROBLEMS.append(f"LATEX_LIVE_PROXY_UID must be the number of the user the proxy runs as, not {PROXY_UID!r}")
+    PROXY_UID = None
+if PROXY_HOST and not HOST_RE.fullmatch(PROXY_HOST):
+    SHARED_PROBLEMS.append(f"LATEX_LIVE_PROXY_HOST must be a Host header's value (host or host:port), not {PROXY_HOST!r}")
+if IDENTITY_HEADER and not re.fullmatch(r"[A-Za-z0-9_-]+", IDENTITY_HEADER):
+    SHARED_PROBLEMS.append(f"LATEX_LIVE_IDENTITY_HEADER must be a header name, e.g. x-remote-user, not {IDENTITY_HEADER!r}")
+COMMIT = SHARED and os.environ.get("LATEX_LIVE_COMMIT", "").strip() == "1"
+if os.environ.get("LATEX_LIVE_COMMIT", "").strip() not in ("", "0", "1"):
+    SHARED_PROBLEMS.append(f"LATEX_LIVE_COMMIT must be 1 (or 0), not {os.environ['LATEX_LIVE_COMMIT']!r}")
+COMMIT_IDLE = os.environ.get("LATEX_LIVE_COMMIT_IDLE", "").strip() or "60"
+if re.fullmatch(r"[0-9]{1,6}(\.[0-9]+)?", COMMIT_IDLE):
+    COMMIT_IDLE = float(COMMIT_IDLE)
+else:
+    SHARED_PROBLEMS.append(f"LATEX_LIVE_COMMIT_IDLE must be a number of seconds, not {COMMIT_IDLE!r}")
+    COMMIT_IDLE = 60.0
+
+
+def load_users(path):
+    """The users file, checked: {id: {id, name, email, macro, role, token}}; ValueError (or OSError)
+    says what is wrong. The file is {"users": {"<id>": {"name", "email", "macro", "role", "token"}}}:
+    <id> is the user's name at the proxy, role one of ROLES (the only field needed), macro their note
+    macro without the backslash (to comment), token the secret of their personal link, and email the
+    one their edits are committed under."""
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    entries = data.get("users") if isinstance(data, dict) else None
+    if not isinstance(entries, dict):
+        raise ValueError('expected {"users": {"<id>": {"role": "editor", ...}, ...}}')
+    found, seen = {}, {"macro": {}, "token": {}}
+    for id_, entry in entries.items():
+        where = f"user {id_!r}"
+        if not USER_ID_RE.fullmatch(id_):
+            raise ValueError(f"{where}: an id is up to 64 letters, digits, '.', '_', '@' or '-'")
+        if not isinstance(entry, dict) or entry.get("role") not in ROLES:
+            raise ValueError(f"{where}: role must be one of {', '.join(ROLES)}")
+        fields = {key: entry.get(key) for key in ("name", "email", "macro", "token")}
+        for key in ("name", "email"):
+            value = fields[key]
+            if value is not None and (not isinstance(value, str) or not value.strip() or len(value) > 200
+                                      or re.search(r"[\x00-\x1f\x7f<>]", value)):
+                raise ValueError(f"{where}: {key} must be one line of text, without < or >")
+        if fields["macro"] is not None and not (isinstance(fields["macro"], str) and re.fullmatch(r"\\?[a-zA-Z]{1,40}", fields["macro"])):
+            raise ValueError(f'{where}: macro is the name of their note macro, e.g. "ab" for \\ab')
+        if fields["token"] is not None and not (isinstance(fields["token"], str) and USER_TOKEN_RE.fullmatch(fields["token"])):
+            raise ValueError(f"{where}: token must be 16 to 128 letters, digits, '-' or '_' (e.g. secrets.token_urlsafe(18))")
+        macro = fields["macro"] and fields["macro"].lstrip("\\")
+        for key, value in (("macro", macro), ("token", fields["token"])):
+            if value and value in seen[key]:
+                raise ValueError(f"{where} has the same {key} as user {seen[key][value]!r}")
+            if value:
+                seen[key][value] = id_
+        found[id_] = {"id": id_, "name": (fields["name"] or id_).strip(), "email": fields["email"] and fields["email"].strip(),
+                      "macro": macro, "role": entry["role"], "token": fields["token"]}
+    return found
+
+
+USERS = {"tried": None, "users": {}}  # the users file as last read, and the stat of the last try (users)
+USERS_LOCK = threading.Lock()
+
+
+def users():
+    """The users file's entries (load_users), read again whenever it changes, so adding someone needs
+    no restart. While it is broken or missing, the last good version stays (with one warning)."""
+    try:
+        st = os.stat(USERS_FILE)
+        stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
+    except OSError as e:
+        stamp = str(e)
+    with USERS_LOCK:
+        if stamp != USERS["tried"]:
+            USERS["tried"] = stamp
+            try:
+                USERS["users"] = load_users(USERS_FILE)
+                if os.stat(USERS_FILE).st_mode & 0o077:
+                    print(f"=== latex-live: other users can read {USERS_FILE} (it holds personal links' tokens): chmod 600 it",
+                          file=sys.stderr, flush=True)
+            except (OSError, ValueError) as e:
+                print(f"=== latex-live: {USERS_FILE}: {e}; still using the users as they were", file=sys.stderr, flush=True)
+        return USERS["users"]
+
+
+def principal(entry, via):
+    """Who a request comes from: a users-file entry without its token, plus via: how it was checked
+    ("owner-token", "token": a personal link, or "proxy": the trusted proxy's identity header)."""
+    return {**{key: value for key, value in entry.items() if key != "token"}, "via": via}
+
+
+def users_owner():
+    """The users file's entry with role owner (shared mode), else None."""
+    return next((u for u in users().values() if u["role"] == "owner"), None) if SHARED else None
+
+
+def owner_principal(via):
+    """The owner (whoever has the instance's token): the users file's entry with role owner, if there
+    is one, else a nameless stand-in (owner_name names it)."""
+    return principal(users_owner() or {"id": "owner", "name": None, "email": None, "macro": None, "role": "owner"}, via)
+
+
+def owner_name(server):
+    """The owner's name, for coauthors: from the users file, else git's user.name, else "the owner"."""
+    if entry := users_owner():
+        return entry["name"]
+    if server.git_name is None:
+        r = subprocess.run(["git", "-C", server.paper_root, "config", "user.name"], capture_output=True, text=True)
+        server.git_name = r.stdout.strip()
+    return server.git_name or "the owner"
+
+
+def least_role(method, path):
+    """The least role that may make a request in shared mode, or None for what no one may there (switch:
+    a shared preview serves one document); whatever is not listed is the owner's (open, instances,
+    papers, commit). Downloading the paper without its notes (export) or with its notes in the margin
+    (review), and the baselines that change highlights compare with, are reading it: each builds at
+    most once per build of the document or commit (start_export, start_review, base_status), and
+    starts only with a POST, whose Origin says it comes from the viewer's own page (a GET of the
+    downloads is answered 405 there, so that an old viewer says why). The checks quote the sources'
+    comments and the text in their false branches, which only editors see."""
+    if method == "GET" and path.startswith("/check/"):  # (the checks quote the sources' comments and hidden text)
+        return "editor"
+    if method == "GET" and path.startswith(READ_PATHS + ("/pdfjs/", "/codemirror/")):
+        return "viewer"
+    if method == "GET":
+        return {"/": "viewer", "/me": "viewer", "/docs": "viewer", "/forward": "viewer", "/synctex": "viewer",
+                "/viewer.html": "viewer", "/favicon.ico": "viewer", "/export": "viewer", "/review": "viewer", "/commits": "editor",
+                "/files": "editor", "/file": "editor"}.get(path, "owner")
+    if path == "/switch":
+        return None
+    return {"/note": "commenter", "/rebuild": "editor", "/diff": "editor", "/file": "editor", "/export": "viewer",
+            "/review": "viewer", "/baseline": "viewer"}.get(path, "owner")
+
+
+def at_least(user, role):
+    """Whether user (a principal) has role or one that may do more (ROLES)."""
+    return ROLES.index(user["role"]) >= ROLES.index(role)
+
+
+def allowed(user, method, path):
+    """Whether user (a principal) may make a request: as least_role says in shared mode; without it,
+    everyone is the owner, who may do everything."""
+    if not SHARED:
+        return True
+    need = least_role(method, path)
+    return need is not None and at_least(user, need)
+
+
+def me(server, user):
+    """GET me: who the viewer's user is and what they may do, so the viewer shows only that (without
+    shared mode: the owner, who may do everything). macroDefined: whether the paper defines the user's
+    note macro, without which a coauthor can't comment; openHost, in shared mode: whether the owner's
+    editor opens here (a service has none); download: whether they may download the builds made on
+    request, the paper without its notes (export) and with its notes in the margin (review), which
+    take the same role."""
+    defined = bool(user["macro"]) and user["macro"] in paper_note_kinds(server.paper_root, server.default_pdf)
+    can = lambda path: allowed(user, "POST", path)
+    return {"id": user["id"], "name": user["name"] or owner_name(server), "macro": user["macro"], "role": user["role"],
+            "shared": SHARED, "owner": owner_name(server), "macroDefined": defined,
+            "can": {"comment": can("/note") and (user["role"] == "owner" or defined), "edit": can("/file"),
+                    "rebuild": can("/rebuild"), "compare": can("/diff"), "switch": can("/switch"),
+                    "openHost": can("/open") and (not SHARED or editor_cli() is not None),
+                    "download": can("/export") and can("/review"), "checks": allowed(user, "GET", "/check/")}}
+
+
+def shared_pdfs(server):
+    """The PDFs a non-owner may ask for: the shared document's, and those derived from it."""
+    doc = server.default_pdf[:-4]
+    return {f"{doc}{suffix}.pdf" for suffix in ("", "-clean", "-diff", "-head", "-head-clean", "-push", "-push-clean", "-export",
+                                                "-review")}
+
+
+def host_kinds(host):
+    """What a Host header's value names, of "loopback", "public" (LATEX_LIVE_PUBLIC_URL's host, any
+    port) and "proxy" (exactly LATEX_LIVE_PROXY_HOST): an empty set for any other name, which a
+    shared instance refuses (a page on a DNS-rebinding name must not reach it)."""
+    m = HOST_RE.fullmatch(host.strip())
+    if not m:
+        return set()
+    name = m.group(1).lower().strip("[]")
+    kinds = {"loopback"} if name in LOOPBACK_NAMES else set()
+    if PUBLIC_HOST and name == PUBLIC_HOST:
+        kinds.add("public")
+    if PROXY_HOST and host.strip().lower() == PROXY_HOST.lower():
+        kinds.add("proxy")
+    return kinds
+
+
+def is_loopback(address):
+    """Whether an IP address is on this machine, IPv4-mapped ones too (::ffff:127.0.0.1, which older
+    Pythons don't count)."""
+    try:
+        ip = ipaddress.ip_address(address.split("%")[0])
+    except ValueError:
+        return False
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return ip.is_loopback or bool(mapped and mapped.is_loopback)
+
+
+def proc_net_address(ip, port):
+    """An address and port as Linux's /proc/net/tcp and tcp6 write them: hex, each 32-bit word of the
+    address in host byte order."""
+    raw = ip.packed
+    return "".join("%08X" % int.from_bytes(raw[i:i + 4], sys.byteorder) for i in range(0, len(raw), 4)) + ":%04X" % port
+
+
+def peer_uid(client, server):
+    """The uid of the local socket at the client's (address, port) that is connected to this server's
+    (address, port), from Linux's /proc/net/tcp6 and /proc/net/tcp; None if there is none (not Linux,
+    or the client is gone: a closed socket is no longer its owner's, and shows as root's). An IPv4
+    client (::ffff:a.b.c.d here) has an IPv4 socket, or an IPv6 one with mapped addresses."""
+    try:
+        (cip, cport), (sip, sport) = [(ipaddress.ip_address(pair[0].split("%")[0]), pair[1]) for pair in (client, server)]
+    except ValueError:
+        return None
+    tables = [("/proc/net/tcp6", cip, sip)]
+    if getattr(cip, "ipv4_mapped", None) and getattr(sip, "ipv4_mapped", None):
+        tables.insert(0, ("/proc/net/tcp", cip.ipv4_mapped, sip.ipv4_mapped))
+    for table, local, remote in tables:
+        try:
+            with open(table) as f:
+                text = f.read()
+        except OSError:
+            continue
+        key = f" {proc_net_address(local, cport)} {proc_net_address(remote, sport)} "
+        i = text.find(key)
+        while i >= 0:
+            cols = text[i:text.find("\n", i)].split()  # local, remote, state, queues, timer, retransmits, uid, timeout, inode
+            if len(cols) >= 9 and cols[8] != "0":
+                return int(cols[6])
+            i = text.find(key, i + 1)
+    return None
+
+
+POST_LIMIT, POST_LIMITS = 100_000, {"/file": 8_000_000}  # bytes of a POST body (the browser editor saves whole files)
+
+
+def content_length(headers, limit):
+    """(n, None) for a request body of n bytes (its Content-Length; none: 0), else (None, the status to
+    answer): 400 unless it is a single plain number, 413 if it is over limit."""
+    values = headers.get_all("Content-Length") or ["0"]
+    if len({v.strip() for v in values}) != 1 or not re.fullmatch(r"[0-9]{1,15}", values[0].strip()):
+        return None, 400
+    n = int(values[0].strip())
+    return (n, None) if n <= limit else (None, 413)
+
+
 class DualStackServer(http.server.ThreadingHTTPServer):
     address_family = socket.AF_INET6
 
     def server_bind(self):
         self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)  # accept IPv4 too
         super().server_bind()
+
+    def handle_error(self, request, client_address):
+        """Print what went wrong in a request, unless the client just left mid-answer (a reload cuts a
+        download short): that is no error, and its traceback would only clutter the log."""
+        if not isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            super().handle_error(request, client_address)
+
+
+class LoopbackServer(DualStackServer):
+    """A shared instance's server: on every interface, like the others (so 127.0.0.1 and [::1] both
+    work), but it drops a connection from another machine before reading anything: coauthors come
+    through the proxy, which runs here. At most CONNECTIONS connections at once (each holds a thread
+    until it ends or times out): past that, it drops new ones, which a public tunnel could otherwise
+    open without end."""
+    CONNECTIONS = 64
+
+    def server_activate(self):
+        self.slots, self.holding, self.slots_lock = threading.BoundedSemaphore(self.CONNECTIONS), set(), threading.Lock()
+        super().server_activate()
+
+    def verify_request(self, request, client_address):
+        return is_loopback(client_address[0])
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            return self.shutdown_request(request)
+        with self.slots_lock:
+            self.holding.add(request)
+        super().process_request(request, client_address)
+
+    def shutdown_request(self, request):
+        super().shutdown_request(request)
+        with self.slots_lock:
+            held = request in self.holding
+            self.holding.discard(request)
+        if held:
+            self.slots.release()
+
+
 STATIC = {"/viewer.html"}  # plus everything under /pdfjs/ and /codemirror/
-POST_LIMIT, POST_LIMITS = 100_000, {"/file": 8_000_000}  # bytes of a POST body (the browser editor saves whole files)
-
-
-def content_length(headers):
-    """A request's Content-Length; -1 when it is malformed."""
-    try:
-        return int(headers.get("Content-Length") or 0)
-    except ValueError:
-        return -1
+READ_PATHS = ("/pdf/", "/status/", "/outline/", "/notes/", "/check/", "/graphics/", "/margin/", "/floats/", "/authors/")
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -168,18 +517,102 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, directory=HERE, **kwargs)
 
     def authorize(self, query):
-        """Every client needs ?t=TOKEN once, then the cookie (forwarded traffic arrives via loopback too)."""
-        self.set_cookie = False
-        token = self.server.token
-        if not token:  # (never: load_token refuses an empty one)
-            return False
+        """Who is asking (a principal), or None, with self.denial saying why (deny). Every client needs
+        ?t=TOKEN once, then the cookie (forwarded traffic arrives via loopback too). In shared mode, a
+        user's own token works the same way, or the trusted proxy names the user (proxy_user); and the
+        Host must be one of this instance's names (host_kinds)."""
+        self.set_cookie, self.hosts = None, set()
+        self.denial = (403, "open your link again (the one with ?t= in it)", None)
+        if SHARED:  # (a browser with an old or revoked personal link, or none, gets a page that says what to do)
+            self.denial = (*self.denial[:2], lambda: bad_link_page(owner_name(self.server)))
+            hosts = self.headers.get_all("Host") or []
+            self.hosts = host_kinds(hosts[0]) if len(hosts) == 1 else set()
+            if not self.hosts:
+                self.denial = (403, "this preview does not answer to that host name", None)
+                return None
+            if IDENTITY_HEADER and self.headers.get_all(IDENTITY_HEADER) is not None:
+                return self.proxy_user()  # (never by token or cookie: they stay out of the proxy's traffic)
         cookie = http.cookies.SimpleCookie(self.headers.get("Cookie", "")).get("latex_live")
-        if cookie and hmac.compare_digest(cookie.value, token):
+        cookie = cookie.value if cookie else ""
+        for value in (cookie, query.get("t", [""])[0]):
+            user = self.token_user(value)
+            if user:
+                if value != cookie:
+                    self.set_cookie = value
+                return user
+        return None
+
+    def token_user(self, value):
+        """The principal a token is for: the owner (the instance's token), or in shared mode the user
+        whose personal link it is; else None."""
+        if not value:
+            return None
+        if same_secret(value, self.server.token):  # (never with an empty token: same_secret refuses one, as load_token does)
+            return owner_principal("owner-token")
+        for entry in users().values() if SHARED else ():
+            if entry["token"] and same_secret(value, entry["token"]):
+                return principal(entry, "token")
+        return None
+
+    def proxy_user(self):
+        """The user the trusted proxy names in IDENTITY_HEADER (exactly once), or None. Any program on
+        this machine can connect and send that header, so it counts only with the proxy's Host
+        (LATEX_LIVE_PROXY_HOST) and from a socket of the proxy's uid (LATEX_LIVE_PROXY_UID), where set."""
+        values = self.headers.get_all(IDENTITY_HEADER)
+        name = values[0].strip() if len(values) == 1 else ""
+        entry = None
+        if not USER_ID_RE.fullmatch(name):
+            self.denial = (403, f"expected one user name in {IDENTITY_HEADER}", None)
+        elif PROXY_HOST and "proxy" not in self.hosts:
+            self.denial = (403, f"{IDENTITY_HEADER} counts only from the proxy (its Host)", None)
+        elif PROXY_UID is not None and peer_uid(self.client_address, self.connection.getsockname()) != PROXY_UID:
+            self.denial = (403, f"{IDENTITY_HEADER} counts only from the proxy (its uid)", None)
+        elif not (entry := users().get(name)):
+            owner = owner_name(self.server)
+            text = f"You are signed in as {name}, but this preview isn't shared with you. Ask {owner} to add you."
+            self.denial = (403, text, unshared_page(name, owner))
+        return entry and principal(entry, "proxy")
+
+    def deny(self):
+        """Answer a request that authorize turned down: 403, as a page for a browser where there is one
+        (made only now, if it is a function)."""
+        status, text, page = self.denial
+        page = page() if callable(page) else page
+        if page and "text/html" in self.headers.get("Accept", ""):
+            return self.send_html(page, status)
+        if page:
+            return self.send_text(status, text)
+        self.send_error(status, text)
+
+    def origin_allowed(self):
+        """Whether a POST in shared mode comes from the viewer's own page, so that no other site can make
+        a coauthor's browser act: Origin is the public one when the Host is the public or the proxy's,
+        a loopback one (any port: forwards remap it) when the Host is a loopback name. Without Origin,
+        only from a program with a token (curl, check.py), at a loopback name."""
+        origins = self.headers.get_all("Origin") or []
+        if not origins:
+            return "loopback" in self.hosts and self.principal["via"] != "proxy"
+        origin = origins[0].strip() if len(origins) == 1 else ""
+        if self.hosts & {"public", "proxy"} and PUBLIC_ORIGIN and origin == PUBLIC_ORIGIN:
             return True
-        if hmac.compare_digest(query.get("t", [""])[0], token):
-            self.set_cookie = True
+        return "loopback" in self.hosts and bool(LOOPBACK_ORIGIN_RE.fullmatch(origin))
+
+    def permitted(self, method, path, query):
+        """Whether the principal's role allows the request (allowed); non-owners see only the shared
+        document (shared_pdfs). Answers 403 if not. (Without shared mode everyone is the owner.)"""
+        user = self.principal
+        if not allowed(user, method, path):
+            need = least_role(method, path)
+            self.send_json(403, {"error": "a shared preview serves one document" if need is None
+                                 else f"this takes the {need} role here (yours is {user['role']})"})
+            return False
+        if user["role"] == "owner":
             return True
-        return False
+        name = path.split("/", 2)[2] if path.startswith(READ_PATHS) else query.get("file", [None])[0] if path == "/synctex" else None
+        if name is not None and name not in shared_pdfs(self.server):
+            self.send_json(403, {"error": f"this preview shares {self.server.default_pdf} only"})
+            return False
+        return True
 
     def do_HEAD(self):  # (not served: SimpleHTTPRequestHandler's would skip the token)
         self.send_error(405)
@@ -193,34 +626,40 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return False
 
     def end_headers(self):
-        if getattr(self, "set_cookie", False):
-            self.send_header("Set-Cookie", f"latex_live={self.server.token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000")
+        if getattr(self, "set_cookie", None):  # (Secure where the browser reaches it over https: shared mode's public URL)
+            secure = "; Secure" if SHARED and (PUBLIC_ORIGIN or "").startswith("https:") and "loopback" not in getattr(self, "hosts", ()) else ""
+            self.send_header("Set-Cookie", f"latex_live={self.set_cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000{secure}")
         if self.path.startswith("/viewer.html"):  # revalidate, so an update shows on the next reload
             self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if SHARED:  # (no other site may frame the viewer, nor learn its URL; VS Code's Simple Browser frames an owner's own)
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+            self.send_header("Referrer-Policy", "no-referrer")
         super().end_headers()
 
     def do_GET(self):
         url = urllib.parse.urlsplit(self.path)
         path = urllib.parse.unquote(url.path)
-        if not self.authorize(urllib.parse.parse_qs(url.query)):
-            return self.send_error(403, f"open the URL with ?t=<token> from {TOKEN_FILE}")
-        if self.misdirected():
+        query = urllib.parse.parse_qs(url.query)
+        self.principal = self.authorize(query)
+        if not self.principal:
+            return self.deny() if SHARED else self.send_error(403, f"open the URL with ?t=<token> from {TOKEN_FILE}")
+        if self.misdirected() or not self.permitted("GET", path, query):
             return
         if path == "/":
             self.send_response(302)
             self.send_header("Location", f"viewer.html?file={urllib.parse.quote(self.server.default_pdf)}")  # (relative: also under the hub)
             self.end_headers()
-        elif path.startswith(("/pdf/", "/status/", "/outline/", "/notes/", "/check/", "/graphics/", "/margin/", "/floats/",
-                              "/authors/")):
+        elif path.startswith(READ_PATHS):
             name = path.split("/", 2)[2]
             if not name.endswith(".pdf") or os.path.basename(name) != name:
                 return self.send_error(404)
             pdf = pdf_path(self.server.paper_root, name)
             doc_pdf = re.sub(r"(-head|-push)?-(clean|diff|head|push|export|review)\.pdf$", ".pdf", name)  # the document a derived PDF belongs to
-            query = urllib.parse.parse_qs(url.query)
             if path.startswith("/status/"):  # (?base=push: a viewer shows changes since the last push; ?open=: its editor's file)
                 info = status(self.server, name, query.get("base") == ["push"])
-                if "open" in query:
+                if "open" in query and allowed(self.principal, "GET", "/file"):
                     info["source"] = source_status(self.server, query["open"][0])
                 body = json.dumps(info).encode()
             elif path.startswith("/outline/"):
@@ -230,40 +669,38 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             elif path.startswith("/authors/"):
                 body = json.dumps(note_authors(self.server.paper_root, doc_pdf)).encode()
             elif path.startswith("/check/"):
-                body = json.dumps(checks(self.server, doc_pdf)).encode()
+                body = json.dumps(cached_checks(self.server, doc_pdf)).encode()
             elif path.startswith("/graphics/"):
                 body = json.dumps(graphics(self.server.paper_root, doc_pdf)).encode()
             elif path.startswith("/margin/"):
                 body = json.dumps(margin_notes(self.server.paper_root, doc_pdf)).encode()
             elif path.startswith("/floats/"):
                 body = json.dumps(floats(self.server.paper_root, doc_pdf, name.endswith("-clean.pdf"))).encode()
-            elif os.path.isfile(pdf):
-                with open(pdf, "rb") as f:
-                    body = f.read()
-            else:
+            elif (body := read_pdf(pdf)) is None:
                 return self.send_error(404)
             self.send_response(200)
             self.send_header("Content-Type", "application/pdf" if path.startswith("/pdf/") else "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(body)
+            self.write_body(body)
         elif path == "/me":
-            self.send_json(200, me())
-        elif path == "/synctex":  # (json=1: just where it is, for the browser editor; else it opens the editor here)
-            query = urllib.parse.parse_qs(url.query)
-            if query.get("json") == ["1"]:
+            self.send_json(200, me(self.server, self.principal))
+        elif path == "/synctex":  # (JSON for the browser; without shared mode and json=1 it opens the editor here)
+            if SHARED or query.get("json") == ["1"]:
                 self.send_json(*synctex_lookup(self.server, query))
             else:
                 self.send_text(*synctex_edit(self.server.paper_root, query))
         elif path == "/files":
             self.send_json(200, files_listing(self.server))
         elif path == "/file":
-            self.send_json(*file_request(self.server, urllib.parse.parse_qs(url.query)))
+            self.send_json(*file_request(self.server, query))
+        elif path in ("/open", "/diff", "/switch", "/export", "/review") and SHARED:  # (only as POST, which checks the Origin)
+            self.send_error(405, "use POST")
         elif path == "/open":
-            self.send_text(*open_source(self.server.paper_root, urllib.parse.parse_qs(url.query)))
+            self.send_text(*open_source(self.server.paper_root, query))
         elif path == "/forward":
-            self.send_json(*forward_request(self.server.paper_root, urllib.parse.parse_qs(url.query)))
+            self.send_json(*forward_request(self.server, query))
         elif path == "/commits":
             self.send_json(200, commits(self.server.paper_root))
         elif path == "/export":
@@ -271,43 +708,76 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif path == "/review":
             self.send_json(*start_review(self.server))
         elif path == "/diff":
-            self.send_json(*start_diff(self.server, urllib.parse.parse_qs(url.query)))
+            self.send_json(*start_diff(self.server, query.get("rev", [""])[0]))
         elif path == "/instances":
             self.send_json(200, {"self": os.getpid(), "instances": instances()})
         elif path == "/papers":
             self.send_html(papers_page(self.server, self.headers.get("Host", "localhost")))
-        elif path == "/docs":
-            self.send_json(200, {"doc": self.server.default_pdf[:-4], "docs": root_docs(self.server.paper_root)})
+        elif path == "/docs":  # (a coauthor sees only the shared document)
+            docs = root_docs(self.server.paper_root) if self.principal["role"] == "owner" else [self.server.default_pdf[:-4]]
+            self.send_json(200, {"doc": self.server.default_pdf[:-4], "docs": docs})
         elif path == "/switch":
-            self.send_json(*request_switch(self.server, urllib.parse.parse_qs(url.query)))
+            self.send_json(*request_switch(self.server, query))
+        elif path == "/favicon.ico":  # (no icon; nothing to refuse either: browsers ask on every page)
+            self.send_response(204)
+            self.end_headers()
         elif path in STATIC or (path.startswith(("/pdfjs/", "/codemirror/")) and ".." not in path and not path.endswith("/")):
             super().do_GET()
         else:
             self.send_error(404)
 
     def do_POST(self):
-        """Actions (POST /note, /file, /rebuild). Only with the cookie, which SameSite=Strict keeps off
-        other sites' requests, and a JSON body, which other sites can't send without asking first."""
+        """Actions (POST /note, /file, /rebuild, /switch, /diff, /open, /commit), and the builds made on
+        request (POST /export, /review, and in shared mode /baseline). Only with the cookie, which SameSite=Strict keeps off other
+        sites' requests, and a JSON body, which other sites can't send without asking first; in shared
+        mode, also only from the viewer's own page (origin_allowed), and as the role allows. The body is
+        read before any refusal, so that the answer isn't lost to a reset."""
         path = urllib.parse.urlsplit(self.path).path
-        if not self.authorize({}):
-            return self.send_error(403, "open the viewer URL with ?t=<token> first")
+        self.principal = self.authorize({})
+        if not self.principal:
+            return self.deny() if SHARED else self.send_error(403, "open the viewer URL with ?t=<token> first")
         if self.misdirected():
+            return
+        length, error = content_length(self.headers, POST_LIMITS.get(path, POST_LIMIT))
+        if error:
+            return self.send_error(error)
+        try:
+            data = self.rfile.read(length)
+        except OSError:  # (the client stopped sending: the timeout)
+            return
+        if SHARED and not self.origin_allowed():
+            return self.send_error(403, "not from this preview's own page (Origin)")
+        if not self.permitted("POST", path, {}):
             return
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self.send_error(415, "expected a JSON body")
-        length = content_length(self.headers)
-        if not 0 <= length <= POST_LIMITS.get(path, POST_LIMIT):
-            return self.send_error(413 if length > 0 else 400)
         try:
-            req = json.loads(self.rfile.read(length) or b"{}")
+            req = json.loads(data or b"{}")
         except (ValueError, RecursionError):
             return self.send_error(400, "bad JSON")
         if path == "/note" and isinstance(req, dict):
-            self.send_json(*note_request(self.server, req))
+            self.send_json(*note_request(self.server, req, self.principal))
         elif path == "/file" and isinstance(req, dict):
-            self.send_json(*save_request(self.server, req))
+            self.send_json(*save_request(self.server, req, self.principal))
+        elif path == "/commit":
+            self.send_json(*commit_request(self.server))
+        elif path == "/rebuild" and SHARED:
+            self.send_json(*shared_rebuild_request(self.server, self.principal))
         elif path == "/rebuild":
             self.send_json(*on_main_thread(self.server, rebuild_doc))
+        elif path == "/baseline" and SHARED and isinstance(req, dict):
+            self.send_json(*baseline_request(self.server, req.get("kind")))
+        elif path == "/switch" and isinstance(req, dict):
+            self.send_json(*request_switch(self.server, json_query(req, "doc")))
+        elif path == "/diff" and isinstance(req, dict):
+            rev = json_query(req, "rev").get("rev", [""])[0]
+            self.send_json(*start_diff(self.server, rev, any_rev=self.principal["role"] == "owner"))
+        elif path == "/open" and isinstance(req, dict):
+            self.send_text(*open_source(self.server.paper_root, json_query(req, "file", "line")))
+        elif path == "/export":
+            self.send_json(*start_export(self.server))
+        elif path == "/review":
+            self.send_json(*start_review(self.server))
         else:
             self.send_error(404)
 
@@ -318,16 +788,27 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        self.write_body(body)
 
-    def send_html(self, text):
+    def write_body(self, body):
+        """Write a response body in parts of 256 KB: the socket timeout bounds each part's write, not a
+        whole PDF or source file on a slow link. A client that leaves meanwhile (a reload cuts a PDF's
+        download short) just stops it."""
+        view = memoryview(body)
+        try:
+            for i in range(0, len(body), 1 << 18):
+                self.wfile.write(view[i:i + (1 << 18)])
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+
+    def send_html(self, text, status=200):
         body = text.encode()
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        self.write_body(body)
 
     def send_text(self, status, text):
         body = text.encode()
@@ -335,10 +816,36 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        self.write_body(body)
 
     def log_message(self, *args):  # the viewer polls twice a second; keep the terminal clean
         pass
+
+
+def json_query(req, *keys):
+    """A JSON body's keys as parse_qs gives a query string's (strings and integers), for the handlers
+    that GET requests share."""
+    return {key: [str(req[key])] for key in keys if isinstance(req.get(key), (str, int)) and not isinstance(req.get(key), bool)}
+
+
+PAGE_STYLE = "<style>body { font: 15px system-ui, sans-serif; background: #323639; color: #eee; margin: 3em; max-width: 40em; }</style>"
+
+
+def unshared_page(name, owner):
+    """The page for someone the proxy signed in whom the users file doesn't list."""
+    return f"""<!doctype html><meta charset="utf-8"><title>latex-live: not shared with you</title>
+{PAGE_STYLE}
+<h2>This preview isn't shared with you</h2>
+<p>You are signed in as <b>{html.escape(name)}</b>, but this preview isn't shared with you. Ask {html.escape(owner)} to add you.</p>"""
+
+
+def bad_link_page(owner):
+    """The page for a browser in shared mode without a link that works: an old or revoked personal link,
+    or none (it says nothing about the link itself, nor where anything is)."""
+    return f"""<!doctype html><meta charset="utf-8"><title>latex-live: this link doesn't work</title>
+{PAGE_STYLE}
+<h2>This link doesn't work</h2>
+<p>It may be old, or your access may have ended. Ask {html.escape(owner)} for a new one.</p>"""
 
 
 def image_pulled():
@@ -366,19 +873,30 @@ def image_problem(server):
     return server.image_note
 
 
+# At most this many SyncTeX runs and builds made on request at once (run_synctex, the downloads, the
+# baselines, the diff): each request may start one, often a container, and in shared mode any coauthor
+# can send requests, so they must not pile up on the owner's machine.
+SPAWNS = threading.BoundedSemaphore(4)
+
+
 def run_synctex(paper_root, *args):
     """Run `synctex <args>` and return its result records (dicts of the Key:value lines).
 
     Without a synctex on the host, it runs in the TeX Live image (~0.2 s); with neither, there are
-    no records (synctex_unavailable says why).
+    no records (synctex_unavailable says why). In shared mode always in the image, confined: SyncTeX
+    parses the build's files, which the paper's TeX writes. At most four at once (SPAWNS), each for
+    up to a minute.
     """
     cmd = ["synctex", *args]
-    if not shutil.which("synctex"):
+    if SHARED or not shutil.which("synctex"):
         if not shutil.which("podman"):
             return []
-        cmd = ["podman", "run", "--rm", "--pull=never", "--network=none", "--security-opt", "label=disable",
-               "-v", f"{paper_root}:{paper_root}", "-w", paper_root, TEXLIVE_IMAGE, *cmd]
-    out = subprocess.run(cmd, capture_output=True, text=True).stdout
+        cmd = [*container_argv(paper_root), *cmd]
+    try:
+        with SPAWNS:
+            out = subprocess.run(cmd, capture_output=True, text=True, cwd=paper_root, timeout=60).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
     records = []
     for line in out.splitlines():
         key, sep, value = line.partition(":")
@@ -394,9 +912,30 @@ def job_file(paper_root, pdf_name, ext):
     return os.path.join(paper_root, BUILD, f"{pdf_name[:-4]}-live{ext}")
 
 
+def fls_file(paper_root, pdf_name):
+    """The list of files the last successful pass of the published <doc>.pdf read: the copy of its
+    recorder file (.fls) kept after each successful pass (latex_report.py, or shared_build),
+    build/<doc>-live.fls.done. pdflatex rewrites the .fls itself during every pass, so mid-build it
+    lacks the files read later (notes, note macros, the editor's files would come and go); before the
+    first successful pass, it is all there is."""
+    done = job_file(paper_root, pdf_name, ".fls.done")
+    return done if os.path.isfile(done) else job_file(paper_root, pdf_name, ".fls")
+
+
 def clean_file(paper_root, pdf_name, ext):
     """build/clean/<doc>-clean<ext>: the notes-free pass (latex_report.py; its PDF moves to build/)."""
     return os.path.join(paper_root, BUILD, "clean", f"{pdf_name[:-4]}-clean{ext}")
+
+
+def read_pdf(path):
+    """A PDF's bytes, for /pdf/, or None if there is none. In shared mode, never through a symbolic link:
+    the build folder is written in containers that run the coauthors' sources."""
+    try:
+        fd = os.open(path, os.O_RDONLY | (os.O_NOFOLLOW if SHARED else 0))
+    except OSError:
+        return None
+    with open(fd, "rb") as f:
+        return f.read() if stat.S_ISREG(os.fstat(f.fileno()).st_mode) else None
 
 
 def pdf_path(paper_root, name):
@@ -407,10 +946,14 @@ def pdf_path(paper_root, name):
     return os.path.join(paper_root, PUBLISH, name)
 
 
+BIB_SPAN_LOCK = threading.Lock()  # (bib_span: one lookup per build, however many viewers poll at once)
+
+
 def bib_span(paper_root, files, cache={}):
     """Where the bibliography starts and ends: ({"page", "y"}, {"page", "y"}) (y in points
     from the page top), or None. Maps the first and last lines of the .bbl to the PDF, cached
-    per build. files = (synctex_gz, bbl, pdf).
+    per build (each viewer's status poll asks, and a lookup may take several SyncTeX runs).
+    files = (synctex_gz, bbl, pdf).
     """
     synctex_gz, bbl, pdf = files
     try:
@@ -420,13 +963,15 @@ def bib_span(paper_root, files, cache={}):
     except OSError:
         return None
     if cache.get(synctex_gz, (None,))[0] != mtime:
-        def where(line):
-            rec = next((r for r in run_synctex(paper_root, "view", "-i", f"{line}:0:{bbl}", "-o", pdf) if "Page" in r), None)
-            return rec and {"page": int(rec["Page"]), "x": float(rec["h"]), "y": float(rec["v"]) - float(rec["H"])}
-        start = where(1)
-        # The last lines (\end{thebibliography}, blank ones) may have no boxes: walk back to one that does.
-        end = next(filter(None, (where(line) for line in range(last, max(1, last - 8), -1))), None) if start else None
-        cache[synctex_gz] = (mtime, start and (start, end))
+        with BIB_SPAN_LOCK:
+            if cache.get(synctex_gz, (None,))[0] != mtime:  # (another request may have looked it up meanwhile)
+                def where(line):
+                    rec = next((r for r in run_synctex(paper_root, "view", "-i", f"{line}:0:{bbl}", "-o", pdf) if "Page" in r), None)
+                    return rec and {"page": int(rec["Page"]), "x": float(rec["h"]), "y": float(rec["v"]) - float(rec["H"])}
+                start = where(1)
+                # The last lines (\end{thebibliography}, blank ones) may have no boxes: walk back to one that does.
+                end = next(filter(None, (where(line) for line in range(last, max(1, last - 8), -1))), None) if start else None
+                cache[synctex_gz] = (mtime, start and (start, end))
     return cache[synctex_gz][1]
 
 
@@ -559,11 +1104,27 @@ def page_limit(server, pdf_name):
     return next((n for pattern, n in VENUE_PAGE_LIMITS.items() if any(re.fullmatch(pattern, p) for p in packages)), None)
 
 
+def forward_asked(found):
+    """forward.py's request (build/<job>.forward.json: {seq, page, x, y, w, h, clean?}) as read, or in
+    shared mode only its numbers (the paper's TeX can write that file too), or None if it has none."""
+    if not SHARED or found is None:
+        return found
+    numbers = lambda d: {k: d[k] for k in ("seq", "page", "x", "y", "w", "h")
+                         if isinstance(d, dict) and type(d.get(k)) in (int, float)}
+    target = numbers(found)
+    if len(target) != 6:
+        return None
+    clean = numbers(found.get("clean"))
+    return {**target, **({"clean": clean} if len(clean) == 5 else {})}
+
+
 def status(server, pdf_name, push=False):
     """Everything the viewer polls for: PDF version, build state, forward-search target, page limit
     and layout (and the notes-free build's PDF, to measure it too), which document the server
     builds (viewers of another one switch to it), and the change baselines (push: a viewer shows
-    changes since the last push, so that baseline gets built)."""
+    changes since the last push, so that baseline gets built). In shared mode a GET builds nothing
+    (the viewer asks for a baseline with POST /baseline), and the build's state, status and what it
+    published come from shared_build, not from build/, where the paper's TeX writes."""
     root = server.paper_root
     pdf = pdf_path(root, pdf_name)
     version = str(mtime(pdf)) if os.path.isfile(pdf) else None
@@ -574,16 +1135,16 @@ def status(server, pdf_name, push=False):
     limit = page_limit(server, pdf_name)
     info = {
         "version": version,
-        "building": build_running(root, pdf_name),
-        "build": read_json(job_file(root, pdf_name, ".status.json")),
-        "forward": read_json(job_file(root, pdf_name, ".forward.json")),
+        "building": build_running(server, pdf_name),
+        "build": build_status(server, pdf_name),
+        "forward": forward_asked(read_json(job_file(root, pdf_name, ".forward.json"))),
         "pageLimit": limit,
         "refs": refs_start(root, pdf_name),  # where the main text ends (page badge, space hints)
         "layout": layout(root, pdf_name),
         "doc": server.default_pdf,
     }
-    info["cleanBuild"] = read_json(clean_file(root, pdf_name, ".status.json"))  # (the notes-free pass)
-    published = read_json(job_file(root, pdf_name, ".published.json"))  # what latex_report.py last published
+    info["cleanBuild"] = build_status(server, pdf_name, clean=True)  # (the notes-free pass)
+    published = server.shared["published"] if SHARED else read_json(job_file(root, pdf_name, ".published.json"))  # (what was published last)
     if published and os.path.isfile(pdf):
         st = os.stat(pdf)
         if [st.st_mtime_ns, st.st_size] != [published.get("mtime"), published.get("size")]:
@@ -591,8 +1152,8 @@ def status(server, pdf_name, push=False):
     clean_pdf = pdf_path(root, pdf_name[:-4] + "-clean.pdf")
     if os.path.isfile(clean_pdf):
         info["clean"] = {"version": str(mtime(clean_pdf)), "refs": refs_start(root, pdf_name, clean=True)}
-    info["head"] = base_status(server, pdf_name, "head")
-    info["push"] = base_status(server, pdf_name, "push", build=push)
+    info["head"] = base_status(server, pdf_name, "head", build=not SHARED)
+    info["push"] = base_status(server, pdf_name, "push", build=push and not SHARED)
     info["texImage"] = image_problem(server)
     info["latexLive"] = {"version": VERSION, "updated": code_updated()}
     return info
@@ -643,8 +1204,7 @@ def project_macros(paper_root, fls):
                      for l in f if l.startswith("INPUT ") and l.rstrip().endswith(".tex")]
     except OSError:
         return macros
-    paths = [p for p in dict.fromkeys(paths)
-             if p.startswith(os.path.join(paper_root, "")) and not p.startswith(os.path.join(paper_root, BUILD, ""))]
+    paths = [p for p in dict.fromkeys(paths) if in_paper(paper_root, p)]
     done = set()
 
     def read(path, define):
@@ -751,7 +1311,7 @@ def toc_outline(paper_root, pdf_name, clean=False):
                 lines = contents_lines(fh.read())
         except OSError:
             return []
-    macros = project_macros(paper_root, job_file(paper_root, pdf_name, ".fls"))
+    macros = project_macros(paper_root, fls_file(paper_root, pdf_name))
     entries = []
     for kind, title, page, dest in lines:
         if kind in TOC_LEVELS:
@@ -829,7 +1389,7 @@ def floats(paper_root, pdf_name, clean=False):
     if not os.path.exists(synctex_gz):
         return []
     boxes = synctex_boxes(synctex_gz)
-    macros = project_macros(paper_root, job_file(paper_root, pdf_name, ".fls"))
+    macros = project_macros(paper_root, fls_file(paper_root, pdf_name))
     area = layout(paper_root, pdf_name) or {"W": 612, "H": 792, "top": 72, "bottom": 720}
     tall = area["bottom"] - area["top"] - 1  # (no float is as tall as the text block)
     listed = {}
@@ -845,7 +1405,7 @@ def floats(paper_root, pdf_name, clean=False):
     except OSError:
         label_nums = {}
     found, taken = [], {"figure": 0, "table": 0}
-    for path in project_tex_files(paper_root, job_file(paper_root, pdf_name, ".fls")):
+    for path in project_tex_files(paper_root, fls_file(paper_root, pdf_name)):
         text, open_at = read_tex(path), []
         for m in FLOAT_ENV_RE.finditer(text):
             if m.group(1) == "begin":
@@ -910,20 +1470,71 @@ def forward_target(paper_root, src, line, clean=False):
     return None
 
 
-def forward_request(paper_root, query):
-    """/forward?file=<relative path>&line=N[&clean=1]: forward search for the viewer's lists."""
+def shared_result(server, key, compute):
+    """compute()'s result for key, computed once: a request for the same key while it runs waits for it,
+    and later ones reuse it (keys hold what the result depends on, e.g. the build's version). This keeps
+    many identical requests, e.g. from several open viewers, to one container run. At most 512 kept."""
+    with server.results_lock:
+        entry = server.results.get(key)
+        mine = entry is None
+        if mine:
+            if len(server.results) >= 512:
+                server.results.clear()
+            entry = server.results[key] = {"done": threading.Event()}
+    if not mine:
+        entry["done"].wait()
+        if "value" in entry:
+            return entry["value"]
+        return compute()  # (the first one failed)
+    try:
+        entry["value"] = compute()
+    except BaseException:
+        with server.results_lock:
+            if server.results.get(key) is entry:
+                del server.results[key]
+        raise
+    finally:
+        entry["done"].set()
+    return entry["value"]
+
+
+def forward_request(server, query):
+    """/forward?file=<relative path>&line=N[&clean=1]: forward search for the viewer's lists. The same
+    lookup is made once per build: requests for it while it runs wait for its answer (shared_result)."""
+    paper_root = server.paper_root
     try:
         src, line = os.path.realpath(os.path.join(paper_root, query["file"][0])), int(query["line"][0])
     except (KeyError, ValueError):
         return 400, {"error": "expected file, line"}
     if not src.startswith(os.path.realpath(paper_root) + os.sep):
         return 404, {"error": "not a file in the paper"}
-    found = forward_target(paper_root, src, line, clean=query.get("clean") == ["1"])
+    clean = query.get("clean") == ["1"]
+    pattern = os.path.join("clean", "*-clean.synctex.gz") if clean else "*-live.synctex.gz"
+    builds = tuple(sorted((path, mtime(path)) for path in glob.glob(os.path.join(glob.escape(os.path.join(paper_root, BUILD)), pattern))))
+    found = shared_result(server, ("forward", src, line, clean, builds), lambda: forward_target(paper_root, src, line, clean))
     if found:
         return 200, found[1]
     if missing := synctex_unavailable():
         return 503, {"error": missing}
     return 404, {"error": f"{query['file'][0]}:{line} is not in the PDF"}
+
+
+def in_paper(paper_root, path):
+    """Whether path (absolute, normalized) is one of the paper's own files: in the paper root, and not in
+    the build directory, whose files the build generates. (The .fls a build writes can name any path.)
+    In shared mode, also once symbolic links are resolved: coauthors write notes into these files, so a
+    link to a file elsewhere is not one (the owner's own previews keep such links, as they always did);
+    and not a dot file or a file in a dot folder, which TeX doesn't read there (openin_any=p), however a
+    file list that the paper's TeX forged names it."""
+    if not path.startswith(os.path.join(paper_root, "")) or path.startswith(os.path.join(paper_root, BUILD, "")):
+        return False
+    if not SHARED:
+        return True
+    real, root = os.path.realpath(path), os.path.realpath(paper_root)
+    dotted = any(part.startswith(".") for rel in (os.path.relpath(path, paper_root), os.path.relpath(real, root))
+                 for part in rel.split(os.sep))
+    return (real.startswith(os.path.join(root, "")) and not real.startswith(os.path.join(os.path.realpath(os.path.join(root, BUILD)), ""))
+            and not dotted)
 
 
 def project_tex_files(paper_root, fls):
@@ -933,9 +1544,8 @@ def project_tex_files(paper_root, fls):
             paths = [os.path.normpath(l[6:].strip()) for l in f if l.startswith("INPUT ") and l.rstrip().endswith(".tex")]
     except OSError:
         return []
-    root = os.path.join(paper_root, "")
-    paths = [os.path.join(paper_root, p) for p in dict.fromkeys(paths)]
-    return [p for p in paths if p.startswith(root) and not p.startswith(os.path.join(paper_root, BUILD, ""))]
+    paths = [os.path.normpath(os.path.join(paper_root, p)) for p in dict.fromkeys(paths)]
+    return [p for p in dict.fromkeys(paths) if in_paper(paper_root, p)]
 
 
 def read_tex(path):
@@ -982,12 +1592,12 @@ def notes(paper_root, pdf_name):
     project's show/hide switch), e.g. \\todo and the per-author \\eb, \\ch; the author label
     is the bold "XX:" in the body.
     """
-    files = project_tex_files(paper_root, job_file(paper_root, pdf_name, ".fls"))
+    files = project_tex_files(paper_root, fls_file(paper_root, pdf_name))
     texts = {path: read_tex(path) for path in files}
     kinds = note_kinds(texts.values())
     if not kinds:
         return []
-    macros = project_macros(paper_root, job_file(paper_root, pdf_name, ".fls"))
+    macros = project_macros(paper_root, fls_file(paper_root, pdf_name))
     found = []
     for path, text in texts.items():
         for m in note_use_re(kinds).finditer(text):
@@ -1040,7 +1650,7 @@ def margin_notes(paper_root, pdf_name):
     the viewer finds in the page text to put the note's caret between two words.
     """
     synctex_gz = clean_file(paper_root, pdf_name, ".synctex.gz")
-    fls = job_file(paper_root, pdf_name, ".fls")
+    fls = fls_file(paper_root, pdf_name)
     if not os.path.exists(synctex_gz):
         return []
     points = synctex_points(synctex_gz)
@@ -1193,10 +1803,14 @@ def note_fields(text, m, end):
             "protected": bool(PROTECTED_RE and PROTECTED_RE.search(text[m.start():end]))}
 
 
+def paper_note_kinds(paper_root, pdf_name):
+    """{note macro: author label} of the document's note macros (note_kinds), from the files its last
+    successful build read."""
+    return note_kinds(read_tex(p) for p in project_tex_files(paper_root, fls_file(paper_root, pdf_name)))
+
 def note_authors(paper_root, pdf_name):
     """[{macro, author}]: the note macros the viewer can write, from their definitions."""
-    files = project_tex_files(paper_root, job_file(paper_root, pdf_name, ".fls"))
-    return [{"macro": macro, "author": author} for macro, author in note_kinds(read_tex(p) for p in files).items()]
+    return [{"macro": macro, "author": author} for macro, author in paper_note_kinds(paper_root, pdf_name).items()]
 
 
 def plain_key(text):
@@ -1358,9 +1972,9 @@ def write_source(path, old, new):
     os.replace(tmp, path)
 
 
-def note_request(server, req):
-    """POST /note: add a note at a selection in the PDF, or edit, resolve, reply to, or delete one.
-    Returns (status, JSON).
+def note_request(server, req, user):
+    """POST /note, from user (a principal): add a note at a selection in the PDF, or edit, resolve, reply
+    to, or delete one. Returns (status, JSON).
 
     Every request names pdf (the published PDF), whose last build lists the paper's .tex files.
     add: page, x, y (PDF points from the page's top-left, at the selection's end), clean (the
@@ -1369,17 +1983,37 @@ def note_request(server, req):
     note's argument as /notes and /margin gave it); edit also text (plain) or latex (written as is);
     resolve also who (the resolver's note macro, for the initials) and text (the reason); reply also
     who (the replier's note macro) and text (plain).
+
+    A coauthor in shared mode (user, a principal other than the owner) writes as their own note
+    macro whatever macro or who the request names, edits and deletes only their own notes, writes
+    LaTeX (latex) only as an editor, and only in the shared document; anyone who may comment may
+    resolve anyone's note. While the shared copy can't take a write (a git merge in progress, or
+    others' edits there can't be committed first), 503 (updating).
     """
     root = server.paper_root
     try:
         action, pdf = req.get("action", "add"), req["pdf"]
         if not isinstance(pdf, str) or not pdf.endswith(".pdf") or os.path.basename(pdf) != pdf:
             return 400, {"error": "bad pdf"}
-        files = {os.path.realpath(p): p for p in project_tex_files(root, job_file(root, pdf, ".fls"))}
+        coauthor = user["role"] != "owner"
+        if coauthor and not at_least(user, "commenter"):
+            return 403, {"error": "viewers can read the notes but not write them"}
+        if coauthor and pdf != server.default_pdf:
+            return 403, {"error": f"this preview shares {server.default_pdf} only"}
+        if coauthor and "latex" in req and user["role"] == "commenter":
+            return 403, {"error": "commenters write notes as plain text (LaTeX takes the editor role)"}
+        files = {os.path.realpath(p): p for p in project_tex_files(root, fls_file(root, pdf))}
         kinds = note_kinds(read_tex(p) for p in files.values())
+        if coauthor and user["macro"] not in kinds:
+            return 403, {"error": f"your note macro \\{user['macro']} is not defined in the paper" if user["macro"]
+                         else "the users file gives you no note macro, so you can't write notes"}
+        if coauthor and action in ("add", "resolve", "reply"):  # (as themselves, whoever the request says)
+            req = {**req, ("macro" if action == "add" else "who"): user["macro"]}
         macro = req["macro"]
         if macro not in kinds:
             return 400, {"error": f"\\{macro} is not a note macro of this paper"}
+        if coauthor and action in ("edit", "delete") and macro != user["macro"]:
+            return 403, {"error": "you can edit or delete only your own notes"}
         if action == "add":
             found = inverse_search(root, pdf, int(req["page"]), float(req["x"]), float(req["y"]), bool(req.get("clean")))
             if isinstance(found[0], int):
@@ -1396,14 +2030,21 @@ def note_request(server, req):
         if src not in files:
             return 403, {"error": f"{rel} is not one of the paper's .tex files"}
         with NOTE_LOCK:
+            if paused(server) or not commit_others(server, user, rel):  # (LATEX_LIVE_COMMIT: others' edits there are theirs)
+                return updating()
             raw = read_source(src)
             if action == "add":
-                return add_note(src, rel, raw, line, macro, kinds[macro], req, list(kinds))
-            return change_note(src, rel, raw, line, macro, action, req, kinds)
-    except (KeyError, TypeError, ValueError) as e:
-        return 400, {"error": f"bad request ({type(e).__name__}: {e})"}
+                result = add_note(src, rel, raw, line, macro, kinds[macro], req, list(kinds))
+            else:
+                result = change_note(src, rel, raw, line, macro, action, req, kinds)
+            if result[0] == 200:
+                remember_write(server, user, rel, "notes")  # (to be committed as theirs: LATEX_LIVE_COMMIT)
+                wrote(server, user, rel)
+        return result
     except UnicodeDecodeError:
         return 415, {"error": "the source file is not UTF-8"}
+    except (KeyError, TypeError, ValueError) as e:
+        return 400, {"error": f"bad request ({type(e).__name__}: {e})"}
     except SourceChanged:
         return 409, {"error": "the source file changed meanwhile (saved in an editor?); try again"}
 
@@ -1499,21 +2140,6 @@ def change_note(src, rel, raw, line, macro, action, req, kinds):
 EDITABLE_EXTS = (".tex", ".bib", ".sty", ".cls")
 EDITABLE_SIZE = 4_000_000  # bytes (a save sends the text, and sometimes the base text too: POST_LIMITS)
 MERGE_LABELS = ("saved meanwhile", "base", "your edit")  # (git's conflict markers name the two sides)
-
-
-def me():
-    """GET /me: who the viewer's user is and what they may do: the owner, who may do everything. The
-    viewer shows the browser editor only when this answers (an older server has no editor)."""
-    return {"role": "owner", "can": {"edit": True}}
-
-
-def fls_file(paper_root, pdf_name):
-    """The list of files the last successful pass of the published <doc>.pdf read: the copy of its
-    recorder file (.fls) that latex_report.py keeps, build/<doc>-live.fls.done. pdflatex rewrites the
-    .fls itself during every pass, so mid-build it lacks the files read later (the editor's files
-    would come and go); before the first successful pass, it is all there is."""
-    done = job_file(paper_root, pdf_name, ".fls.done")
-    return done if os.path.isfile(done) else job_file(paper_root, pdf_name, ".fls")
 
 
 def editable_real(paper_root, rel):
@@ -1646,9 +2272,9 @@ def file_request(server, query):
     return 200, {"path": rel, "text": text, "version": version, "eol": eol}
 
 
-def save_request(server, req):
-    """POST /file {path, base, text, base_text?, force?, editor?}: save a file from the browser editor. Returns
-    (status, JSON).
+def save_request(server, req, user):
+    """POST /file {path, base, text, base_text?, force?, editor?}: save a file from the browser editor,
+    as user (a principal). Returns (status, JSON).
 
     base is the version the edits in text (the whole new text, \\n line ends) started from. If the
     file is still at base, or with force, text is written. Otherwise the edits are merged with what
@@ -1656,8 +2282,9 @@ def save_request(server, req):
     (remember_version). Then 200 {"version", "merged", "text"}: text is what is now in the file when
     that is not the text sent (merged: true); 409 {"conflict": true, "version", "text", "merged"} when
     both changed the same lines, with nothing written (the file's version and text, and git's merge
-    with conflict markers); or 409 {"stale": true, "version", "text"} without base's text: send it
-    again with base_text."""
+    with conflict markers; plus "by", the name of who saved the file as it is now, when that was
+    through the server); or 409 {"stale": true, "version", "text"} without base's text: send it again
+    with base_text. While the shared copy can't take a write, 503 (updating)."""
     rel, text, base, base_text, force, editor = (req.get(key) for key in ("path", "text", "base", "base_text", "force",
                                                                           "editor"))
     if not (isinstance(rel, str) and isinstance(text, str) and isinstance(base, (str, type(None)))
@@ -1679,7 +2306,8 @@ def save_request(server, req):
     for _ in range(3):  # (again when another program writes the file between our read and write)
         try:
             with NOTE_LOCK:
-                return save_file(server, rel, real, text, base, base_text, bool(force), editor)
+                return (updating() if paused(server)
+                        else save_file(server, user, rel, real, text, base, base_text, bool(force), editor))
         except SourceChanged:
             continue
         except UnicodeDecodeError:
@@ -1689,12 +2317,12 @@ def save_request(server, req):
     return 409, {"error": f"{rel} keeps changing on disk; try again"}
 
 
-def save_file(server, rel, real, sent, base, base_text, force, editor=None):
-    """save_request's read, merge and write of rel (at real) with the text sent, under NOTE_LOCK:
-    (status, JSON).
+def save_file(server, user, rel, real, sent, base, base_text, force, editor=None):
+    """save_request's read, merge and write of rel (at real) with the text sent, for user, under
+    NOTE_LOCK: (status, JSON).
 
-    When the file is just as this editor's (the viewer page's own name for its saves) last save of
-    rel left it, though the edits start from another version, the answer to that save got lost (the
+    When the file is just as this editor's (the viewer page's own name for its saves, and this user's) last
+    save of rel left it, though the edits start from another version, the answer to that save got lost (the
     editor then keeps the older base), and the new text builds on what was sent then: it is merged
     from that text instead, so that the editor's own save doesn't count as someone else's change, and
     an edit undone since (back to the older base) is undone in the file too. Another page's save never
@@ -1705,9 +2333,10 @@ def save_file(server, rel, real, sent, base, base_text, force, editor=None):
     current, eol = editor_text(raw)
     version = file_version(data)
     remember_version(server, rel, version, current)
+    written = os.path.relpath(real, os.path.realpath(server.paper_root))
     text = sent
     if not force and base != version:
-        own = editor and server.last_saves.get((rel, editor))  # (the version it left, and that of the text sent)
+        own = editor and server.last_saves.get((user["id"], rel, editor))  # (the version it left, and that of the text sent)
         with server.versions_lock:
             base_text = server.versions.get((rel, base)) if base_text is None else base_text
             if own and own[0] == version:  # (this editor's last save, whose answer got lost)
@@ -1720,7 +2349,9 @@ def save_file(server, rel, real, sent, base, base_text, force, editor=None):
         except (OSError, RuntimeError, UnicodeDecodeError, subprocess.SubprocessError) as e:
             return 422, {"error": f"could not merge your edits with the changes saved meanwhile ({e})"}
         if conflicts:
+            by = server.last_writer.get(written)
             return 409, {"conflict": True, "version": version, "text": current, "merged": text,
+                         **({"by": by[1]} if by and by[0] == version else {}),
                          "error": f"your edits and the changes saved meanwhile touch the same lines of {rel}"}
     new = text.replace("\n", eol) if eol != "\n" else text
     encoded = new.encode("utf-8")
@@ -1728,15 +2359,19 @@ def save_file(server, rel, real, sent, base, base_text, force, editor=None):
         return 413, {"error": "the editor saves files of up to 4 MB"}
     new_version = file_version(encoded)
     if new != raw:
+        if not commit_others(server, user, written):  # (LATEX_LIVE_COMMIT: what others wrote there is theirs)
+            return updating()
         write_source(real, raw, new)
+        remember_write(server, user, written, "edit")
+        wrote(server, user, written, new_version)
     remember_version(server, rel, new_version, text)
     sent_version = new_version
-    if text != sent:  # (merged: keep the text sent too, should the answer get lost)
+    if text != sent:  # (merged: keep the text they sent too, should the answer get lost)
         sent_version = file_version((sent.replace("\n", eol) if eol != "\n" else sent).encode("utf-8"))
         remember_version(server, rel, sent_version, sent)
     if editor:
-        server.last_saves[(rel, editor)] = (new_version, sent_version)
-        server.last_saves.move_to_end((rel, editor))
+        server.last_saves[(user["id"], rel, editor)] = (new_version, sent_version)
+        server.last_saves.move_to_end((user["id"], rel, editor))
         while len(server.last_saves) > 256:
             server.last_saves.popitem(last=False)
     return 200, {"version": new_version, "merged": text != sent, **({"text": text} if text != sent else {})}
@@ -1760,13 +2395,415 @@ def merge_texts(current, base, new):
     return r.returncode, r.stdout.decode("utf-8")
 
 
+def wrote(server, user, rel, version=None):
+    """Remember that user (a principal) wrote rel (relative to the paper root) through the server,
+    leaving it at version (None: as it is now), so that a conflict over that version can say who saved
+    it (save_file's "by")."""
+    if version is None:
+        try:
+            version = cached_version(os.path.join(os.path.realpath(server.paper_root), rel))
+        except OSError:
+            return
+    server.last_writer[rel] = (version, user["name"] or (owner_name(server) if user["role"] == "owner" else user["id"]))
+
+
+# Auto-commit (shared mode, LATEX_LIVE_COMMIT=1): what the server writes for each user (their saves,
+# their notes) is committed to git as theirs, one commit per pause of theirs (LATEX_LIVE_COMMIT_IDLE
+# seconds), only the files the server wrote for them, with a "Latex-Live-Shared: <user id>" trailer;
+# the owner commits everything pending at once with POST /commit. A commit takes a whole file, so
+# before the server writes a file for one user, what it wrote there for others is committed first
+# (commit_others): each commit holds one person's edits. Commits run under NOTE_LOCK, as writes do,
+# so no write lands in a file while it is committed. They wait while git is busy (a merge, rebase or
+# cherry-pick, or another git command holding the index). Who wrote what, not committed yet, is kept
+# in the state folder too (save_pending), so that a restart, even after a crash, still commits it as
+# theirs; edits found uncommitted at the start that no one's writes account for are committed then,
+# as the owner's (UNATTRIBUTED), rather than in the next coauthor's commit of that file.
+UNATTRIBUTED = "(unattributed)"  # (the pending entry of those; no user has this id: USER_ID_RE)
+
+
+def remember_write(server, user, rel, kind):
+    """Remember that the server wrote rel (relative to the paper root) for user (a principal), kind
+    "edit" (a save) or "notes", to commit it as theirs once they pause (commit_loop)."""
+    if not server.autocommit:
+        return
+    with server.pending_lock:
+        server.write_seq += 1
+        entry = server.pending.setdefault(user["id"], {"paths": {}})
+        old = entry["paths"].get(rel)
+        entry.update(user=user, due=time.monotonic() + COMMIT_IDLE)
+        entry["paths"][rel] = ("edit" if kind == "edit" or (old and old[0] == "edit") else kind, server.write_seq)
+        save_pending(server)
+
+
+def commit_others(server, user, rel):
+    """Before the server writes rel for user (holding NOTE_LOCK): commit what it wrote there for
+    anyone else and hasn't committed yet, as theirs, so that the next commit of rel is user's alone.
+    False if that can't be done now, as git stays busy for 2 s (another git command holds its index):
+    the caller then writes nothing (updating). A commit that fails otherwise has said why, and the
+    write goes ahead."""
+    if not server.autocommit:
+        return True
+    end = time.monotonic() + 2
+    while True:
+        with server.pending_lock:
+            others = [uid for uid, entry in server.pending.items() if uid != user["id"] and rel in entry["paths"]]
+        if not others:
+            return True
+        commit_pending(server, others, only=rel)
+        with server.pending_lock:
+            if not any(uid in server.pending and rel in server.pending[uid]["paths"] for uid in others):
+                return True
+        if not git_busy(server):
+            return True
+        if time.monotonic() > end:
+            return False
+        time.sleep(0.2)
+
+
+def paused(server):
+    """Why the shared copy takes no writes now: git in the middle of a merge, rebase, cherry-pick or
+    revert there (git_operation), whose result would take the writes, or whose abort would lose them;
+    else None. Only in shared mode: the owner's own previews write as they always did."""
+    return git_operation(server) if SHARED else None
+
+
+def updating():
+    """The answer to a write that the shared copy can't take now (paused, commit_others): 503, which
+    the viewer tries again, keeping the text meanwhile (the editor's, the note box's)."""
+    return 503, {"error": "the shared copy is being updated; try again in a moment", "retry": True}
+
+
+def save_pending(server):
+    """Keep who wrote which files, not committed yet, in the state folder (server.pending_file), so
+    that a restart, even after a crash, still commits them as theirs (load_pending). The caller holds
+    pending_lock."""
+    entries = {uid: {"user": {key: entry["user"].get(key) for key in ("id", "name", "email", "macro", "role")},
+                     "paths": {rel: kind for rel, (kind, _) in entry["paths"].items()}}
+               for uid, entry in server.pending.items() if entry["paths"]}
+    path = server.pending_file
+    try:
+        if not entries:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            return
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+            json.dump({"root": server.paper_root, "pending": entries}, f)
+        os.replace(tmp, path)
+    except OSError as e:
+        commit_notice(server, f"could not keep the list of uncommitted edits in {path} ({e})")
+
+
+def load_pending(server):
+    """The writes the last run left uncommitted (save_pending), pending again, to be committed as
+    theirs right away."""
+    data = read_json(server.pending_file)
+    saved = data.get("pending") if isinstance(data, dict) else None
+    with server.pending_lock:
+        for uid, entry in (saved or {}).items() if isinstance(saved, dict) else ():
+            user, paths = (entry.get("user"), entry.get("paths")) if isinstance(entry, dict) else (None, None)
+            if not (isinstance(user, dict) and user.get("id") == uid and user.get("role") in ROLES and isinstance(paths, dict)
+                    and (uid == UNATTRIBUTED or USER_ID_RE.fullmatch(uid))):
+                continue
+            kept = {}
+            for rel, kind in paths.items():
+                if isinstance(rel, str) and kind in ("edit", "notes") and not os.path.isabs(rel) \
+                        and os.path.normpath(rel).split(os.sep)[0] != "..":
+                    server.write_seq += 1
+                    kept[os.path.normpath(rel)] = (kind, server.write_seq)
+            if kept:
+                user = {key: user.get(key) if isinstance(user.get(key), str) else None for key in ("id", "name", "email", "macro", "role")}
+                server.pending[uid] = {"user": {**user, "via": "restart"}, "paths": kept, "due": time.monotonic()}
+        if server.pending:
+            print("=== latex-live: the last run left edits uncommitted; committing them as theirs: "
+                  + "; ".join(f"{e['user']['name'] or uid}: {', '.join(sorted(e['paths']))}" for uid, e in server.pending.items()),
+                  flush=True)
+
+
+def claim_leftovers(server):
+    """At the start: the editable files that git tracks and that hold uncommitted edits no pending write
+    accounts for (made before a crash, or outside the server), as one pending entry (UNATTRIBUTED),
+    committed as the owner's before anyone writes those files again (commit_others)."""
+    root = os.path.realpath(server.paper_root)
+    with server.pending_lock:
+        claimed = {rel for entry in server.pending.values() for rel in entry["paths"]}
+    files = sorted({os.path.relpath(real, root) for real in editable_files(server).values()} - claimed)
+    if not files:
+        return
+    git = ["git", "-C", server.paper_root, "--literal-pathspecs"]
+    run = lambda args: subprocess.run(git + args, capture_output=True, encoding="utf-8", errors="surrogateescape",
+                                      env=git_read_env(), timeout=60)
+    r = run(["diff", "--name-only", "-z", "--relative", "HEAD", "--", *files])
+    if r.returncode:  # (no commit yet: nothing to compare with)
+        return
+    changed, tracked = set(r.stdout.split("\0")), set(run(["ls-files", "-z", "--", *files]).stdout.split("\0"))
+    left = [rel for rel in files if rel in changed and rel in tracked]
+    if not left:
+        return
+    with server.pending_lock:
+        entry = server.pending.setdefault(UNATTRIBUTED, {"paths": {}})
+        entry.update(user={"id": UNATTRIBUTED, "name": None, "email": None, "macro": None, "role": "owner", "via": "start"},
+                     due=time.monotonic())
+        for rel in left:
+            server.write_seq += 1
+            entry["paths"][rel] = ("edit", server.write_seq)
+        save_pending(server)
+    print(f"=== latex-live: no one's saves account for the uncommitted edits in {', '.join(left)}; committing them as the"
+          " owner's (Latex-Live-Shared: unattributed)", flush=True)
+
+
+def start_commits(server):
+    """Shared mode with LATEX_LIVE_COMMIT=1: commit the users' writes from now on (commit_loop), if
+    the paper is in a git checkout. First, before any write is served (NOTE_LOCK), what the last run
+    left uncommitted: its users' writes as theirs (load_pending), the rest as the owner's
+    (claim_leftovers)."""
+    if not COMMIT:
+        return
+    try:
+        r = subprocess.run(["git", "-C", server.paper_root, "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True)
+    except OSError:
+        return print("=== latex-live: git is not installed, so edits are not committed (LATEX_LIVE_COMMIT)", flush=True)
+    if r.stdout.strip() != "true":
+        return print("=== latex-live: the paper is not in a git checkout, so edits are not committed (LATEX_LIVE_COMMIT)", flush=True)
+    server.autocommit = True
+    with NOTE_LOCK:
+        try:
+            load_pending(server)
+            claim_leftovers(server)
+            if server.pending:
+                commit_pending(server)
+        except Exception:  # (the server runs on; commit_loop tries again)
+            commit_notice(server, f"could not commit what the last run left:\n{traceback.format_exc().rstrip()}")
+    threading.Thread(target=commit_loop, args=(server,), daemon=True).start()
+    print(f"=== latex-live: each user's edits are committed as theirs after {COMMIT_IDLE:g} s of quiet (LATEX_LIVE_COMMIT)",
+          flush=True)
+
+
+def commit_loop(server):
+    """The thread that commits each user's pending writes once they have been quiet for
+    LATEX_LIVE_COMMIT_IDLE seconds (commit_pending). Whatever goes wrong, it says so once (with where,
+    for a bug) and keeps going after a pause."""
+    while True:
+        with server.pending_lock:  # (it wakes when the first one is due, and at least every second for new writes)
+            first = min((entry.get("due", math.inf) for entry in server.pending.values()), default=math.inf)
+        time.sleep(min(1, max(0.05, first - time.monotonic())))
+        try:
+            with server.pending_lock:
+                due = [uid for uid, entry in server.pending.items() if entry["due"] <= time.monotonic()]
+            if due:
+                with NOTE_LOCK:
+                    commit_pending(server, due)
+        except Exception:
+            commit_notice(server, f"commits failed; trying again in a while:\n{traceback.format_exc().rstrip()}")
+            time.sleep(10)
+
+
+def commit_request(server):
+    """POST /commit (the owner): commit every pending write now. {"commits": [{user, commit, subject,
+    files}]}, with "error" if some could not be."""
+    if not server.autocommit:
+        return 409, {"error": "edits are not committed here (shared mode does that with LATEX_LIVE_COMMIT=1)"}
+    try:
+        with NOTE_LOCK:
+            made, problem = commit_pending(server)
+    except Exception as e:  # (answered, rather than a dropped connection)
+        commit_notice(server, f"could not commit:\n{traceback.format_exc().rstrip()}")
+        return 500, {"error": f"could not commit ({e})", "commits": []}
+    if problem and not made:
+        return 409, {"error": problem, "commits": []}
+    return 200, {"commits": made, **({"error": problem} if problem else {})}
+
+
+def commit_at_exit(server):
+    """At shutdown: commit what is still pending, as theirs, waiting up to 5 s while another git command
+    holds the index. What stays pending (git in the middle of a merge, say) is in the state folder,
+    for the next start (load_pending)."""
+    if not server.autocommit:
+        return
+    end = time.monotonic() + 5
+    try:
+        while server.pending:
+            with NOTE_LOCK:
+                commit_pending(server)
+            if not server.pending or git_operation(server) or not git_busy(server) or time.monotonic() > end:
+                break
+            time.sleep(0.2)
+    except Exception:
+        print(f"=== latex-live: could not commit the pending edits:\n{traceback.format_exc().rstrip()}", flush=True)
+    if server.pending:
+        print(f"=== latex-live: edits stay uncommitted for now; the next start commits them as theirs ({server.pending_file})",
+              flush=True)
+
+
+GIT_OPERATIONS = (("MERGE_HEAD", "a merge"), ("rebase-merge", "a rebase"), ("rebase-apply", "a rebase"),
+                  ("CHERRY_PICK_HEAD", "a cherry-pick"), ("REVERT_HEAD", "a revert"))
+
+
+def git_dir(server):
+    """The paper's git directory (asked once), or None outside a git checkout."""
+    if server.git_dir is None:
+        try:
+            r = subprocess.run(["git", "-C", server.paper_root, "rev-parse", "--absolute-git-dir"], capture_output=True,
+                               encoding="utf-8", errors="surrogateescape", timeout=60)
+        except OSError:  # (no git)
+            server.git_dir = ""
+        except subprocess.SubprocessError:  # (asked again next time)
+            return None
+        else:
+            server.git_dir = r.stdout.strip() if r.returncode == 0 else ""
+    return server.git_dir or None
+
+
+def git_operation(server):
+    """The operation git is in the middle of in the paper's checkout: "a merge", "a rebase", "a
+    cherry-pick" or "a revert"; else None."""
+    folder = git_dir(server)
+    return next((what for name, what in GIT_OPERATIONS if folder and os.path.exists(os.path.join(folder, name))), None)
+
+
+def git_busy(server):
+    """Why git can't take a commit now: an operation in progress (git_operation), or another git
+    command holding the index; else None."""
+    folder = git_dir(server)
+    if not folder:
+        return "the paper is not in a git checkout"
+    if what := git_operation(server):
+        return f"git is in the middle of {what}; edits are committed once it is done"
+    if os.path.exists(os.path.join(folder, "index.lock")):
+        return "git is busy (another git command holds index.lock); edits are committed once it is done"
+    return None
+
+
+def commit_pending(server, ids=None, only=None):
+    """Commit the pending writes of the users in ids (default: everyone's; of the file only, if
+    given), one commit per user (commit_files). The caller holds NOTE_LOCK. While git is busy
+    (git_busy), nothing, and they are tried again later; a user's commit that fails (even through a
+    bug here) is tried again in a while. Returns ([{user, commit, subject, files}], what went wrong
+    or None)."""
+    if busy := git_busy(server):
+        commit_notice(server, busy)
+        with server.pending_lock:  # (commit_loop looks again in a few seconds)
+            for entry in server.pending.values():
+                entry["due"] = max(entry["due"], time.monotonic() + 3)
+        return [], busy
+    made, problem = [], None
+    with server.pending_lock:
+        ids = [uid for uid in (list(server.pending) if ids is None else ids) if uid in server.pending]
+    for uid in ids:
+        with server.pending_lock:
+            user, paths = server.pending[uid]["user"], dict(server.pending[uid]["paths"])
+        paths = {rel: value for rel, value in paths.items() if only is None or rel == only}
+        who = user["name"] or user["id"]
+        try:
+            done, failed = commit_files(server, user, paths), None
+        except (OSError, RuntimeError, subprocess.SubprocessError) as e:
+            done, failed = None, f"could not commit {who}'s edits: {e}"
+        except Exception:  # (a bug: said once, with where; the others' commits go on)
+            done, failed = None, f"could not commit {who}'s edits:\n{traceback.format_exc().rstrip()}"
+        with server.pending_lock:
+            entry = server.pending[uid]
+            if failed:
+                entry["due"] = time.monotonic() + max(10, min(COMMIT_IDLE, 60))  # (again in a while)
+            else:  # (what was written again meanwhile stays pending)
+                for rel, value in paths.items():
+                    if entry["paths"].get(rel) == value:
+                        del entry["paths"][rel]
+                if not entry["paths"]:
+                    del server.pending[uid]
+                save_pending(server)
+        if failed:
+            problem = problem or failed
+            commit_notice(server, failed)
+        if done:
+            made.append(done)
+    if made and not problem:
+        server.commit_said = None
+    return made, problem
+
+
+def commit_notice(server, message):
+    """Print why commits wait or fail, once until the reason changes."""
+    if message != server.commit_said:
+        server.commit_said = message
+        print(f"=== latex-live: {message}", flush=True)
+
+
+def git_read_env():
+    """The environment for git commands that only read: without optional locks, so that they never hold
+    the index while the server commits (commit_files)."""
+    return {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+
+
+def commit_files(server, user, paths):
+    """Commit paths ({path relative to the paper root: (kind, sequence number)}) as user, as they are
+    in the working tree and nothing else (git commit --only; the committer is the owner), leaving
+    out what git doesn't track, what is gone, and what is as committed. Returns {user, commit,
+    subject, files}, or None if nothing is left; RuntimeError if git refuses."""
+    root = server.paper_root
+    git = ["git", "-C", root, "--literal-pathspecs"]
+    run = lambda args, env: subprocess.run(git + args, capture_output=True, encoding="utf-8", errors="surrogateescape", env=env,
+                                           timeout=60)  # (NOTE_LOCK is held; file names as Python has them, even if not UTF-8)
+    files = sorted(rel for rel in paths if os.path.isfile(os.path.join(root, rel)))
+    if files:
+        tracked = set(run(["ls-files", "-z", "--", *files], git_read_env()).stdout.split("\0"))
+        r = run(["diff", "--name-only", "-z", "--relative", "HEAD", "--", *files], git_read_env())
+        changed = set(r.stdout.split("\0")) if r.returncode == 0 else set(files)  # (no HEAD yet: all of them)
+        files = [rel for rel in files if rel in tracked and rel in changed]
+    if not files:
+        return None
+    owner, owner_email = committer(server)
+    name = user["name"] or owner
+    email = user["email"] or (owner_email if user["role"] == "owner" else "")
+    listed = ", ".join(files[:3]) + (f" and {len(files) - 3} more" if len(files) > 3 else "")
+    if user["id"] == UNATTRIBUTED:
+        subject, trailer = f"Edits found uncommitted at the start: {listed}", "unattributed"
+    else:
+        verb = "edit" if any(paths[rel][0] == "edit" for rel in files) else "notes in"
+        subject, trailer = f"{name}: {verb} {listed}", user["id"]
+    env = {key: value for key, value in os.environ.items() if key != "GIT_OPTIONAL_LOCKS"}  # (a commit takes the index)
+    r = run(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "gc.auto=0", "-c", f"user.name={owner}",
+             "-c", f"user.email={owner_email}", "commit", "--only", f"--author={name} <{email}>",
+             "-m", f"{subject}\n\nLatex-Live-Shared: {trailer}", "--", *files], env)
+    if r.returncode:
+        raise RuntimeError((r.stderr.strip() or r.stdout.strip() or f"git commit failed ({r.returncode})").splitlines()[-1])
+    sha = run(["rev-parse", "--short", "HEAD"], git_read_env()).stdout.strip()
+    print(f"=== latex-live: committed {sha}: {subject}", flush=True)
+    return {"user": trailer, "commit": sha, "subject": subject, "files": files}
+
+
+def committer(server):
+    """(name, email) that commits coauthors' edits: the users file's owner's, else git's user.name and
+    user.email, else latex-live."""
+    entry, found = users_owner() or {}, []
+    for key in ("name", "email"):
+        if not (value := entry.get(key)):
+            value = subprocess.run(["git", "-C", server.paper_root, "config", f"user.{key}"], capture_output=True, text=True,
+                                   timeout=60).stdout.strip()
+        found.append(value or "latex-live")
+    return tuple(found)
+
+
 def pdf_pages_text(pdf):
     """Plain text of each page (pdftotext), or [] without poppler."""
+    out = pdf_tool(["pdftotext", "-q", pdf, "-"])
+    return out.split("\f") if out else []
+
+
+def pdf_tool(argv, timeout=60):
+    """What a poppler tool (pdfinfo, pdffonts, pdfimages, pdftotext) prints about a PDF the build made, or
+    "" without poppler, or once it has run for timeout seconds. In shared mode, where the paper's TeX made
+    the PDF and poppler parses it on this machine, also with at most 1 GB of memory and that much CPU time."""
+    def limits():
+        resource.setrlimit(resource.RLIMIT_AS, (1 << 30, 1 << 30))
+        resource.setrlimit(resource.RLIMIT_CPU, (timeout, timeout))
     try:
-        out = subprocess.run(["pdftotext", "-q", pdf, "-"], capture_output=True, text=True, timeout=60).stdout
+        return subprocess.run(argv, capture_output=True, encoding="utf-8", errors="replace", timeout=timeout,
+                              preexec_fn=limits if SHARED else None).stdout
     except (OSError, subprocess.TimeoutExpired):
-        return []
-    return out.split("\f")
+        return ""
 
 
 def find_bib_entry(paper_root, key):
@@ -1800,18 +2837,17 @@ def project_inputs(paper_root, fls):
             paths = [os.path.normpath(l[6:].strip()) for l in f if l.startswith("INPUT ")]
     except OSError:
         return []
-    root = os.path.join(paper_root, "")
     found = []
     for p in dict.fromkeys(paths):
-        full = os.path.join(paper_root, p)
-        if full.startswith(root) and not full.startswith(os.path.join(paper_root, BUILD, "")) and os.path.isfile(full):
+        full = os.path.normpath(os.path.join(paper_root, p))
+        if in_paper(paper_root, full) and os.path.isfile(full):
             found.append(os.path.relpath(full, paper_root))
-    return found
+    return list(dict.fromkeys(found))
 
 
 def include_sites(paper_root, pdf_name):
     """Where each included graphic or \\input file is included: {relative path: (tex file, line)}."""
-    fls = job_file(paper_root, pdf_name, ".fls")
+    fls = fls_file(paper_root, pdf_name)
     inputs = project_inputs(paper_root, fls)
     stems = {os.path.splitext(p)[0]: p for p in inputs}
     sites = {}
@@ -1842,7 +2878,8 @@ def graphics(paper_root, pdf_name):
     push). The viewer compares hashes across rebuilds to mark figures whose files changed, or marks
     the dirty (unpushed) ones against HEAD (the last push)."""
     git = ["git", "-C", paper_root]
-    changed = lambda rev: set(subprocess.run(git + ["diff", "--name-only", "--relative", rev], capture_output=True, text=True).stdout.splitlines())
+    changed = lambda rev: set(subprocess.run(git + ["diff", "--name-only", "--relative", rev], capture_output=True, text=True,
+                                             env=git_read_env()).stdout.splitlines())
     untracked = set(subprocess.run(git + ["ls-files", "-o", "--exclude-standard"], capture_output=True, text=True).stdout.splitlines())
     dirty = changed("HEAD") | untracked
     pushed = pushed_commit(paper_root)[0]
@@ -2047,7 +3084,7 @@ DEFINITION_RE = re.compile(r"\\(?:(?:re|provide)?newcommand|DeclareRobustCommand
 def prose_lines(paper_root, pdf_name):
     """(file, line, text) for the prose of the project's .tex files: comments, notes, math, and the
     arguments of labels, references, citations and includes removed; project macros expanded."""
-    fls = job_file(paper_root, pdf_name, ".fls")
+    fls = fls_file(paper_root, pdf_name)
     macros = project_macros(paper_root, fls)
     texts = {path: read_tex(path) for path in project_tex_files(paper_root, fls)}
     kinds = note_kinds(texts.values())
@@ -2133,7 +3170,7 @@ def lint(paper_root, pdf_name, pages, in_bib):
                              "page": ps[0]})
     # Doubled words and references that can break across lines.
     typos = []
-    for path in project_tex_files(paper_root, job_file(paper_root, pdf_name, ".fls")):
+    for path in project_tex_files(paper_root, fls_file(paper_root, pdf_name)):
         text = read_tex(path)
         rel = os.path.relpath(path, paper_root)
         for m in re.finditer(r"(?<![\\\w])([A-Za-z]{2,})\s+\1\b", text, re.I):
@@ -2163,7 +3200,7 @@ def float_placement(paper_root, pdf_name, clean=False):
     """
     found = floats(paper_root, pdf_name, clean)
     f = clean_file if clean else job_file
-    fls = job_file(paper_root, pdf_name, ".fls")
+    fls = fls_file(paper_root, pdf_name)
     points = synctex_points(f(paper_root, pdf_name, ".synctex.gz"))
     area = layout(paper_root, pdf_name) or {"H": 792, "left": 72, "width": 468, "top": 72, "bottom": 720}
     texts = {path: read_tex(path) for path in project_tex_files(paper_root, fls)}
@@ -2303,10 +3340,7 @@ def pdf_strings(data, cache={}):
             f.write(data)
             f.flush()
             for cmd in (["pdfinfo", f.name], ["pdftotext", "-q", f.name, "-"]):
-                try:
-                    out.append(subprocess.run(cmd, capture_output=True, text=True, timeout=30).stdout)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
+                out.append(pdf_tool(cmd, timeout=30))
         cache[key] = "\n".join(out)
     return cache[key]
 
@@ -2349,7 +3383,7 @@ def arxiv_source(paper_root, pdf_name):
     is found in the build's sources (e.g. in a package that inlines every \\input).
     """
     doc = pdf_name[:-4]
-    fls = job_file(paper_root, pdf_name, ".fls")
+    fls = fls_file(paper_root, pdf_name)
     package = arxiv_package(paper_root)
     if package:
         label = os.path.basename(package[2]) + ("/" if not package[1] else "")
@@ -2537,7 +3571,7 @@ def checks(server, pdf_name):
                       root_tex, re.M)
     if pages and re.search(r"\banonymous\b", pages[0], re.I):
         names = set()  # people named in the note-macro comments, e.g. "\eb ... % Ellis Brown"
-        for path in project_tex_files(root, job_file(root, pdf_name, ".fls")):
+        for path in project_tex_files(root, fls_file(root, pdf_name)):
             with open(path, errors="replace") as fh:
                 names |= {m.strip() for m in re.findall(r"\\todotxt.*%\s*([A-Z][a-z]+(?: [A-Z][a-z]+)+)\s*$", fh.read(), re.M)}
         git_name = subprocess.run(["git", "-C", root, "config", "user.name"], capture_output=True, text=True).stdout.strip()
@@ -2550,7 +3584,7 @@ def checks(server, pdf_name):
             r"github\.com/\S+", r"huggingface\.co/\S+", r"\bwandb\b"]
         anon = hits("|".join(ident), skip_bib=True, flags=0)
         anon += hits(r"\b(?:our|my) (?:prior|previous|earlier|recent) (?:work|paper|study)|\bwe (?:previously|earlier) (?:showed|proposed|introduced|found)")
-        info = subprocess.run(["pdfinfo", pdf], capture_output=True, text=True).stdout
+        info = pdf_tool(["pdfinfo", pdf])
         # (ICML's submission style sets the metadata author to "Anonymous Authors".)
         meta_author = re.search(r"^Author:[ \t]*(?!anonymous\b)(\S.*)$", info, re.M | re.I)
         problems = [{"text": f"PDF metadata names an author: {meta_author.group(1).strip()}"}] if meta_author else []
@@ -2581,7 +3615,7 @@ def checks(server, pdf_name):
         items)
 
     # Undefined references and citations, placeholders.
-    build = read_json(job_file(root, pdf_name, ".status.json")) or {}
+    build = build_status(server, pdf_name) or {}
     undefined = build.get("undefined") or []
     marks = hits(r"\?\?")
     add("Undefined references and citations", "fail" if undefined or marks else "ok",
@@ -2592,11 +3626,11 @@ def checks(server, pdf_name):
         f"{len(placeholders)} in the {'notes-free ' if clean else ''}PDF" if placeholders else "none", placeholders)
 
     # Fonts.
-    fonts = subprocess.run(["pdffonts", pdf], capture_output=True, text=True).stdout.splitlines()[2:]
+    fonts = pdf_tool(["pdffonts", pdf]).splitlines()[2:]
     type3 = []
-    if any(" Type 3 " in l for l in fonts):  # which pages (usually matplotlib figures)
-        for n in range(1, len(pages) + 1):
-            out = subprocess.run(["pdffonts", "-f", str(n), "-l", str(n), pdf], capture_output=True, text=True).stdout
+    if any(" Type 3 " in l for l in fonts):  # which pages (usually matplotlib figures; in shared mode, of the first 200)
+        for n in range(1, min(len(pages), 200 if SHARED else len(pages)) + 1):
+            out = pdf_tool(["pdffonts", "-f", str(n), "-l", str(n), pdf])
             if " Type 3 " in out:
                 type3.append(n)
     unembedded = [l.split()[0] for l in fonts if len(l.split()) >= 5 and re.search(r"\s(no)\s+(yes|no)\s+(yes|no)\s+\d+\s+\d+\s*$", l)]
@@ -2608,7 +3642,7 @@ def checks(server, pdf_name):
 
     # Images.
     low = []
-    for l in subprocess.run(["pdfimages", "-list", pdf], capture_output=True, text=True).stdout.splitlines()[2:]:
+    for l in pdf_tool(["pdfimages", "-list", pdf]).splitlines()[2:]:
         c = l.split()
         if len(c) >= 14 and c[2] in ("image", "stencil") and c[12].isdigit() and int(c[3]) * int(c[4]) > 10000:
             ppi = min(int(c[12]), int(c[13]))
@@ -2689,6 +3723,43 @@ def checks(server, pdf_name):
     add("Overfull lines", "info" if boxes else "ok", f"{len(boxes)} line(s) stick into the margin" if boxes else "none",
         [{"text": m, "file": p, "line": n} for p, n, m in boxes])
     return results
+
+
+def cached_checks(server, pdf_name):
+    """GET /check/: checks, which take seconds of the machine's time on a long paper, reused while the
+    published PDF and its notes-free one stay the same, for up to 10 s (in shared mode, where editors
+    may ask, as long as they stay the same, and recomputed at most every 30 s anyway). One computation
+    per document at a time, without holding checks_lock meanwhile: requests that come while it runs wait
+    for its result, and other documents' checks don't wait for it."""
+    root = server.paper_root
+    key = (mtime(pdf_path(root, pdf_name)), mtime(pdf_path(root, f"{pdf_name[:-4]}-clean.pdf")))
+
+    def fresh(kept):
+        age = time.monotonic() - kept["at"]
+        return kept["key"] == key or age < 30 if SHARED else kept["key"] == key and age < 10
+
+    with server.checks_lock:
+        kept = server.checks.get(pdf_name)
+        if kept and fresh(kept):
+            return kept["results"]
+        running = server.checks_running.get(pdf_name)
+        mine = running is None
+        if mine:
+            running = server.checks_running[pdf_name] = threading.Event()
+    if not mine:
+        running.wait()
+        with server.checks_lock:
+            kept = server.checks.get(pdf_name)
+        return kept["results"] if kept else checks(server, pdf_name)
+    try:
+        results = checks(server, pdf_name)
+        with server.checks_lock:
+            server.checks[pdf_name] = {"key": key, "at": time.monotonic(), "results": results}
+        return results
+    finally:
+        with server.checks_lock:
+            server.checks_running.pop(pdf_name, None)
+        running.set()
 
 
 def editor_cli():
@@ -2793,15 +3864,27 @@ def commits(paper_root):
     """Recent commits for the viewer's compare menu."""
     out = subprocess.run(["git", "-C", paper_root, "log", "-n", "40", "--date=format:%b %d %H:%M",
                           "--format=%h%x09%ad%x09%an%x09%s"], capture_output=True, text=True).stdout
-    dirty = bool(subprocess.run(["git", "-C", paper_root, "status", "--porcelain", "--untracked-files=no"],
-                                capture_output=True, text=True).stdout.strip())
+    dirty = bool(subprocess.run(["git", "-C", paper_root, "status", "--porcelain", "--untracked-files=no"], capture_output=True,
+                                text=True, env=git_read_env()).stdout.strip())
     return {"dirty": dirty, "commits": [dict(zip(("rev", "date", "author", "subject"), l.split("\t", 3)))
                                         for l in out.splitlines()]}
 
 
-def build_running(paper_root, pdf_name):
-    """Whether latexmk is building pdf_name now: its passes may still publish it before the run ends."""
-    return mtime(job_file(paper_root, pdf_name, ".building")) > mtime(job_file(paper_root, pdf_name, ".status.json"))
+def build_running(server, pdf_name):
+    """Whether latexmk (in shared mode, shared_build) is building pdf_name now: its passes may still publish
+    it before the run ends."""
+    if SHARED:
+        return pdf_name == server.default_pdf and server.shared["building"]
+    root = server.paper_root
+    return mtime(job_file(root, pdf_name, ".building")) > mtime(job_file(root, pdf_name, ".status.json"))
+
+
+def build_status(server, pdf_name, clean=False):
+    """The last run's result (latex_report.py's build/<job>.status.json), or with clean, the notes-free
+    pass's; in shared mode, shared_build's, kept in memory (the paper's TeX can write those files)."""
+    if SHARED:
+        return server.shared["clean" if clean else "status"] if pdf_name == server.default_pdf else None
+    return read_json((clean_file if clean else job_file)(server.paper_root, pdf_name, ".status.json"))
 
 
 def waiting_for_build(server, pdf, state):
@@ -2809,7 +3892,7 @@ def waiting_for_build(server, pdf, state):
     be of the build before, or of a pass before the last), or None when it doesn't, or when state (theirs)
     is a build of theirs that is running. Not with --no-build: no latexmk runs then, so a .building marker
     is one that a build stopped part way left behind."""
-    if server.no_build or state.get("pdf") == pdf and state.get("state") == "running" or not build_running(server.paper_root, pdf):
+    if server.no_build or state.get("pdf") == pdf and state.get("state") == "running" or not build_running(server, pdf):
         return None
     return {"pdf": pdf, "state": "running", "step": "waiting for the build in progress", "time": time.strftime("%H:%M:%S"), "msg": ""}
 
@@ -2820,15 +3903,16 @@ def start_export(server):
     pdf = server.default_pdf
     if not os.path.isfile(pdf_path(server.paper_root, pdf)):
         return 409, {"state": "failed", "msg": f"{pdf} has not built yet"}
-    e = server.export
-    if waiting := waiting_for_build(server, pdf, e):
-        return 200, waiting
-    source = str(mtime(pdf_path(server.paper_root, pdf)))  # (the build it reflects)
-    if e.get("pdf") == pdf and (e.get("state") == "running" or e.get("source") == source):  # (a failure too, until the next build)
-        return 200, e
-    server.export = {"pdf": pdf, "source": source, "state": "running", "time": time.strftime("%H:%M:%S"), "msg": ""}
-    threading.Thread(target=build_export, args=(server, pdf, source), daemon=True).start()
-    return 200, server.export
+    with server.download_lock:  # (from however many viewers at once: one build)
+        e = server.export
+        if waiting := waiting_for_build(server, pdf, e):
+            return 200, waiting
+        source = str(mtime(pdf_path(server.paper_root, pdf)))  # (the build it reflects)
+        if e.get("pdf") == pdf and (e.get("state") == "running" or e.get("source") == source):  # (a failure too, until the next build)
+            return 200, e
+        server.export = {"pdf": pdf, "source": source, "state": "running", "time": time.strftime("%H:%M:%S"), "msg": ""}
+        threading.Thread(target=build_export, args=(server, pdf, source), daemon=True).start()
+        return 200, server.export
 
 
 def build_export(server, pdf, source):
@@ -2837,9 +3921,22 @@ def build_export(server, pdf, source):
         exact_export(server, pdf)
         state = {"state": "done", "version": str(mtime(os.path.join(server.paper_root, BUILD, f"{pdf[:-4]}-export.pdf")))}
     except Exception as e:  # (shown in the viewer)
-        state = {"state": "failed", "msg": str(e)[:300]}
-    if server.export.get("pdf") == pdf and server.export.get("source") == source:
-        server.export = {**server.export, **state}
+        state = {"state": "failed", "msg": failure(server, e)}
+    with server.download_lock:  # (not over a newer export's state: start_export)
+        if server.export.get("pdf") == pdf and server.export.get("source") == source:
+            server.export = {**server.export, **state}
+
+
+def failure(server, e):
+    """What a download that failed says in the viewer (build_export, build_review), in 300 characters at most. In
+    shared mode, where every coauthor reads it, without the server's folders (TeX names the paper's files relative
+    to it, but Python's errors name them in full) or the command line of a TeX run that took too long."""
+    if SHARED and isinstance(e, subprocess.TimeoutExpired):
+        return f"a TeX run took more than {e.timeout / 60:g} minutes"
+    text = str(e)
+    for folder, name in ((os.path.realpath(server.paper_root), "."), (server.paper_root, "."), (HERE, "latex-live")) if SHARED else ():
+        text = text.replace(folder + os.sep, "" if name == "." else name + os.sep).replace(folder, name)
+    return text[:300]
 
 
 def exact_export(server, pdf, keep=None):
@@ -2861,8 +3958,9 @@ def exact_export(server, pdf, keep=None):
     import latex_report
 
     def run(command, cwd, env=None):
-        return subprocess.run(["sh", "-c", f"{server.tex_exec} {command} >/dev/null 2>&1"], cwd=cwd, timeout=600,
-                              env={**os.environ, **(env or {})}).returncode == 0
+        with SPAWNS:
+            return subprocess.run(["sh", "-c", f"{server.tex_exec} {command} >/dev/null 2>&1"], cwd=cwd, timeout=600,
+                                  env={**os.environ, **(env or {})}).returncode == 0
 
     def log():
         return read_output(root, os.path.join(out, f"{job}.log")) or ""
@@ -2873,6 +3971,8 @@ def exact_export(server, pdf, keep=None):
         if built == source and why:
             raise RuntimeError(why)
         if built != source or not os.path.isfile(os.path.join(root, BUILD, f"{job}.pdf")):
+            if SHARED and not image_pulled():  # (said plainly, rather than as a pdflatex failure with no log)
+                raise RuntimeError(f"{IMAGE_MISSING}; until then there is no download without notes (never the host's TeX here)")
             server.exported.pop(pdf, None)
             try:
                 shutil.rmtree(out, ignore_errors=True)
@@ -2906,10 +4006,11 @@ def exact_export(server, pdf, keep=None):
                 raise
             os.replace(os.path.join(out, f"{job}.pdf"), os.path.join(root, BUILD, f"{job}.pdf"))
             server.exported[pdf] = (source, None)
-            e = server.export  # (built for the review copy: the download without notes needs no second build)
-            if not (e.get("pdf") == pdf and (e.get("state") == "running" or e.get("source") == source)):
-                server.export = {"pdf": pdf, "source": source, "state": "done", "time": time.strftime("%H:%M:%S"), "msg": "",
-                                 "version": str(mtime(os.path.join(root, BUILD, f"{job}.pdf")))}
+            with server.download_lock:  # (built for the review copy: the download without notes needs no second build)
+                e = server.export
+                if not (e.get("pdf") == pdf and (e.get("state") == "running" or e.get("source") == source)):
+                    server.export = {"pdf": pdf, "source": source, "state": "done", "time": time.strftime("%H:%M:%S"), "msg": "",
+                                     "version": str(mtime(os.path.join(root, BUILD, f"{job}.pdf")))}
         if keep:
             keep(out)
     return out
@@ -2947,7 +4048,14 @@ def keep_inputs(out):
     inputs = os.path.join(out, "inputs")
     shutil.rmtree(inputs, ignore_errors=True)
     shutil.copytree(out, inputs, ignore=lambda folder, names: [n for n in names if n.endswith(AUX_SKIP)
-                                                                or (folder == out and n == "inputs")])
+                                                                or (folder == out and n == "inputs")] + links_in(folder, names))
+
+
+def links_in(folder, names):
+    """For shutil.copytree in shared mode, which copies what a link points to: the names in folder
+    that are symbolic links, to leave out. TeX writes none, and a copy of TeX's output (which editors
+    control) must bring in no file from elsewhere for the next pass to read, or the host to open."""
+    return [n for n in names if SHARED and os.path.islink(os.path.join(folder, n))]
 
 
 # The review copy (/review): the exact build without notes, its pages unchanged on wider pages, with
@@ -3075,16 +4183,17 @@ def start_review(server):
     pdf = server.default_pdf
     if not os.path.isfile(pdf_path(server.paper_root, pdf)):
         return 409, {"state": "failed", "msg": f"{pdf} has not built yet"}
-    r = server.review
-    if waiting := waiting_for_build(server, pdf, r):
-        return 200, waiting
-    source = str(mtime(pdf_path(server.paper_root, pdf)))
-    if r.get("pdf") == pdf and (r.get("state") == "running" or r.get("source") == source):  # (a failure too, until the next build)
-        return 200, r
-    server.review = {"pdf": pdf, "source": source, "state": "running", "step": "the exact build without notes",
-                     "time": time.strftime("%H:%M:%S"), "msg": ""}
-    threading.Thread(target=build_review, args=(server, pdf, source), daemon=True).start()
-    return 200, server.review
+    with server.download_lock:  # (from however many viewers at once: one build)
+        r = server.review
+        if waiting := waiting_for_build(server, pdf, r):
+            return 200, waiting
+        source = str(mtime(pdf_path(server.paper_root, pdf)))
+        if r.get("pdf") == pdf and (r.get("state") == "running" or r.get("source") == source):  # (a failure too, until the next build)
+            return 200, r
+        server.review = {"pdf": pdf, "source": source, "state": "running", "step": "the exact build without notes",
+                         "time": time.strftime("%H:%M:%S"), "msg": ""}
+        threading.Thread(target=build_review, args=(server, pdf, source), daemon=True).start()
+        return 200, server.review
 
 
 def build_review(server, pdf, source):
@@ -3098,16 +4207,20 @@ def build_review(server, pdf, source):
     job = f"{doc}-export"  # (the probe repeats the export's last pass, \jobname included)
 
     def step(text):
-        if server.review.get("pdf") == pdf and server.review.get("source") == source:
-            server.review = {**server.review, "step": text}
+        with server.download_lock:  # (not over a newer review's state: start_review)
+            if server.review.get("pdf") == pdf and server.review.get("source") == source:
+                server.review = {**server.review, "step": text}
 
     def keep(export):  # the export's PDF and SyncTeX, and the inputs of its last pass, for the probe
         shutil.copyfile(os.path.join(root, BUILD, f"{job}.pdf"), os.path.join(out, "export.pdf"))
         shutil.copyfile(os.path.join(export, f"{job}.synctex.gz"), os.path.join(out, "export.synctex.gz"))
-        shutil.copytree(os.path.join(export, "inputs"), out, dirs_exist_ok=True)
+        shutil.copytree(os.path.join(export, "inputs"), out, dirs_exist_ok=True, ignore=links_in)
 
     with server.review_lock:  # (one at a time: they share build/review/<doc>/)
         try:
+            if SHARED and not image_pulled():  # (said plainly, rather than as a pdflatex failure with no log)
+                raise RuntimeError(f"{IMAGE_MISSING}; until then there is no copy with notes in the margin"
+                                   " (never the host's TeX here)")
             notes = review_notes(root, pdf)
             if not notes:
                 raise RuntimeError("the paper has no notes to show (resolved ones and protected markers don't count)")
@@ -3136,8 +4249,9 @@ def build_review(server, pdf, source):
                     os.replace(os.path.join(out, name), os.path.join(copy, name))
             with open(os.path.join(copy, f"{doc}-review.tex"), "w", encoding="utf-8") as f:
                 f.write(review_tex(plan, geo, probe.get("colors", {}), notes))
-            r = subprocess.run(["sh", "-c", f"{server.tex_exec} pdflatex -interaction=batchmode -halt-on-error"
-                                            f" {doc}-review.tex >/dev/null 2>&1"], cwd=copy, timeout=600)
+            with SPAWNS:
+                r = subprocess.run(["sh", "-c", f"{server.tex_exec} pdflatex -interaction=batchmode -halt-on-error"
+                                                f" {doc}-review.tex >/dev/null 2>&1"], cwd=copy, timeout=600)
             log = read_output(root, os.path.join(copy, f"{doc}-review.log")) or ""
             written = re.search(r"Output written on .*?\((\d+) pages?", log.replace("\n", ""))
             if r.returncode != 0 or not written or int(written.group(1)) != plan["pages"]:
@@ -3148,9 +4262,10 @@ def build_review(server, pdf, source):
                      "notes": len(plan["notes"]), "approximate": sum(n["how"] != "exact" for n in plan["notes"]),
                      "continued": sum(n["top"] is None for n in plan["notes"])}
         except Exception as e:  # (shown in the viewer)
-            state = {"state": "failed", "msg": str(e)[:300]}
-    if server.review.get("pdf") == pdf and server.review.get("source") == source:
-        server.review = {**server.review, **state}
+            state = {"state": "failed", "msg": failure(server, e)}
+    with server.download_lock:  # (not over a newer review's state: start_review)
+        if server.review.get("pdf") == pdf and server.review.get("source") == source:
+            server.review = {**server.review, **state}
 
 
 def review_notes(paper_root, pdf_name):
@@ -3159,7 +4274,7 @@ def review_notes(paper_root, pdf_name):
     another note (they show in it), or LATEX_LIVE_PROTECTED markers. call is the note as written and
     body its argument, as Latin-1 (the file's bytes as they are); typeset is what its macro hands to
     \\todotxt, squeezed (to tell apart notes of two authors with the same text), or None."""
-    files = project_tex_files(paper_root, job_file(paper_root, pdf_name, ".fls"))
+    files = project_tex_files(paper_root, fls_file(paper_root, pdf_name))
     texts = [read_tex(p) for p in files]
     kinds = note_kinds(texts)
     if not kinds:
@@ -3225,9 +4340,11 @@ def run_probe(server, out, job, doc, notes, geo):
         for n in notes:
             f.write(f"\\latexlivesnippet{{{n['id']}}}{{{n['call']}}}\n")
     try:
-        subprocess.run(["sh", "-c", f"{server.tex_exec} pdflatex -interaction=batchmode -file-line-error -synctex=1"
-                                    f" -output-directory='{out}' -jobname={job} '\\input{{{rel}/probe}}\\input{{{doc}}}' >/dev/null 2>&1"],
-                       cwd=server.paper_root, timeout=600, env={**os.environ, "max_print_line": "1000000"})
+        with SPAWNS:  # (as the export's runs)
+            subprocess.run(["sh", "-c", f"{server.tex_exec} pdflatex -interaction=batchmode -file-line-error -synctex=1"
+                                        f" -output-directory='{out}' -jobname={job}"
+                                        f" '\\input{{{rel}/probe}}\\input{{{doc}}}' >/dev/null 2>&1"],
+                           cwd=server.paper_root, timeout=600, env={**os.environ, "max_print_line": "1000000"})
     except subprocess.TimeoutExpired:
         return {}
     probe = {"pos": [], "seen": [], "snippets": {}, "colors": {}, "synctex": os.path.join(out, f"{job}.synctex.gz")}
@@ -3301,7 +4418,7 @@ def note_colors(paper_root, pdf_name, macros):
     """{note macro: (model, color)}: the first color its definition sets (\\color or \\textcolor),
     e.g. ("", "Emerald") or ("rgb", "0.1,0.5,0.2"), for its number and wire."""
     found = {}
-    for path in project_tex_files(paper_root, job_file(paper_root, pdf_name, ".fls")):
+    for path in project_tex_files(paper_root, fls_file(paper_root, pdf_name)):
         text = read_tex(path)
         for m in NOTE_DEF_RE.finditer(text):
             color = re.search(r"\\(?:text)?color\s*(?:\[([^\]]*)\])?\s*\{([^{}]*)\}", brace_group(text, m.end())[0])
@@ -3699,9 +4816,11 @@ def review_tex(plan, geo, colors, notes):
     return "".join(out)
 
 
-def start_diff(server, query):
-    """/diff?rev=REV: build <doc>-diff.pdf, a latexdiff of REV against the working tree, in the background."""
-    rev = query.get("rev", [""])[0]
+def start_diff(server, rev, any_rev=True):
+    """POST /diff {rev} (and GET /diff?rev= without shared mode): build <doc>-diff.pdf, a latexdiff of
+    rev against the working tree, in the background. Without any_rev (a coauthor), only a commit that
+    HEAD builds on: other branches, tags and the stash may hold what isn't shared. (Its history is: the
+    shared copy is a branch of the paper's, and coauthors compare with any commit it builds on.)"""
     if not re.fullmatch(r"[\w./^~-]{1,80}", rev) or rev.startswith("-"):
         return 400, {"error": "bad rev"}
     if server.diff.get("state") == "running":
@@ -3710,6 +4829,9 @@ def start_diff(server, query):
                          capture_output=True, text=True).stdout.strip()
     if not sha:
         return 404, {"error": f"unknown revision {rev}"}
+    if not any_rev and subprocess.run(["git", "-C", server.paper_root, "merge-base", "--is-ancestor", sha, "HEAD"],
+                                      capture_output=True).returncode != 0:
+        return 403, {"error": f"{rev} is not a commit this version of the paper builds on"}
     server.diff = {"rev": rev, "sha": sha[:9], "state": "running", "time": time.strftime("%H:%M:%S"), "msg": ""}
     threading.Thread(target=build_diff, args=(server, sha), daemon=True).start()
     return 200, server.diff
@@ -3744,10 +4866,14 @@ def build_diff(server, sha):
             if os.path.isfile(os.path.join(root, rel_path)):
                 os.makedirs(os.path.dirname(os.path.join(new, rel_path)), exist_ok=True)
                 shutil.copyfile(os.path.join(root, rel_path), os.path.join(new, rel_path))
-        exec_ = container_argv(root) if image_pulled() else []  # else the host's, if it has latexdiff
-        r = run([*exec_, "latexdiff", "--flatten", "--type=UNDERLINE", "--math-markup=coarse",
-                 "--config", "PICTUREENV=(?:picture|DIFnomarkup|tikzpicture|NiceTabular|tabular)[\\w\\d*@]*",
-                 os.path.join(old, f"{doc}.tex"), os.path.join(new, f"{doc}.tex")], timeout=300)
+        pulled = image_pulled()
+        if SHARED and not pulled:  # (shared mode never runs the host's TeX tools)
+            raise RuntimeError(f"{IMAGE_MISSING}; meanwhile there is no diff")
+        exec_ = container_argv(root) if pulled else []  # else the host's, if it has latexdiff
+        with SPAWNS:
+            r = run([*exec_, "latexdiff", "--flatten", "--type=UNDERLINE", "--math-markup=coarse",
+                     "--config", "PICTUREENV=(?:picture|DIFnomarkup|tikzpicture|NiceTabular|tabular)[\\w\\d*@]*",
+                     os.path.join(old, f"{doc}.tex"), os.path.join(new, f"{doc}.tex")], timeout=300)
         if r.returncode != 0 or not r.stdout.strip():
             raise RuntimeError("latexdiff failed: " + (r.stderr.strip().splitlines() or ["no output"])[-1])
         with open(os.path.join(out, f"{job}.tex"), "w") as fh:
@@ -3756,9 +4882,10 @@ def build_diff(server, sha):
             if os.path.exists(job_file(root, server.default_pdf, ext)):
                 shutil.copyfile(job_file(root, server.default_pdf, ext), os.path.join(out, job + ext))
         tex = [*exec_, "pdflatex", "-interaction=nonstopmode", f"-output-directory={out}", f"-jobname={job}",
-               os.path.join(out, f"{job}.tex")]
+               os.path.relpath(os.path.join(out, f"{job}.tex"), root)]  # (relative: shared mode's TeX opens no absolute path)
         for _ in range(2):
-            r = run(tex, timeout=300, env={**os.environ, "max_print_line": "10000"})
+            with SPAWNS:
+                r = run(tex, timeout=300, env={**os.environ, "max_print_line": "10000"})
         pdf = os.path.join(out, f"{job}.pdf")
         if not os.path.isfile(pdf):
             bang = next((l for l in r.stdout.splitlines() if l.startswith("! ")), "pdflatex produced no PDF")
@@ -3808,22 +4935,27 @@ def base_status(server, pdf_name, kind, build=True):
     if pdf_name != server.default_pdf:
         return None
     lock = server.base_locks[kind]
-    if time.monotonic() - server.base_checked[kind] > 3 and lock.acquire(blocking=False):
+    due = time.monotonic() - server.base_checked[kind] > 3
+    if (due or build and server.bases[kind].get("state") == "waiting") and lock.acquire(blocking=False):
         try:
-            server.base_checked[kind] = time.monotonic()
-            if kind == "head":
-                r = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True)
-                sha, ref = r.stdout.strip() if r.returncode == 0 else None, None
-            else:
-                sha, ref = pushed_commit(root)
             b = server.bases[kind]
-            if not sha:
-                server.bases[kind] = b = {}
-            elif (sha, pdf_name) != (b.get("sha"), b.get("pdf")) and b.get("state") != "running":
-                server.bases[kind] = b = {"sha": sha, "ref": ref, "pdf": pdf_name, "state": "waiting", "msg": ""}
+            if due:
+                server.base_checked[kind] = time.monotonic()
+                if kind == "head":
+                    r = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True)
+                    sha, ref = r.stdout.strip() if r.returncode == 0 else None, None
+                else:
+                    sha, ref = pushed_commit(root)
+                if not sha:
+                    server.bases[kind] = b = {}
+                elif (sha, pdf_name) != (b.get("sha"), b.get("pdf")) and b.get("state") != "running":
+                    server.bases[kind] = b = {"sha": sha, "ref": ref, "pdf": pdf_name, "state": "waiting", "msg": ""}
+            sha = b.get("sha")
             if b.get("state") == "waiting" and build and os.path.isfile(job_file(root, pdf_name, ".aux")):
                 head = server.bases["head"]
-                if kind == "push" and (head.get("sha"), head.get("pdf")) == (sha, pdf_name):
+                # (in shared mode HEAD's baseline is built only when a viewer asks for it: then it isn't waited for)
+                head_coming = not SHARED or head.get("built") == sha or head.get("state") in ("running", "failed")
+                if kind == "push" and (head.get("sha"), head.get("pdf")) == (sha, pdf_name) and head_coming:
                     if head.get("built") == sha:  # (else wait for the HEAD build)
                         share_head_base(server, pdf_name)
                         b.update(state="done", built=sha)
@@ -3862,13 +4994,27 @@ def share_head_base(server, pdf_name):
                 shutil.copy2(head, push)
 
 
+def link_missing(source, target, skip=()):
+    """Link each entry of the folder source into target that target lacks (but those named in skip),
+    and do the same inside each folder that both have: git archive made those in target for the .tex
+    files in them, and the rest of their files (fonts, images) must resolve there too."""
+    for name in os.listdir(source):
+        here, there = os.path.join(source, name), os.path.join(target, name)
+        if name in skip:
+            continue
+        if not os.path.lexists(there):
+            os.symlink(here, there)
+        elif os.path.isdir(here) and not os.path.islink(here) and os.path.isdir(there) and not os.path.islink(there):
+            link_missing(here, there)
+
+
 def build_base(server, kind, sha, pdf_name):
     """The document as committed at sha, for the kind of baseline (base_status): build/<doc>-<kind>.pdf,
     plus build/<doc>-<kind>-clean.pdf without notes (when the live build has a notes-free PDF).
 
     Like build_diff, only the .tex files come from git (`git archive` into build/<kind>/<doc>/src/).
     Figures, styles, fonts and the bibliography resolve to the working tree's (through TEXINPUTS,
-    and links for the top-level entries with no .tex files, such as a class's font directory), so
+    and links for everything else, such as a class's font directory: link_missing), so
     the diff shows text edits; the viewer marks changed figures itself. The live build's .aux/.bbl
     seed the references: two passes with notes, then one without (two with line numbers,
     latex_report.uses_lineno).
@@ -3884,7 +5030,8 @@ def build_base(server, kind, sha, pdf_name):
     def tex(jobname, source):
         cmd = (f"{server.tex_exec} pdflatex -interaction=batchmode -output-directory='{out}' -jobname={jobname}"
                f" '{source}' >/dev/null 2>&1")
-        subprocess.run(["sh", "-c", cmd], cwd=src, timeout=300, env={**os.environ, "TEXINPUTS": f"{src}:{root}:"})
+        with SPAWNS:
+            subprocess.run(["sh", "-c", cmd], cwd=src, timeout=300, env={**os.environ, "TEXINPUTS": f"{src}:{root}:"})
         return os.path.join(out, f"{jobname}.pdf")
 
     try:
@@ -3895,9 +5042,7 @@ def build_base(server, kind, sha, pdf_name):
         archive.wait()
         if not os.path.isfile(os.path.join(src, f"{doc}.tex")):
             raise RuntimeError(f"{doc}.tex is not in {sha[:9]}")
-        for name in os.listdir(root):  # (fonts are not looked up through TEXINPUTS)
-            if name not in (".git", BUILD.split(os.sep)[0]) and not os.path.lexists(os.path.join(src, name)):
-                os.symlink(os.path.join(root, name), os.path.join(src, name))
+        link_missing(root, src, skip=(".git", BUILD.split(os.sep)[0]))  # (fonts are not looked up through TEXINPUTS)
         for ext in (".aux", ".bbl", ".brf"):  # (.brf: hyperref's back-references)
             if os.path.exists(job_file(root, pdf_name, ext)):
                 shutil.copyfile(job_file(root, pdf_name, ext), os.path.join(out, job + ext))
@@ -3924,34 +5069,52 @@ def build_base(server, kind, sha, pdf_name):
 
 
 def serve(paper_root, default_pdf, port, page_limit):
-    for p in range(port, port + 10):  # a small range, for tunnels that forward only a few ports
+    """The instance's server, set up; main starts serving (server.serve_forever in a thread)."""
+    # A small range, for tunnels that forward only a few ports. A shared instance takes exactly its
+    # port: the proxy sends coauthors there, and must not reach another preview that holds it.
+    for p in [port] if SHARED else range(port, port + 10):
         try:
-            server = DualStackServer(("::", p), Handler)
+            server = (LoopbackServer if SHARED else DualStackServer)(("::", p), Handler)
             break
         except OSError:
             continue
     else:
-        sys.exit(f"latex-live: no free port in {port}-{port + 9}")
+        sys.exit(f"latex-live: port {port} is taken; a shared instance serves exactly --port" if SHARED
+                 else f"latex-live: no free port in {port}-{port + 9}")
     server.daemon_threads = True
+    server.git_name = None  # (owner_name)
     server.paper_root = paper_root
     server.paper_id = paper_id(paper_root)  # (checked against the hub's requests: Handler.misdirected)
     server.default_pdf = default_pdf
     server.page_limit = page_limit
     server.diff = {}
     server.export, server.review = {}, {}  # (start_export, start_review)
+    server.download_lock = threading.Lock()  # (their states: checked and started at once, never over a newer one)
     server.review_lock = threading.Lock()  # (build_review)
     server.export_lock, server.exported = threading.Lock(), {}  # (exact_export)
     server.bases, server.base_checked = {"head": {}, "push": {}}, {"head": 0, "push": 0}  # (base_status)
     server.base_locks = {"head": threading.Lock(), "push": threading.Lock()}
-    server.tex_exec = ""  # main: the tex-exec prefix, as for latexmk
+    # The tex-exec prefix, as for latexmk (main sets it). In shared mode the confined image from the
+    # start: a request (an export, a baseline) may come before main gets there, and must not run the host's TeX.
+    server.tex_exec = container_exec(os.path.realpath(paper_root)) if SHARED else ""
     server.image_checked, server.image_note = 0, None
-    server.latexmk, server.lock, server.stopping, server.retried = None, None, False, -60
+    server.latexmk, server.lock, server.stopping, server.retried, server.no_build = None, None, False, -60, False
     server.requests = queue.Queue()  # document switches and rebuilds, for the main thread (on_main_thread)
     server.editable = None  # (editable_files)
     server.versions, server.versions_lock = collections.OrderedDict(), threading.Lock()  # (remember_version)
-    server.last_saves = collections.OrderedDict()  # (save_file: by file and editor, the last 256)
+    server.last_saves = collections.OrderedDict()  # (save_file: by user, file and editor, the last 256)
+    server.last_writer = {}  # (wrote)
+    server.autocommit, server.pending, server.write_seq, server.commit_said = False, {}, 0, None  # (remember_write)
+    server.pending_lock = threading.Lock()
+    server.pending_file = os.path.join(STATE, "pending", f"{server.paper_id}.json")  # (save_pending)
+    server.git_dir = None  # (git_dir)
+    server.results, server.results_lock = {}, threading.Lock()  # (shared_result)
+    server.checks, server.checks_running, server.checks_lock = {}, {}, threading.Lock()  # (cached_checks)
+    # shared_build's state: whether a run is on, its status and the notes-free pass's, what it published, the
+    # sources' stat it built from, and the requests to build again (POST /rebuild, at most every 20 s for coauthors).
+    server.shared = {"building": False, "status": None, "clean": None, "published": None, "wanted": threading.Event(),
+                     "force": False, "rebuilt": -60, "proc": None, "clean_seq": 0, "bib": None, "idx": None, "retried": -60}
     server.token = load_token()
-    threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 
 
@@ -3967,7 +5130,9 @@ def open_in_editor(pdf):
 
 def take_lock(doc):
     """The lock on build/<doc>-live.lock (one instance per document), or (None, the holder's
-    {port, pid}; no pid from older versions, which recorded only the port)."""
+    {port, pid, state}; no pid from older versions, which recorded only the port, and no state, its
+    LATEX_LIVE_STATE, from those before 0.4). TeX can write in build/, so this is a hint to check
+    (runs_here, instance_answers), not a fact."""
     lock = open(os.path.join(BUILD, f"{doc}-live.lock"), "a+")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -3986,7 +5151,7 @@ def record_port(server):
     """The viewer port and this process, in the lock file for later instances of the document,
     and in the list of running instances (instances)."""
     server.lock.truncate(0)
-    server.lock.write(json.dumps({"port": server.server_address[1], "pid": os.getpid()}))
+    server.lock.write(json.dumps({"port": server.server_address[1], "pid": os.getpid(), "state": STATE}))
     server.lock.flush()
     os.makedirs(INSTANCES, exist_ok=True)
     entry = {"port": server.server_address[1], "pid": os.getpid(), "root": server.paper_root, "doc": server.default_pdf[:-4],
@@ -4022,6 +5187,20 @@ def is_live_argv(argv):
             return False
         args = args[2:] if args[0] in ("-W", "-X") else args[1:]  # (options with a value)
     return bool(args) and os.path.basename(args[0]) == "live.py"
+
+
+def runs_here(pid, root):
+    """Whether pid is a latex-live instance (is_live_instance) working in root, a paper root (its
+    working directory, as Linux's /proc tells; elsewhere, only its command line is checked). The lock
+    file in build/ names the pid to stop, and the paper's TeX can write there: it must not make us
+    stop another process."""
+    if not os.path.isdir("/proc/self"):
+        return is_live_instance(pid)
+    try:
+        cwd = os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return False
+    return os.path.realpath(cwd) == os.path.realpath(root) and is_live_instance(pid)  # (its command line read after its folder)
 
 
 def instances():
@@ -4148,9 +5327,10 @@ class HubHandler(Handler):
         """Send the request on to the preview of doc in paper id_, and its answer back. The
         preview checks that it is that paper (X-Latex-Live-Paper): a port that its preview gave
         up and another paper's took since the last look answers 421, and the hub looks again."""
-        length = content_length(self.headers)
-        if not 0 <= length <= POST_LIMITS.get(urllib.parse.urlsplit(path).path, POST_LIMIT):  # (the previews' own limits)
-            return self.send_error(413 if length > 0 else 400)
+        target_path = urllib.parse.unquote(urllib.parse.urlsplit(path).path)
+        length, error = content_length(self.headers, POST_LIMITS.get(target_path, POST_LIMIT))  # (the previews' own limits)
+        if error:
+            return self.send_error(error)
         body = self.rfile.read(length) if length else None
         headers = {k: v for k, v in self.headers.items() if k.lower() in ("content-type", "range", "if-range")}
         headers.update({"Cookie": f"latex_live={self.server.token}", "X-Latex-Live-Paper": id_})
@@ -4266,7 +5446,17 @@ def answers(port, path):
 
 
 def instance_answers(port):
-    return answers(port, "/docs")
+    """Whether an HTTP server answers on port within a few seconds, whatever it answers: the port of the
+    instance that holds a document's lock, which it records in build/, where the paper's TeX can write.
+    So the request carries no token (an instance with it refuses it, and still answers)."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/docs", timeout=3):
+            return True
+    except urllib.error.HTTPError as e:
+        e.close()
+        return True
+    except (OSError, ValueError, http.client.HTTPException):
+        return False
 
 
 def hub_lock_held():
@@ -4299,9 +5489,10 @@ def replace_stuck_hub():
     stop_instance(hub["pid"])
 
 
-def stop_instance(pid):
-    """Stop another latex-live instance (it stops its latexmk); False if pid is not one, or won't stop."""
-    if not is_live_instance(pid):
+def stop_instance(pid, root=None):
+    """Stop another latex-live instance (it stops its latexmk); False if pid is not one (with root: one
+    working in that paper root, runs_here), or won't stop."""
+    if not (runs_here(pid, root) if root else is_live_instance(pid)):
         return False
     try:
         os.kill(pid, signal.SIGTERM)
@@ -4441,7 +5632,11 @@ def rebuild_doc(server):
 
 
 def container_argv(paper_root):
-    """Argument list that runs a tool in the TeX Live image (for subprocess, with cwd = paper root)."""
+    """Argument list that runs a tool in the TeX Live image (for subprocess, with cwd = paper root). In
+    shared mode, through tex-exec, which confines it there (LATEX_LIVE_SANDBOX) and never falls back to
+    the host's TeX (LATEX_LIVE_REQUIRE_IMAGE)."""
+    if SHARED:
+        return [os.path.join(HERE, "tex-exec"), TEXLIVE_IMAGE, os.path.realpath(paper_root)]
     return ["podman", "run", "--rm", "--init", "--pull=never", "--network=none", "--security-opt", "label=disable",
             "-v", f"{paper_root}:{paper_root}", "-w", os.path.realpath(paper_root), "-e", "max_print_line", TEXLIVE_IMAGE]
 
@@ -4452,11 +5647,300 @@ def container_exec(paper_root):
     return f"'{os.path.join(HERE, 'tex-exec')}' {TEXLIVE_IMAGE} '{paper_root}'"
 
 
+# Shared mode builds without latexmk (shared_build). latexmk is Perl that runs on the host, and it
+# parses the files that the paper's TeX writes (.aux, .bcf, .log): it hands \bibdata names from the
+# .aux to a shell command (its kpsewhich), so coauthors who write the paper could run commands on this
+# machine through it. Instead, live.py watches the paper's files itself and runs pdflatex, bibtex,
+# biber and makeindex as argument lists, each in a container of its own (tex-exec, confined, with the
+# paper read-only and only build/ writable), and it treats what they write in build/ as written by
+# someone else: the run's state, its status and what it published stay in memory (server.shared).
+# The same layout line as latexmkrc's $pre_tex_code (check.py checks that they agree).
+LAYOUT_TEX = (r"\def\latexlivelayout{\typeout{latex-live layout:"
+              r" \the\paperwidth,\the\paperheight,\the\hoffset,\the\oddsidemargin,\the\voffset,\the\topmargin,"
+              r"\the\headheight,\the\headsep,\the\textwidth,\the\textheight,\the\columnwidth,\the\baselineskip}}"
+              r"\ifdefined\AddToHook\AddToHook{begindocument/end}{\latexlivelayout}\else\AtBeginDocument{\latexlivelayout}\fi")
+RERUN_RE = re.compile(r"Rerun to get|may have changed\. Rerun|Please rerun|rerunfilecheck Warning")
+BIBDATA_RE = re.compile(r"^\\(?:citation|bibdata|bibstyle)\{.*\}$", re.M)
+INSTANCE = f"{os.getpid()}-{secrets.token_hex(4)}"  # (tex-exec labels a shared instance's containers with it)
+
+
+def start_shared_build(server):
+    """Shared mode: build the document now, and again whenever its files change (shared_build)."""
+    os.environ["LATEX_LIVE_DOC"] = server.default_pdf[:-4]  # (latex_report.run_report names the main file after it)
+    threading.Thread(target=shared_build, args=(server,), daemon=True).start()
+
+
+def shared_inputs(server):
+    """The files a build of the shared document depends on: those the browser editor opens (the main
+    file, what the last build read, the .bib files) and the paper's other files the last build read
+    (figures, styles), as {real path: their stat (mtime, size, inode), or None if gone}."""
+    root = server.paper_root
+    paths = set(editable_files(server).values())
+    paths |= {os.path.realpath(os.path.join(root, rel)) for rel in project_inputs(root, fls_file(root, server.default_pdf))}
+    found = {}
+    for path in paths:
+        try:
+            st = os.stat(path)
+            found[path] = (st.st_mtime_ns, st.st_size, st.st_ino)
+        except OSError:
+            found[path] = None
+    return found
+
+
+def shared_build(server):
+    """Shared mode's builder, a thread of its own: a run (shared_run) at the start, then whenever one of
+    the files it depends on changes (shared_inputs, looked at twice a second; a change during a run
+    makes another), or POST /rebuild asks for one (shared_rebuild_request). Never more than one run
+    at a time."""
+    built = None
+    while not server.stopping:
+        asked = server.shared["wanted"].wait(0.5)
+        now = shared_inputs(server)
+        if not asked and built is not None and all(built.get(path, stat) == stat for path, stat in now.items()):
+            continue
+        server.shared["wanted"].clear()
+        server.shared["force"] = False
+        try:
+            shared_run(server)
+        except Exception:  # (said, and the next change tries again)
+            print(f"=== latex-live: the build failed:\n{traceback.format_exc().rstrip()}", flush=True)
+            server.shared.update(building=False, status={"ok": False, "time": time.strftime("%H:%M:%S"),
+                                                         "errors": [{"file": None, "line": None, "msg": "the build failed (see the server's log)"}]})
+        built = {**shared_inputs(server), **now}  # (as the run started: files the run read for the first time count as they are now)
+
+
+def shared_tool(server, argv, run="main"):
+    """Run a TeX tool (argv) in its own container (tex-exec, from the paper root), for up to 10 minutes;
+    whether it succeeded. run labels the container, so that a rebuild stops a main run's (stop_containers)."""
+    proc = subprocess.Popen([*container_argv(server.paper_root), *argv], cwd=server.paper_root,
+                            env={**server.env, "LATEX_LIVE_RUN": run}, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if run == "main":
+        server.shared["proc"] = proc
+    try:
+        return proc.wait(timeout=600) == 0
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        stop_containers(run)
+        return False
+    finally:
+        if run == "main":
+            server.shared["proc"] = None
+
+
+def read_build(path, limit=64 << 20):
+    """A file a TeX tool wrote in build/, as text (at most limit characters), or "" if there is none."""
+    try:
+        with open(path, errors="replace") as f:
+            return f.read(limit)
+    except OSError:
+        return ""
+
+
+def bib_state(server, aux):
+    """What a bibtex run depends on: the .aux's citation, bibliography and style lines, and the stat of
+    the .bib files it names in the paper (in_paper), to tell whether bibtex needs to run again."""
+    root, stats = server.paper_root, []
+    for names in re.findall(r"^\\bibdata\{(.*)\}$", aux, re.M):
+        for name in names.split(","):
+            path = os.path.normpath(os.path.join(root, name.strip() + ("" if name.strip().endswith(".bib") else ".bib")))
+            if in_paper(root, path) and os.path.isfile(path):
+                st = os.stat(path)
+                stats.append((path, st.st_mtime_ns, st.st_size))
+    return hashlib.sha256(repr((BIBDATA_RE.findall(aux), stats)).encode()).hexdigest()
+
+
+def shared_run(server):
+    """One build of the shared document (shared_build), as latexmk would make it: pdflatex in passes, with
+    bibtex, biber or makeindex between them where the paper uses them, until the references settle (at
+    most six passes). Each successful pass publishes the PDF (shared_publish) and keeps its list of files
+    (build/<job>.fls.done); the run's status, from the log (latex_report.run_report, with the paper's own
+    files only), stays in memory; and a successful run starts the notes-free pass (shared_notes_free).
+    A rebuild stops a run part way (its containers: stop_containers) and starts it again."""
+    sys.path.insert(0, HERE)
+    import latex_report
+    root, pdf = server.paper_root, server.default_pdf
+    doc, job = pdf[:-4], f"{pdf[:-4]}-live"
+    out = lambda ext: os.path.join(BUILD, job + ext)  # (relative to the paper root, as the tools see it)
+    server.shared["building"] = True
+    began = time.time_ns()  # (in its status: the run reflects the files as they were then)
+    try:
+        stop_containers("main")  # (one that a rebuild's stop missed: its client had not started it yet)
+        if not image_pulled():
+            raise RuntimeError(f"{IMAGE_MISSING}; until then nothing builds (never the host's TeX here)")
+        tex = ["pdflatex", "-recorder", "-synctex=1", "-file-line-error", "-halt-on-error", "-interaction=batchmode",
+               f"-output-directory={BUILD}", f"-jobname={job}", f"{LAYOUT_TEX}\\input{{{doc}}}"]
+        ok = False
+        for passes in range(1, 7):
+            before = read_build(out(".aux"))
+            ok = shared_tool(server, tex)
+            if server.shared["force"]:  # (a rebuild stopped it: shared_build starts again)
+                return
+            if not ok:
+                break
+            latex_report.keep_inputs(job)
+            shared_publish(server, job)
+            aux, log = read_build(out(".aux")), read_build(out(".log"))
+            ran = False
+            if "\\bibdata" in aux and (state := bib_state(server, aux)) != server.shared["bib"]:
+                ran = shared_tool(server, ["bibtex", f"{BUILD}/{job}"])
+                server.shared["bib"] = state  # (failed or not: again once what it reads changes, or on a rebuild)
+            elif os.path.exists(out(".bcf")) and re.search(r"Please \(?re\)?run Biber", log):
+                ran = shared_tool(server, ["biber", f"--output-directory={BUILD}", job])
+            idx = read_build(out(".idx"))
+            if idx and (state := hashlib.sha256(idx.encode()).hexdigest()) != server.shared["idx"]:
+                server.shared["idx"] = state
+                ran = shared_tool(server, ["makeindex", "-o", out(".ind"), out(".idx")]) or ran
+            if server.shared["force"]:
+                return
+            if not ran and not RERUN_RE.search(log) and aux == before:
+                break
+        files = [os.path.relpath(p, root) for p in project_tex_files(root, fls_file(root, pdf))]
+        ok, status, log, _ = latex_report.run_report(job, "ok" if ok else "fail", files)
+        if not ok and latex_report.damaged_aux(log, job) and time.monotonic() - server.shared["retried"] > 60:
+            server.shared["retried"] = time.monotonic()  # (a run stopped part way cut off an .aux: once more without them)
+            for ext in latex_report.AUX_EXTS:
+                try:
+                    os.remove(out(ext))
+                except OSError:
+                    pass
+            server.shared["wanted"].set()
+        server.shared["status"] = {**status, "began": began}
+        stamp = status["time"]
+        print(f"=== live-reload: published {pdf} at {stamp}" if ok else f"=== live-reload: BUILD FAILED at {stamp}; kept the previous {pdf}",
+              flush=True)
+        if ok and latex_report.has_notes(files):
+            shared_notes_free(server, job, doc)
+    except RuntimeError as e:
+        server.shared["status"] = {"ok": False, "time": time.strftime("%H:%M:%S"), "began": began,
+                                   "errors": [{"file": None, "line": None, "msg": str(e)}]}
+    finally:
+        server.shared["building"] = False
+
+
+def shared_publish(server, job):
+    """Publish build/<job>.pdf as the shared document's PDF, in one step, and remember what was published
+    (status's "overwritten" compares the PDF with it). Never through a symbolic link: build/ is written in
+    the containers."""
+    dest = pdf_path(server.paper_root, server.default_pdf)
+    try:
+        fd = os.open(os.path.join(server.paper_root, BUILD, f"{job}.pdf"), os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return
+    tmp = os.path.join(os.path.dirname(dest), f".{os.path.basename(dest)}.tmp")
+    with open(fd, "rb") as src, open(tmp, "wb") as f:
+        shutil.copyfileobj(src, f)
+    os.replace(tmp, dest)
+    st = os.stat(dest)
+    server.shared["published"] = {"mtime": st.st_mtime_ns, "size": st.st_size}
+
+
+def shared_notes_free(server, job, doc):
+    """The notes-free pass after a successful run (latex_report.notes_free_pass), in a thread, in a
+    container labelled "clean": a newer run's pass stops an older one's, whose result then counts no more."""
+    sys.path.insert(0, HERE)
+    import latex_report
+    stop_containers("clean")
+    server.shared["clean_seq"] += 1
+    seq = server.shared["clean_seq"]
+    latex_report.seed_notes_free(job, doc)
+
+    def run():
+        status = latex_report.notes_free_pass(job, doc, env={**server.env, "LATEX_LIVE_RUN": "clean"})
+        if seq == server.shared["clean_seq"]:
+            server.shared["clean"] = status
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def stop_containers(run=None):
+    """Stop this shared instance's containers (tex-exec labels them with INSTANCE), or those of one kind
+    of run ("main", "clean"), at once. Once the podman client is stopped, a container keeps running;
+    this stops the container itself."""
+    if not SHARED:
+        return
+    filters = ["--filter", f"label=latex-live.instance={INSTANCE}"] + (["--filter", f"label=latex-live.run={run}"] if run else [])
+    try:
+        ids = subprocess.run(["podman", "ps", "-q", *filters], capture_output=True, text=True, timeout=30).stdout.split()
+        if ids:
+            subprocess.run(["podman", "rm", "-f", "-t", "0", *ids], capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def shared_rebuild_request(server, user):
+    """POST /rebuild in shared mode: stop the run in progress (its containers too) and build again. At
+    most once every 20 s for the coauthors together (429; the owner, any time), so that they can't keep the
+    machine busy."""
+    if user["role"] != "owner":
+        if time.monotonic() - server.shared["rebuilt"] < 20:
+            return 429, {"error": "it was just rebuilt; try again in a few seconds"}
+        server.shared["rebuilt"] = time.monotonic()
+    server.shared.update(force=True, bib=None, idx=None)  # (bibtex and makeindex run again too)
+    if proc := server.shared["proc"]:
+        proc.terminate()
+    stop_containers("main")
+    server.shared["wanted"].set()
+    print(f"=== latex-live: rebuilding {server.default_pdf[:-4]}.tex (asked by {user['name'] or user['id']})", flush=True)
+    return 202, {"doc": server.default_pdf[:-4]}
+
+
+def baseline_request(server, kind):
+    """POST /baseline {kind: "head" or "push"} in shared mode: build that baseline for the change
+    highlights, once per commit (base_status), where status, a GET, only reports it."""
+    if kind not in ("head", "push"):
+        return 400, {"error": "kind is head or push"}
+    return 200, base_status(server, server.default_pdf, kind) or {}
+
+
 def print_urls(port, path="/"):
     token = load_token()
     print(f"=== latex-live: viewer (on a remote machine, forward port {port} first): http://localhost:{port}{path}?t={token}", flush=True)
-    if host := os.environ.get("LATEX_LIVE_HOST"):
+    if (host := os.environ.get("LATEX_LIVE_HOST")) and not SHARED:  # (a shared instance answers only on this machine)
         print(f"=== latex-live: viewer, direct: http://{host}:{port}{path}?t={token}", flush=True)
+
+
+def print_shared_urls(port):
+    """Shared mode: the link for coauthors, with no token in it (the proxy names them; a personal link
+    adds ?t= with the user's own token), then the owner's own on this machine, also without its token:
+    a shared instance usually runs as a service, whose output goes to a log that others may read."""
+    where = f"{PUBLIC_ORIGIN}/" if PUBLIC_ORIGIN else "the proxy's address (LATEX_LIVE_PUBLIC_URL would print it here)"
+    print(f"=== latex-live: shared with the users in {USERS_FILE}: {where} (a personal link adds ?t=<their token>)", flush=True)
+    print(f"=== latex-live: on this machine: http://localhost:{port}/ (add your token the first time: it is in {TOKEN_FILE})",
+          flush=True)
+
+
+def check_shared(args):
+    """Before a shared instance starts: stop on a setting it can't run with (SHARED_PROBLEMS, the users
+    file, host TeX, the owner's own state folder, the identity header without the proxy's uid on Linux),
+    warn about weak ones, and confine every TeX run from here on (tex-exec reads these variables; every
+    run passes the environment on)."""
+    if SHARED_PROBLEMS:
+        sys.exit("\n".join(f"latex-live: {problem}" for problem in SHARED_PROBLEMS))
+    try:
+        load_users(USERS_FILE)
+    except (OSError, ValueError) as e:
+        sys.exit(f"latex-live: the users file {USERS_FILE}: {e}")
+    users()  # (warns if others can read it)
+    if args.host_tex or not shutil.which("podman"):
+        sys.exit("latex-live: a shared instance builds only in the TeX Live image (coauthors write the sources), "
+                 + ("so not with --host-tex" if args.host_tex else "with rootless podman, which is not installed here"))
+    if os.path.realpath(STATE) == os.path.realpath(DEFAULT_STATE):
+        sys.exit(f"latex-live: a shared instance needs a state folder of its own (LATEX_LIVE_STATE), not {DEFAULT_STATE}: there"
+                 " it would share your previews' token and list itself among them")
+    if IDENTITY_HEADER and PROXY_UID is None and sys.platform.startswith("linux"):
+        sys.exit(f"latex-live: with LATEX_LIVE_IDENTITY_HEADER, set LATEX_LIVE_PROXY_UID to the uid the proxy runs as: any"
+                 f" program on this machine can send {IDENTITY_HEADER} and act as any user in the users file")
+    if IDENTITY_HEADER and PROXY_UID is None:
+        print(f"=== latex-live: any program on this machine can send {IDENTITY_HEADER} and act as any user in the users file;"
+              " LATEX_LIVE_PROXY_UID (the proxy's uid, on Linux) prevents that", flush=True)
+    if IDENTITY_HEADER and PROXY_UID is not None and not os.path.exists("/proc/net/tcp"):
+        print(f"=== latex-live: LATEX_LIVE_PROXY_UID needs Linux's /proc/net/tcp, so {IDENTITY_HEADER} counts from no one", flush=True)
+    if IDENTITY_HEADER and not PUBLIC_ORIGIN:
+        print("=== latex-live: without LATEX_LIVE_PUBLIC_URL, coauthors who come through the proxy can read but not comment"
+              " or edit (their browser's Origin can't be checked)", flush=True)
+    os.environ.update(LATEX_LIVE_REQUIRE_IMAGE="1", LATEX_LIVE_SANDBOX="1", LATEX_LIVE_INSTANCE=INSTANCE)
 
 
 def print_hub_urls(doc, fallback_port, wait=0):
@@ -4477,9 +5961,10 @@ def main():
                     " sources were edited last. The viewer switches between root files. A path (e.g. the editor's"
                     " current file) runs in that file's paper: it builds the file if it is a root one.")
     ap.add_argument("--version", action="version", version=f"latex-live {VERSION}")
-    ap.add_argument("--port", type=int, default=default_port(), help="the hub's port, which serves every preview (default:"
+    ap.add_argument("--port", type=int, help="the hub's port, which serves every preview (default:"
                     " $LATEX_LIVE_PORT, else the number in ~/.config/latex-live/port, else 44100); each preview also has"
-                    " its own, from the next one")
+                    " its own, from the next one. A shared instance (LATEX_LIVE_USERS) serves exactly this port, without"
+                    " the hub, and needs it")
     ap.add_argument("--page-limit", type=int, help="main-text page limit to check in the viewer (default: the venue's,"
                     " for ICLR, NeurIPS, COLM, ICML, CVPR and ICCV styles)")
     ap.add_argument("--build-dir", default="build", help="build directory, relative to the paper root (default: build);"
@@ -4490,9 +5975,15 @@ def main():
     ap.add_argument("--replace", action="store_true", help="stop another instance building the same document and run here"
                     " (one that no longer answers is replaced anyway)")
     args = ap.parse_args()
+    if args.port is None:
+        if SHARED:  # (it would otherwise take the hub's port, which the owner's previews use)
+            sys.exit("latex-live: a shared instance (LATEX_LIVE_USERS) needs --port: the port its proxy connects to")
+        args.port = default_port()
     global BUILD, PUBLISH
     BUILD = os.environ["LATEX_LIVE_BUILD"] = os.path.normpath(args.build_dir)
     PUBLISH = "" if BUILD == "build" else BUILD
+    if SHARED:
+        check_shared(args)
 
     if args.doc and os.path.dirname(args.doc):  # a path: run in its paper
         path = os.path.abspath(args.doc)
@@ -4517,33 +6008,56 @@ def main():
     os.makedirs(BUILD, exist_ok=True)
     lock, other = take_lock(doc)
     if not lock:
-        port, pid = other.get("port"), other.get("pid")
+        port, pid, state = other.get("port"), other.get("pid"), other.get("state")
         holder = f"process {pid}, port {port}" if pid else f"port {port}"
         if port and instance_answers(port) and not args.replace:
             print(f"=== latex-live: already running for {doc}.tex ({holder}; another terminal or window)", flush=True)
-            if any(e["pid"] == pid and e.get("id") for e in instances()):
+            listed = any(e["pid"] == pid and e.get("id") for e in instances())  # (the port in build/ is a hint: take_lock)
+            if isinstance(state, str) and os.path.realpath(state) != os.path.realpath(STATE):  # (its token is not ours)
+                where = state if state.isprintable() else "another folder"
+                print(f"=== latex-live: it keeps its state in {where} (LATEX_LIVE_STATE), so its link is not printed here", flush=True)
+            elif SHARED:
+                print_shared_urls(port)
+            elif listed:
                 print_hub_urls(doc, port)
-            else:  # (a version from before the hub, which only serves its own port)
-                print_urls(port)
+            else:  # (not in this user's list of instances: its port is not trusted with the token)
+                print(f"=== latex-live: it is not in {INSTANCES}, so its link is not printed here", flush=True)
             print("=== latex-live: --replace stops that one and runs here", flush=True)
             return
         if not pid:
             sys.exit(f"latex-live: {doc}.tex is held by an instance that is not answering ({holder}); stop it and retry")
+        if not runs_here(pid, os.getcwd()):
+            sys.exit(f"latex-live: {doc}.tex is locked, but the process its lock file names ({pid}) is not latex-live working in"
+                     f" {os.getcwd()}, so it is not stopped; stop the instance for {doc}.tex yourself and retry")
         print(f"=== latex-live: stopping the instance for {doc}.tex ({holder})"
               + ("" if args.replace else ", which is not answering"), flush=True)
-        if not stop_instance(pid):
+        if not stop_instance(pid, os.getcwd()):
             sys.exit(f"latex-live: could not stop process {pid}; stop it and retry")
-        lock, other = take_lock(doc)
-        if not lock:
+        for _ in range(50):  # (an exiting instance stops looking live a moment before it lets go of the lock)
+            lock, other = take_lock(doc)
+            if lock:
+                break
+            time.sleep(0.1)
+        else:
             sys.exit(f"latex-live: {doc}.tex is still locked; retry")
-    replace_stuck_hub()
-    server = serve(os.getcwd(), f"{doc}.pdf", args.port + 1, args.page_limit)  # (the hub has --port)
+    if not SHARED:  # (a shared instance takes no part in the hub)
+        replace_stuck_hub()
+    server = serve(os.getcwd(), f"{doc}.pdf", args.port if SHARED else args.port + 1, args.page_limit)  # (the hub has --port)
     code_updated()  # (what this process runs)
     server.lock = lock
     set_doc(server, doc)
     record_port(server)
-    threading.Thread(target=hub_watch, args=(args.port,), daemon=True).start()
-    print_hub_urls(doc, server.server_address[1], wait=3)
+    if SHARED:  # (what the last run left uncommitted is committed before the first request: start_commits)
+        start_commits(server)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        print_shared_urls(server.server_address[1])
+    else:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=hub_watch, args=(args.port,), daemon=True).start()
+        print_hub_urls(doc, server.server_address[1], wait=3)
+        if os.environ.get("LATEX_LIVE_COMMIT", "").strip() == "1":
+            print("=== latex-live: LATEX_LIVE_COMMIT works in shared mode only (LATEX_LIVE_USERS), so nothing is committed",
+                  flush=True)
     others = [d for d in docs if d != doc]
     print(f"=== latex-live {VERSION}: building {doc}.tex" + (f"; the viewer switches to {', '.join(others)}" if others else ""),
           flush=True)
@@ -4552,7 +6066,13 @@ def main():
 
     server.no_build = args.no_build
     server.env = {**os.environ, "LATEX_LIVE_HOME": HERE, "max_print_line": "10000"}
-    if args.no_build:
+    if SHARED:  # (the image even with --no-build: the baselines and downloads build too, never with the host's TeX)
+        server.env["LATEX_LIVE_EXEC"] = os.environ["LATEX_LIVE_EXEC"] = server.tex_exec
+        if not args.no_build:
+            print("=== latex-live: TeX Live 2024 (podman), confined, each run in a container of its own" if image_pulled()
+                  else f"=== latex-live: {IMAGE_MISSING}; until then nothing builds (never the host's TeX here)", flush=True)
+            start_shared_build(server)
+    elif args.no_build:
         pass
     elif args.host_tex or not shutil.which("podman"):
         print("=== latex-live: TeX from the host" + ("" if args.host_tex else " (no podman)")
@@ -4562,7 +6082,8 @@ def main():
         server.env["LATEX_LIVE_EXEC"] = server.tex_exec = container_exec(os.path.realpath(os.getcwd()))
         print("=== latex-live: TeX Live 2024 (podman)" if image_pulled()
               else f"=== latex-live: {IMAGE_MISSING}; until then, the host's TeX runs", flush=True)
-    start_latexmk(server)
+    if not SHARED:
+        start_latexmk(server)
 
     # Only signal latexmk here; the main loop reaps it.
     def stop(*_):
@@ -4574,7 +6095,8 @@ def main():
     signal.signal(signal.SIGHUP, stop)  # VS Code closing the task terminal
     try:  # until stopped, or latexmk exits by itself; meanwhile, switch documents and rebuild for the viewer
         while not server.stopping and not (server.latexmk and server.latexmk.poll() is not None):
-            retry_build(server)
+            if not SHARED:
+                retry_build(server)
             try:
                 job, result, done = server.requests.get(timeout=1)
             except queue.Empty:
@@ -4586,11 +6108,16 @@ def main():
             done.set()
     except KeyboardInterrupt:
         pass
-    stop_latexmk(server)
-    try:
-        os.remove(os.path.join(INSTANCES, f"{os.getpid()}.json"))
-    except OSError:
-        pass
+    finally:  # (also after an error: the pending edits are committed as theirs now, rather than in someone else's commit)
+        server.stopping = True
+        stop_latexmk(server)
+        stop_containers()
+        commit_at_exit(server)
+        stop_containers()  # (one a build started while the first sweep ran)
+        try:
+            os.remove(os.path.join(INSTANCES, f"{os.getpid()}.json"))
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

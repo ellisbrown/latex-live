@@ -29,8 +29,8 @@ The plan below makes it a general tool.
   Code (`code -g`), or in the browser editor while that is open. `forward.py
   FILE LINE`, or Show in PDF in the browser editor, scrolls the viewer to a
   source line and highlights it.
-- **Edit in the browser.** ✎ Source (or E) opens the LaTeX beside the PDF. A
-  file menu lists the paper's `.tex`, `.bib`, `.sty` and `.cls` files by
+- **Edit in the browser.** ✎ Source (or E) opens the LaTeX beside the PDF (in
+  a shared preview, for editors and the owner). A file menu lists the paper's `.tex`, `.bib`, `.sty` and `.cls` files by
   folder, with a filter. Edits save by themselves a moment after you stop
   typing (Cmd/Ctrl+S saves at once), and the PDF rebuilds. If the file changed
   meanwhile (saved in another editor or tab, or a note from the viewer), your
@@ -45,13 +45,15 @@ The plan below makes it a general tool.
   bubble, wired to a caret in the text where the note sits. Hover a bubble to
   expand it; click it to open the source.
 - **Comments from the viewer.** Pick who you are in the toolbar (one of the
-  paper's note macros, e.g. `\ch`), select text in the PDF, and press 💬 (or
-  C): your note goes into the source right after the selected words, and the
-  rebuild shows it. Typed text is escaped, so `%`, `&` and `_` are safe. In
-  their bubbles and in the sidebar, notes get ✓ (resolve), others' notes ↩
-  (reply: your note goes right after theirs), and your own ✎ (edit). Resolving
-  asks why and comments the note out instead of deleting it, on its own lines
-  after the line that held it (a comment line doesn't break the paragraph):
+  paper's note macros, e.g. `\ch`; in a shared preview, coauthors comment as
+  themselves, so the menu shows only their own), select text in the PDF, and
+  press 💬 (or C): your note goes into the source right after the selected
+  words, and the rebuild shows it. Typed text is escaped, so `%`, `&` and `_`
+  are safe. In their bubbles and in the sidebar, notes get ✓ (resolve),
+  others' notes ↩ (reply: your note goes right after theirs), and your own ✎
+  (edit). Resolving asks why and comments the note out instead of deleting it,
+  on its own lines after the line that held it (a comment line doesn't break
+  the paragraph):
   ```
   % RESOLVED 2026-10-19 (EB): defined the control in App. D.2.
   % \ch{The control is never defined ...}
@@ -63,6 +65,18 @@ The plan below makes it a general tool.
   can't set (✓, →, emoji) are refused. If the file is open with unsaved
   changes in your editor, save it first: otherwise, saving later offers to
   overwrite the note. The browser editor merges the note in by itself.
+- **Shared preview for coauthors.** A coauthor with no LaTeX setup of their
+  own opens one link and gets the live preview: they read the PDF, comment as
+  themselves (with their own note macro), and, if they are editors, edit the
+  LaTeX in the browser. Each person has a role: viewer, commenter, editor or
+  owner. Who they are comes from an authenticating reverse proxy, which names
+  them in a header, or from a personal link. A badge in the toolbar shows each
+  person their name and role. Coauthors see only what their role allows, on
+  that one document; double-clicking the PDF opens the browser editor for
+  editors and names the source line for others. The preview runs on a
+  separate copy of the paper (a git worktree on its own branch), and can
+  commit each person's edits to git as theirs, for you to merge. See
+  [Shared mode](#shared-mode).
 - **Page-limit badge.** Main-text pages against the venue limit, measured with
   and without notes. The limit comes from the venue style (ICLR, NeurIPS and
   COLM: 9 pages; ICML, CVPR and ICCV: 8) or `--page-limit`.
@@ -113,6 +127,7 @@ The plan below makes it a general tool.
   the margin. The version without notes is an exact build, as you would
   submit it: its own bibtex run (a citation only in a note drops out) and as
   many passes as the references need, made once per build of the document.
+  In a shared preview, every coauthor can download all three, viewers too.
 - **Notes in the margin, for co-authors** (the download menu's "PDF with notes
   in the margin", saved as `<doc>-with-margin-notes.pdf`): the pages without
   notes, unchanged, on wider pages, with each note in a margin beside its
@@ -127,6 +142,11 @@ The plan below makes it a general tool.
   its source line instead; the viewer says how many were. A citation only in
   notes, which the bibliography leaves out, shows its key (with natbib, its
   authors and year). The pages' links don't work in this copy.
+- **Welcome guide.** When a coauthor opens a shared preview, a short guide for
+  their role explains the live PDF, commenting, editing, finding your way, the
+  downloads, and where their changes go. Closed with "Don't show this again"
+  checked (the default), it stays closed; "Welcome guide" in the ⋯ menu or in
+  the `?` list reopens it.
 - **Viewer comforts:**
   - a one-row toolbar: on a narrow window, the controls that don't fit move
     into the ⋯ menu, least used first;
@@ -165,7 +185,7 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
 
 - **Requirements:** Python 3.9+ (standard library only), `latexmk` on the host,
   and either rootless podman with `docker.io/minidocks/texlive:2024-full`
-  pulled, or a host TeX Live with `--host-tex`.
+  pulled, or a host TeX Live with `--host-tex`. Shared mode needs podman.
 - **Viewer address:** one port for every preview on the machine, 44100
   (`--port`, `$LATEX_LIVE_PORT`, or the number in `~/.config/latex-live/port`): a paper's viewer is at `/p/<folder>-<hash>/<doc>/`, and `/`
   opens the only preview or lists them all. Each preview still runs in its
@@ -183,7 +203,8 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
     internal names that must never appear in the arXiv source, e.g.
     `(?i)projectx|cluster-a`, for the arXiv source check.
   - `LATEX_LIVE_HOST`: also print a direct viewer URL on this hostname, e.g.
-    the name a tunnel exposes.
+    the name a tunnel exposes (not in shared mode, which answers this machine
+    only).
   - `LATEX_LIVE_EDITOR`: the editor command that double-click opens the
     source in while the browser editor is closed (`<editor> -g FILE:LINE`),
     e.g. `cursor`. Without it, latex-live uses `code`, and only from a VS Code
@@ -195,7 +216,35 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
     stay as written, e.g. `\\ch\{human-written\}` at the end of a paragraph
     or inside a caption. Notes written from the viewer (replies too) go after
     the paragraph or caption it marks, and the marker itself can't be edited,
-    resolved, or deleted there. The browser editor doesn't guard it.
+    resolved, or deleted there. The browser editor doesn't guard it: whoever
+    may edit can change it there like any other text.
+  - `LATEX_LIVE_USERS`: a users file, which turns on
+    [shared mode](#shared-mode) for this instance, e.g.
+    `~/.config/latex-live-shared/users.json`.
+  - `LATEX_LIVE_STATE`: the folder that holds the token and the list of
+    running instances (default `~/.config/latex-live`). A shared instance
+    needs one of its own, e.g. `~/.config/latex-live-shared`, and refuses the
+    default: there it would share your previews' token.
+  - `LATEX_LIVE_PUBLIC_URL`: in shared mode, the origin that coauthors'
+    browsers use (scheme, host and port, no path), e.g.
+    `https://paper.example.org`. Notes, saves and other actions are accepted
+    only from pages there, and it is the link the instance prints. Without it,
+    coauthors who come through a proxy can read but not comment or edit.
+  - `LATEX_LIVE_IDENTITY_HEADER`: in shared mode, the header in which an
+    authenticating reverse proxy names the signed-in user, e.g.
+    `x-remote-user`. Without it, coauthors use personal links.
+  - `LATEX_LIVE_PROXY_HOST`: the exact `Host` header that the authenticating
+    proxy sends (`host` or `host:port`), e.g. `proxy.internal`. The identity
+    header counts only on requests with this Host.
+  - `LATEX_LIVE_PROXY_UID`: the user id the proxy runs as, e.g. `0`. The
+    identity header then counts only on connections from that user's
+    processes, so other users of the machine can't send it. Required on Linux
+    with `LATEX_LIVE_IDENTITY_HEADER` (elsewhere, where it can't be checked,
+    the instance warns instead).
+  - `LATEX_LIVE_COMMIT`: in shared mode, `1` commits each person's saves and
+    notes to git as theirs (with the owner as committer) once they pause.
+  - `LATEX_LIVE_COMMIT_IDLE`: the seconds of quiet after a person's last edit
+    before it is committed (default 60), e.g. `30`.
 - **Versions:** releases are tagged `v<VERSION>` (see `VERSION`; `live.py
   --version` prints it), with notes on the GitHub releases page. To pin one,
   check out its tag; to follow development, track `main`. After the checkout
@@ -203,17 +252,113 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
   to update" until the task is restarted.
 - **Contributing:** see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow,
   how the pieces fit together, and the rules.
-- **Smoke test:** `python3 check.py` (about a minute, with TeX as above)
-  compiles the Python, checks the viewer's import map and parses its script
-  (with Node), and runs an instance on a scratch two-column paper with git
-  history: build, notes-free pass, the copy with notes in the margin,
-  endpoints, SyncTeX, the browser editor's files and saves, both change
-  baselines, and taking over an instance. Run it before pushing.
+- **Smoke test:** `python3 check.py` (a minute or two, with TeX as above; its
+  shared-mode part needs podman and the image) compiles the Python, checks the
+  viewer's import map and parses its script (with Node), and runs an instance
+  on a scratch two-column paper with git history: build, notes-free pass,
+  endpoints, SyncTeX, both change baselines, the download without notes, the
+  copy with notes in the margin, and taking over an instance. A shared-mode
+  instance on a copy of the paper, beside it, then covers the confinement (a
+  bibliography name that is a shell command runs nothing), the roles, the
+  proxy's identity header, personal links, both downloads built on request,
+  the browser editor's saves and merges, rebuilds that stop their containers,
+  build state forged in `build/`, and the commits. Run it before pushing.
 - **PDF.js:** vendored in `pdfjs/` (4.10.38 legacy build, Apache-2.0; see
   `pdfjs/LICENSE`).
 - **CodeMirror:** vendored in `codemirror/` for the browser editor (CodeMirror
   6 and the packages it uses, as published on npm, MIT; see
   `codemirror/VERSION` and `codemirror/LICENSE`).
+
+### Shared mode
+
+With `LATEX_LIVE_USERS` set, an instance serves its paper to the people in a
+users file, each with a role:
+
+- **viewer:** reads the PDF, the notes and the outline, and downloads the
+  PDF: with its notes, without them, or with them in the margin;
+- **commenter:** also writes notes, as their own note macro and in plain
+  text; edits and deletes only their own notes, and replies to and resolves
+  anyone's;
+- **editor:** also edits the sources in the browser (notes too, as LaTeX),
+  rebuilds (the coauthors together at most every 20 seconds), sees the
+  pre-submission checks, and compares with earlier commits of the copy's
+  branch;
+- **owner:** everything, as without shared mode.
+
+Coauthors who may edit write the LaTeX that this machine compiles, so such an
+instance treats the paper and everything TeX writes as theirs:
+
+- It builds without latexmk. latexmk is a Perl program on the host that
+  reads the files TeX writes, and it passes the bibliography names in the
+  `.aux` to a shell, so a crafted name would run a command here. live.py
+  itself watches the paper's files and runs pdflatex, and bibtex, biber or
+  makeindex where the paper uses them, as latexmk would (up to six passes,
+  until the references settle). Other tools that a paper's own `latexmkrc`
+  would add (makeglossaries, say) don't run, and a `latexmkrc` in the paper
+  is not read.
+- Every TeX run is a container of its own from the TeX Live image, never the
+  host's TeX (it refuses `--host-tex`, and a machine without podman): no
+  network, no capabilities, no shell escape, at most 4 GB of memory, 2 CPUs,
+  512 processes, files of 1 GB, and 10 minutes. The paper folder is mounted
+  read-only and only its build folder writable, and TeX opens files only below
+  its folder and in the TeX tree. A rebuild stops the run in progress, its
+  containers too, and so does stopping the instance. The memory and CPU
+  limits need cgroup v2 with those controllers delegated to your user (see
+  [SETUP.md](SETUP.md#sharing-a-preview-with-coauthors)).
+- What TeX writes in the build folder counts as written by the coauthors:
+  the build's state, its errors and what it published stay in the server's
+  memory, and the PDF is copied and served without following links. The
+  downloads built on request (without notes, and with notes in the margin)
+  and the change-highlight baselines build in the same containers, each at
+  most once per build of the paper and one at a time, however many ask. They
+  start only with a POST from the viewer's own page: nothing builds on a GET,
+  and another site's page can't start a build.
+- The pre-submission checks read the PDF with poppler's tools, which run on
+  the host, so they are for editors and the owner, under time and memory
+  limits.
+- Editors compare only with commits that the copy's branch builds on: its
+  history is part of what you share. Share a branch whose history you are
+  happy to show (a squashed one, say).
+- It serves exactly `--port` (give it one outside your own previews' ports),
+  never the hub of your own previews, and answers connections from this
+  machine only, at most 64 at a time: coauthors reach it through a reverse
+  proxy or tunnel that runs here. Its pages can't be framed by another site.
+- It needs its own state folder (`LATEX_LIVE_STATE`), and on Linux, with an
+  identity header, `LATEX_LIVE_PROXY_UID`; it refuses to start without them.
+  It prints the link for coauthors (`LATEX_LIVE_PUBLIC_URL`, with no token in
+  it), then your own.
+
+The users file is JSON, readable only by you (mode 0600). It is read again
+whenever it changes, so adding someone needs no restart; while an edit leaves
+it broken, the last good version stays.
+
+```json
+{
+  "users": {
+    "ada": {"name": "Ada Example", "email": "ada@example.org", "macro": "ad", "role": "owner"},
+    "ben": {"name": "Ben Example", "email": "ben@example.org", "macro": "be", "role": "editor"},
+    "cy": {"name": "Cy Example", "email": "cy@example.org", "macro": "cy", "role": "commenter", "token": "<personal-link secret>"},
+    "dee": {"role": "viewer"}
+  }
+}
+```
+
+- **Key:** the name the proxy signs the person in as (up to 64 letters,
+  digits, `.`, `_`, `@` and `-`), matched exactly.
+- **`role`:** `viewer`, `commenter`, `editor` or `owner`; the only field
+  required.
+- **`macro`:** their note macro, without the backslash. It must be one of the
+  paper's note macros; without one, they can read but not comment.
+- **`name`, `email`:** how the viewer names them, and the author of their
+  commits (`LATEX_LIVE_COMMIT`).
+- **`token`:** the secret of a personal link, for someone who doesn't come
+  through an authenticating proxy: 16 to 128 letters, digits, `-` and `_`,
+  e.g. from Python's `secrets.token_urlsafe(18)`. Their link is the public URL
+  followed by `/?t=` and the token.
+
+[SETUP.md](SETUP.md#sharing-a-preview-with-coauthors) has the steps: the copy,
+the users file, the proxy's settings, a service that keeps it running, and
+merging the edits back.
 
 ## Portability gaps
 
@@ -226,6 +371,23 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
   - **Stopping:** on Linux, latexmk stops when the server dies, however it
     dies. On macOS it stops with the server's signal handlers, so a killed
     (`kill -9`) server leaves it running.
+- **Shared mode.**
+  - **TeX:** it needs rootless podman and the TeX Live image, and never falls
+    back to the host's TeX, so it doesn't run where there is no podman (e.g. a
+    Mac with MacTeX only). Its containers' memory and CPU limits need cgroup
+    v2 with those controllers delegated to your user.
+  - **Proxy check:** `LATEX_LIVE_PROXY_UID` looks the connection's user up in
+    Linux's `/proc/net`; elsewhere, while it is set, an identity header counts
+    from no one.
+  - **Host tools:** the pre-submission checks run poppler's tools on the host
+    (the image has none), on a PDF that editors' LaTeX made: that is why they
+    are for editors and the owner only, under limits.
+  - **A killed server:** a server killed outright (`kill -9`) can't stop its
+    containers; each still stops itself after 10 minutes.
+  - **Editing together:** no real-time co-editing. Edits reach others when
+    they are saved, a moment after typing stops; each save is merged with what
+    others saved meanwhile, and edits to the same lines become a conflict to
+    settle.
 - **ICLR and this paper.**
   - **Venue rules:** references and unnumbered statements (ethics,
     reproducibility, acknowledgments) don't count toward the page limit. Page
@@ -266,7 +428,10 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
 4. **Venue presets.** ICLR, NeurIPS, COLM, ICML, CVPR and ICCV page limits
    exist (submission limits; pass `--page-limit` for a camera-ready extra
    page). Still to do: ACL, and per venue what doesn't count.
-5. **Two network modes.**
+5. **Network modes.** Shared mode serves a paper to coauthors (see
+   [Shared mode](#shared-mode)): each one signed in by a proxy or a personal
+   link, with a role, on one fixed port that answers this machine only. Still
+   to do:
    - **local** (the laptop default): localhost only, no token, and it opens
      the browser;
    - **remote**: the token plus a configurable port range, for tunnels that
@@ -275,5 +440,7 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
    Editor links for VS Code, Cursor, or a custom command.
 6. **Test papers.** Plain article, ICLR, NeurIPS, and a two-column template,
    to keep the layout heuristics honest.
-7. **Static review snapshot** (optional). One self-contained HTML file (PDF,
-   note bubbles, checks) for coauthors who only use Overleaf.
+7. **Static review snapshot** (optional). Coauthors who only use Overleaf can
+   now use a shared preview, or the PDF with notes in the margin. Still to do:
+   one self-contained HTML file (PDF, note bubbles, checks) for a reader who
+   can't reach the machine.

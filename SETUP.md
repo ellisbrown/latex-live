@@ -7,13 +7,15 @@ can do steps 1–4 and 6 on its own. Step 5 (VS Code) needs the person.
 
 ## Rules for an agent
 
-- **Never print the token** or a URL containing `?t=`. It grants access to the
-  viewer. When a command's output may contain it, redact it first, e.g.
+- **Never print the token**, a URL containing `?t=`, or a shared preview's
+  users file (it holds personal links' tokens). They grant access to the
+  viewer. When a command's output may contain a token, redact it first, e.g.
   `sed -E 's/t=[A-Za-z0-9_-]{8,}/t=REDACTED/g'`.
 - **Don't modify the paper's sources.** latex-live writes into `build/` plus
   the published `<doc>.pdf`, and into the sources only when the person adds,
-  edits, or deletes a note from the viewer. Only the `.vscode/tasks.json` added
-  in step 4 goes in the paper checkout, and it stays out of git.
+  edits, or deletes a note from the viewer, or saves in the browser editor.
+  Only the `.vscode/tasks.json` added in step 4 goes in the paper checkout, and
+  it stays out of git.
 - **Stop any instance you start for testing** before handing over. Only one
   instance runs per document. A leftover one makes the person's VS Code task
   exit, reporting "already running".
@@ -196,6 +198,308 @@ Then restart the task with Cmd+Shift+B; until then, the viewer shows "restart
 to update". To stay on a release instead, check out its tag
 (`git -C ~/.local/share/latex-live checkout v0.1.1`); the releases page lists
 them. To propose a change, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Sharing a preview with coauthors
+
+A shared instance gives coauthors who don't run LaTeX themselves the live
+preview of your paper, in their own browsers: they read it, comment as
+themselves, and editors edit the LaTeX beside the PDF. Each can also download
+the paper, as built, without its notes, or with its notes in the margin (a
+copy to read the notes away from the preview). The README's
+[Shared mode](README.md#shared-mode) describes the roles and the users file.
+The instance answers only connections from this machine, so coauthors reach
+it in one of two ways:
+
+- through an authenticating reverse proxy on this machine, which names each
+  signed-in user in a request header;
+- with a personal link each, through a reverse proxy or tunnel on this
+  machine that doesn't sign anyone in.
+
+An agent can do these steps once the person has said who gets which role and
+how coauthors reach the machine.
+
+### 0. Check podman's limits
+
+Every TeX run of a shared instance is a container with memory and CPU limits,
+which rootless podman can set only with cgroup v2 and those controllers
+delegated to your user. This prints `ok` where they work:
+
+```bash
+podman run --rm --pull=never --network=none --memory=4g --cpus=2 --entrypoint= \
+  docker.io/minidocks/texlive:2024-full true && echo ok
+```
+
+If it fails over cgroups, ask an administrator to delegate the `memory` and
+`cpu` controllers to user sessions (systemd's `Delegate=` for `user@.service`).
+
+### 1. Make a separate copy of the paper
+
+From your paper's checkout, add a git worktree on a branch of its own:
+
+```bash
+git worktree add -b shared ../paper-shared
+```
+
+Run the shared instance there, never in your own checkout:
+
+- coauthors' saves and notes land in the copy, so they never touch your
+  working tree or your uncommitted work;
+- the LaTeX that editors write can read any file in the copy (see
+  [Security notes](#security-notes)), and a worktree holds only the branch's
+  files: git's own folder, with your remotes' settings, stays outside it;
+- with `LATEX_LIVE_COMMIT=1`, each person's edits become commits on `shared`,
+  authored by them, which you merge like any other branch (step 6).
+
+While it runs, leave the copy's files to latex-live: a commit takes whole
+files, so a change you made there by hand would go in as a coauthor's. Edit
+in your own checkout and merge (step 6), or in the shared viewer as the
+owner.
+
+### 2. Write the users file
+
+Put it outside the copy, e.g. `~/.config/latex-live-shared/users.json` (after
+`mkdir -m 700 ~/.config/latex-live-shared`), in the format of the README's
+[Shared mode](README.md#shared-mode), and keep it private (`chmod 600`;
+latex-live warns while others can read it).
+
+- **Names:** each key is the name the proxy signs that person in as, exactly.
+  With personal links only, any short name will do.
+- **Yourself:** add yourself with role `owner`. Through the proxy you are then
+  the owner, and your name and email commit coauthors' edits.
+- **Roles:** give each person the least role they need, and treat editors as
+  trusted coauthors (see [Security notes](#security-notes)).
+- **Note macros:** `macro` must be a note macro that the paper defines, the
+  way it defines the others, e.g. `\newcommand{\cy}[1]{\todotxt{[CY: #1]}}`.
+  Add the missing ones to the paper, in the copy too, before you start the
+  instance. Without one, a coauthor can read but is told "your note macro \cy
+  is not defined in the paper" when commenting.
+- **Personal links:** give each such person a `token`. This puts one in the
+  file without printing it:
+
+  ```bash
+  python3 - ~/.config/latex-live-shared/users.json cy <<'EOF'
+  import json, secrets, sys
+  path, user = sys.argv[1:]
+  with open(path) as f:
+      data = json.load(f)
+  data["users"][user]["token"] = secrets.token_urlsafe(18)
+  with open(path, "w") as f:
+      json.dump(data, f, indent=2)
+  EOF
+  ```
+
+  Their link is the public URL followed by `/?t=` and their token. Send it
+  privately: anyone with the link is that person. Deleting the token ends that
+  access at once.
+
+latex-live reads the file again whenever it changes, so changes need no
+restart. While an edit leaves it broken, the last good version stays, and the
+output says why.
+
+### 3. Run it
+
+From the copy's paper folder (the same subfolder as in your checkout, if the
+paper isn't at the top of the repository), on a free port outside the ones
+your own previews use (44100–44110, or the same block from the number in
+`~/.config/latex-live/port`, if you moved them), e.g. 44120. Always give it
+with `--port`: without it, the instance would take the hub's port (44100, or
+`$LATEX_LIVE_PORT`).
+
+Behind an authenticating proxy that names the user in a header:
+
+```bash
+LATEX_LIVE_USERS=~/.config/latex-live-shared/users.json \
+LATEX_LIVE_STATE=~/.config/latex-live-shared \
+LATEX_LIVE_PUBLIC_URL=https://paper.example.org \
+LATEX_LIVE_IDENTITY_HEADER=x-remote-user \
+LATEX_LIVE_PROXY_HOST=proxy.internal \
+LATEX_LIVE_PROXY_UID=0 \
+LATEX_LIVE_COMMIT=1 \
+python3 ~/.local/share/latex-live/live.py --port 44120 --no-open
+```
+
+- Point the proxy at `http://127.0.0.1:44120` (or `[::1]:44120`), and have it
+  replace any copy of the header that a browser sends.
+- `LATEX_LIVE_PUBLIC_URL` is the address coauthors open, as their browsers
+  send it: scheme, host, and the port unless it is the default one.
+- `LATEX_LIVE_PROXY_HOST` is the `Host` header the proxy sends to latex-live,
+  often a backend name rather than the public one.
+- `LATEX_LIVE_PROXY_UID` is the uid the proxy runs as (`ps -o uid= -p <its
+  pid>`; 0 for root).
+
+With personal links only, leave out the three proxy settings:
+
+```bash
+LATEX_LIVE_USERS=~/.config/latex-live-shared/users.json \
+LATEX_LIVE_STATE=~/.config/latex-live-shared \
+LATEX_LIVE_PUBLIC_URL=https://paper.example.org \
+LATEX_LIVE_COMMIT=1 \
+python3 ~/.local/share/latex-live/live.py --port 44120 --no-open
+```
+
+The reverse proxy or tunnel must run on this machine too, and pass the
+browser's `Host` header on; if it sends another one, set
+`LATEX_LIVE_PROXY_HOST` to that.
+
+`LATEX_LIVE_STATE` gives the instance a state folder of its own: its own
+owner token (the `token` file there), and no place on the hub of your own
+previews. It is required: without it (or with your previews' folder), the
+instance refuses to start. So is `LATEX_LIVE_PROXY_UID` on Linux, whenever
+`LATEX_LIVE_IDENTITY_HEADER` is set.
+
+Expected output, in order:
+
+1. Warnings, if any, about weak settings, e.g. a users file that others can
+   read. Fix what they name.
+2. `=== latex-live: shared with the users in <users file>: <public URL>/ ...`,
+   the link for coauthors.
+3. `=== latex-live: on this machine: http://localhost:44120/ ...`: your own
+   link on this machine, without its token, which is in the `token` file it
+   names (step 4 uses it).
+4. `=== latex-live: each user's edits are committed as theirs after 60 s of quiet (LATEX_LIVE_COMMIT)`
+5. `=== latex-live <version>: building <doc>.tex`
+6. `=== latex-live: TeX Live 2024 (podman), confined, each run in a container of its own`
+7. `=== live-reload: published <doc>.pdf at <time>` once the first build is
+   done, and again after each later one (no latexmk output: a shared instance
+   runs the TeX tools itself).
+
+### 4. Check it
+
+Without printing a token. As the owner, with this instance's token:
+
+```bash
+TOKEN=$(cat ~/.config/latex-live-shared/token)
+curl -s -b "latex_live=$TOKEN" http://127.0.0.1:44120/me | grep -o '"role": "[a-z]*"'   # "role": "owner"
+```
+
+As a coauthor, the way the proxy asks:
+
+```bash
+curl -s -H 'Host: proxy.internal' -H 'x-remote-user: ben' http://127.0.0.1:44120/me | grep -o '"role": "[a-z]*"'   # "role": "editor"
+```
+
+With `LATEX_LIVE_PROXY_UID` set, the second prints nothing (it gets a 403)
+unless you run it as the proxy's user: that setting keeps other users of the
+machine from signing in as anyone. Then open the public URL in a browser, as
+a coauthor would: the toolbar badge shows their name and role. Use the public
+URL for your own visits too: your browser keeps one latex-live cookie per host
+name, whatever the port, so the local link would replace the cookie your own
+previews use on `localhost`.
+
+### 5. Keep it running
+
+A systemd user service keeps it running, restarting it whenever it exits. Put
+this in `~/.config/systemd/user/latex-live-shared.service`, with your paths
+and the settings of step 3 (`%h` is your home folder; systemd doesn't expand
+`~`):
+
+```ini
+[Unit]
+Description=latex-live shared preview
+
+[Service]
+WorkingDirectory=%h/papers/paper-shared
+Environment=LATEX_LIVE_USERS=%h/.config/latex-live-shared/users.json
+Environment=LATEX_LIVE_STATE=%h/.config/latex-live-shared
+Environment=LATEX_LIVE_PUBLIC_URL=https://paper.example.org
+Environment=LATEX_LIVE_IDENTITY_HEADER=x-remote-user
+Environment=LATEX_LIVE_PROXY_HOST=proxy.internal
+Environment=LATEX_LIVE_PROXY_UID=0
+Environment=LATEX_LIVE_COMMIT=1
+ExecStart=/usr/bin/python3 %h/.local/share/latex-live/live.py --port 44120 --no-open
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+```
+
+Then run `systemctl --user daemon-reload && systemctl --user enable --now
+latex-live-shared`.
+
+- If `podman` is outside the `PATH` that `systemctl --user show-environment`
+  shows, add an `Environment=PATH=...` line.
+- With lingering on (see [Keeping the image](#keeping-the-image)), it keeps
+  running after you log out, and starts at boot.
+- `journalctl --user -u latex-live-shared` shows its output. It prints no
+  token, but names the users file and the state folder.
+- `systemctl --user stop latex-live-shared` commits pending edits before the
+  instance stops. After updating latex-live, use `restart` instead of `stop`.
+
+### 6. Bring the changes back
+
+Coauthors' edits collect on the `shared` branch: with `LATEX_LIVE_COMMIT=1`,
+as commits by them, once each one pauses, and when the instance stops. In
+your own checkout, review and merge them like any other branch:
+
+```bash
+git log --format='%an: %s' ..shared   # what coauthors changed
+git merge shared
+```
+
+Without `LATEX_LIVE_COMMIT`, commit their edits in the copy yourself first.
+
+To bring your newer work into the copy, stop the instance, merge your branch
+(`main` here) into the copy, and start it again:
+
+```bash
+systemctl --user stop latex-live-shared   # commits pending edits first
+git -C ~/papers/paper-shared merge main
+systemctl --user start latex-live-shared
+```
+
+Open viewers wait meanwhile and reconnect. Edits that weren't saved yet are
+saved then, merged with your changes.
+
+### Security notes
+
+- **This machine only.** A shared instance drops connections from other
+  machines without answering. Coauthors reach it only through the proxy or
+  tunnel that runs here.
+- **The identity header counts only from the proxy.** Any program on this
+  machine can connect to the port and send that header, so latex-live trusts
+  it only as exactly one header, with the `Host` in `LATEX_LIVE_PROXY_HOST`,
+  and (on Linux) from a process of the user in `LATEX_LIVE_PROXY_UID`: set
+  both. Requests that carry it ignore tokens and cookies.
+- **Host and Origin.** The instance answers only to loopback names, the
+  public URL's host and the proxy's `Host`, so a web page can't reach it under
+  another name (DNS rebinding). Notes, saves and other actions count only when
+  the browser's `Origin` is `LATEX_LIVE_PUBLIC_URL` (or a loopback page, for a
+  loopback address), so another site can't act through a coauthor's browser.
+  That goes for the two downloads that start a build (without notes, with
+  notes in the margin) too: the viewer asks for them that way, and each builds
+  at most once per build of the paper.
+- **Editors are trusted coauthors.** An editor can change the paper's `.tex`,
+  `.bib`, `.sty` and `.cls` files, in effect any such file in the copy (an
+  `\input` adds one to the paper). The LaTeX they write can read any file
+  below the copy's paper folder and typeset it. Keep nothing in the copy that
+  they shouldn't see. Commenters write plain text only. Editors can also
+  compare with any commit that the copy's branch builds on, so its whole
+  history is visible to them: share a branch whose history you are happy to
+  show (e.g. one squashed commit on top of what you would publish).
+- **TeX is confined, and nothing on the host reads its output as code.** No
+  latexmk runs (it passes names from the `.aux` to a shell on the host):
+  live.py runs pdflatex, bibtex, biber and makeindex itself, with fixed
+  arguments, each in a container of its own from the TeX Live image, never
+  with the host's TeX. The downloads without notes and with notes in the
+  margin, the change-highlight baselines, latexdiff and SyncTeX run there too.
+  A container has no network, no capabilities, no new privileges, at most
+  4 GB of memory, 2 CPUs, 512 processes, files of 1 GB, and 10 minutes, no
+  shell escape, and the paper folder read-only, with only the build folder
+  writable. TeX opens files only below the paper folder and in its own tree
+  (`openin_any=p`), and writes only into the build folder (`openout_any=p`).
+  A rebuild stops the run in progress, containers included, and coauthors can
+  ask for one at most every 20 seconds.
+- **The build folder is the coauthors'.** TeX can write any file there, so
+  the instance keeps the build's state, its errors and what it published in
+  memory rather than reading them back, serves the PDF without following
+  links, and never sends its token to a port that a file there names.
+- **Host tools.** The pre-submission checks read the PDF with poppler's tools
+  on the host (the image has none), under time and memory limits; only
+  editors and the owner can run them.
+- **Links and tokens.** Anyone with a personal link is that person: send links
+  privately, and delete a token to end that access. The instance's owner token
+  (in `$LATEX_LIVE_STATE`) opens everything: keep it to yourself.
 
 ## Troubleshooting
 
