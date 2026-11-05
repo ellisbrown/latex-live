@@ -363,13 +363,13 @@ def tex_stand_in(tmp):
 
 def bounds_checks():
     """The downloads read TeX's output within bounds (config.OUTPUT_LIMIT and config.SYNCTEX_LIMIT, made smaller here),
-    without TeX: a log, an .aux or a .bbl past its bound (live.read_output), the probe pass's log (live.run_probe,
+    without TeX: a log, an .aux or a .bbl past its bound (files.read_output), the probe pass's log (live.run_probe,
     with a stand-in for TeX) and a SyncTeX file uncompressed (live.synctex_pages) stop a download with a message
     that says so, before they are read whole; within them, the probe's records are read as before, and so is a log
     whose wrapped lines split a UTF-8 character."""
     sys.path.insert(0, HERE)
     import live
-    from latexlive import config
+    from latexlive import config, files
     saved, tmp = (config.OUTPUT_LIMIT, config.SYNCTEX_LIMIT), tempfile.mkdtemp(prefix="latex-live-check-")
     try:
         config.OUTPUT_LIMIT = config.SYNCTEX_LIMIT = 1 << 20
@@ -378,18 +378,18 @@ def bounds_checks():
         os.makedirs(out)
         aux = os.path.join(out, "main-export.aux")
         put(aux, "\\relax\n" * 1000)
-        if live.read_output(root, aux) != "\\relax\n" * 1000 or live.read_output(root, aux + ".gone") is not None:
-            fail("live.read_output does not read a file within its bound as it is, or has a file that is gone")
+        if files.read_output(root, aux) != "\\relax\n" * 1000 or files.read_output(root, aux + ".gone") is not None:
+            fail("files.read_output does not read a file within its bound as it is, or has a file that is gone")
         put_bytes(aux, b"Overfull \\hbox in caf\xc3\n\xa9\n")  # (TeX wraps its log at 79 bytes, splitting a UTF-8 character)
         try:
-            if "Overfull" not in (live.read_output(root, aux) or ""):
+            if "Overfull" not in (files.read_output(root, aux) or ""):
                 raise ValueError("nothing read")
         except ValueError as e:
-            fail(f"live.read_output does not read a log whose wrapping split a UTF-8 character: {e}")
+            fail(f"files.read_output does not read a log whose wrapping split a UTF-8 character: {e}")
         put(aux, "\\relax\n" * 200_000)
         try:
-            live.read_output(root, aux)
-            fail("live.read_output read a file past its bound")
+            files.read_output(root, aux)
+            fail("files.read_output read a file past its bound")
         except RuntimeError as e:
             if "build/review/main/main-export.aux is over 1 MB" not in str(e):
                 fail(f"a file past its bound: {e}")
@@ -504,13 +504,13 @@ def waiting_download_checks():
     start (a build of theirs that runs is reported as it is). With --no-build, a stale marker holds nothing up."""
     sys.path.insert(0, HERE)
     import live
-    from latexlive import config
+    from latexlive import config, files
     tmp = tempfile.mkdtemp(prefix="latex-live-check-")
     try:
         root = os.path.join(tmp, "paper")
         os.makedirs(os.path.join(root, config.BUILD))
         put(os.path.join(root, "main.pdf"), "%PDF-1.5\n")
-        status, building = live.job_file(root, "main.pdf", ".status.json"), live.job_file(root, "main.pdf", ".building")
+        status, building = files.job_file(root, "main.pdf", ".status.json"), files.job_file(root, "main.pdf", ".building")
         put(status, "{}")
         put(building, "")
         os.utime(building, (time.time() + 5, time.time() + 5))  # (a run that started after the last one ended)
@@ -700,7 +700,7 @@ def shared_build_checks():
     latexmkrc's $pre_tex_code."""
     sys.path.insert(0, HERE)
     import live
-    from latexlive import config
+    from latexlive import config, files
     with open(os.path.join(HERE, "latexmkrc")) as f:
         rc = re.search(r"^\$pre_tex_code = (.*?);$", f.read(), re.S | re.M).group(1)
     code = "".join(re.sub(r"\\([\\'])", r"\1", part) for part in re.findall(r"'((?:[^'\\]|\\.)*)'", rc))
@@ -722,7 +722,7 @@ def shared_build_checks():
                                ("chapter.aux", "\\relax\n\\citation{late}\n"), ("../outside.aux", "\\citation{outside}\n")):
                 os.makedirs(os.path.dirname(os.path.join(config.BUILD, name)) or config.BUILD, exist_ok=True)
                 put(os.path.join(config.BUILD, name), text)
-            tree = live.aux_tree(read_text(os.path.join(config.BUILD, "main-live.aux")))
+            tree = files.aux_tree(read_text(os.path.join(config.BUILD, "main-live.aux")))
         finally:
             os.chdir(cwd)
         if "\\citation{late}" not in tree or "outside" in tree.replace("../outside.aux", ""):
@@ -741,7 +741,7 @@ def shared_parsing_checks():
     what the builder watches."""
     sys.path.insert(0, HERE)
     import live
-    from latexlive import config
+    from latexlive import config, files
     saved = (config.SHARED, config.SYNCTEX_LIMIT, config.RECORD_LIMIT)
     tmp = tempfile.mkdtemp(prefix="latex-live-check-")
     cwd = os.getcwd()
@@ -757,18 +757,18 @@ def shared_parsing_checks():
         put(os.path.join(build, "main-live.aux"), f"\\relax\n\\@input{{{secret}}}\n\\@input{{../../other.aux}}\n\\@input{{link.aux}}\n"
             "\\@input{chapter.aux}\n")
         put(os.path.join(build, "chapter.aux"), "\\citation{chapterkey}\n")
-        tree = live.aux_tree(read_text(os.path.join(build, "main-live.aux")))
+        tree = files.aux_tree(read_text(os.path.join(build, "main-live.aux")))
         heads = live.written_contents(os.path.join(build, "main-live.aux"), "toc")
         if "secretkey" in tree or "chapterkey" not in tree or "Secret heading" in json.dumps(heads):
             fail(f"an .aux's \\@input of an absolute path, of .. or through a link was read: {tree!r} {heads!r}")
 
         put(os.path.join(build, "big.json"), "[" + "1," * (1 << 20) + "1]")
         began = time.monotonic()
-        if live.read_json(os.path.join(build, "big.json")) is not None or time.monotonic() - began > 2:
+        if files.read_json(os.path.join(build, "big.json")) is not None or time.monotonic() - began > 2:
             fail("a JSON file past config.JSON_LIMIT was parsed")
         config.RECORD_LIMIT = 1000
         put(os.path.join(build, "main-live.fls"), "INPUT main.tex\n" * 5000)
-        if len(live.fls_inputs(os.path.join(build, "main-live.fls"))) != 1000:
+        if len(files.fls_inputs(os.path.join(build, "main-live.fls"))) != 1000:
             fail("a recorder file was read past config.RECORD_LIMIT lines")
         config.RECORD_LIMIT, config.SYNCTEX_LIMIT = 2_000_000, 1 << 20
         synctex_gz = os.path.join(build, "main-live.synctex.gz")
@@ -1616,7 +1616,7 @@ def tex_exec_check(tmp):
     at most 512 processes, 4 GB, 2 CPUs, 1 GB files and the caller's deadline (LATEX_LIVE_TIMEOUT, at most
     10 minutes), labels that name the instance, the run and its kind (for stopping it), the paper read-only
     (its dot entries at any depth, .git among them, hidden) and only build/ writable, no shell escape, and TeX's files
-    only below its folder; live.container_argv in shared mode goes through tex-exec too."""
+    only below its folder; tools.container_argv in shared mode goes through tex-exec too."""
     cmd = [os.path.join(HERE, "tex-exec"), "localhost/latex-live-check-missing:none", tmp, "true"]
     fallback = subprocess.run(cmd, cwd=tmp, env=ENV, capture_output=True, text=True, timeout=60)
     required = subprocess.run(cmd, cwd=tmp, env={**ENV, "LATEX_LIVE_REQUIRE_IMAGE": "1"}, capture_output=True, text=True, timeout=60)
@@ -1640,10 +1640,9 @@ def tex_exec_check(tmp):
                                    "PATH": stub + os.pathsep + ENV.get("PATH", os.defpath)},
                               capture_output=True, text=True, timeout=60)
     sys.path.insert(0, HERE)
-    import live
-    from latexlive import config
+    from latexlive import config, tools
     shared, config.SHARED = config.SHARED, True
-    started = live.container_argv(tmp)
+    started = tools.container_argv(tmp)
     config.SHARED = shared
     want = ("--cap-drop=all", "--security-opt=no-new-privileges", "--pids-limit=512", "--memory=4g", "--cpus=2",
             "fsize=1073741824:1073741824", "--timeout=60", "latex-live.instance=check-1", "latex-live.run=main-7",
@@ -1659,7 +1658,7 @@ def tex_exec_check(tmp):
         fail(f"tex-exec with LATEX_LIVE_SANDBOX=1 runs podman with {args} (exit {confined.returncode}), not with all of {want}"
              " (and the paper only read-only)")
     if started[:1] != [os.path.join(HERE, "tex-exec")]:
-        fail(f"live.container_argv in shared mode is {started}, not through tex-exec")
+        fail(f"tools.container_argv in shared mode is {started}, not through tex-exec")
     ok("tex-exec refuses the host's TeX when shared mode requires the image, and confines the container there (the paper"
        " read-only, limits, labels, 10 minutes at most)")
 
@@ -3009,11 +3008,11 @@ def rebuild_stop_checks(sh):
 
     sys.path.insert(0, HERE)
     import live
-    from latexlive import config
+    from latexlive import config, tools
     saved = config.SHARED, config.INSTANCE
     config.SHARED, config.INSTANCE = True, f"{pid}-timeoutcheck"
     try:
-        free = live.SPAWNS._value
+        free = tools.SPAWNS._value
         code, _ = live.run_tool([os.path.join(HERE, "tex-exec"), image, root, "sleep", "120"], root, timeout=8, kind="synctex",
                                 env={**ENV, "LATEX_LIVE_SANDBOX": "1", "LATEX_LIVE_REQUIRE_IMAGE": "1",
                                      "LATEX_LIVE_INSTANCE": config.INSTANCE})
@@ -3021,8 +3020,8 @@ def rebuild_stop_checks(sh):
                               text=True, timeout=60).stdout.split()
     finally:
         config.SHARED, config.INSTANCE = saved
-    if code == 0 or left or live.SPAWNS._value != free:  # (None: stopped by run_tool; else by podman's own, equal, deadline)
-        fail(f"a tool that ran out of time: exit {code}, {len(left)} container(s) left, {live.SPAWNS._value} of {free} slots free")
+    if code == 0 or left or tools.SPAWNS._value != free:  # (None: stopped by run_tool; else by podman's own, equal, deadline)
+        fail(f"a tool that ran out of time: exit {code}, {len(left)} container(s) left, {tools.SPAWNS._value} of {free} slots free")
     ok("a tool that runs out of time has its container stopped before its slot is free again")
     lock_spoof_checks(sh)
 
