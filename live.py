@@ -554,7 +554,7 @@ def status(server, pdf_name, push=False):
     limit = page_limit(server, pdf_name)
     info = {
         "version": version,
-        "building": mtime(job_file(root, pdf_name, ".building")) > mtime(job_file(root, pdf_name, ".status.json")),
+        "building": build_running(root, pdf_name),
         "build": read_json(job_file(root, pdf_name, ".status.json")),
         "forward": read_json(job_file(root, pdf_name, ".forward.json")),
         "pageLimit": limit,
@@ -2470,14 +2470,30 @@ def commits(paper_root):
                                         for l in out.splitlines()]}
 
 
+def build_running(paper_root, pdf_name):
+    """Whether latexmk is building pdf_name now: its passes may still publish it before the run ends."""
+    return mtime(job_file(paper_root, pdf_name, ".building")) > mtime(job_file(paper_root, pdf_name, ".status.json"))
+
+
+def waiting_for_build(server, pdf, state):
+    """The state that /export and /review report while the document builds (a download made then would
+    be of the build before, or of a pass before the last), or None when it doesn't, or when state (theirs)
+    is a build of theirs that is running."""
+    if state.get("pdf") == pdf and state.get("state") == "running" or not build_running(server.paper_root, pdf):
+        return None
+    return {"pdf": pdf, "state": "running", "step": "waiting for the build in progress", "time": time.strftime("%H:%M:%S"), "msg": ""}
+
+
 def start_export(server):
     """/export: the document without its notes, built exactly (build_export), for downloading as
     build/<doc>-export.pdf. Built once per build of the document; until then, its state."""
     pdf = server.default_pdf
     if not os.path.isfile(pdf_path(server.paper_root, pdf)):
         return 409, {"state": "failed", "msg": f"{pdf} has not built yet"}
-    source = str(mtime(pdf_path(server.paper_root, pdf)))  # (the build it reflects)
     e = server.export
+    if waiting := waiting_for_build(server, pdf, e):
+        return 200, waiting
+    source = str(mtime(pdf_path(server.paper_root, pdf)))  # (the build it reflects)
     if e.get("pdf") == pdf and (e.get("state") == "running" or e.get("source") == source):  # (a failure too, until the next build)
         return 200, e
     server.export = {"pdf": pdf, "source": source, "state": "running", "time": time.strftime("%H:%M:%S"), "msg": ""}
@@ -2729,8 +2745,10 @@ def start_review(server):
     pdf = server.default_pdf
     if not os.path.isfile(pdf_path(server.paper_root, pdf)):
         return 409, {"state": "failed", "msg": f"{pdf} has not built yet"}
-    source = str(mtime(pdf_path(server.paper_root, pdf)))
     r = server.review
+    if waiting := waiting_for_build(server, pdf, r):
+        return 200, waiting
+    source = str(mtime(pdf_path(server.paper_root, pdf)))
     if r.get("pdf") == pdf and (r.get("state") == "running" or r.get("source") == source):  # (a failure too, until the next build)
         return 200, r
     server.review = {"pdf": pdf, "source": source, "state": "running", "step": "the exact build without notes",

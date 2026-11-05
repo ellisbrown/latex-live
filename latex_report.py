@@ -332,12 +332,13 @@ def main():
             previous = json.load(f)
     except (OSError, ValueError):
         pass
+    if ok:  # (before the status, which ends "building": live.py's downloads then use this PDF)
+        publish(root, dest)
     write_status(root, {"ok": ok, "time": stamp, "errors": summary,
                         "warnings": len(seen) + len(set(MULTI_RE.findall(flat))), "overfull": len(boxes),
                         "undefined": undefined, "tex": tex_format(log)})
 
     if ok:
-        publish(root, dest)
         print(f"=== live-reload: published {dest} at {stamp}")
         if has_notes(files):
             start_notes_free_build(root, doc)

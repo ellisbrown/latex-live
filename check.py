@@ -7,7 +7,9 @@
    that don't fit after the paper; its matching tells apart two authors' notes with the same text,
    and gives no note the record of a protected marker that holds its text. The downloads read TeX's
    logs, .aux, .bbl and SyncTeX files only up to a bound, and say so past it (a stand-in for TeX
-   writes the probe pass's log), and read a log whose wrapped lines split a UTF-8 character.
+   writes the probe pass's log), and read a log whose wrapped lines split a UTF-8 character. An export
+   that failed or timed out fails again at once for the same build; the downloads wait for a build
+   in progress.
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a
    git repository with a pushed commit and a local one) gets a live.py instance, with the hub on
    port 44180 and state of its own (not the user's):
@@ -161,6 +163,7 @@ def static_checks():
     matching_checks()
     bounds_checks()
     failed_export_checks()
+    waiting_download_checks()
 
 
 def put(path, text):
@@ -324,6 +327,37 @@ def failed_export_checks():
         shutil.rmtree(tmp, ignore_errors=True)
     ok("an export that failed or timed out fails again at once for the same build (no second build for the review"
        " copy), and is built again for the next one")
+
+
+def waiting_download_checks():
+    """/export and /review wait while the document builds (live.start_export, live.start_review): a pass may publish
+    the PDF before the run ends, and a download made then would lack the run's last pass; once the run ends, they
+    start (a build of theirs that runs is reported as it is)."""
+    sys.path.insert(0, HERE)
+    import live
+    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
+    try:
+        root = os.path.join(tmp, "paper")
+        os.makedirs(os.path.join(root, live.BUILD))
+        put(os.path.join(root, "main.pdf"), "%PDF-1.5\n")
+        status, building = live.job_file(root, "main.pdf", ".status.json"), live.job_file(root, "main.pdf", ".building")
+        put(status, "{}")
+        put(building, "")
+        os.utime(building, (time.time() + 5, time.time() + 5))  # (a run that started after the last one ended)
+        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", export={}, review={})
+        for name, start in (("/export", live.start_export), ("/review", live.start_review)):
+            code, state = start(server)
+            if (code, state.get("state"), state.get("step")) != (200, "running", "waiting for the build in progress") or server.export or server.review:
+                fail(f"{name} during a build: {code} {state}, {server.export or server.review}")
+        server.export = {"pdf": "main.pdf", "state": "running", "step": "its own"}
+        if live.start_export(server)[1].get("step") != "its own":
+            fail("/export during a build did not report its own build that runs")
+        os.utime(status, (time.time() + 10, time.time() + 10))  # (the run ended)
+        if live.waiting_for_build(server, "main.pdf", {}) is not None:
+            fail("/export still waits after the build ended")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    ok("the downloads wait while the document builds, and start once the run ends")
 
 
 def layout_checks():
