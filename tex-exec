@@ -6,11 +6,33 @@
 # Rootless podman maps container root to the caller, so outputs stay owned by us. latexmk passes
 # BIBINPUTS/BSTINPUTS/TEXINPUTS through the environment when it runs bibtex from build/; forward
 # them (unset ones are skipped), plus max_print_line (unwrapped log lines, for latex_report.py).
+#
+# In shared mode, where coauthors write the sources, live.py sets LATEX_LIVE_REQUIRE_IMAGE=1: never
+# the host's TeX, so a missing image fails the run; and LATEX_LIVE_SANDBOX=1: the paper folder is
+# mounted read-only and only its build folder ($LATEX_LIVE_BUILD) writable; the container gets no
+# capabilities, no new privileges, at most 512 processes, 4 GB of memory, 2 CPUs, files of at most
+# 1 GB and 10 minutes (podman stops it then, even when the caller has stopped waiting); it is labelled
+# with the instance ($LATEX_LIVE_INSTANCE) and the kind of run ($LATEX_LIVE_RUN), so that live.py can
+# stop it; and TeX gets no shell escape, and no files outside its working directory and the TeX tree
+# (openin_any=p). That skips the image's entrypoint, which switches users and so needs a capability.
 image=$1 root=$2
 shift 2
 if podman image exists "$image"; then
+    if [ "$LATEX_LIVE_SANDBOX" = 1 ]; then
+        build="$root/${LATEX_LIVE_BUILD:-build}"
+        set -- --cap-drop=all --security-opt=no-new-privileges --pids-limit=512 --memory=4g --cpus=2 \
+            --ulimit fsize=1073741824:1073741824 --timeout=600 --entrypoint= \
+            --label "latex-live.instance=$LATEX_LIVE_INSTANCE" --label "latex-live.run=${LATEX_LIVE_RUN:-other}" \
+            -v "$root:$root:ro" -v "$build:$build" -e openin_any=p -e openout_any=p -e shell_escape=f "$image" "$@"
+    else
+        set -- -v "$root:$root" "$image" "$@"
+    fi
     exec podman run --rm --init --pull=never --network=none --security-opt label=disable \
-        -v "$root:$root" -w "$(pwd -P)" -e BIBINPUTS -e BSTINPUTS -e TEXINPUTS -e max_print_line "$image" "$@"
+        -w "$(pwd -P)" -e BIBINPUTS -e BSTINPUTS -e TEXINPUTS -e max_print_line "$@"
+fi
+if [ "$LATEX_LIVE_REQUIRE_IMAGE" = 1 ]; then
+    echo "=== latex-live: $image is not pulled (to fix: podman pull $image); shared mode never runs the host's $1" >&2
+    exit 1
 fi
 echo "=== latex-live: $image is not pulled (to fix: podman pull $image); using the host's $1" >&2
 exec "$@"
