@@ -469,6 +469,9 @@ $("downloadPdf").onclick = () => {
   saveFile(`pdf/${encodeURIComponent(shown)}?v=${buildVersion}`, isDiff ? file : `${docName()}${$("downloadClean").hidden ? "" : "-with-notes"}.pdf`);
 };
 // The server builds them in the background: ask until it is done, showing its progress, then save.
+// The server builds them from the PDF as last built (and waits for a build in progress first): ask until it is
+// done, showing its progress (poll leaves the status line to it meanwhile: liveStatus), then save. Right after
+// this tab writes a note, wait for the build that the write starts, which the server can't know of yet.
 const building = new Set();
 async function downloadBuilt(endpoint, built, saveAs, what, done) {
   showMore(false);
@@ -476,15 +479,18 @@ async function downloadBuilt(endpoint, built, saveAs, what, done) {
   if (building.has(endpoint)) return;
   building.add(endpoint);
   try {
+    while (behind()) {
+      setStatus(`waiting for the build in progress, then the PDF ${what}…`, "busy");
+      await new Promise((r) => setTimeout(r, 250));
+    }
     for (;;) {
       const e = await (await fetch(endpoint)).json();
       if (e.state === "done") {
         saveFile(`pdf/${encodeURIComponent(built)}?v=${e.version}`, saveAs);
-        return setStatus(`saved ${saveAs} (${done(e)})`, "fresh");
+        return setStatus(`saved ${saveAs} (${done(e)}${buildFailed ? "; of the last build that worked" : ""})`, "fresh");
       }
       if (e.state === "failed") return setStatus(`couldn't build the PDF ${what}: ${e.msg}`, "error");
       setStatus(`building the PDF ${what}${e.step ? `: ${e.step}` : ""}…`, "busy");
-      rebuildAt = Date.now(); // (poll keeps a busy status a few seconds after a request)
       await new Promise((r) => setTimeout(r, 1000));
     }
   } catch (err) {
@@ -774,6 +780,13 @@ async function openSource(file, line) {
   if (!r.ok) setStatus(await r.text(), "error"); // e.g. latex-live is not running in a VS Code terminal
 }
 
+// The live build's state on the status line (poll, load), unless a download that the server builds is in
+// progress: that has the line meanwhile (downloadBuilt), rather than the two taking turns.
+function liveStatus(text, cls = "", title = text) {
+  if (building.size) return;
+  setStatus(text, cls);
+  $("status").title = title;
+}
 function setStatus(text, cls = "") {
   $("status").textContent = $("status").title = text; // (the title: the whole text when it is cut off)
   $("status").className = cls;
@@ -1571,6 +1584,7 @@ async function postNote(body) {
     const r = await fetch("note", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const res = await r.json().catch(() => ({ error: `failed (${r.status})` }));
     if (!r.ok) return res.error || `failed (${r.status})`;
+    wroteAt = Date.now(); // (a build comes: behind)
     const old = writtenKey(body.source, body.macro, body.tex);
     if (body.action === "add" || body.action === "reply") markWritten(writtenKey(res.source, res.macro, res.tex), true);
     else if (written.has(old)) {
@@ -2256,6 +2270,15 @@ let loading = false;
 let forwardSeq = null;
 let wordsPromise = null;
 let buildVersion = null;
+// Whether a build is adding a change that this tab wrote (a note: wroteAt) and hasn't started yet, for
+// downloadBuilt: until a build starts, for 2 seconds at most (latexmk looks for changes four times a second).
+let buildRunning = false, buildStarted = 0, buildFailed = false, wroteAt = 0;
+function seeBuild(running, failed) {
+  if (running && !buildRunning) buildStarted = Date.now();
+  buildRunning = running;
+  buildFailed = failed; // (the last build that finished: the PDF is then the one before)
+}
+const behind = () => wroteAt > buildStarted && Date.now() - wroteAt < 2000;
 
 async function load(name, version, variant, info) {
   // Fetch and parse the new PDF before swapping, so the old one stays visible meanwhile.
@@ -2279,8 +2302,7 @@ async function load(name, version, variant, info) {
   $("findCount").textContent = "";
   $("count").textContent = next.numPages;
   const time = new Date().toLocaleTimeString();
-  setStatus(`✓ ${time.replace(/\s*[AP]M$/i, "")}`, "fresh");
-  $("status").title = `Updated at ${time}`;
+  liveStatus(`✓ ${time.replace(/\s*[AP]M$/i, "")}`, "fresh", `Updated at ${time}`);
   setTimeout(() => $("status").classList.remove("fresh"), 1500);
   prevBuildWords = oldWords || null;
   wordsPromise = docWords(next);
@@ -2314,6 +2336,7 @@ async function poll() {
     if (r.status === 404) throw new Error("server is older than this viewer: restart the LaTeX build task");
     if (!r.ok) throw new Error(`status ${r.status}`);
     const info = await r.json();
+    if (!isDiff) seeBuild(!!info.building, info.build?.ok === false);
     if (!isDiff && info.doc && info.doc !== docFile) return openDoc(info.doc); // the server builds another document now
     if (info.layout) area = info.layout;
     showBuild(info.building ? null : info.build, info.building ? null : info.cleanBuild, info.building ? null : info.overwritten);
@@ -2323,9 +2346,9 @@ async function poll() {
     $("texImage").textContent = info.texImage?.startsWith("no synctex") ? "⚠ no SyncTeX" : "⚠ TeX image missing";
     $("updated").hidden = !info.latexLive?.updated;
     $("versionInfo").textContent = info.latexLive ? `latex-live ${info.latexLive.version}` : "";
-    if (info.building) setStatus(isDiff ? "building diff…" : "building…", "busy");
-    else if ($("status").className === "busy" && Date.now() - rebuildAt > 4000) setStatus(info.build?.ok === false ? "build failed" : "", info.build?.ok === false ? "error" : "");
-    if (!info.version) return info.building || setStatus(`waiting for ${file}…`);
+    if (info.building) liveStatus(isDiff ? "building diff…" : "building…", "busy");
+    else if ($("status").className === "busy" && Date.now() - rebuildAt > 4000) liveStatus(info.build?.ok === false ? "build failed" : "", info.build?.ok === false ? "error" : "");
+    if (!info.version) return info.building || liveStatus(`waiting for ${file}…`);
     buildVersion = info.version;
     headInfo = info.head || null;
     pushInfo = info.push || null;
