@@ -2647,6 +2647,27 @@ def editor_checks(sh):
     ok("a save whose answer got lost doesn't conflict with the same tab's next save of the same line (and an undo of it"
        " undoes it in the file); another tab's or another user's does, and says who saved meanwhile")
 
+    # A draft restored while the tab had saved newer edits (the viewer's restoreKept): sent from the draft's old base,
+    # under the new save name that restoreKept takes, the tab's acknowledged save counts as a change by someone else,
+    # so overlapping edits conflict rather than the draft overwriting them.
+    draft_base = expect_dict(via_proxy("ed", "/file?path=body.tex"), 200, "GET file body.tex")
+    newer = with_paragraph(draft_base["text"], 13, "Paragraph thirteen, saved after the draft was kept.")
+    save("ed", {"path": "body.tex", "base": draft_base["version"], "text": newer, "editor": "tab-c"}, 200,
+         "the tab's newer save, answered")
+    draft = with_paragraph(draft_base["text"], 13, "Paragraph thirteen, as the kept draft had it.")
+    clash = save("ed", {"path": "body.tex", "base": draft_base["version"], "base_text": draft_base["text"], "text": draft,
+                        "editor": "tab-c-restored"}, 409, "the restored draft's save, under a new save name")
+    if clash.get("conflict") is not True or read_text(path) != newer:
+        fail(f"a restored draft overwrote the newer saved edits of the same line instead of conflicting: {str(clash)[:200]}")
+    with open(os.path.join(HERE, "viewer.html")) as f:
+        page = f.read()
+    restore = page[page.index("async function restoreKept"):]
+    restore = restore[:restore.index("\n}\n")]
+    if "editor: saveId" not in page or "saveId = newSaveId()" not in restore:
+        fail("the viewer's restoreKept no longer saves a restored draft under a new save name")
+    ok("a restored draft is saved under a new save name, so the tab's newer saved edits of the same lines conflict with it"
+       " instead of being overwritten")
+
     crlf = expect_dict(via_proxy("ed", "/file?path=crlf.bib"), 200, "GET file crlf.bib")
     raw = read_bytes(crlf_path)
     if crlf.get("eol") != "\r\n" or crlf.get("text") != raw.decode().replace("\r\n", "\n") or crlf.get("version") != version_of(raw):

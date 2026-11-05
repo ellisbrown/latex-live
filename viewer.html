@@ -1104,8 +1104,12 @@ const postJSON = (path, body, keepalive = false) => {
   return fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: data,
                        keepalive: keepalive && new TextEncoder().encode(data).length < KEEPALIVE });
 };
-// This page's own name for its saves, so that live.py knows which saves are its own (save_file)
-const EDITOR_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+// This page's own name (for the edits it keeps: keptKey), and the name its saves go by, so that live.py
+// knows which saves are its own (save_file). A restored draft starts a new name for the saves
+// (restoreKept): it is not built on this page's last save, so that save must count as anyone's.
+const newSaveId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+const EDITOR_ID = newSaveId();
+let saveId = EDITOR_ID;
 // A response's body: its JSON, or {error} with a plain-text or HTML error's message (and html: true
 // for a page, which may also be a proxy's sign-in page rather than the server's answer).
 async function readBody(r) {
@@ -1518,7 +1522,7 @@ async function saveSource({ keepalive = false } = {}) {
   showSaveState();
   target.uncertain = true; // (until the server's answer says what the file holds)
   try {
-    let body = { path: target.path, base: target.baseVersion, text, editor: EDITOR_ID };
+    let body = { path: target.path, base: target.baseVersion, text, editor: saveId };
     if (keepalive && fitsKeepalive({ ...body, base_text: target.base })) body = { ...body, base_text: target.base }; // (no second try once the page is gone)
     let r = await postJSON("file", body, keepalive);
     let res = await readBody(r);
@@ -1896,7 +1900,11 @@ async function restoreKept(kept) {
   if (ed?.path !== kept.path) return;
   hideNotice("restore");
   conflict = kept.conflict && MARK_ENDS.test(kept.text) ? { by: kept.conflict.by || null } : null;
-  Object.assign(ed, { base: kept.base, baseVersion: kept.baseVersion ?? null }); // (the edits, against what they started from)
+  // The edits, against what they started from, saved under a new name: the newer edits just saved are
+  // someone else's change to them (merged, or a conflict where they overlap), not a save of theirs whose
+  // answer got lost (save_file would then take the draft as typed on from it, and overwrite them).
+  saveId = newSaveId();
+  Object.assign(ed, { base: kept.base, baseVersion: kept.baseVersion ?? null });
   sourceEpoch++;
   replaceSource(kept.text);
   keepUnsaved(true); // (kept as this page's edits now, before the earlier page's copy goes)
