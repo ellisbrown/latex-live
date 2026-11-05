@@ -9,7 +9,7 @@ from .baselines import base_status
 from .build import build_running, build_status
 from .document import layout, page_limit
 from .files import file_hash, job_file, mtime, pdf_path, read_json
-from .synctex import refs_start
+from .synctex import PENDING, refs_start
 from .tools import image_problem
 
 
@@ -25,6 +25,12 @@ def forward_asked(found):
         return None
     clean = numbers(found.get("clean"))
     return {**target, **({"clean": clean} if len(clean) == 5 else {})}
+
+
+def with_refs(info, refs):
+    """info with where the main text ends (refs), or refsPending while that is being looked up (refs_start
+    without wait: the viewer shows a new PDF at once, and measures its main text once refs come)."""
+    return {**info, "refs": None, "refsPending": True} if refs is PENDING else {**info, "refs": refs}
 
 
 def status(server, pdf_name, push=False):
@@ -48,10 +54,10 @@ def status(server, pdf_name, push=False):
         "build": build_status(server, pdf_name),
         "forward": forward_asked(read_json(job_file(root, pdf_name, ".forward.json"))),
         "pageLimit": limit,
-        "refs": refs_start(root, pdf_name),  # where the main text ends (page badge, space hints)
         "layout": layout(root, pdf_name),
         "doc": server.default_pdf,
     }
+    info = with_refs(info, refs_start(root, pdf_name, wait=False))  # where the main text ends (page badge, space hints)
     info["cleanBuild"] = build_status(server, pdf_name, clean=True)  # (the notes-free pass)
     published = server.shared["published"] if config.SHARED else read_json(job_file(root, pdf_name, ".published.json"))  # (what was published last)
     if published and os.path.isfile(pdf):
@@ -60,7 +66,7 @@ def status(server, pdf_name, push=False):
             info["overwritten"] = time.strftime("%H:%M:%S", time.localtime(st.st_mtime))
     clean_pdf = pdf_path(root, pdf_name[:-4] + "-clean.pdf")
     if os.path.isfile(clean_pdf):
-        info["clean"] = {"version": str(mtime(clean_pdf)), "refs": refs_start(root, pdf_name, clean=True)}
+        info["clean"] = with_refs({"version": str(mtime(clean_pdf))}, refs_start(root, pdf_name, clean=True, wait=False))
     info["head"] = base_status(server, pdf_name, "head", build=not config.SHARED)
     info["push"] = base_status(server, pdf_name, "push", build=push and not config.SHARED)
     info["texImage"] = image_problem(server)

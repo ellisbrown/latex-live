@@ -5,6 +5,7 @@ import glob
 import gzip
 import os
 import re
+import shlex
 import shutil
 import threading
 import zlib
@@ -22,23 +23,42 @@ def run_synctex(paper_root, *args):
     parses the build's files, which the paper's TeX writes. At most four at once (SPAWNS), each for
     up to a minute.
     """
-    cmd = ["synctex", *args]
+    return run_synctexes(paper_root, [args])[0]
+
+
+RUN_MARK = "latex-live synctex run"  # (run_synctexes: what starts each run's output)
+
+
+def run_synctexes(paper_root, runs):
+    """run_synctex for each argument list of runs, in one tool run (one container, rather than one each: a
+    container takes longer to start than SyncTeX to answer): a list of their records, one list per run."""
+    if not runs:
+        return []
+    cmd = ["synctex", *runs[0]] if len(runs) == 1 else [
+        "sh", "-c", f'for n; do echo "{RUN_MARK}"; eval "set -- $n"; synctex "$@"; done', "sh",
+        *(" ".join(shlex.quote(str(a)) for a in args) for args in runs)]
     if config.SHARED or not shutil.which("synctex"):
         if not shutil.which("podman"):
-            return []
+            return [[] for _ in runs]
         cmd = [*container_argv(paper_root), *cmd]
     try:
         code, out = run_tool(cmd, paper_root, timeout=60, kind="synctex", capture=4 << 20)
     except OSError:
-        return []
-    records = []
+        return [[] for _ in runs]
+    found = [[]] if len(runs) == 1 else []
     for line in out.splitlines():
+        if line == RUN_MARK and len(runs) > 1:
+            found.append([])
+            continue
         key, sep, value = line.partition(":")
+        if not found:
+            continue
+        records = found[-1]
         if key == "Output":  # each result record starts with Output:
             records.append({})
         if sep and records:
             records[-1][key] = value
-    return records
+    return (found + [[] for _ in runs])[:len(runs)]
 
 
 def synctex_records(synctex_gz):
@@ -69,13 +89,17 @@ def to_int(text, default=None):
 
 
 BIB_SPAN_LOCK = threading.Lock()  # (bib_span: one lookup per build, however many viewers poll at once)
+PENDING = "pending"  # (bib_span without wait: the lookup for the newest build runs meanwhile)
+BIB_SPAN_RUNNING, RUNNING_LOCK = set(), threading.Lock()  # (the lookups started without wait that have yet to end: (synctex_gz, mtime))
 
 
-def bib_span(paper_root, files, cache={}):
+def bib_span(paper_root, files, cache={}, wait=True):
     """Where the bibliography starts and ends: ({"page", "y"}, {"page", "y"}) (y in points
     from the page top), or None. Maps the first and last lines of the .bbl to the PDF, cached
     per build (each viewer's status poll asks, and a lookup may take several SyncTeX runs).
-    files = (synctex_gz, bbl, pdf).
+    files = (synctex_gz, bbl, pdf). Without wait, while the build's lookup has yet to be made,
+    PENDING, with the lookup started in a thread (the status poll must not wait for it: a new
+    PDF shows at once, and its page count once the lookup ends).
     """
     synctex_gz, bbl, pdf = files
     try:
@@ -86,28 +110,48 @@ def bib_span(paper_root, files, cache={}):
         last = text.count("\n") + 1
     except OSError:
         return None
+    if cache.get(synctex_gz, (None,))[0] != mtime and not wait:
+        with RUNNING_LOCK:
+            if (synctex_gz, mtime) not in BIB_SPAN_RUNNING:
+                BIB_SPAN_RUNNING.add((synctex_gz, mtime))
+
+                def look_up():
+                    try:
+                        bib_span(paper_root, files, cache)
+                    finally:
+                        with RUNNING_LOCK:
+                            BIB_SPAN_RUNNING.discard((synctex_gz, mtime))
+                threading.Thread(target=look_up, daemon=True).start()
+        return PENDING
     if cache.get(synctex_gz, (None,))[0] != mtime:
         with BIB_SPAN_LOCK:
             if cache.get(synctex_gz, (None,))[0] != mtime:  # (another request may have looked it up meanwhile)
-                def where(line):
-                    rec = next((r for r in run_synctex(paper_root, "view", "-i", f"{line}:0:{bbl}", "-o", pdf) if "Page" in r), None)
+                def where(records):
+                    rec = next((r for r in records if "Page" in r), None)
                     try:
                         return rec and {"page": int(rec["Page"]), "x": float(rec["h"]), "y": float(rec["v"]) - float(rec["H"])}
                     except (KeyError, ValueError):  # (a record that isn't what SyncTeX writes)
                         return None
-                start = where(1)
-                # The last lines (\end{thebibliography}, blank ones) may have no boxes: walk back to one that does.
-                end = next(filter(None, (where(line) for line in range(last, max(1, last - 8), -1))), None) if start else None
+
+                def look_up(lines):
+                    return [where(r) for r in run_synctexes(paper_root, [("view", "-i", f"{n}:0:{bbl}", "-o", pdf) for n in lines])]
+                # The first line and the last; the last lines (\end{thebibliography}, blank ones) may have no boxes:
+                # then walk back to one that does, within seven more.
+                start, end = look_up([1, last]) if last > 1 else (*look_up([1]), None)
+                if start and not end:
+                    end = next(filter(None, look_up(range(last - 1, max(1, last - 8), -1))), None)
+                end = end if start else None
                 cache[synctex_gz] = (mtime, start and (start, end))
     return cache[synctex_gz][1]
 
 
-def refs_start(paper_root, pdf_name, clean=False):
-    """Where the bibliography starts, in the live build or the notes-free one."""
+def refs_start(paper_root, pdf_name, clean=False, wait=True):
+    """Where the bibliography starts, in the live build or the notes-free one (without wait, PENDING
+    while it is being looked up: bib_span)."""
     f = clean_file if clean else job_file
     span = bib_span(paper_root, (f(paper_root, pdf_name, ".synctex.gz"), f(paper_root, pdf_name, ".bbl"),
-                                 f(paper_root, pdf_name, ".pdf")))
-    return span and span[0]
+                                 f(paper_root, pdf_name, ".pdf")), wait=wait)
+    return span if span is PENDING else span and span[0]
 
 
 SYNCTEX_BOX_RE = re.compile(r"([\[(h])(\d+),(\d+):(-?\d+),(-?\d+):(-?\d+),(-?\d+),(-?\d+)")  # vboxes, hboxes
