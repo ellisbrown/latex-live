@@ -245,6 +245,9 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
     notes to git as theirs (with the owner as committer) once they pause.
   - `LATEX_LIVE_COMMIT_IDLE`: the seconds of quiet after a person's last edit
     before it is committed (default 60), e.g. `30`.
+  - `LATEX_LIVE_BUILD_LIMIT`: in shared mode, the most disk space the build
+    folder may take, in MB (default 2048). Past it, the build is stopped and
+    the build folder emptied, and the viewer says so.
 - **Versions:** releases are tagged `v<VERSION>` (see `VERSION`; `live.py
   --version` prints it), with notes on the GitHub releases page. To pin one,
   check out its tag; to follow development, track `main`. After the checkout
@@ -299,10 +302,14 @@ instance treats the paper and everything TeX writes as theirs:
 - Every TeX run is a container of its own from the TeX Live image, never the
   host's TeX (it refuses `--host-tex`, and a machine without podman): no
   network, no capabilities, no shell escape, at most 4 GB of memory, 2 CPUs,
-  512 processes, files of 1 GB, and 10 minutes. The paper folder is mounted
-  read-only and only its build folder writable, and TeX opens files only below
-  its folder and in the TeX tree. A rebuild stops the run in progress, its
-  containers too, and so does stopping the instance. The memory and CPU
+  512 processes, files of 1 GB, and 10 minutes, and the build folder may
+  grow to `LATEX_LIVE_BUILD_LIMIT` (checked every 2 seconds). The paper folder
+  is mounted read-only and only its build folder writable, with its dot entries
+  (`.git`, whose config may hold a remote's credentials, `.env`, ...) hidden,
+  and TeX opens files only below its folder and in the TeX tree. A rebuild
+  stops the run in progress, its containers too, and so does stopping the
+  instance. Builds and downloads share four container slots, one of them
+  kept for the live build. The memory and CPU
   limits need cgroup v2 with those controllers delegated to your user (see
   [SETUP.md](SETUP.md#sharing-a-preview-with-coauthors)).
 - What TeX writes in the build folder counts as written by the coauthors:

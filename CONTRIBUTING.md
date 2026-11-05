@@ -62,7 +62,8 @@ shows on reload. `latex_report.py` and `forward.py` run anew each time.
   until `least_role` grants it to a lesser role, every POST goes through the
   `Origin` check, and nothing acts or starts a build on a GET there. TeX tools
   run only in the image, through `tex-exec` with `LATEX_LIVE_SANDBOX`, each
-  run in a `SPAWNS` slot and under a timeout, and no host program parses what
+  run in a `SPAWNS` slot (the live build: `LIVE_SPAWN`, its own) and under a
+  timeout, with `build/` watched for size (`watch_build_size`), and no host program parses what
   TeX wrote as commands (so no latexmk there). Treat every file in `build/` as
   written by a coauthor. Extend `check.py`'s role checks with each new
   endpoint.

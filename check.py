@@ -79,7 +79,9 @@
      to its last line; diffs only against commits that HEAD builds on; editors' rebuilds at most
      every 20 s;
    - a rebuild stops the run in progress and its container (a pass kept busy for a minute); removing
-     a file the build reads rebuilds it; a bibtex failure fails the build; the status ignores a status, a .building marker and a record of what was published forged in
+     a file the build reads rebuilds it; a bibtex failure fails the build; a file a failed build missed
+     builds it once it appears; a build that fills build/ past LATEX_LIVE_BUILD_LIMIT is stopped and
+     build/ emptied; a container sees no dot entry of the paper (.git); the status ignores a status, a .building marker and a record of what was published forged in
      build/; a second instance asks the port in a forged lock file without its token;
    - auto-commit: each user's edits are committed as that user (by the owner) once they are
      quiet, or at the owner's POST commit, only the files the server wrote, on the shared branch
@@ -198,11 +200,11 @@ Walrus yak zebu ibex okapi. \eb{as written}
 """
 # A change to the shared copy that only the test makes, before the shared instance starts: no one's saves
 # account for it, so the server commits it then, as the owner's (shared_start_checks). It also tells whether
-# TeX can read an absolute path there (shared mode runs it with openin_any=p), and reads slow.tex while that exists
-# (rebuild_stop_checks).
+# TeX can read an absolute path there (shared mode runs it with openin_any=p), and reads slow.tex, disk.tex and
+# refer.tex while they exist (rebuild_stop_checks).
 LOCAL_CHANGE = r"""\IfFileExists{/etc/passwd}{\typeout{latex-live-check: TeX read an absolute path}}
   {\typeout{latex-live-check: TeX refused an absolute path}}
-\IfFileExists{slow.tex}{\input{slow.tex}}{}
+\IfFileExists{slow.tex}{\input{slow.tex}}{}\IfFileExists{disk.tex}{\input{disk.tex}}{}\IfFileExists{refer.tex}{\input{refer.tex}}{}
 """
 # A line for the shared copy's preamble whose \bibdata name is a shell command, which would create bibdata-ran in
 # the paper: latexmk hands such names to a shell on the host (its kpsewhich), where it runs. The .bib file of that
@@ -1381,6 +1383,7 @@ def shared_setup(tmp, sharing):
     sh["env"] = {**ENV, "LATEX_LIVE_STATE": state, "LATEX_LIVE_USERS": sh["users_file"], "LATEX_LIVE_IDENTITY_HEADER": "x-test-user",
                  "LATEX_LIVE_PROXY_HOST": PROXY_HOST, "LATEX_LIVE_PUBLIC_URL": PUBLIC, "LATEX_LIVE_COMMIT": "1",
                  "LATEX_LIVE_COMMIT_IDLE": "2", "LATEX_LIVE_PROTECTED": r"\\eb\{as written\}", "LATEX_LIVE_EDITOR": stub,
+                 "LATEX_LIVE_BUILD_LIMIT": "64",
                  "PATH": host_tex + os.pathsep + ENV.get("PATH", os.defpath)}
     if sys.platform.startswith("linux"):  # (the server looks the peer's uid up in /proc/net)
         sh["env"]["LATEX_LIVE_PROXY_UID"] = str(os.getuid())
@@ -1515,8 +1518,8 @@ def tex_exec_check(tmp):
     mode), it confines the container, as a stand-in for podman shows: no capabilities, no new privileges,
     at most 512 processes, 4 GB, 2 CPUs, 1 GB files and 10 minutes (a caller's timeout stops only the
     podman client), labels that name the instance and the run (for stopping it), the paper read-only
-    and only build/ writable, no shell escape, and TeX's files only below its folder; live.container_argv
-    in shared mode goes through tex-exec too."""
+    (its dot entries, .git among them, hidden) and only build/ writable, no shell escape, and TeX's files
+    only below its folder; live.container_argv in shared mode goes through tex-exec too."""
     cmd = [os.path.join(HERE, "tex-exec"), "localhost/latex-live-check-missing:none", tmp, "true"]
     fallback = subprocess.run(cmd, cwd=tmp, env=ENV, capture_output=True, text=True, timeout=60)
     required = subprocess.run(cmd, cwd=tmp, env={**ENV, "LATEX_LIVE_REQUIRE_IMAGE": "1"}, capture_output=True, text=True, timeout=60)
@@ -1529,7 +1532,10 @@ def tex_exec_check(tmp):
     with open(os.path.join(stub, "podman"), "w") as f:  # (the image exists; a run prints its arguments, one per line)
         f.write('#!/bin/sh\n[ "$1" = image ] && exit 0\nprintf \'%s\\n\' "$@"\n')
     os.chmod(os.path.join(stub, "podman"), 0o755)
-    confined = subprocess.run([os.path.join(HERE, "tex-exec"), "localhost/latex-live-check:none", tmp, "pdflatex", "x.tex"], cwd=tmp,
+    root = os.path.join(tmp, "sandboxed")  # (a paper root with dot entries, which the container must not see)
+    os.makedirs(os.path.join(root, ".git"))
+    put(os.path.join(root, ".env"), "")
+    confined = subprocess.run([os.path.join(HERE, "tex-exec"), "localhost/latex-live-check:none", root, "pdflatex", "x.tex"], cwd=root,
                               env={**ENV, "LATEX_LIVE_SANDBOX": "1", "LATEX_LIVE_BUILD": "out", "LATEX_LIVE_INSTANCE": "check-1",
                                    "LATEX_LIVE_RUN": "main", "PATH": stub + os.pathsep + ENV.get("PATH", os.defpath)},
                               capture_output=True, text=True, timeout=60)
@@ -1540,9 +1546,10 @@ def tex_exec_check(tmp):
     live.SHARED = shared
     want = ("--cap-drop=all", "--security-opt=no-new-privileges", "--pids-limit=512", "--memory=4g", "--cpus=2",
             "fsize=1073741824:1073741824", "--timeout=600", "latex-live.instance=check-1", "latex-live.run=main",
-            f"{tmp}:{tmp}:ro", f"{tmp}/out:{tmp}/out", "openin_any=p", "openout_any=p", "shell_escape=f")
+            f"{root}:{root}:ro", f"{root}/out:{root}/out", "openin_any=p", "openout_any=p", "shell_escape=f",
+            f"{root}/.git:ro,size=4k,notmpcopyup", f"/dev/null:{root}/.env:ro")
     args = confined.stdout.splitlines()
-    if (confined.returncode or not all(w in args for w in want) or f"{tmp}:{tmp}" in args
+    if (confined.returncode or not all(w in args for w in want) or f"{root}:{root}" in args
             or args[-3:] != ["localhost/latex-live-check:none", "pdflatex", "x.tex"]):
         fail(f"tex-exec with LATEX_LIVE_SANDBOX=1 runs podman with {args} (exit {confined.returncode}), not with all of {want}"
              " (and the paper only read-only)")
@@ -2725,6 +2732,57 @@ def rebuild_stop_checks(sh):
     if broken.get("ok") is not False:
         fail(f"a build whose bibtex failed reports success: {broken}")
     ok("a build whose bibtex fails reports it, and builds again once the .bib is fixed")
+
+    refer, later = os.path.join(root, "refer.tex"), os.path.join(root, "later.tex")
+    put(refer, "\\input{later}\n")  # (a file that doesn't exist yet, as an edit that refers to a figure still to come)
+    expect(with_token(owner, "/rebuild", "POST", {}), 202, "the owner rebuilding with refer.tex")
+    wait_for("a build that misses later.tex", lambda: (b := shared_status(sh).get("build") or {}).get("ok") is False
+             and b.get("began", 0) >= mtime_ns(refer) and not shared_status(sh).get("building"), timeout=60, step=0.5)
+    put(later, "% It came later.\n")
+    try:
+        wait_for("a build once later.tex exists (no rebuild asked for)",
+                 lambda: (b := shared_status(sh).get("build") or {}).get("ok") and b.get("began", 0) >= mtime_ns(later),
+                 timeout=60, step=0.5)
+    finally:
+        os.remove(refer)
+        os.remove(later)
+    expect(with_token(owner, "/rebuild", "POST", {}), 202, "the owner rebuilding without refer.tex")
+    wait_for("the shared copy's build to settle", lambda: settled(sh) and (shared_status(sh).get("build") or {}).get("ok"),
+             timeout=120)
+    ok("a file that a failed build missed builds the paper once it appears")
+
+    put(os.path.join(root, "disk.tex"), "\\newcount\\diskn \\newwrite\\diskf \\def\\diska{xxxxxxxxxx}"
+        "\\edef\\diskb{\\diska\\diska\\diska\\diska\\diska\\diska\\diska\\diska\\diska\\diska}"
+        "\\edef\\diskc{\\diskb\\diskb\\diskb\\diskb\\diskb\\diskb\\diskb\\diskb\\diskb\\diskb}\n"
+        "\\loop\\advance\\diskn by 1 \\immediate\\openout\\diskf=junk\\the\\diskn.txt\n"  # (1 MB in each of up to 500 files)
+        "{\\count255=0 \\loop\\immediate\\write\\diskf{\\diskc}\\advance\\count255 by 1 \\ifnum\\count255<1000 \\repeat}"
+        "\\immediate\\closeout\\diskf \\ifnum\\diskn<500 \\repeat\n")
+    try:
+        expect(with_token(owner, "/rebuild", "POST", {}), 202, "the owner rebuilding with disk.tex")
+        full = wait_for("a build stopped for filling build/", lambda: "LATEX_LIVE_BUILD_LIMIT" in json.dumps(
+            (shared_status(sh).get("build") or {}).get("errors")) and shared_status(sh)["build"], timeout=120, step=0.5)
+        wait_for("build/ emptied and the run's container gone", lambda: not glob.glob(os.path.join(root, "build", "junk*.txt"))
+                 and not instance_containers(pid, "main"), timeout=10, step=0.5)
+    finally:
+        os.remove(os.path.join(root, "disk.tex"))
+    expect(with_token(owner, "/rebuild", "POST", {}), 202, "the owner rebuilding without disk.tex")
+    wait_for("the shared copy's build to settle", lambda: settled(sh) and (shared_status(sh).get("build") or {}).get("ok"),
+             timeout=120)
+    ok(f"a build that fills build/ past LATEX_LIVE_BUILD_LIMIT is stopped, build/ emptied, and it says so"
+       f" ({str(full.get('errors'))[:70]}); the next one builds")
+
+    marker = secrets.token_hex(8)
+    put(os.path.join(root, ".git", "latex-live-check-marker"), marker)
+    with open(os.path.join(root, ".git", "config"), "a") as f:  # (where a remote's credentials would be)
+        f.write(f"[latexlivecheck]\n\tmarker = {marker}\n")
+    image = texlive_image()[0]
+    seen = subprocess.run([os.path.join(HERE, "tex-exec"), image, root, "sh", "-c",
+                           "cat .git/config .git/latex-live-check-marker .private.bib; ls -a .git"], cwd=root, capture_output=True,
+                          text=True, timeout=120, env={**ENV, "LATEX_LIVE_SANDBOX": "1", "LATEX_LIVE_REQUIRE_IMAGE": "1",
+                                                       "LATEX_LIVE_INSTANCE": f"{pid}-dotcheck"})
+    if marker in seen.stdout + seen.stderr or "@misc{five}" in seen.stdout:
+        fail("a shared-mode container can read the paper's .git (or another dot entry): biber, which ignores openin_any, would too")
+    ok("a shared-mode container sees no .git or other dot entry of the paper (empty in their place)")
     lock_spoof_checks(sh)
 
 
