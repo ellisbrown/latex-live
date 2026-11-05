@@ -355,6 +355,7 @@ def static_checks():
     bounds_checks()
     failed_export_checks()
     waiting_download_checks()
+    standby_snapshot_checks()
     code_updated_checks()
     static_file_checks()
 
@@ -1695,6 +1696,32 @@ def standby_normal_pass(paper, image):
     subprocess.run([*prefix, "pdflatex", "-synctex=1", "-file-line-error", "-halt-on-error", "-interaction=batchmode", "-recorder",
                     "-jobname=main-live", "-output-directory=build", source], cwd=copy, capture_output=True, timeout=120, env=ENV)
     return pdf_pages_and_text(os.path.join(copy, "build", "main-live.pdf"))
+
+
+def standby_snapshot_checks():
+    """The warm standby notices a name that appears in a folder the paper links to (latexlive/standby.snapshot and
+    new_name, which look at the working directory: run in a process of their own), as TeX would find it
+    (\\IfFileExists of a file that was missing), and a link back up doesn't loop."""
+    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
+    try:
+        os.makedirs(os.path.join(tmp, "paper", "build"))
+        os.makedirs(os.path.join(tmp, "assets"))
+        os.symlink(os.path.join(tmp, "assets"), os.path.join(tmp, "paper", "assets"))
+        os.symlink(".", os.path.join(tmp, "paper", "loop"))
+        script = ("import os, sys, time\n"
+                  f"sys.path.insert(0, {HERE!r})\n"
+                  "from latexlive import standby\n"
+                  "snap = standby.snapshot('build', 'main-live')\n"
+                  "before = None if snap is None else standby.new_name(snap, 'build', 'main-live')\n"
+                  "time.sleep(0.01)\n"
+                  "open(os.path.join('..', 'assets', 'optional.tex'), 'w').close()\n"
+                  "print(snap is not None, before, standby.new_name(snap, 'build', 'main-live') if snap else None)\n")
+        r = subprocess.run([sys.executable, "-c", script], cwd=os.path.join(tmp, "paper"), capture_output=True, text=True, timeout=60)
+        if r.stdout.split() != ["True", "None", os.path.join("assets", "optional.tex")]:
+            fail(f"a file added in a folder the paper links to went unnoticed by the warm standby's snapshot: {r.stdout}{r.stderr}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    ok("the warm standby notices a file added in a folder the paper links to (and a link back up doesn't loop)")
 
 
 def standby_checks(tmp):
