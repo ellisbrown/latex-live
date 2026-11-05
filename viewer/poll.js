@@ -5,7 +5,7 @@ import {
 } from "./page.js";
 import { postJSON, readBody, unreachable } from "./net.js";
 import { isCollaborator, loadAuthors, me } from "./role.js";
-import { assets, eventBus, leaveDocument, pdfjsLib, showDocument, shownVariant } from "./pdfview.js";
+import { assets, doc, eventBus, leaveDocument, pdfjsLib, showDocument, shownVariant } from "./pdfview.js";
 import { resetFind } from "./search.js";
 import { rebuildAt, seeBuild, setBuildVersion, setShown, shown } from "./build.js";
 import { setGutter } from "./layout.js";
@@ -69,6 +69,17 @@ function timeLoad(name, version, info, asked, answered) {
   };
 }
 
+// The main text's extent (the page badge, space hints and section lengths) of the build on screen. Its references'
+// start (refs) comes with the status, or a little later (refsPending: the server is looking it up): the PDF shows
+// meanwhile, and is measured once a later poll brings them (measureWhenRefs, until then).
+let measureWhenRefs = null;
+function measureShown(d, variant, version, refs, limit) {
+  checkPages(d, refs || null, limit).then((r) => {
+    setResult(variant, version, r);
+    renderPages(); refreshTab(); fillSectionPages(); updateCut();
+  }).catch((e) => console.warn(e));
+}
+
 async function load(name, version, variant, info, timed = () => {}) {
   // Fetch and parse the new PDF before swapping, so the old one stays visible meanwhile.
   const next = await pdfjsLib.getDocument({ url: `pdf/${encodeURIComponent(name)}?v=${version}`, ...assets }).promise;
@@ -96,12 +107,10 @@ async function load(name, version, variant, info, timed = () => {}) {
   if (!isDiff) loadNotes().catch(() => {});
   if (!isDiff) loadAuthors().catch(() => {});
   if (!isDiff && variant === "clean") loadMargin(next).catch((e) => { console.warn(e); setGutter(false); });
-  const refs = variant === "clean" ? info.clean.refs : info.refs;
-  if (!isDiff) { // (the main text's extent: the page badge, space hints and section lengths)
-    checkPages(next, refs || null, info.pageLimit).then((r) => {
-      setResult(variant, version, r);
-      renderPages(); refreshTab(); fillSectionPages(); updateCut();
-    }).catch((e) => console.warn(e));
+  const built = variant === "clean" ? info.clean : info;
+  measureWhenRefs = !isDiff && built.refsPending ? { d: next, variant, version } : null;
+  if (!isDiff) {
+    if (!built.refsPending) measureShown(next, variant, version, built.refs, info.pageLimit);
   } else {
     setResult(variant, version, null);
     renderPages();
@@ -169,6 +178,13 @@ export async function poll() {
       const [name, version] = clean ? [cleanFile, clean.version] : [file, info.version];
       await load(name, version, clean ? "clean" : "notes", info, timeLoad(name, version, info, asked, answered));
       setShown(want);
+    }
+    if (measureWhenRefs?.d === doc) { // (its references' start has come since it was loaded)
+      const built = measureWhenRefs.variant === "clean" ? info.clean : info;
+      if (built?.version === measureWhenRefs.version && !built.refsPending) {
+        measureShown(doc, measureWhenRefs.variant, measureWhenRefs.version, built.refs, info.pageLimit);
+        measureWhenRefs = null;
+      }
     }
     updateChanges();
     if (!isDiff && !measuring) { // the page count of the build that is not on screen
