@@ -4,6 +4,8 @@
   were edited last; the viewer switches to another root file.
 - `latexmk -pvc` rebuilds into build/ whenever any input file changes (latexmkrc),
   as job <doc>-live so stale <doc>.aux/.bbl from in-place builds are never read.
+  Each pdflatex pass takes a warm standby when it can: a pdflatex that has read the
+  preamble already and waits, so a save waits only for the body (standby).
 - pdflatex/bibtex run in the TeX Live 2024 image (close to Overleaf) via one
   short-lived rootless podman container per call (~0.2 s each); --host-tex
   uses the host's TeX installation instead. latexmk itself stays on the host.
@@ -48,7 +50,7 @@
   with LATEX_LIVE_COMMIT=1 each coauthor's edits and notes are committed to git as theirs.
 
 The server is this package, which live.py starts (main). Its modules, from the bottom up: config
-(settings), auth and roles (who is asking, and what each role may do), files, tools, git and latex (the
+(settings), standby (the live build's warm standby, which latexmkrc runs as a script), auth and roles (who is asking, and what each role may do), files, tools, git and latex (the
 paper's files and the build's, running TeX tools, git, reading LaTeX), synctex and document (the
 document as built), notes, sources, note_writer, commits and editor (reading and writing the
 sources), navigation, instances, build, baselines and status, shared_watch and shared_build (shared

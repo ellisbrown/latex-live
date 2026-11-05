@@ -13,6 +13,7 @@ from . import config
 from .files import clean_file, job_file, mtime, read_json
 from .instances import record_port, take_lock
 from .latex import root_docs
+from .standby import stop_standbys
 
 
 def build_running(server, pdf_name):
@@ -56,6 +57,8 @@ def start_latexmk(server, force=False):
     doc = server.default_pdf[:-4]
     force = force or (read_json(job_file(server.paper_root, server.default_pdf, ".status.json")) or {}).get("ok") is False
     env = {**server.env, "LATEX_LIVE_DOC": doc}
+    if config.STANDBY:  # (latexmkrc then runs each pass through standby.py, which stops its standbys when this process is gone)
+        env["LATEX_LIVE_STANDBY_OWNER"] = str(os.getpid())
     if config.PUBLISH:
         env["LATEX_LIVE_PUBLISH"] = os.path.join(config.PUBLISH, server.default_pdf)  # latex_report.py
     # On Linux, PR_SET_PDEATHSIG: latexmk gets SIGTERM if this process dies, however it dies.
@@ -81,6 +84,7 @@ def retry_build(server):
         return
     server.retried = time.monotonic()
     stop_latexmk(server)
+    stop_doc_standbys(server)
     sys.path.insert(0, config.HERE)
     import latex_report
     for ext in (*latex_report.AUX_EXTS, ".fdb_latexmk", ".fls", ".log", ".bbl", ".blg"):
@@ -100,6 +104,12 @@ def stop_latexmk(server):
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+
+
+def stop_doc_standbys(server, doc=None):
+    """Stop the warm standbys of doc (default: the current document) and remove what they left."""
+    if not config.SHARED:
+        stop_standbys(server.paper_root, config.BUILD, f"{doc or server.default_pdf[:-4]}-live")
 
 
 def on_main_thread(server, job):
@@ -132,6 +142,7 @@ def switch_doc(server, doc):
         return 409, {"error": f"{doc}.tex is open in another latex-live instance (port {other.get('port', '?')})",
                      "port": other.get("port")}
     stop_latexmk(server)
+    stop_doc_standbys(server)
     server.lock.close()
     server.lock = lock
     set_doc(server, doc)

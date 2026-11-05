@@ -23,6 +23,11 @@
 # hidden, or into the image. A name with a newline, ':' or ',' can't be hidden this way, so the run
 # is refused.
 # That skips the image's entrypoint, which switches users and so needs a capability.
+#
+# A warm standby of the live build (latexlive/standby.py) sets LATEX_LIVE_STANDBY_LABEL: its container gets
+# that label, its run's (LATEX_LIVE_RUN) and a deadline (LATEX_LIVE_TIMEOUT seconds, at most 2 hours), so that
+# it stops even if nothing stops it, and it never runs on the host's TeX, which a normal pass would not use
+# once the image is back.
 image=$1 root=$2
 shift 2
 if podman image exists "$image"; then
@@ -63,12 +68,20 @@ if podman image exists "$image"; then
             -v "$root:$root:ro" -v "$build:$build" -e openin_any=p -e openout_any=p -e shell_escape=f "$@"
     else
         set -- -v "$root:$root" "$image" "$@"
+        if [ -n "$LATEX_LIVE_STANDBY_LABEL" ]; then
+            timeout=${LATEX_LIVE_TIMEOUT:-3600}
+            case $timeout in ''|*[!0-9]*) timeout=3600 ;; esac
+            if [ "$timeout" -gt 7200 ] || [ "$timeout" -lt 1 ]; then timeout=3600; fi
+            set -- --timeout="$timeout" --label "latex-live.standby=$LATEX_LIVE_STANDBY_LABEL" \
+                --label "latex-live.run=${LATEX_LIVE_RUN:-standby}" "$@"
+        fi
     fi
     exec podman run --rm --init --pull=never --network=none --security-opt label=disable \
         -w "$(pwd -P)" -e BIBINPUTS -e BSTINPUTS -e TEXINPUTS -e max_print_line "$@"
 fi
-if [ "$LATEX_LIVE_REQUIRE_IMAGE" = 1 ]; then
-    echo "=== latex-live: $image is not pulled (to fix: podman pull $image); shared mode never runs the host's $1" >&2
+if [ "$LATEX_LIVE_REQUIRE_IMAGE" = 1 ] || [ -n "$LATEX_LIVE_STANDBY_LABEL" ]; then
+    who="shared mode"; if [ -n "$LATEX_LIVE_STANDBY_LABEL" ]; then who="a warm standby"; fi
+    echo "=== latex-live: $image is not pulled (to fix: podman pull $image); $who never runs the host's $1" >&2
     exit 1
 fi
 echo "=== latex-live: $image is not pulled (to fix: podman pull $image); using the host's $1" >&2

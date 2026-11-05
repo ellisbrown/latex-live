@@ -28,7 +28,11 @@ $pre_tex_code = '\\def\\latexlivelayout{\\typeout{latex-live layout:'
     . ' \\the\\paperwidth,\\the\\paperheight,\\the\\hoffset,\\the\\oddsidemargin,\\the\\voffset,\\the\\topmargin,'
     . '\\the\\headheight,\\the\\headsep,\\the\\textwidth,\\the\\textheight,\\the\\columnwidth,\\the\\baselineskip}}'
     . '\\ifdefined\\AddToHook\\AddToHook{begindocument/end}{\\latexlivelayout}\\else\\AtBeginDocument{\\latexlivelayout}\\fi';
-$pdflatex = "touch $build/%R.building; $exec pdflatex -synctex=1 -file-line-error -halt-on-error %O %P && python3 '$here/latex_report.py' --pass %R";
+# With LATEX_LIVE_STANDBY_OWNER (live.py's pid; LATEX_LIVE_STANDBY=0 turns it off), each pass goes through
+# latexlive/standby.py, which runs it in a warm standby (a pdflatex that has read the preamble already)
+# when it can, else as before, with the same arguments and $exec (which it reads from the environment).
+my $pass = $ENV{LATEX_LIVE_STANDBY_OWNER} ? "python3 -I '$here/latexlive/standby.py'" : $exec;
+$pdflatex = "touch $build/%R.building; $pass pdflatex -synctex=1 -file-line-error -halt-on-error %O %P && python3 '$here/latex_report.py' --pass %R";
 $bibtex = "$exec bibtex %O %S";
 $out_dir = $build;
 $view = 'none';     # live.py's viewer reloads itself when the PDF changes
