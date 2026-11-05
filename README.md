@@ -10,7 +10,8 @@ nothing beyond Python's standard library.
 
 ## Features
 
-- Rebuild on save, with errors as a clickable banner and in VS Code's Problems panel.
+- Rebuild on save, with errors as a clickable banner and in VS Code's Problems panel. A
+  warm standby has read the preamble already, so a save waits only for the body.
 - SyncTeX both ways: double-click the PDF to open the source line, and a key
   in VS Code highlights the current line in the PDF.
 - Notes: a notes-free view with each note in a margin bubble, and notes

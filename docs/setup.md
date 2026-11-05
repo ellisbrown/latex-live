@@ -280,6 +280,17 @@ are in [shared-mode.md](shared-mode.md#settings).
   Mac, Cursor's local terminals don't set the variable VS Code terminals set,
   so set this to the `cursor` symlink to the app (`/usr/local/bin/cursor`);
   Cursor's bundled `code` script doesn't reach the open window.
+- `LATEX_LIVE_STANDBY=0`: turn off the warm standby. By default each preview
+  keeps a pdflatex run waiting that has read the paper's preamble already, so
+  a save waits only for the body: about a third less time for a typical
+  paper. The PDF, the errors and SyncTeX are what a normal build gives. After
+  a change to the preamble, or to a file it reads, the next pass runs
+  normally, and the one after it is checked against a normal pass before the
+  standby is trusted. A pass that can't use the standby runs normally, and
+  the task's output says why once (`=== latex-live: ... warm standby ...`).
+  A waiting standby holds about 120 MB of memory (pdflatex and its podman
+  client). It runs only in the TeX Live image (or with `--host-tex` on the
+  host's TeX), and not in shared mode.
 - `LATEX_LIVE_HOST`: also print a direct viewer URL on this host name, e.g.
   the name a tunnel exposes.
 - `LATEX_LIVE_PORT`: the hub's port (see [Ports and the token](#ports-and-the-token)).
@@ -328,3 +339,4 @@ missing.
 | Every `localhost:44100/p/...` viewer hangs | The preview serving the hub is paused (Ctrl+Z in its terminal: run `fg` there) or stuck. Starting a preview of another document (or with `--replace`) replaces a stuck one after about 10 s. |
 | `no free port in 44101-44110` | Too many previews: stop old ones (`pgrep -af latex-live/live.py`). |
 | Viewer shows an old PDF with a red banner | The last build failed and the previous PDF was kept. Click the error to open it. |
+| `=== latex-live: not using the warm standby for this pass: ...` (or `no warm standby ...`) | Nothing to fix: that pass ran normally, as without the standby, and the line says why. Typical reasons are a change to the preamble or to a file it reads (the standby is then rebuilt and checked) and a new file in the paper. Set `LATEX_LIVE_STANDBY=0` to turn the standby off. |
