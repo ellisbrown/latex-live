@@ -3,8 +3,9 @@
 
 1. The Python compiles without warnings (and with Python 3.9, if there is one); the viewer's import
    map is valid JSON, comes before its module code, and maps every bare module name that the viewer
-   and the vendored editor (codemirror/) import to a file here; the viewer's script parses (with
-   Node, if there is one); instances starting at once agree on one token, never an empty one.
+   (viewer/) and the vendored editor (codemirror/) import to a file here, and every module that the
+   viewer imports by path is a file here; the viewer's modules parse (with Node, if there is one);
+   instances starting at once agree on one token, never an empty one.
    The review copy's layout keeps notes in order, apart, and on their pages, and continues the ones
    that don't fit after the paper; its matching tells apart two authors' notes with the same text.
    In shared mode, the downloads built on request say plainly that the TeX Live image is missing, the
@@ -20,7 +21,8 @@
    - the hub redirects an old bookmark, needs the token or its cookie, and forwards every
      endpoint (POST /rebuild too); the hub and the previews refuse HEAD and bad or oversized POST
      bodies; SyncTeX finds a source line; /instances lists the instance;
-   - /me reports the owner with every capability; the editor's modules are served; SyncTeX answers
+   - /me reports the owner with every capability; the viewer's and the editor's modules and the
+     viewer's style are served (as JavaScript, and CSS), the viewer's revalidated; SyncTeX answers
      as JSON without opening the editor, while GET /open, POST /open and plain /synctex still open
      it (a stand-in that logs its arguments); the hub takes a source file's save above the other
      actions' size limit, refuses bodies above its limits, and survives a non-ASCII token;
@@ -301,17 +303,18 @@ def static_checks():
     if oldest:
         ok("it compiles with Python 3.9 too")
     with open(os.path.join(HERE, "viewer.html")) as f:
-        scripts = viewer_scripts(f.read())
+        code = viewer_scripts(f.read())
     node = shutil.which("node")
     if not node:
         return print("skip: no node, so the viewer's script is not checked", flush=True)
-    with tempfile.NamedTemporaryFile("w", suffix=".mjs", delete=False) as f:
-        f.write("\n".join(scripts))
-    r = subprocess.run([node, "--check", f.name], capture_output=True, text=True)
-    os.remove(f.name)
-    if r.returncode:
-        fail(f"the viewer's script does not parse:\n{r.stderr}")
-    ok("the viewer's script parses")
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
+        for name, text in code.items():  # (each as a .mjs file: Node parses it as a module then)
+            path = os.path.join(tmp, name.replace("/", "-") + ".mjs")
+            put(path, text)
+            r = subprocess.run([node, "--check", path], capture_output=True, text=True)
+            if r.returncode:
+                fail(f"the viewer's {name} does not parse:\n{r.stderr}")
+    ok(f"the viewer's script parses ({len(code)} module{'s' if len(code) > 1 else ''})")
     with tempfile.TemporaryDirectory(prefix="latex-live-token-") as state:  # (instances starting at once)
         racers = [subprocess.Popen([sys.executable, "-c", "from latexlive.auth import load_token; print(load_token())"], cwd=HERE,
                                    env={**ENV, "LATEX_LIVE_STATE": state}, stdout=subprocess.PIPE, text=True)
@@ -879,10 +882,12 @@ def shared_parsing_checks():
 
 
 def viewer_scripts(page):
-    """The viewer's inline module code, once its import map checks out: valid JSON, ahead of the module
-    code, every target a file here given relative to the viewer (so that it also resolves under the hub's
-    prefix), and every bare module name that the viewer or a vendored editor module imports mapped."""
-    scripts, imports = [], None
+    """The viewer's module code by file (its modules in viewer/, and inline code in viewer.html if any),
+    once its import map checks out: valid JSON, ahead of the module code, every target a file here given
+    relative to the viewer (so that it also resolves under the hub's prefix), and every bare module name
+    that the viewer or a vendored editor module imports mapped; and once every module that the viewer
+    imports by path is a file here, given relative to the importing file (so that it also resolves there)."""
+    scripts, imports, modules = [], None, False
     for m in re.finditer(r"<script\b([^>]*)>(.*?)</script>", page, re.S):
         attrs, code = m.group(1), m.group(2)
         kind = re.search(r"""\btype\s*=\s*["']?([^"'\s>]+)""", attrs)
@@ -891,8 +896,9 @@ def viewer_scripts(page):
         if src:
             if not os.path.isfile(os.path.join(HERE, urllib.parse.urlsplit(src.group(1)).path.lstrip("/"))):
                 fail(f"the viewer loads {src.group(1)}, which is not in the checkout")
+            modules = modules or kind == "module"
         elif kind == "importmap":
-            if scripts:
+            if modules:
                 fail("the viewer's import map comes after its module code, so browsers would ignore it")
             try:
                 imports = json.loads(code)["imports"]
@@ -902,6 +908,7 @@ def viewer_scripts(page):
                 fail("the viewer's import map has no imports object")
         elif kind in ("", "module"):
             scripts.append(code)
+            modules = True
         else:
             fail(f"check.py does not check the viewer's <script{attrs}>")
     if imports is None:
@@ -912,23 +919,32 @@ def viewer_scripts(page):
         found = os.path.isdir(real) if name.endswith("/") else os.path.isfile(real)
         if not path.startswith("./") or not real.startswith(HERE + os.sep) or not found:
             fail(f"the viewer's import map sends {name} to {target!r}, not to a file here given as ./...")
-    code = {"viewer.html": "\n".join(scripts)}
-    for path in sorted(glob.glob(os.path.join(HERE, "codemirror", "*.js"))):
-        with open(path, encoding="utf-8") as f:
-            code[os.path.relpath(path, HERE)] = f.read()
-    for name, text in code.items():
+    code = {"viewer.html": "\n".join(scripts)} if scripts else {}
+    for path in sorted(glob.glob(os.path.join(HERE, "viewer", "*.js"))):
+        code[os.path.relpath(path, HERE)] = read_text(path)
+    vendored = {os.path.relpath(path, HERE): read_text(path) for path in sorted(glob.glob(os.path.join(HERE, "codemirror", "*.js")))}
+    for name, text in {**code, **vendored}.items():
         for spec in sorted(bare_imports(text)):
             if spec not in imports and not any(key.endswith("/") and spec.startswith(key) for key in imports):
                 fail(f"{name} imports {spec}, which the viewer's import map does not map")
-    ok(f"the viewer's import map maps every module that the viewer and its editor import ({len(imports)} names)")
-    return scripts
+    for name, text in code.items():
+        for spec in sorted(imported(text) - bare_imports(text)):
+            real = os.path.normpath(os.path.join(HERE, os.path.dirname(name), urllib.parse.urlsplit(spec).path))
+            if not spec.startswith(("./", "../")) or not real.startswith(HERE + os.sep) or not os.path.isfile(real):
+                fail(f"the viewer's {name} imports {spec}, not a file here given relative to it")
+    ok(f"the viewer's import map maps every module that the viewer and its editor import ({len(imports)} names); the"
+       " viewer's own imports are files here")
+    return code
+
+
+def imported(code):
+    """What JavaScript code imports, statically or with import("...")."""
+    return {m.group(1) for pattern in IMPORT_RES for m in pattern.finditer(code)}
 
 
 def bare_imports(code):
-    """The bare module names (not ./, ../ or / paths, nor URLs) that JavaScript code imports, statically
-    or with import("...")."""
-    names = {m.group(1) for pattern in IMPORT_RES for m in pattern.finditer(code)}
-    return {n for n in names if not n.startswith((".", "/")) and not re.match(r"[A-Za-z][A-Za-z0-9+.-]*:", n)}
+    """The bare module names (not ./, ../ or / paths, nor URLs) that JavaScript code imports."""
+    return {n for n in imported(code) if not n.startswith((".", "/")) and not re.match(r"[A-Za-z][A-Za-z0-9+.-]*:", n)}
 
 
 def git(cwd, *args):
@@ -1107,7 +1123,8 @@ def live_checks(tmp):
 
         for path in ("/status/main.pdf?base=push", "/outline/main.pdf", "/notes/main.pdf", "/authors/main.pdf",
                      "/check/main.pdf", "/graphics/main.pdf", "/margin/main.pdf", "/floats/main.pdf", "/docs",
-                     "/commits", "/papers", "/viewer.html", "/pdfjs/build/pdf.min.mjs", "/pdf/main.pdf"):
+                     "/commits", "/papers", "/viewer.html", "/viewer/main.js", "/viewer/viewer.css", "/pdfjs/build/pdf.min.mjs",
+                     "/pdf/main.pdf"):
             try:
                 get(path, token)
             except Exception as e:
@@ -1383,9 +1400,15 @@ def owner_checks(token, own, editor_log):
     with open(os.path.join(HERE, "codemirror", "view.js"), "rb") as f:
         if status != 200 or data != f.read() or not JS_TYPE_RE.match(kind):
             fail(f"/codemirror/view.js through the hub: {status} {kind}")
+    for name, kind_re in (("viewer/main.js", JS_TYPE_RE), ("viewer/viewer.css", re.compile(r"text/css\b"))):
+        status, headers, data = request(f"{hub['base']}main/{name}", token)
+        kind, cache = (next((value for key, value in headers.items() if key.lower() == h), "") for h in ("content-type", "cache-control"))
+        if status != 200 or data != read_bytes(os.path.join(HERE, name)) or not kind_re.match(kind) or "no-cache" not in cache:
+            fail(f"/{name} through the hub: {status} {kind} ({cache or 'no Cache-Control'})")
     if (status := request(f"{hub['base']}main/favicon.ico", token)[0]) not in (200, 204):  # (browsers ask on every page)
         fail(f"/favicon.ico through the hub: {status}, not answered")
-    ok("GET me reports the owner with every capability; the editor's modules are served as JavaScript; /favicon.ico is answered")
+    ok("GET me reports the owner with every capability; the viewer's and the editor's modules are served as JavaScript, the"
+       " viewer's style as CSS, the viewer's own revalidated on each load; /favicon.ico is answered")
 
     page, x, y = text_point(lambda path: hub_get(path, token), "main.tex", 9)
     if editor_calls(editor_log):
@@ -2144,7 +2167,7 @@ def identity_checks(sh):
 
 READS = ("/viewer.html?file=main.pdf", "/pdf/main.pdf", "/pdf/main-clean.pdf", "/status/main.pdf",
          "/outline/main.pdf", "/notes/main.pdf", "/authors/main.pdf", "/graphics/main.pdf", "/margin/main.pdf", "/floats/main.pdf",
-         "/docs", "/me", "/pdfjs/build/pdf.min.mjs")
+         "/docs", "/me", "/pdfjs/build/pdf.min.mjs", "/viewer/main.js", "/viewer/viewer.css")
 
 
 def role_checks(sh):
@@ -2210,8 +2233,9 @@ def role_checks(sh):
                        ("Content-Security-Policy", "frame-ancestors 'none'")):
         if want not in (header(page, name) or ""):
             fail(f"the shared viewer's page is sent without {name}: {want} (it has {header(page, name)!r})")
-    ok("a viewer reads everything about the shared document but the checks (editors only); the editor's modules are served,"
-       " nothing else; /favicon.ico is answered; the viewer's page can't be framed or sniffed, and sends no referrer")
+    ok("a viewer reads everything about the shared document but the checks (editors only); the viewer's and the editor's"
+       " modules are served, nothing else; /favicon.ico is answered; the viewer's page can't be framed or sniffed, and sends no"
+       " referrer")
 
     for path in ("/status/appendix.pdf", "/notes/appendix.pdf", "/outline/appendix.pdf", "/authors/appendix.pdf", "/graphics/appendix.pdf",
                  "/margin/appendix.pdf", "/floats/appendix.pdf", "/check/appendix.pdf", "/pdf/reviews.pdf", "/pdf/appendix.pdf",
@@ -2758,8 +2782,7 @@ def editor_checks(sh):
                         "editor": "tab-c-restored"}, 409, "the restored draft's save, under a new save name")
     if clash.get("conflict") is not True or read_text(path) != newer:
         fail(f"a restored draft overwrote the newer saved edits of the same line instead of conflicting: {str(clash)[:200]}")
-    with open(os.path.join(HERE, "viewer.html")) as f:
-        page = f.read()
+    page = "\n".join(read_text(p) for p in [os.path.join(HERE, "viewer.html"), *sorted(glob.glob(os.path.join(HERE, "viewer", "*.js")))])
     restore = page[page.index("async function restoreKept"):]
     restore = restore[:restore.index("\n}\n")]
     if "editor: saveId" not in page or "saveId = newSaveId()" not in restore:

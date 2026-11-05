@@ -1,0 +1,285 @@
+body { margin: 0; background: #525659; font: 13px system-ui, sans-serif; }
+body.dark { background: #1e1e1e; }
+body.dark #viewer .canvasWrapper, body.dark #preview canvas, body.dark .thumb canvas { filter: invert(0.88) hue-rotate(180deg); }
+/* One row: what doesn't fit moves into the ⋯ menu (fitBar). */
+#bar { position: fixed; top: 0; left: 0; right: 0; height: 32px; z-index: 10; display: flex; gap: 8px; overflow: hidden;
+       align-items: center; padding: 0 10px; background: #323639; color: #eee; white-space: nowrap; }
+#bar > *, .grp > * { flex-shrink: 0; }
+.grp { display: flex; gap: 4px; align-items: center; }
+.grp:not(:has(> :not([hidden]))) { display: none; }
+:is(#bar, #moreMenu, #downloadMenu) button { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 8px; cursor: pointer; }
+:is(#bar, #moreMenu, #downloadMenu) button:hover:not(:disabled) { background: #5b6164; }
+:is(#bar, #moreMenu, #downloadMenu) button:disabled { opacity: 0.35; cursor: default; }
+:is(#bar, #moreMenu, #downloadMenu) button.on { background: #2f6fb0; }
+:is(#bar, #moreMenu, #downloadMenu) input { background: #202124; color: #eee; border: 1px solid #555; }
+#docPick, #zoomPick { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 4px; cursor: pointer; }
+#docPick[hidden] { display: none; }
+#docPick { max-width: 14em; field-sizing: content; } /* (as wide as the document shown; other previews can have long names) */
+:is(#bar, #moreMenu, #downloadMenu) a { color: #9cf; }
+#page { width: 3em; text-align: right; }
+#findGroup, #find { flex-shrink: 1; min-width: 6em; } /* (only once nothing else can move: fitBar measures unshrunk) */
+#bar.measuring * { flex-shrink: 0 !important; }
+#bar.measuring #spacer { margin-left: 0; }
+#find { width: 11em; padding: 2px 4px; }
+#findCount { min-width: 4em; opacity: 0.8; }
+#findCount:empty { display: none; }
+#findCount.none { color: #f88; opacity: 1; }
+.navgroup { display: flex; gap: 3px; align-items: center; padding: 1px 3px 1px 7px; border-radius: 3px; }
+#changes { background: #2c4a36; } #cutNav { background: #5a4220; }
+#changes[hidden], #cutNav[hidden], #diffInfo[hidden], #compare[hidden], #notesView[hidden], #rebuild[hidden] { display: none; }
+.navgroup button { padding: 1px 6px; }
+#spacer { margin-left: auto; }
+#pages { padding: 2px 6px; border-radius: 3px; }
+#pages:empty { display: none; }
+#pages.ok { background: #2d4a2d; } #pages.tight { background: #5a4a1a; } #pages.over { background: #6a2424; }
+#status { opacity: 0.8; transition: color 0.3s; flex-shrink: 1; min-width: 6em; max-width: 24em; overflow: hidden; text-overflow: ellipsis; }
+#moreMenu { position: fixed; top: 32px; right: 8px; z-index: 11; display: flex; flex-direction: column; gap: 6px;
+            min-width: 180px; padding: 8px; background: #2a2d2f; color: #eee; border-radius: 0 0 6px 6px; box-shadow: 0 4px 12px #000a; }
+#moreMenu[hidden] { display: none; }
+#downloadMenu { position: fixed; z-index: 12; display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 6px;
+                background: #2a2d2f; border-radius: 0 0 6px 6px; box-shadow: 0 4px 12px #000a; }
+#downloadMenu button { text-align: left; }
+#downloadMenu[hidden], #downloadClean[hidden], #downloadReview[hidden] { display: none; }
+#keys, #welcome { position: fixed; top: 60px; left: 50%; transform: translateX(-50%); z-index: 14; padding: 12px 16px;
+                  background: #2a2d2f; color: #ddd; border-radius: 6px; box-shadow: 0 6px 20px #000c; font-size: 13px; }
+#keys[hidden], #welcome[hidden], #keysEdit[hidden] { display: none; }
+:is(#keys, #welcome) .head { font-weight: 600; margin-bottom: 8px; }
+:is(#keys, #welcome) .close { float: right; cursor: pointer; opacity: 0.7; margin-left: 16px; }
+/* ✕ buttons: just the glyph (they are buttons for the keyboard and screen readers). */
+:is(#keys, #welcome, #banner, #notice, #editorHint) button.close { background: none; border: 0; padding: 0 2px; color: inherit;
+                                                                    font: inherit; line-height: inherit; cursor: pointer; opacity: 0.7; }
+:is(#keys, #welcome, #banner, #notice, #editorHint) button.close:hover { opacity: 1; background: none; }
+#keys .head button.welcome { margin-left: 14px; padding: 0; border: 0; background: none; font: inherit; font-weight: normal;
+                             font-size: 12px; color: #9cf; cursor: pointer; }
+#keys .head button.welcome:hover { text-decoration: underline; }
+#keys tr[hidden] { display: none; }
+#keys td { padding: 3px 14px 3px 0; vertical-align: top; }
+#keys td:first-child { white-space: nowrap; }
+kbd { display: inline-block; min-width: 1em; padding: 0 4px; border: 1px solid #666; border-bottom-width: 2px;
+      border-radius: 3px; background: #3a3d40; font: 12px ui-monospace, monospace; text-align: center; }
+#moreFixed, #moreItems { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+#moreItems { border-top: 1px solid #444; padding-top: 8px; }
+#moreItems:not(:has(> :not([hidden]))) { display: none; }
+#moreMenu [data-label]:not(.grp)::after { content: " " attr(data-label); }
+#moreMenu .grp[data-label]::before { content: attr(data-label); min-width: 3em; opacity: 0.7; }
+#status.fresh { color: #8f8; opacity: 1; }
+#status.busy { color: #fd6; opacity: 1; }
+#status.error { color: #f88; opacity: 1; }
+#texImage { color: #fd6; cursor: help; }
+#texImage[hidden], #updated[hidden] { display: none; }
+#updated { color: #9cf; cursor: help; }
+#versionInfo { font-size: 11px; opacity: 0.55; color: inherit; text-decoration: none; }
+#versionInfo:hover { opacity: 0.9; text-decoration: underline; }
+#banner { position: fixed; top: 32px; right: 12px; z-index: 10; max-width: 60%; padding: 8px 30px 8px 12px;
+          background: #5c1f1f; color: #fee; border-radius: 0 0 6px 6px; box-shadow: 0 2px 8px #0008; }
+#banner[hidden] { display: none; }
+#banner a { color: #fcc; cursor: pointer; text-decoration: underline; }
+#banner div { margin-top: 4px; font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; }
+#banner .close { position: absolute; top: 4px; right: 8px; cursor: pointer; opacity: 0.7; }
+#comparePanel { position: fixed; top: 32px; z-index: 11; width: 440px; max-height: 70vh; overflow: auto;
+                background: #2a2d2f; color: #ddd; border-radius: 0 0 6px 6px; box-shadow: 0 4px 12px #000a; }
+#comparePanel[hidden] { display: none; }
+#comparePanel .head { padding: 8px 10px; opacity: 0.75; font-size: 12px; }
+#comparePanel .commit { padding: 5px 10px; cursor: pointer; display: grid; grid-template-columns: 5.5em 7.5em 1fr; gap: 6px; }
+#comparePanel .commit:hover { background: #3d4245; }
+#comparePanel .commit span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#comparePanel .rev { font-family: ui-monospace, monospace; color: #9cf; }
+#comparePanel .date { opacity: 0.6; }
+
+/* Sidebar: outline, page thumbnails, notes, checks, figures and tables. */
+#side { position: absolute; top: 32px; left: 0; bottom: 0; width: 290px; display: flex; flex-direction: column;
+        background: #2a2d2f; color: #ddd; box-sizing: border-box; }
+#side[hidden] { display: none; }
+#tabs { display: flex; border-bottom: 1px solid #3d4245; flex: none; }
+#tabs button { flex: 1; background: none; color: #bbb; border: 0; border-bottom: 2px solid transparent;
+               padding: 7px 2px 5px; cursor: pointer; font: inherit; white-space: nowrap; }
+#tabs button:hover { color: #fff; }
+#tabs button.on { color: #fff; border-bottom-color: #4a90d9; }
+#tabs button[hidden] { display: none; }
+#tabs .n { font-size: 11px; opacity: 0.7; }
+.panel { flex: 1; overflow: auto; padding: 6px 0; }
+#side .panel[hidden] { display: none; }
+.panel .empty { padding: 10px 14px; opacity: 0.6; }
+body.side #viewerContainer { left: 290px; }
+#outline ul { list-style: none; margin: 0; padding-left: 12px; }
+#outline > ul { padding-left: 4px; }
+#outline li > span { display: flex; gap: 6px; padding: 3px 8px; border-radius: 3px; cursor: pointer; white-space: nowrap; }
+#outline .t { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+#outline .num { flex: none; opacity: 0.6; font-variant-numeric: tabular-nums; }
+#outline .pp { flex: none; font-size: 11px; opacity: 0.55; font-variant-numeric: tabular-nums; }
+#outline li > span:hover { background: #3d4245; }
+#outline li.minor > span { font-size: 12px; opacity: 0.7; padding-top: 1px; padding-bottom: 1px; }
+#thumbs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 8px; padding: 10px; align-content: start; }
+.thumb { cursor: pointer; text-align: center; font-size: 11px; color: #aaa; }
+.thumb .img { position: relative; background: #fff; box-shadow: 0 1px 3px #0008; outline: 2px solid transparent; overflow: hidden; }
+.thumb canvas { display: block; width: 100%; height: 100%; }
+.thumb.current .img { outline-color: #4a90d9; }
+.thumb.current { color: #fff; }
+.thumb .over { position: absolute; left: 0; right: 0; top: 0; background: rgba(220, 40, 40, 0.28); }
+.thumb.last-allowed .img { box-shadow: 0 1px 3px #0008, 0 4px 0 -1px #e04040; }
+.thumb .tag { color: #f88; }
+#notes .filters, #checks .toolbar, #figures .filters { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 10px 8px; align-items: center; }
+.chip { border-radius: 10px; padding: 1px 8px; font-size: 11px; cursor: pointer; color: #111; font-weight: 600; user-select: none; }
+.chip.off { opacity: 0.3; }
+.note { padding: 6px 10px; cursor: pointer; border-top: 1px solid #33373a; }
+.note:hover, .check li:hover { background: #3d4245; }
+.note .text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; margin-top: 3px; }
+.note .where, .check .where { font-size: 11px; color: #9cf; cursor: pointer; }
+.note .where:hover, .check .where:hover { text-decoration: underline; }
+.note .who { float: right; }
+.float { padding: 8px 10px; cursor: pointer; border-top: 1px solid #33373a; }
+.float:hover { background: #3d4245; }
+.float .head { display: flex; gap: 6px; font-size: 12px; }
+.float .head .pg { margin-left: auto; font-size: 11px; opacity: 0.55; }
+.float .crop { margin-top: 5px; background: #fff; box-shadow: 0 1px 3px #0008; }
+.float .crop canvas { display: block; width: 100%; }
+.float .cap { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+              margin-top: 4px; font-size: 11px; opacity: 0.75; }
+#checks button { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 8px; cursor: pointer; }
+#checks .when { font-size: 11px; opacity: 0.6; }
+.check { border-top: 1px solid #33373a; }
+.check summary { padding: 6px 10px; cursor: pointer; list-style: none; display: grid; grid-template-columns: 1.4em 1fr; }
+.check summary::-webkit-details-marker { display: none; }
+.check .detail { grid-column: 2; font-size: 11px; opacity: 0.7; }
+.check .icon.ok { color: #7c7; } .check .icon.info { color: #8bf; } .check .icon.warn { color: #fc5; } .check .icon.fail { color: #f77; }
+.check ul { list-style: none; margin: 0 0 6px; padding: 0; }
+.check li { padding: 3px 10px 3px 28px; font-size: 12px; cursor: pointer; word-break: break-word; }
+
+#viewerContainer { position: absolute; top: 32px; left: 0; right: 0; bottom: 0; overflow: auto; }
+.sync-flash { position: absolute; z-index: 5; pointer-events: none; border-radius: 3px;
+              background: rgba(255, 200, 0, 0.4); animation: sync-fade 2.5s ease-in forwards; }
+.sync-flash.dot { border-radius: 50%; }
+@keyframes sync-fade { 0%, 40% { opacity: 1; } 100% { opacity: 0; } }
+/* Marks drawn over pages (in % of the page, so they follow zoom): changes and unresolved "??". */
+.ll-marks { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+.ll-marks div { position: absolute; border-radius: 2px; }
+.ll-marks .chg { background: rgba(60, 200, 110, 0.22); box-shadow: -3px 0 0 rgba(40, 170, 90, 0.9); }
+.ll-marks .del { background: rgba(230, 60, 60, 0.9); }
+.ll-marks .unres { outline: 2px solid rgba(230, 40, 40, 0.9); background: rgba(230, 40, 40, 0.15); }
+.ll-marks .chg.fig { background: rgba(60, 200, 110, 0.07); box-shadow: none; outline: 3px solid rgba(40, 170, 90, 0.9); outline-offset: 2px; }
+.ll-marks .cut { background: repeating-linear-gradient(135deg, rgba(240, 140, 20, 0.3) 0 4px, transparent 4px 8px);
+                 outline: 1px dashed rgba(220, 120, 10, 0.85); }
+.ll-marks [data-label]::after { content: attr(data-label); position: absolute; left: 100%; top: 50%; margin-left: 6px;
+                                transform: translateY(-50%); padding: 0 5px; border-radius: 2px; white-space: nowrap;
+                                font: 10px/15px system-ui, sans-serif; color: #fff; background: rgba(200, 110, 10, 0.95); }
+.ll-marks .chg.fig[data-label]::after { left: -2px; top: -20px; margin: 0; transform: none; background: rgba(40, 170, 90, 0.95); }
+/* Margin notes (notes-free view): bubbles in a gutter right of each page (with two columns, the
+   left column's left of it), wired to a caret where the note sits in the text. Sized in screen
+   pixels, so they stay readable at any zoom. */
+#viewerContainer.gutter .pdfViewer { padding-right: 250px; }
+#viewerContainer.gutter-left .pdfViewer { padding-left: 250px; }
+.ll-margin { position: absolute; inset: 0; z-index: 6; pointer-events: none; }
+.ll-margin svg { position: absolute; left: 0; top: 0; overflow: visible; }
+.ll-margin path { fill: none; stroke-width: 1.2; stroke-dasharray: 2 2; opacity: 0.7; }
+.ll-margin path.hot { stroke-width: 2; stroke-dasharray: none; opacity: 1; }
+.ll-margin .caret { position: absolute; width: 2px; margin-left: -1px; border-radius: 1px; pointer-events: auto; cursor: pointer; }
+.ll-margin .caret::before { content: ""; position: absolute; left: -3px; top: -3px; width: 8px; height: 4px;
+                            border-radius: 2px; background: inherit; }
+.ll-margin .caret.hot { box-shadow: 0 0 0 3px rgba(255, 200, 0, 0.6); }
+.ll-bubble { position: absolute; left: calc(100% + 16px); width: 214px; box-sizing: border-box; padding: 3px 7px 4px;
+             border-radius: 5px; border-left: 4px solid; background: #fcfcf7; color: #222; box-shadow: 0 1px 3px #0007;
+             font: 11px/1.35 system-ui, sans-serif; pointer-events: auto; cursor: pointer; }
+.ll-bubble.left { left: auto; right: calc(100% + 16px); border-left: 0; border-right: 4px solid; }
+.ll-bubble .text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+.ll-bubble b { margin-right: 4px; }
+.ll-bubble.hot { z-index: 2; box-shadow: 0 3px 12px #000b; outline: 2px solid rgba(255, 200, 0, 0.8); }
+.ll-bubble.hot .text { -webkit-line-clamp: 30; }
+body.dark .ll-bubble { background: #2e3134; color: #ddd; }
+#marginBtn[hidden] { display: none; }
+/* Comments: who you are (toolbar), a button by the selection, and a box to write or edit a note in. */
+#whoPick { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 4px; cursor: pointer; }
+#whoPick:disabled { appearance: none; background: none; color: #ccc; cursor: default; opacity: 1; } /* (shared mode: a label, you comment as yourself) */
+#whoPick[hidden], #commentBtn[hidden], #notePop[hidden], #notePop .latex[hidden] { display: none; }
+#commentBtn { position: fixed; z-index: 12; padding: 3px 9px; border: 0; border-radius: 3px; background: #2f6fb0;
+              color: #fff; font: 12px system-ui, sans-serif; cursor: pointer; box-shadow: 0 2px 6px #0008; }
+#notePop { position: fixed; z-index: 13; width: 340px; padding: 8px; background: #2a2d2f; color: #ddd;
+           border-radius: 6px; box-shadow: 0 4px 14px #000a; font: 13px system-ui, sans-serif; }
+#notePop .head { font-size: 12px; opacity: 0.8; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#notePop textarea { width: 100%; box-sizing: border-box; min-height: 64px; resize: vertical; padding: 4px 6px;
+                    background: #1e1f21; color: #eee; border: 1px solid #555; border-radius: 3px; font: inherit; }
+#notePop .row { display: flex; gap: 6px; align-items: center; margin-top: 6px; font-size: 11px; }
+#notePop .hint { opacity: 0.6; margin-right: auto; }
+#notePop .latex { color: #fd6; }
+#notePop button { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 10px; cursor: pointer; }
+#notePop button.primary { background: #2f6fb0; }
+#notePop button:disabled { opacity: 0.5; cursor: default; }
+#notePop .error { color: #f88; font-size: 12px; margin-top: 4px; }
+#notePop .error:empty { display: none; }
+.tools { float: right; display: none; margin-left: 4px; }
+.ll-bubble .tools { position: absolute; top: 1px; right: 2px; background: inherit; border-radius: 3px; } /* (no reflow on hover) */
+.ll-bubble:hover .tools, .ll-bubble.hot .tools, .note:hover .tools { display: inline-flex; }
+.tools button { border: 0; background: transparent; color: inherit; cursor: pointer; padding: 0 3px; font-size: 12px; opacity: 0.65; }
+.tools button:hover { opacity: 1; }
+#preview { position: fixed; z-index: 20; background: #fff; border-radius: 4px; box-shadow: 0 4px 18px #000b;
+           padding: 6px; cursor: pointer; }
+#preview[hidden] { display: none; }
+body.dark #preview { background: #2b2b2b; }
+#preview canvas { display: block; }
+#preview .hint { font-size: 10px; color: #888; text-align: right; margin-top: 2px; }
+
+/* Who you are, in shared mode (live.py /me): name and role, right of the spacer. */
+#me { padding: 1px 8px; border-radius: 9px; background: #3d4245; color: #ddd; font-size: 12px; cursor: default; }
+#me[hidden], #editBtn[hidden] { display: none; }
+#moreMenu #editBtn .txt { display: none; } /* (the menu shows its data-label instead) */
+/* The welcome guide: like the shortcuts list, with a few short sections for the role at hand. */
+#welcome { width: min(520px, calc(100vw - 40px)); max-height: calc(100vh - 90px); overflow: auto; box-sizing: border-box; line-height: 1.45; }
+#welcome h4 { margin: 12px 0 2px; font-size: 13px; color: #fff; }
+#welcome p { margin: 0; }
+#welcome .review { margin-top: 4px; }
+#welcome .again { margin-top: 12px; font-size: 12px; opacity: 0.7; }
+#welcome .row { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+#welcome .row label { margin-right: auto; cursor: pointer; opacity: 0.85; }
+#welcome button { background: #2f6fb0; color: #fff; border: 0; border-radius: 3px; padding: 4px 16px; cursor: pointer; font: inherit; }
+#welcome [hidden] { display: none; }
+
+/* The LaTeX source beside the PDF (✎ Source): a header with the file picker, the save state and
+   Show in PDF over CodeMirror, and a handle on its left edge to resize it. Always dark, as the
+   rest of the chrome is. */
+:root { --editor-w: 520px; }
+#editorPane { position: absolute; top: 32px; right: 0; bottom: 0; width: var(--editor-w); z-index: 7; display: flex; flex-direction: column;
+              background: #2a2d2f; color: #ddd; box-sizing: border-box; border-left: 1px solid #1d1f20; }
+#editorPane[hidden] { display: none; }
+#editorPane:focus { outline: none; } /* (focusable only so that keys typed after a click in its header stay out of the viewer's shortcuts) */
+body.editor #viewerContainer { right: var(--editor-w); }
+body.editor #banner { right: calc(var(--editor-w) + 12px); }
+#editorGrip { position: absolute; left: -4px; top: 0; bottom: 0; width: 7px; z-index: 4; cursor: col-resize; }
+#editorGrip:hover, body.resizing #editorGrip { background: rgba(47, 111, 176, 0.6); }
+body.resizing { cursor: col-resize; user-select: none; }
+#editorHead { display: flex; flex: none; gap: 6px; align-items: center; height: 32px; padding: 0 8px; box-sizing: border-box;
+              background: #323639; border-bottom: 1px solid #1d1f20; white-space: nowrap; }
+:is(#editorHead, #notice) button { background: #4a4f52; color: #eee; border: 0; border-radius: 3px; padding: 3px 8px; cursor: pointer; font: inherit; }
+:is(#editorHead, #notice) button:hover { background: #5b6164; }
+#filePick { min-width: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; }
+#saveState { margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; opacity: 0.75; }
+#saveState.dirty, #saveState.busy { color: #fd6; opacity: 1; }
+#saveState.error { color: #f88; opacity: 1; }
+#saveState.conflict, #saveState.retry { cursor: pointer; text-decoration: underline; }
+/* A hint above the text, once: how to get from the PDF to its source. */
+#editorHint { flex: none; padding: 4px 10px; font-size: 12px; color: #bbb; background: #26292b; border-bottom: 1px solid #1d1f20; }
+#editorHint[hidden] { display: none; }
+#editorHint .close { float: right; margin-left: 8px; }
+#editorHost { flex: 1; min-height: 0; position: relative; }
+#editorHost .cm-editor { height: 100%; }
+#editorHost .msg { padding: 12px; opacity: 0.7; }
+#fileMenu { position: absolute; top: 32px; left: 8px; z-index: 5; width: min(420px, calc(100% - 16px)); max-height: 60%; display: flex;
+            flex-direction: column; background: #2a2d2f; border-radius: 0 0 6px 6px; box-shadow: 0 4px 12px #000a; }
+#fileMenu[hidden] { display: none; }
+#fileFilter { margin: 8px; padding: 3px 6px; background: #202124; color: #eee; border: 1px solid #555; border-radius: 3px; font: inherit; }
+#fileList { overflow: auto; padding-bottom: 6px; }
+#fileList .dir { padding: 6px 10px 2px; font-size: 11px; opacity: 0.6; }
+#fileList .f { padding: 3px 10px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#fileList .f.sub { padding-left: 22px; }
+#fileList .f:hover, #fileList .f.sel { background: #3d4245; }
+#fileList .f.current { color: #9cf; }
+#fileList .empty { padding: 6px 10px; opacity: 0.6; }
+/* The notice above the text (not over it: the markers to resolve may be at its top): a save that git
+   could not merge and the two ways out, or edits that can't be saved, to copy. */
+#notice { flex: none; max-height: 45%; overflow: auto; margin: 8px; padding: 10px 12px; line-height: 1.4;
+          background: #3a2f22; color: #eee; border-left: 4px solid #e0a040; border-radius: 4px; }
+#notice .close { float: right; margin-left: 12px; }
+#notice code { font: 12px ui-monospace, monospace; white-space: nowrap; color: #fd6; }
+#notice .row { display: flex; gap: 6px; margin-top: 8px; }
+#notice .row:empty { display: none; }
+#notice[hidden], #notice [hidden] { display: none; } /* (after .row, which sets display) */
+#notice textarea { width: 100%; height: 10em; box-sizing: border-box; margin-top: 6px; padding: 4px 6px; resize: vertical;
+                   background: #1e1f21; color: #eee; border: 1px solid #555; border-radius: 3px; font: 12px ui-monospace, monospace; }
