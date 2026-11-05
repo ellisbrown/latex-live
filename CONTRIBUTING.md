@@ -1,7 +1,9 @@
 # Contributing to latex-live
 
 For people and coding agents changing latex-live. The [README](README.md)
-describes what it does, and [SETUP.md](SETUP.md) describes how to install it.
+describes what it does and indexes the user docs in [docs/](docs/):
+[setup](docs/setup.md), [the viewer](docs/viewer.md) and
+[shared mode](docs/shared-mode.md).
 
 ## Workflow
 
@@ -91,7 +93,9 @@ shows on reload. `latex_report.py` and `forward.py` run anew each time.
   short reason, e.g. `# (fonts are not looked up through TEXINPUTS)`.
 - Match the surrounding code's naming and idiom. Prefer a small function in
   the file that uses it over a new module.
-- In the README, describe what a user sees, not how it is implemented.
+- In the README and `docs/`, describe what a user sees, not how it is
+  implemented. Keep the README short; details go in the doc they belong to.
+  When you change behavior, update the doc that describes it.
 - Commit subjects are imperative sentences that say what changed, e.g. "Keep
   the toolbar to one row". Use the body for why, and for anything a reviewer
   should check.
