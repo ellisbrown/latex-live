@@ -25,7 +25,7 @@ from .navigation import editor_cli, forward_request, open_source, synctex_edit, 
 from .note_writer import note_request
 from .notes import margin_notes, note_authors, notes, paper_note_kinds, shown_notes
 from .review import start_review
-from .roles import READ_PATHS, allowed, at_least, least_role, shared_pdfs, viewer_status
+from .roles import READ_PATHS, STATIC_DIRS, allowed, at_least, least_role, shared_pdfs, viewer_status
 from .shared_build import shared_rebuild_request
 from .status import status
 from .web import BaseHandler, POST_LIMIT, POST_LIMITS, content_length, json_query
@@ -48,7 +48,19 @@ def me(server, user):
                     "download": can("/export") and can("/review"), "checks": allowed(user, "GET", "/check/")}}
 
 
-STATIC = {"/viewer.html"}  # plus everything under /pdfjs/ and /codemirror/
+STATIC = {"/viewer.html"}  # plus the files in the folders of STATIC_DIRS (static_file)
+
+
+def static_file(path):
+    """Whether path (unquoted) is one of the viewer's own files, which SimpleHTTPRequestHandler sends from
+    the checkout: viewer.html (STATIC), or a file in pdfjs/, codemirror/ or viewer/ (STATIC_DIRS), never
+    through .. or a link out of its folder."""
+    if path in STATIC:
+        return True
+    if not path.startswith(STATIC_DIRS) or ".." in path or path.endswith("/") or "\0" in path:
+        return False
+    folder = os.path.realpath(os.path.join(config.HERE, path.split("/")[1]))
+    return os.path.realpath(os.path.join(config.HERE, path.lstrip("/"))).startswith(os.path.join(folder, ""))
 
 
 class Handler(BaseHandler):
@@ -186,7 +198,7 @@ class Handler(BaseHandler):
         elif path == "/favicon.ico":  # (no icon; nothing to refuse either: browsers ask on every page)
             self.send_response(204)
             self.end_headers()
-        elif path in STATIC or (path.startswith(("/pdfjs/", "/codemirror/")) and ".." not in path and not path.endswith("/")):
+        elif static_file(path):
             super().do_GET()
         else:
             self.send_error(404)

@@ -328,6 +328,7 @@ def static_checks():
     failed_export_checks()
     waiting_download_checks()
     code_updated_checks()
+    static_file_checks()
 
 
 def code_updated_checks():
@@ -371,6 +372,33 @@ def code_updated_checks():
         config.HERE = saved
         shutil.rmtree(tmp)
     ok("a restart is asked for when a module of the server changes, is added or is removed")
+
+
+def static_file_checks():
+    """The server sends the viewer's own files from the checkout (handler.static_file): viewer.html and the
+    files in pdfjs/, codemirror/ and viewer/, never a folder, a file elsewhere in the checkout, a path through
+    .., or a link out of the file's folder (a link within it is followed)."""
+    sys.path.insert(0, HERE)
+    from latexlive import config, handler
+    saved, tmp = config.HERE, tempfile.mkdtemp(prefix="latex-live-check-")
+    try:
+        config.HERE = tmp
+        for name in ("viewer.html", "live.py", "viewer/main.js", "viewer/viewer.css", "pdfjs/build/pdf.min.mjs", "codemirror/view.js"):
+            put(os.path.join(tmp, name), "x\n")
+        os.symlink(os.path.join(tmp, "live.py"), os.path.join(tmp, "viewer", "out.js"))
+        os.symlink(os.path.join(tmp, "viewer", "main.js"), os.path.join(tmp, "viewer", "in.js"))
+        os.symlink(os.path.join(tmp, "pdfjs"), os.path.join(tmp, "viewer", "pdfjs"))
+        served = ("/viewer.html", "/viewer/main.js", "/viewer/viewer.css", "/viewer/in.js", "/pdfjs/build/pdf.min.mjs",
+                  "/codemirror/view.js", "/viewer/nope.js")  # (a missing file: SimpleHTTPRequestHandler answers 404)
+        refused = ("/live.py", "/viewer/", "/viewer", "/viewer/../live.py", "/viewer/out.js", "/viewer/pdfjs/build/pdf.min.mjs",
+                   "/viewer/\0.js", "/viewer.html/", "/latexlive/config.py", "/pdfjsx/a.js")
+        wrong = [p for p in served if not handler.static_file(p)] + [p for p in refused if handler.static_file(p)]
+        if wrong:
+            fail(f"static_file is wrong about {wrong}")
+    finally:
+        config.HERE = saved
+        shutil.rmtree(tmp)
+    ok("the server sends only the viewer's own files from the checkout, never through .. or a link out of their folder")
 
 
 def put(path, text):
@@ -2168,8 +2196,11 @@ def role_checks(sh):
     if (script[0] != 200 or script[2] != read_bytes(os.path.join(HERE, "codemirror", "view.js"))
             or not JS_TYPE_RE.match(header(script, "Content-Type") or "")):
         fail(f"/codemirror/view.js for the editor: {script[0]} {header(script, 'Content-Type')}")
-    for path in ("/codemirror/", "/codemirror/../live.py", "/codemirror/%2e%2e/live.py", "/codemirror/nope.js"):
+    for path in ("/codemirror/", "/codemirror/../live.py", "/codemirror/%2e%2e/live.py", "/codemirror/nope.js",
+                 "/viewer/", "/viewer/../live.py", "/viewer/%2e%2e/live.py", "/viewer/nope.js", "/viewer/%00.js"):
         expect(via_proxy("ed", path), 404, f"GET {path}")
+    for path in ("/live.py", "/latexlive/config.py", "/VERSION", "/check.py"):  # (the checkout's other files: not even the owner's to read)
+        expect(with_token(owner, path), 404, f"GET {path} for the owner")
     expect(via_proxy("vw", "/favicon.ico"), (200, 204), "GET /favicon.ico for a viewer (browsers ask on every page)")
     for uid in ("vw", "cm"):  # (the checks run poppler on the host: editors only)
         expect(via_proxy(uid, "/check/main.pdf"), 403, f"GET check for {sh['users'][uid]['role']} {uid}")
