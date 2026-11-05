@@ -337,7 +337,7 @@ def failed_export_checks():
 def waiting_download_checks():
     """/export and /review wait while the document builds (live.start_export, live.start_review): a pass may publish
     the PDF before the run ends, and a download made then would lack the run's last pass; once the run ends, they
-    start (a build of theirs that runs is reported as it is)."""
+    start (a build of theirs that runs is reported as it is). With --no-build, a stale marker holds nothing up."""
     sys.path.insert(0, HERE)
     import live
     tmp = tempfile.mkdtemp(prefix="latex-live-check-")
@@ -349,7 +349,10 @@ def waiting_download_checks():
         put(status, "{}")
         put(building, "")
         os.utime(building, (time.time() + 5, time.time() + 5))  # (a run that started after the last one ended)
-        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", export={}, review={})
+        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", export={}, review={}, no_build=True)
+        if live.waiting_for_build(server, "main.pdf", {}) is not None:
+            fail("with --no-build, the downloads wait for a build that a stopped one left marked as running")
+        server.no_build = False
         for name, start in (("/export", live.start_export), ("/review", live.start_review)):
             code, state = start(server)
             if (code, state.get("state"), state.get("step")) != (200, "running", "waiting for the build in progress") or server.export or server.review:
@@ -362,7 +365,7 @@ def waiting_download_checks():
             fail("/export still waits after the build ended")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    ok("the downloads wait while the document builds, and start once the run ends")
+    ok("the downloads wait while the document builds, and start once the run ends (with --no-build, at once)")
 
 
 def layout_checks():

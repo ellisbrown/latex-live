@@ -2478,8 +2478,9 @@ def build_running(paper_root, pdf_name):
 def waiting_for_build(server, pdf, state):
     """The state that /export and /review report while the document builds (a download made then would
     be of the build before, or of a pass before the last), or None when it doesn't, or when state (theirs)
-    is a build of theirs that is running."""
-    if state.get("pdf") == pdf and state.get("state") == "running" or not build_running(server.paper_root, pdf):
+    is a build of theirs that is running. Not with --no-build: no latexmk runs then, so a .building marker
+    is one that a build stopped part way left behind."""
+    if server.no_build or state.get("pdf") == pdf and state.get("state") == "running" or not build_running(server.paper_root, pdf):
         return None
     return {"pdf": pdf, "state": "running", "step": "waiting for the build in progress", "time": time.strftime("%H:%M:%S"), "msg": ""}
 
