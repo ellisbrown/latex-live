@@ -486,7 +486,10 @@ saved then, merged with your changes.
   A container has no network, no capabilities, no new privileges, at most
   4 GB of memory, 2 CPUs, 512 processes, files of 1 GB, and 10 minutes, no
   shell escape, and the paper folder read-only, with only the build folder
-  writable. TeX opens files only below the paper folder and in its own tree
+  writable and the paper's dot entries (`.git` and its config, `.env`, ...)
+  hidden. At most four run at once, one slot kept for the live build. Past
+  `LATEX_LIVE_BUILD_LIMIT` (2 GB unless set), the build is stopped and the
+  build folder emptied. TeX opens files only below the paper folder and in its own tree
   (`openin_any=p`), and writes only into the build folder (`openout_any=p`).
   A rebuild stops the run in progress, containers included, and coauthors can
   ask for one at most every 20 seconds.

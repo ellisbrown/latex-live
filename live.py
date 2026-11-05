@@ -231,6 +231,12 @@ if re.fullmatch(r"[0-9]{1,6}(\.[0-9]+)?", COMMIT_IDLE):
 else:
     SHARED_PROBLEMS.append(f"LATEX_LIVE_COMMIT_IDLE must be a number of seconds, not {COMMIT_IDLE!r}")
     COMMIT_IDLE = 60.0
+BUILD_LIMIT = os.environ.get("LATEX_LIVE_BUILD_LIMIT", "").strip() or "2048"  # (MB: watch_build_size)
+if re.fullmatch(r"[0-9]{1,7}", BUILD_LIMIT) and int(BUILD_LIMIT) > 0:
+    BUILD_LIMIT = int(BUILD_LIMIT) << 20
+else:
+    SHARED_PROBLEMS.append(f"LATEX_LIVE_BUILD_LIMIT must be a number of MB, not {BUILD_LIMIT!r}")
+    BUILD_LIMIT = 2048 << 20
 
 
 def load_users(path):
@@ -875,8 +881,12 @@ def image_problem(server):
 
 # At most this many SyncTeX runs and builds made on request at once (run_synctex, the downloads, the
 # baselines, the diff): each request may start one, often a container, and in shared mode any coauthor
-# can send requests, so they must not pile up on the owner's machine.
-SPAWNS = threading.BoundedSemaphore(4)
+# can send requests, so they must not pile up on the owner's machine. In shared mode, where live.py also
+# runs the build itself, one of the four slots is the live build's own (LIVE_SPAWN, shared_tool), so that
+# downloads can't keep it waiting; the notes-free pass takes one of the other three. Nothing that holds
+# a slot waits for anything a waiter holds: a slot is taken around one tool run, with no lock held.
+SPAWNS = threading.BoundedSemaphore(3 if SHARED else 4)
+LIVE_SPAWN = threading.BoundedSemaphore(1)
 
 
 def run_synctex(paper_root, *args):
@@ -5114,7 +5124,7 @@ def serve(paper_root, default_pdf, port, page_limit):
     # sources' stat it built from, and the requests to build again (POST /rebuild, at most every 20 s for coauthors).
     server.shared = {"building": False, "status": None, "clean": None, "published": None, "wanted": threading.Event(),
                      "force": False, "rebuilt": -60, "proc": None, "clean_seq": 0, "bib": None, "biber": None, "idx": None,
-                     "failed": {}, "retried": -60}
+                     "failed": {}, "retried": -60, "overflow": 0, "missing": []}
     server.token = load_token()
     return server
 
@@ -5669,15 +5679,18 @@ def start_shared_build(server):
     """Shared mode: build the document now, and again whenever its files change (shared_build)."""
     os.environ["LATEX_LIVE_DOC"] = server.default_pdf[:-4]  # (latex_report.run_report names the main file after it)
     threading.Thread(target=shared_build, args=(server,), daemon=True).start()
+    threading.Thread(target=watch_build_size, args=(server,), daemon=True).start()
 
 
 def shared_inputs(server):
     """The files a build of the shared document depends on: those the browser editor opens (the main
-    file, what the last build read, the .bib files) and the paper's other files the last build read
-    (figures, styles), as {real path: their stat (mtime, size, inode), or None if gone}."""
+    file, what the last build read, the .bib files), the paper's other files the last good build and the
+    last attempt read (figures, styles), and the files a failed build missed (shared_missing), as {real
+    path: their stat (mtime, size, inode), or None while there is none}."""
     root = server.paper_root
-    paths = set(editable_files(server).values())
-    paths |= {os.path.realpath(os.path.join(root, rel)) for rel in project_inputs(root, fls_file(root, server.default_pdf))}
+    paths = set(editable_files(server).values()) | set(server.shared["missing"])
+    for fls in (fls_file(root, server.default_pdf), job_file(root, server.default_pdf, ".fls")):
+        paths |= {os.path.realpath(os.path.join(root, rel)) for rel in project_inputs(root, fls)}
     found = {}
     for path in paths:
         try:
@@ -5686,6 +5699,22 @@ def shared_inputs(server):
         except OSError:
             found[path] = None
     return found
+
+
+MISSING_RE = re.compile(r"File `([^`'\n]{1,200})' not found")
+MISSING_EXTS = ("", ".tex", ".sty", ".cls", ".bib", ".pdf", ".png", ".jpg", ".jpeg", ".eps")  # (as TeX and graphicx add them)
+
+
+def shared_missing(server, log):
+    """The paper's files that a failed build's log says it could not find (LaTeX's "File `x' not found"),
+    each with the extensions TeX and graphicx would try: shared_inputs watches for them to appear."""
+    root, found = server.paper_root, []
+    for name in dict.fromkeys(MISSING_RE.findall(log[-(1 << 20):])):
+        for ext in MISSING_EXTS if not os.path.splitext(name)[1] else ("",):
+            path = os.path.normpath(os.path.join(root, name + ext))
+            if in_paper(root, path):
+                found.append(os.path.realpath(path))
+    return found[:200]
 
 
 def shared_build(server):
@@ -5712,23 +5741,67 @@ def shared_build(server):
 
 
 def shared_tool(server, argv, run="main"):
-    """Run a TeX tool (argv) in its own container (tex-exec, from the paper root), for up to 10 minutes;
-    whether it succeeded. run labels the container, so that a rebuild stops a main run's (stop_containers)."""
-    proc = subprocess.Popen([*container_argv(server.paper_root), *argv], cwd=server.paper_root,
-                            env={**server.env, "LATEX_LIVE_RUN": run}, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if run == "main":
-        server.shared["proc"] = proc
-    try:
-        return proc.wait(timeout=600) == 0
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-        stop_containers(run)
-        return False
-    finally:
+    """Run a TeX tool (argv) in its own container (tex-exec, from the paper root), for up to 10 minutes, in
+    the live build's slot (LIVE_SPAWN; another run's: a SPAWNS slot); whether it succeeded. run labels the
+    container, so that a rebuild stops a main run's (stop_containers)."""
+    with LIVE_SPAWN if run == "main" else SPAWNS:
+        proc = subprocess.Popen([*container_argv(server.paper_root), *argv], cwd=server.paper_root,
+                                env={**server.env, "LATEX_LIVE_RUN": run}, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if run == "main":
-            server.shared["proc"] = None
+            server.shared["proc"] = proc
+        try:
+            return proc.wait(timeout=600) == 0
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            stop_containers(run)
+            return False
+        finally:
+            if run == "main":
+                server.shared["proc"] = None
+
+
+def build_size(server, most=200_000):
+    """The disk space build/ takes (bytes), or None past most files and folders (too many to add up)."""
+    total, seen = 0, 0
+    for folder, dirs, names in os.walk(os.path.join(server.paper_root, BUILD)):
+        seen += len(dirs) + len(names)
+        if seen > most:
+            return None
+        for name in names:
+            try:
+                total += os.lstat(os.path.join(folder, name)).st_blocks * 512
+            except OSError:
+                pass
+    return total
+
+
+def watch_build_size(server):
+    """Shared mode: the paper's TeX decides what it writes into build/ (--ulimit fsize bounds each file, not
+    how many), so every 2 s this adds up build/, and past LATEX_LIVE_BUILD_LIMIT (or 200 000 entries) it
+    stops every container of this instance and empties build/ (but for the lock files), which the next
+    build fills again; the run it stopped says why (shared_run)."""
+    root = os.path.join(server.paper_root, BUILD)
+    while not server.stopping:
+        size = build_size(server)
+        if size is None or size > BUILD_LIMIT:
+            server.shared["overflow"] = time.time_ns()
+            stop_containers()
+            print(f"=== latex-live: {BUILD}/ took more than {BUILD_LIMIT >> 20} MB (LATEX_LIVE_BUILD_LIMIT); stopped the"
+                  " build and emptied it", flush=True)
+            for name in os.listdir(root):
+                path = os.path.join(root, name)
+                if name.endswith(".lock") or name == "latex-live-doc":
+                    continue
+                if os.path.isdir(path) and not os.path.islink(path):
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+        time.sleep(2)
 
 
 def read_build(path, limit=64 << 20):
@@ -5840,8 +5913,12 @@ def shared_run(server):
                 return
             if not ran and not RERUN_RE.search(log) and aux == before:
                 break
+        if server.shared["overflow"] > began:  # (watch_build_size stopped it)
+            raise RuntimeError(f"the build wrote more than {BUILD_LIMIT >> 20} MB into {BUILD}/ (LATEX_LIVE_BUILD_LIMIT), so it"
+                               f" was stopped and {BUILD}/ emptied")
         files = [os.path.relpath(p, root) for p in project_tex_files(root, fls_file(root, pdf))]
         ok, status, log, _ = latex_report.run_report(job, "ok" if ok else "fail", files)
+        server.shared["missing"] = [] if ok else shared_missing(server, log)
         if ok and (tools := [msg for msg in server.shared["failed"].values() if msg]):  # (a stale bibliography or index)
             ok, status = False, {**status, "ok": False, "errors": [{"file": None, "line": None, "msg": msg} for msg in tools]}
         if not ok and latex_report.damaged_aux(log, job) and time.monotonic() - server.shared["retried"] > 60:
@@ -5893,7 +5970,10 @@ def shared_notes_free(server, job, doc):
     latex_report.seed_notes_free(job, doc)
 
     def run():
-        status = latex_report.notes_free_pass(job, doc, env={**server.env, "LATEX_LIVE_RUN": "clean"})
+        with SPAWNS:  # (one of the slots that downloads share: the live build has its own)
+            if seq != server.shared["clean_seq"]:  # (a newer run's pass came meanwhile)
+                return
+            status = latex_report.notes_free_pass(job, doc, env={**server.env, "LATEX_LIVE_RUN": "clean"})
         if seq == server.shared["clean_seq"]:
             server.shared["clean"] = status
 

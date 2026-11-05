@@ -14,16 +14,27 @@
 # 1 GB and 10 minutes (podman stops it then, even when the caller has stopped waiting); it is labelled
 # with the instance ($LATEX_LIVE_INSTANCE) and the kind of run ($LATEX_LIVE_RUN), so that live.py can
 # stop it; and TeX gets no shell escape, and no files outside its working directory and the TeX tree
-# (openin_any=p). That skips the image's entrypoint, which switches users and so needs a capability.
+# (openin_any=p). The paper root's dot entries (.git, whose config may hold a remote's credentials,
+# .env, ...) are hidden: an empty folder or file over each, since biber and latexdiff ignore openin_any.
+# That skips the image's entrypoint, which switches users and so needs a capability.
 image=$1 root=$2
 shift 2
 if podman image exists "$image"; then
     if [ "$LATEX_LIVE_SANDBOX" = 1 ]; then
         build="$root/${LATEX_LIVE_BUILD:-build}"
+        set -- "$image" "$@"
+        for entry in "$root"/.[!.]* "$root"/..?*; do
+            if [ -L "$entry" ] || [ ! -e "$entry" ] || [ "$entry" = "$build" ]; then continue; fi
+            if [ -d "$entry" ]; then
+                set -- --tmpfs "$entry:ro,size=4k,notmpcopyup" "$@"
+            else
+                set -- -v "/dev/null:$entry:ro" "$@"
+            fi
+        done
         set -- --cap-drop=all --security-opt=no-new-privileges --pids-limit=512 --memory=4g --cpus=2 \
             --ulimit fsize=1073741824:1073741824 --timeout=600 --entrypoint= \
             --label "latex-live.instance=$LATEX_LIVE_INSTANCE" --label "latex-live.run=${LATEX_LIVE_RUN:-other}" \
-            -v "$root:$root:ro" -v "$build:$build" -e openin_any=p -e openout_any=p -e shell_escape=f "$image" "$@"
+            -v "$root:$root:ro" -v "$build:$build" -e openin_any=p -e openout_any=p -e shell_escape=f "$@"
     else
         set -- -v "$root:$root" "$image" "$@"
     fi
