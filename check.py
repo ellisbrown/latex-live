@@ -993,9 +993,16 @@ def editor_checks(paper, state, token, own, editor_log):
                  "another tab's save of that line, from the same version")
     if clash.get("conflict") is not True or read_bytes(path).decode() != more:
         fail("another tab's save of the same line overwrote the first tab's instead of conflicting")
+    base = expect("/file?path=body.tex", None, 200, "GET file body.tex")
+    save({"path": "body.tex", "base": base["version"], "text": with_paragraph(base["text"], 9, "Nine, saved, then undone."),
+          "editor": "tab-a"}, 200, "a save (whose answer the editor never gets)")
+    save({"path": "body.tex", "base": base["version"], "text": base["text"], "editor": "tab-a"}, 200,
+         "the same tab's save after undoing that edit")
+    if read_bytes(path).decode() != base["text"]:
+        fail("an edit undone after a save whose answer got lost stayed in the file")
     ok("a save writes; a stale save merges; a conflict writes nothing and answers both texts; force writes; an unknown base"
-       " asks for its text; a save whose answer got lost doesn't conflict with the same tab's next one, but another"
-       " tab's does")
+       " asks for its text; a save whose answer got lost doesn't conflict with the same tab's next one (and an undo of"
+       " it undoes it in the file), but another tab's does")
 
     crlf = expect("/file?path=crlf.bib", None, 200, "GET file crlf.bib")
     raw = read_bytes(crlf_path)
