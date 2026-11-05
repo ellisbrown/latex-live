@@ -16,7 +16,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-from live import forward_target  # noqa: E402
+from latexlive.synctex import forward_target  # noqa: E402
 
 
 def main():

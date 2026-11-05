@@ -86,21 +86,24 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))  # (latexlive/ next to this file, wherever it is run from)
 from latexlive import config  # noqa: E402
 from latexlive.auth import (  # noqa: E402
     LOOPBACK_ORIGIN_RE, ROLES, USER_ID_RE, host_kinds, is_loopback, load_token, load_users, owner_name,
     owner_principal, peer_uid, principal, same_secret, users, users_owner)
+from latexlive.document import (  # noqa: E402
+    FLOAT_ENV_RE, GRAPHIC_EXTS, floats, graphics, include_sites, layout, page_limit, toc_outline)
 from latexlive.files import (  # noqa: E402
-    aux_tree, child_aux, clean_file, file_hash, fls_file, in_paper, job_file, mtime, open_output, pdf_path,
-    project_inputs, project_tex_files, read_build, read_capped, read_json, read_output, too_big)
+    aux_tree, clean_file, file_hash, fls_file, in_paper, job_file, mtime, open_output, pdf_path, project_inputs,
+    project_tex_files, read_build, read_capped, read_json, read_output, too_big)
 from latexlive.git import commits, git_busy, git_operation, git_read_env, pushed_commit  # noqa: E402
 from latexlive.latex import (  # noqa: E402
     DOCCLASS_RE, INPUT_RE, RERUN_RE, blank_comments, brace_group, false_blocks, paper_root_of, pick_doc,
     project_macros, read_tex, root_docs, source_tree, tex_to_text)
 from latexlive.roles import READ_PATHS, allowed, at_least, least_role, shared_pdfs, viewer_status  # noqa: E402
+from latexlive.synctex import (  # noqa: E402
+    bib_span, forward_target, inverse_search, refs_start, synctex_input, synctex_points, to_int)
 from latexlive.tools import (  # noqa: E402
     LIVE_SPAWN, RUN_SEQ, SPAWNS, container_argv, container_exec, image_problem, image_pulled, pdf_pages_text, pdf_tool,
     run_tool, stop_containers, synctex_unavailable, tex_argv)
@@ -581,143 +584,6 @@ def bad_link_page(owner):
 <p>It may be old, or your access may have ended. Ask {html.escape(owner)} for a new one.</p>"""
 
 
-def run_synctex(paper_root, *args):
-    """Run `synctex <args>` and return its result records (dicts of the Key:value lines).
-
-    Without a synctex on the host, it runs in the TeX Live image (~0.2 s); with neither, there are
-    no records (synctex_unavailable says why). In shared mode always in the image, confined: SyncTeX
-    parses the build's files, which the paper's TeX writes. At most four at once (SPAWNS), each for
-    up to a minute.
-    """
-    cmd = ["synctex", *args]
-    if config.SHARED or not shutil.which("synctex"):
-        if not shutil.which("podman"):
-            return []
-        cmd = [*container_argv(paper_root), *cmd]
-    try:
-        code, out = run_tool(cmd, paper_root, timeout=60, kind="synctex", capture=4 << 20)
-    except OSError:
-        return []
-    records = []
-    for line in out.splitlines():
-        key, sep, value = line.partition(":")
-        if key == "Output":  # each result record starts with Output:
-            records.append({})
-        if sep and records:
-            records[-1][key] = value
-    return records
-
-
-def synctex_records(synctex_gz):
-    """The lines of a build's SyncTeX file, decompressed as they are read, up to SYNCTEX_LIMIT bytes and
-    RECORD_LIMIT lines in all (a file the paper's TeX made could hold far more); none if there is no file."""
-    f = open_output(synctex_gz)
-    if f is None:
-        return
-    size = 0
-    with f, gzip.open(f, "rt", errors="replace") as text:
-        for n in range(config.RECORD_LIMIT):
-            try:
-                record = text.readline(1 << 16)  # (a line past that comes in parts)
-            except (OSError, EOFError, zlib.error):  # (not gzip, or cut off)
-                return
-            size += len(record)
-            if not record or size > config.SYNCTEX_LIMIT:
-                return
-            yield record
-
-
-def to_int(text, default=None):
-    """int(text), or default for text that isn't a number (SyncTeX's output comes from files the paper's TeX wrote)."""
-    try:
-        return int(text)
-    except (TypeError, ValueError):
-        return default
-
-
-BIB_SPAN_LOCK = threading.Lock()  # (bib_span: one lookup per build, however many viewers poll at once)
-
-
-def bib_span(paper_root, files, cache={}):
-    """Where the bibliography starts and ends: ({"page", "y"}, {"page", "y"}) (y in points
-    from the page top), or None. Maps the first and last lines of the .bbl to the PDF, cached
-    per build (each viewer's status poll asks, and a lookup may take several SyncTeX runs).
-    files = (synctex_gz, bbl, pdf).
-    """
-    synctex_gz, bbl, pdf = files
-    try:
-        mtime = os.stat(synctex_gz).st_mtime_ns
-        text = read_capped(bbl)
-        if text is None:
-            return None
-        last = text.count("\n") + 1
-    except OSError:
-        return None
-    if cache.get(synctex_gz, (None,))[0] != mtime:
-        with BIB_SPAN_LOCK:
-            if cache.get(synctex_gz, (None,))[0] != mtime:  # (another request may have looked it up meanwhile)
-                def where(line):
-                    rec = next((r for r in run_synctex(paper_root, "view", "-i", f"{line}:0:{bbl}", "-o", pdf) if "Page" in r), None)
-                    try:
-                        return rec and {"page": int(rec["Page"]), "x": float(rec["h"]), "y": float(rec["v"]) - float(rec["H"])}
-                    except (KeyError, ValueError):  # (a record that isn't what SyncTeX writes)
-                        return None
-                start = where(1)
-                # The last lines (\end{thebibliography}, blank ones) may have no boxes: walk back to one that does.
-                end = next(filter(None, (where(line) for line in range(last, max(1, last - 8), -1))), None) if start else None
-                cache[synctex_gz] = (mtime, start and (start, end))
-    return cache[synctex_gz][1]
-
-
-def refs_start(paper_root, pdf_name, clean=False):
-    """Where the bibliography starts, in the live build or the notes-free one."""
-    f = clean_file if clean else job_file
-    span = bib_span(paper_root, (f(paper_root, pdf_name, ".synctex.gz"), f(paper_root, pdf_name, ".bbl"),
-                                 f(paper_root, pdf_name, ".pdf")))
-    return span and span[0]
-
-
-LAYOUT_RE = re.compile(r"^latex-live layout: (.+)$", re.M)
-
-
-def layout(paper_root, pdf_name, cache={}):
-    """The text area of the last build, as latexmkrc's pretex hook printed it to the log, in PDF points
-    from the page's top-left: {W, H, left, top, bottom, width, colwidth, leading, columns}. None until a build has
-    printed it. A build that stopped before \\begin{document} keeps the previous value."""
-    log = job_file(paper_root, pdf_name, ".log")
-    stamp = mtime(log)
-    if cache.get(log, (None,))[0] != stamp:
-        m = LAYOUT_RE.search(read_capped(log) or "")  # (the line comes once the preamble has run: near the start)
-        value = cache.get(log, (None, None))[1]
-        if m:
-            try:  # TeX points (72.27 per inch) to PDF points (72); glue keeps only its natural size
-                pw, ph, hoff, side, voff, top, head, sep, tw, th, cw, skip = (
-                    float(re.match(r"-?[\d.]+", v.strip()).group()) * 72 / 72.27 for v in m.group(1).split(","))
-                y = 72 + voff + top + head + sep  # TeX's origin is 1in from the top-left corner
-                value = {"W": round(pw, 2), "H": round(ph, 2), "left": round(72 + hoff + side, 2), "top": round(y, 2),
-                         "bottom": round(y + th, 2), "width": round(tw, 2), "colwidth": round(cw, 2), "leading": round(skip, 2),
-                         "columns": 2 if cw < 0.75 * tw else 1}
-            except (AttributeError, ValueError):
-                pass
-        cache[log] = (stamp, value)
-    return cache[log][1]
-
-
-# Main-text page limits of submission styles, for documents run without --page-limit.
-VENUE_PAGE_LIMITS = {r"iclr\d{4}_conference": 9, r"neurips_\d{4}": 9, r"colm\d{4}_conference": 9, r"icml\d{4}": 8,
-                     r"cvpr": 8, r"iccv": 8}
-USEPACKAGE_RE = re.compile(r"\\usepackage\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}")
-
-
-def page_limit(server, pdf_name):
-    """--page-limit, else the limit of the venue style the document loads, else None."""
-    if server.page_limit:
-        return server.page_limit
-    packages = {p.strip() for m in USEPACKAGE_RE.finditer(read_tex(os.path.join(server.paper_root, pdf_name[:-4] + ".tex")))
-                for p in m.group(1).split(",")}
-    return next((n for pattern, n in VENUE_PAGE_LIMITS.items() if any(re.fullmatch(pattern, p) for p in packages)), None)
-
-
 def forward_asked(found):
     """forward.py's request (build/<job>.forward.json: {seq, page, x, y, w, h, clean?}) as read, or in
     shared mode only its numbers (the paper's TeX can write that file too), or None if it has none."""
@@ -784,224 +650,6 @@ def code_updated(started={}):
     elif stamp != started["stamp"]:
         started.update(stamp=stamp, updated=[file_hash(path) for path in paths] != started["hash"])
     return started["updated"]
-
-
-TOC_LEVELS = {"part": 0, "chapter": 0, "section": 1, "subsection": 2, "subsubsection": 3, "paragraph": 4}
-
-
-def contents_lines(text):
-    """The \\contentsline{type}{title}{page label}{anchor} entries in text, as argument lists."""
-    found, i = [], 0
-    while (i := text.find("\\contentsline", i)) >= 0:
-        args, i = [], i + len("\\contentsline")
-        while len(args) < 4 and (j := text.find("{", i)) >= 0 and not text[i:j].strip():
-            arg, i = brace_group(text, j)
-            args.append(arg)
-        if len(args) == 4:
-            found.append(args)
-    return found
-
-
-WRITTEN_RE = re.compile(r"\\@writefile\{(toc|lof|lot)\}(?=\{)|\\@input\{([^}]+\.aux)\}")
-
-
-def written_contents(aux, ext, depth=0, budget=None):
-    """The contents lines a build wrote for its .toc, .lof or .lot (ext) through its .aux, and the
-    .aux files that one inputs (\\include). Every build writes them, whether or not the document
-    prints that list. The paper's TeX writes those names: only .aux files in the same folder or below
-    it are read (child_aux), AUX_BUDGET bytes in all."""
-    budget = [config.AUX_BUDGET, 200] if budget is None else budget
-    text = read_capped(aux, min(config.READ_LIMIT, budget[0])) or ""
-    budget[0] -= len(text)
-    found = []
-    for m in WRITTEN_RE.finditer(text):
-        if m.group(1) == ext:
-            found += contents_lines(brace_group(text, m.end())[0])
-        elif m.group(2) and depth < 3 and budget[0] > 0 and budget[1] > 0 and (child := child_aux(os.path.dirname(aux), m.group(2))):
-            budget[1] -= 1
-            found += written_contents(child, ext, depth + 1, budget)
-    return found
-
-
-def numbered(arg, macros):
-    """(number, text) of a contents-line title: \\numberline{2.1}Title -> ("2.1", "Title")."""
-    m = re.match(r"\s*\\numberline\s*\{([^{}]*)\}", arg)
-    text = tex_to_text(arg[m.end():] if m else arg, macros)
-    return (m.group(1).strip() or None) if m else None, re.sub(r" ([:;,.?!)])", r"\1", " ".join(text.split()))
-
-
-def toc_outline(paper_root, pdf_name, clean=False):
-    """Outline entries [{level, num, title, page, dest}] (of the notes-free build with clean=True,
-    whose pages differ). The viewer numbers the PDF's bookmarks with them, and shows them as the
-    outline of a PDF without bookmarks.
-
-    From the contents lines the build wrote to its .aux, else its .toc. The anchor (a named
-    destination) is empty when hyperref doesn't handle the entry; the viewer then finds the title
-    on the page.
-    """
-    f = clean_file if clean else job_file
-    lines = written_contents(f(paper_root, pdf_name, ".aux"), "toc")
-    if not lines:
-        text = read_capped(f(paper_root, pdf_name, ".toc"))
-        if text is None:
-            return []
-        lines = contents_lines(text)
-    macros = project_macros(paper_root, fls_file(paper_root, pdf_name))
-    entries = []
-    for kind, title, page, dest in lines:
-        if kind in TOC_LEVELS:
-            num, title = numbered(title, macros)
-            entries.append({"level": TOC_LEVELS[kind], "num": num, "title": title, "page": page, "dest": dest or None})
-    return entries
-
-
-SYNCTEX_BOX_RE = re.compile(r"([\[(h])(\d+),(\d+):(-?\d+),(-?\d+):(-?\d+),(-?\d+),(-?\d+)")  # vboxes, hboxes
-
-
-def synctex_boxes(synctex_gz, cache={}):
-    """{(file, line): [(page, left, top, right, bottom)]}: the boxes each source line made (points
-    from the page's top-left), from a build's SyncTeX file."""
-    key = (synctex_gz, mtime(synctex_gz))
-    if key not in cache:
-        inputs, boxes, page = {}, {}, 0
-        pt = 72 / 72.27 / 65536  # scaled points to PDF points
-        for record in synctex_records(synctex_gz):
-            if record.startswith("Input:"):
-                tag, _, path = record[6:].rstrip("\n").partition(":")
-                inputs[tag] = os.path.normpath(path)
-            elif record.startswith("{"):
-                page = to_int(record[1:], page)
-            elif m := SYNCTEX_BOX_RE.match(record):
-                x, y, w, h, d = (int(v) * pt for v in m.groups()[3:])
-                boxes.setdefault((inputs.get(m.group(2)), int(m.group(3))), []).append(
-                    (page, round(x, 1), round(y - h, 1), round(x + w, 1), round(y + d, 1)))
-        cache.clear()
-        cache[key] = boxes
-    return cache[key]
-
-
-FLOAT_ENV_RE = re.compile(r"\\(begin|end)\s*\{((?:sideways|wrap)?(?:figure|table))\*?\}")
-CAPTION_RE = re.compile(r"\\caption\s*(?=[\[{])")  # (not \captionof or \subcaption)
-LABEL_RE = re.compile(r"\\label\s*\{([^{}]*)\}")
-NEWLABEL_RE = re.compile(r"\\newlabel\{([^{}]*)\}\{\{([^{}]*)\}")
-
-
-SCALED_RE = re.compile(r"\\(?:resizebox|scalebox|rotatebox|reflectbox|adjustbox)\b|\\begin\{adjustbox\}")
-ARG_RE = re.compile(r"\s*([\[{])")
-
-
-def scaled_lines(env, first):
-    """Lines of a float's environment (env, from line first) that end content drawn scaled or rotated
-    (\\resizebox, \\scalebox, adjustbox...), whose SyncTeX boxes have its size before scaling."""
-    lines = set()
-    for m in SCALED_RE.finditer(env):
-        i = m.end()
-        if m.group().startswith("\\begin"):
-            i = max(env.find("\\end{adjustbox}", i), i)
-        else:  # to the end of its arguments
-            while a := ARG_RE.match(env, i):
-                i = brace_group(env, a.end(1) - 1)[1] if a.group(1) == "{" else (env.find("]", a.end()) + 1 or len(env))
-        lines.update(range(first + env.count("\n", 0, m.start()), first + env.count("\n", 0, i) + 1))
-    return lines
-
-
-def floats(paper_root, pdf_name, clean=False):
-    """The figures and tables that were typeset, in reading order, for the viewer's Figures tab and
-    the placement check:
-    [{kind, num, caption, page, label, dest, box, extent, keys, file, line, last}]. page is the PDF
-    page, label its printed number; box is [left, top, right, bottom] in points from the page's
-    top-left, cut at the page's bottom edge; extent is the box as typeset (not cut, nor widened by
-    content drawn scaled), if known; keys are its \\label names; line and last are the lines of
-    its environment in file.
-
-    The environments come from the source; SyncTeX tells which were typeset and where (the boxes
-    their lines made). Numbers come from their \\label, else the order of their captions; captions
-    and anchors from the list of figures and tables the build wrote to its .aux.
-    """
-    f = clean_file if clean else job_file
-    synctex_gz = f(paper_root, pdf_name, ".synctex.gz")
-    if not os.path.exists(synctex_gz):
-        return []
-    boxes = synctex_boxes(synctex_gz)
-    macros = project_macros(paper_root, fls_file(paper_root, pdf_name))
-    area = layout(paper_root, pdf_name) or {"W": 612, "H": 792, "top": 72, "bottom": 720}
-    tall = area["bottom"] - area["top"] - 1  # (no float is as tall as the text block)
-    listed = {}
-    for kind, ext in (("figure", "lof"), ("table", "lot")):
-        listed[kind] = []
-        for typ, title, page, dest in written_contents(f(paper_root, pdf_name, ".aux"), ext):
-            if typ == kind:
-                num, caption = numbered(title, macros)
-                listed[kind].append({"num": num, "caption": caption, "label": page, "dest": dest or None})
-    label_nums = dict(NEWLABEL_RE.findall(read_capped(f(paper_root, pdf_name, ".aux")) or ""))
-    found, taken = [], {"figure": 0, "table": 0}
-    for path in project_tex_files(paper_root, fls_file(paper_root, pdf_name)):
-        text, open_at = read_tex(path), []
-        for m in FLOAT_ENV_RE.finditer(text):
-            if m.group(1) == "begin":
-                open_at.append(m.start())
-                continue
-            if not open_at:
-                continue
-            start = open_at.pop()
-            if open_at:  # (a float inside another one: part of it)
-                continue
-            first, last = text.count("\n", 0, start) + 1, text.count("\n", 0, m.end()) + 1
-            made = [b for line in range(first, last + 1) for b in boxes.get((path, line), [])
-                    # Not the page, its text block, header and footer (a page shipped out while one of these
-                    # lines was current), nor an unscaled image or an empty box. A float may start low and
-                    # run off the page.
-                    if b[1] >= 1 and b[3] <= area["W"] and area["top"] - 15 <= b[2] <= area["bottom"] + 15
-                    and 0 < b[4] - b[2] < tall and b[3] > b[1]]
-            if not made:  # not typeset (e.g. in an \\iffalse block)
-                continue
-            kind = "table" if m.group(2).endswith("table") else "figure"
-            env = text[start:m.end()]
-            captions = len(CAPTION_RE.findall(env))
-            entry = listed[kind][taken[kind]] if captions and taken[kind] < len(listed[kind]) else {}
-            taken[kind] += captions
-            nums = [label_nums[name] for name in LABEL_RE.findall(env) if name in label_nums]
-            if nums and nums[0] != entry.get("num"):  # the label knows better than the order
-                entry = next((e for e in listed[kind] if e["num"] == nums[0]), {"num": nums[0]})
-            page = collections.Counter(b[0] for b in made).most_common(1)[0][0]
-            on = [b for b in made if b[0] == page]
-            skip = scaled_lines(env, first)
-            sized = [] if m.group(2).startswith("sideways") else [  # (rotated: SyncTeX has the boxes unrotated)
-                b for line in range(first, last + 1) if line not in skip for b in boxes.get((path, line), []) if b in on]
-            found.append({"kind": kind, "num": entry.get("num"), "caption": entry.get("caption", ""), "page": page,
-                          "label": entry.get("label"), "dest": entry.get("dest"),
-                          "box": [min(b[1] for b in on), min(b[2] for b in on), max(b[3] for b in on),
-                                  min(area["H"], max(b[4] for b in on))],  # (a float can run off the page)
-                          "extent": sized and [min(b[1] for b in sized), min(b[2] for b in sized), max(b[3] for b in sized),
-                                               max(b[4] for b in sized)] or None, "keys": LABEL_RE.findall(env),
-                          "file": os.path.relpath(path, paper_root), "line": first, "last": last})
-    return sorted(found, key=lambda x: (x["page"], x["box"][1]))
-
-
-def forward_target(paper_root, src, line, clean=False):
-    """Forward search: where source line src:line (absolute path) is in the most recent build that
-    has it (or in the notes-free build). Returns (pdf, {"page", "x", "y", "w", "h"}) in points from
-    the page's top-left, or None.
-    """
-    pattern = os.path.join("clean", "*-clean.synctex.gz") if clean else "*-live.synctex.gz"
-    jobs = sorted(glob.glob(os.path.join(paper_root, config.BUILD, pattern)), key=os.path.getmtime, reverse=True)
-    for synctex_gz in jobs:
-        pdf = synctex_gz[: -len(".synctex.gz")] + ".pdf"
-        records = [r for r in run_synctex(paper_root, "view", "-i", f"{line}:0:{src}", "-o", pdf) if "Page" in r]
-        if not records:
-            continue
-        # A long source line can span several output lines: cover all of them on the first page.
-        page = records[0]["Page"]
-        try:
-            boxes = [(float(r["h"]), float(r["v"]) - float(r["H"]), abs(float(r["W"])), float(r["H"]))
-                     for r in records if r["Page"] == page]
-            int(page)
-        except (KeyError, ValueError):  # (a record that isn't what SyncTeX writes)
-            continue
-        x, y = min(b[0] for b in boxes), min(b[1] for b in boxes)
-        return pdf, {"page": int(page), "x": x, "y": y,
-                     "w": max(b[0] + b[2] for b in boxes) - x, "h": max(b[1] + b[3] for b in boxes) - y}
-    return None
 
 
 def shared_result(server, key, compute):
@@ -1109,30 +757,6 @@ def notes(paper_root, pdf_name):
             found.append({"author": kinds[m.group(1)], "text": words[:400], "file": os.path.relpath(path, paper_root),
                           "line": text.count("\n", 0, m.start()) + 1, **note_fields(text, m, end)})
     return found
-
-
-SYNCTEX_POINT_RE = re.compile(r"([gkx$])(\d+),(\d+):(-?\d+),(-?\d+)")  # glue, kerns, points, math
-
-
-def synctex_points(synctex_gz, cache={}):
-    """{(file, line): [(page, x, y)]}: where each source line's words, spaces, and math
-    landed (points from the page's top-left, y at the baseline), from a build's SyncTeX file."""
-    key = (synctex_gz, mtime(synctex_gz))
-    if key not in cache:
-        inputs, points, page = {}, {}, 0
-        for record in synctex_records(synctex_gz):
-            if record.startswith("Input:"):
-                tag, _, path = record[6:].rstrip("\n").partition(":")
-                inputs[tag] = os.path.normpath(path)
-            elif record.startswith("{"):
-                page = to_int(record[1:], page)
-            elif m := SYNCTEX_POINT_RE.match(record):
-                pt = 72 / 72.27 / 65536  # scaled points to PDF points
-                points.setdefault((inputs.get(m.group(2)), int(m.group(3))), []).append(
-                    (page, round(int(m.group(4)) * pt, 1), round(int(m.group(5)) * pt, 1)))
-        cache.clear()
-        cache[key] = points
-    return cache[key]
 
 
 # Where a note's surrounding prose stops: paragraph breaks, environments, list items, headings.
@@ -2248,51 +1872,6 @@ def root_flag(text, name):
     return found[-1] == "true" if found else None
 
 
-GRAPHIC_EXTS = (".pdf", ".png", ".jpg", ".jpeg", ".eps", ".svg")
-INCLUDE_RE = re.compile(r"\\(includegraphics|includesvg)\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}|\\(input|include)\s*\{([^}]*)\}")
-
-
-def include_sites(paper_root, pdf_name):
-    """Where each included graphic or \\input file is included: {relative path: (tex file, line)}."""
-    fls = fls_file(paper_root, pdf_name)
-    inputs = project_inputs(paper_root, fls)
-    stems = {os.path.splitext(p)[0]: p for p in inputs}
-    sites = {}
-    for path in project_tex_files(paper_root, fls):
-        text = read_tex(path)
-        for m in INCLUDE_RE.finditer(text):
-            arg = os.path.normpath((m.group(2) or m.group(4)).strip())
-            arg = os.path.splitext(arg)[0] if arg.lower().endswith(GRAPHIC_EXTS + (".tex",)) else arg
-            # The argument may be relative to a \graphicspath directory: match it as a path suffix.
-            target = stems.get(arg) or next((p for s_, p in stems.items() if s_.endswith("/" + arg)), None)
-            if target and target not in sites:
-                sites[target] = (os.path.relpath(path, paper_root), text.count("\n", 0, m.start()) + 1)
-    return sites
-
-
-def graphics(paper_root, pdf_name):
-    """The graphics the build included: [{file, hash, dirty, unpushed, src, line}] (src:line is the
-    \\includegraphics; dirty: changed since HEAD, or untracked; unpushed: likewise since the last
-    push). The viewer compares hashes across rebuilds to mark figures whose files changed, or marks
-    the dirty (unpushed) ones against HEAD (the last push)."""
-    git = ["git", "-C", paper_root]
-    changed = lambda rev: set(subprocess.run(git + ["diff", "--name-only", "--relative", rev], capture_output=True, text=True,
-                                             env=git_read_env()).stdout.splitlines())
-    untracked = set(subprocess.run(git + ["ls-files", "-o", "--exclude-standard"], capture_output=True, text=True).stdout.splitlines())
-    dirty = changed("HEAD") | untracked
-    pushed = pushed_commit(paper_root)[0]
-    unpushed = changed(pushed) | untracked if pushed else set()
-    found = []
-    for path, (src, line) in include_sites(paper_root, pdf_name).items():
-        if path.lower().endswith(GRAPHIC_EXTS):
-            try:
-                found.append({"file": path, "hash": file_hash(os.path.join(paper_root, path)), "dirty": path in dirty,
-                              "unpushed": path in unpushed, "src": src, "line": line})
-            except OSError:
-                pass
-    return found
-
-
 def git_times(paper_root):
     """When each file last changed: {relative path: unix time}, from git history, or the file's
     mtime when it has uncommitted edits or is untracked (checkouts reset mtimes, commits don't)."""
@@ -3155,34 +2734,6 @@ def open_in_vscode(src, line, paper_root):
         return 409, f"{where}, not opened: {why}"
     subprocess.Popen([code, "-g", f"{src}:{line}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return 200, where
-
-
-def synctex_input(paper_root, name, page, x, y, clean):
-    """PDF position -> (the input file as SyncTeX recorded it, line), or (status, message) when there
-    is none. name: the published PDF; x, y in PDF points from the page's top-left; clean for a
-    position in the notes-free PDF."""
-    if not name.endswith(".pdf") or os.path.basename(name) != name:
-        return 400, "bad file"
-    job = clean_file if clean else job_file
-    pdf = job(paper_root, name, ".pdf")  # the job whose .synctex.gz we have
-    if not os.path.isfile(pdf[:-4] + ".synctex.gz"):  # (the notes-free PDF itself moves to build/)
-        return 404, f"no {os.path.relpath(pdf, paper_root)} yet"
-    result = next((r for r in run_synctex(paper_root, "edit", "-o", f"{page}:{x:.2f}:{y:.2f}:{pdf}") if "Input" in r), {})
-    if "Input" not in result:
-        missing = synctex_unavailable()
-        return (503, missing) if missing else (404, "no source location here")
-    return os.path.normpath(result["Input"]), max(1, to_int(result.get("Line"), 1))
-
-
-def inverse_search(paper_root, name, page, x, y, clean):
-    """PDF position -> (source path, line), or (status, message) when there is none (synctex_input)."""
-    found = synctex_input(paper_root, name, page, x, y, clean)
-    if isinstance(found[0], int):
-        return found
-    src, line = found
-    if src.startswith(os.path.join(paper_root, config.BUILD) + os.sep):  # generated, e.g. the table of contents
-        return 404, f"generated text ({os.path.basename(src)}); no source line"
-    return src, line
 
 
 def synctex_lookup(server, query, user=None):
