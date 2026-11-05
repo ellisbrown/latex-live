@@ -124,6 +124,11 @@ else:
 INSTANCE = f"{os.getpid()}-{secrets.token_hex(4)}"  # (tex-exec labels a shared instance's containers with it)
 
 
+# The warm standby (standby.py): a pdflatex run that has read the preamble already and waits for the next pass
+# of the live build. On unless LATEX_LIVE_STANDBY=0; never in shared mode, which builds without latexmk.
+STANDBY = os.environ.get("LATEX_LIVE_STANDBY", "").strip() != "0"
+
+
 # LATEX_LIVE_PROTECTED, a regular expression, marks text that must stay as written, e.g.
 # r"\\ch\{human-written\}" at the end of a paragraph or inside a caption: a note written from the viewer
 # goes after the paragraph or caption it marks, and the marker itself can't be changed there (note_writer).

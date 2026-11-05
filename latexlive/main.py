@@ -13,7 +13,7 @@ import time
 
 from . import DESCRIPTION, config
 from .auth import load_token, load_users, users
-from .build import retry_build, set_doc, start_latexmk, stop_latexmk
+from .build import retry_build, set_doc, start_latexmk, stop_doc_standbys, stop_latexmk
 from .commits import commit_at_exit, start_commits
 from .files import pdf_path
 from .handler import Handler
@@ -272,6 +272,7 @@ def main():
         print("=== latex-live: TeX Live 2024 (podman)" if image_pulled()
               else f"=== latex-live: {config.IMAGE_MISSING}; until then, the host's TeX runs", flush=True)
     if not config.SHARED:
+        stop_doc_standbys(server)  # (what an instance that was killed left)
         start_latexmk(server)
 
     # Only signal latexmk here; the main loop reaps it.
@@ -300,6 +301,7 @@ def main():
     finally:  # (also after an error: the pending edits are committed as theirs now, rather than in someone else's commit)
         server.stopping = True
         stop_latexmk(server)
+        stop_doc_standbys(server)
         stop_containers()
         commit_at_exit(server)
         stop_containers()  # (one a build started while the first sweep ran)
