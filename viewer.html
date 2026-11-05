@@ -2328,14 +2328,21 @@ async function load(name, version, variant, info) {
   }
 }
 
+// One poll at a time, and none waits more than 10 s: a connection that died without closing (one the browser
+// kept from before the preview restarted, say) would otherwise hold its request, and every later poll would
+// queue behind the few connections the browser opens to this port, which every viewer on it shares.
+let polling = false, pollFailed = false; // (the status line says why the last poll failed)
 async function poll() {
-  if (loading) return;
+  if (loading || polling) return;
+  polling = true;
   try {
     const base = changesOn && changeBase === "push" ? "?base=push" : ""; // (the server builds that baseline only then)
-    const r = await fetch(`status/${encodeURIComponent(file)}${base}`, { cache: "no-store" });
+    const r = await fetch(`status/${encodeURIComponent(file)}${base}`, { cache: "no-store", signal: AbortSignal.timeout(10000) });
     if (r.status === 404) throw new Error("server is older than this viewer: restart the LaTeX build task");
     if (!r.ok) throw new Error(`status ${r.status}`);
     const info = await r.json();
+    if (pollFailed) setStatus(""); // (it answers again)
+    pollFailed = false;
     if (!isDiff) seeBuild(!!info.building, info.build?.ok === false);
     if (!isDiff && info.doc && info.doc !== docFile) return openDoc(info.doc); // the server builds another document now
     if (info.layout) area = info.layout;
@@ -2377,9 +2384,10 @@ async function poll() {
       forwardSeq = 0;
     }
   } catch (err) {
-    setStatus(`${err.message || err} (retrying)`, "error");
+    setStatus(`${["TimeoutError", "AbortError"].includes(err.name) ? "no answer from the preview" : err.message || err} (retrying)`, "error");
+    pollFailed = true;
   } finally {
-    loading = false;
+    polling = loading = false;
   }
 }
 if (localStorage.getItem("latex-live:side")) showSide(true);
@@ -2399,8 +2407,8 @@ function viewerOf(i) {
                          : `${location.protocol}//${location.hostname}:${i.port}/viewer.html?${query}`;
 }
 async function loadDocs() {
-  const { doc: building, docs } = await (await fetch("docs")).json();
-  const { self, instances } = await (await fetch("instances")).json().catch(() => ({ instances: [] }));
+  const { doc: building, docs } = await (await fetch("docs", { signal: AbortSignal.timeout(10000) })).json();
+  const { self, instances } = await (await fetch("instances", { signal: AbortSignal.timeout(10000) })).json().catch(() => ({ instances: [] }));
   const others = otherPreviews = instances.filter((i) => i.pid !== self);
   const pick = $("docPick");
   pick.replaceChildren(...docs.map((d) => el("option", { value: d, textContent: `${d}.tex`, selected: `${d}.pdf` === docFile })));
