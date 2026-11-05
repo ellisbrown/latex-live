@@ -109,7 +109,7 @@ GRAPHICS = (".pdf", ".png", ".jpg", ".jpeg", ".jbig2", ".jb2", ".eps", ".mps")
 # The job's files in B that TeX doesn't read, not copied into S (seed): TeX's large outputs, and latexmk's
 # and latex-live's records. One read from B all the same puts the pass in doubt (after_release).
 NOT_READ = (".log", ".pdf", ".synctex.gz", ".synctex(busy)", ".synctex", ".fls", ".fls.done", ".fdb_latexmk", ".lock",
-            ".building", ".status.json", ".published.json", ".forward.json", ".retry", ".tmp")
+            ".building", ".status.json", ".published.json", ".forward.json", ".retry", ".tmp", ".timing")
 
 # The end of the preamble copy. SKIP: L-1; FIFO: the FIFO's name in S; ROOT: the root file's name. It
 # expects of the catcodes the preamble leaves only that \ { } # % and letters do their usual jobs, and it
