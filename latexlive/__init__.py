@@ -50,7 +50,8 @@
   with LATEX_LIVE_COMMIT=1 each coauthor's edits and notes are committed to git as theirs.
 
 The server is this package, which live.py starts (main). Its modules, from the bottom up: config
-(settings), standby (the live build's warm standby, which latexmkrc runs as a script), auth and roles (who is asking, and what each role may do), files, tools, git and latex (the
+(settings), standby (the live build's warm standby, which latexmkrc runs as a script), auth and
+roles (who is asking, and what each role may do), files, tools, git and latex (the
 paper's files and the build's, running TeX tools, git, reading LaTeX), synctex and document (the
 document as built), notes, sources, note_writer, commits and editor (reading and writing the
 sources), navigation, instances, build, baselines and status, shared_watch and shared_build (shared
