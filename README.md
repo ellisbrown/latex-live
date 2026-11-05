@@ -238,9 +238,9 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
     header counts only on requests with this Host.
   - `LATEX_LIVE_PROXY_UID`: the user id the proxy runs as, e.g. `0`. The
     identity header then counts only on connections from that user's
-    processes, so other users of the machine can't send it. Required on Linux
-    with `LATEX_LIVE_IDENTITY_HEADER` (elsewhere, where it can't be checked,
-    the instance warns instead).
+    processes, so other users of the machine can't send it. Required with
+    `LATEX_LIVE_IDENTITY_HEADER`, which works on Linux only (elsewhere this
+    can't be checked, so the instance refuses to start; use personal links).
   - `LATEX_LIVE_COMMIT`: in shared mode, `1` commits each person's saves and
     notes to git as theirs (with the owner as committer) once they pause.
   - `LATEX_LIVE_COMMIT_IDLE`: the seconds of quiet after a person's last edit
@@ -277,16 +277,28 @@ python3 live.py [doc] [--page-limit N] [--no-open] [--host-tex] [--build-dir DIR
 With `LATEX_LIVE_USERS` set, an instance serves its paper to the people in a
 users file, each with a role:
 
-- **viewer:** reads the PDF, the notes and the outline, and downloads the
-  PDF: with its notes, without them, or with them in the margin;
+- **viewer:** reads the PDF, the notes it shows and the outline, and
+  downloads the PDF: with its notes, without them, or with them in the
+  margin;
 - **commenter:** also writes notes, as their own note macro and in plain
   text; edits and deletes only their own notes, and replies to and resolves
   anyone's;
 - **editor:** also edits the sources in the browser (notes too, as LaTeX),
   rebuilds (the coauthors together at most every 20 seconds), sees the
-  pre-submission checks, and compares with earlier commits of the copy's
-  branch;
+  pre-submission checks and the build's error messages, and compares with
+  earlier commits of the copy's branch (the diff, and the change highlights
+  against the last commit or push);
 - **owner:** everything, as without shared mode.
+
+Viewers and commenters see the current PDF and what it shows, nothing more:
+the notes the PDF shows (not those in `\iffalse` or a switch that is off, nor
+any while `\todotxt` hides them), whether the build failed and how many errors
+it had (not the messages, which quote the sources), the figures without their
+labels and source lines, and SyncTeX's lines without the names of files the
+editor doesn't open. The earlier versions (the baselines and the diff) are for
+editors and the owner. The download with notes in the margin shows every note
+outside a false branch, as it always did, even while `\todotxt` hides them in
+the PDF.
 
 Coauthors who may edit write the LaTeX that this machine compiles, so such an
 instance treats the paper and everything TeX writes as theirs:
@@ -296,25 +308,39 @@ instance treats the paper and everything TeX writes as theirs:
   `.aux` to a shell, so a crafted name would run a command here. live.py
   itself watches the paper's files and runs pdflatex, and bibtex, biber or
   makeindex where the paper uses them, as latexmk would (up to six passes,
-  until the references settle). Other tools that a paper's own `latexmkrc`
+  until the references settle). A tool that failed runs again on every
+  build until it succeeds, and its log's last lines are in the build's
+  errors. It also watches the bibliographies and styles that the `.aux` or
+  `.bcf` names (in any folder), and files a build missed or that an
+  `\input` or `\include` names before they exist. Saves in a row make one
+  build: one starts once the files have been quiet for a second (at most 10
+  seconds after the first change), and never within 2 seconds of the last. Other tools that a paper's own `latexmkrc`
   would add (makeglossaries, say) don't run, and a `latexmkrc` in the paper
   is not read.
 - Every TeX run is a container of its own from the TeX Live image, never the
   host's TeX (it refuses `--host-tex`, and a machine without podman): no
   network, no capabilities, no shell escape, at most 4 GB of memory, 2 CPUs,
-  512 processes, files of 1 GB, and 10 minutes, and the build folder may
-  grow to `LATEX_LIVE_BUILD_LIMIT` (checked every 2 seconds). The paper folder
-  is mounted read-only and only its build folder writable, with its dot entries
-  (`.git`, whose config may hold a remote's credentials, `.env`, ...) hidden,
-  and TeX opens files only below its folder and in the TeX tree. A rebuild
-  stops the run in progress, its containers too, and so does stopping the
-  instance. Builds and downloads share four container slots, one of them
-  kept for the live build. The memory and CPU
+  512 processes, files of 1 GB, and 10 minutes (or the caller's shorter
+  deadline: a container that runs out of time is stopped before its slot is
+  free again), and the build folder may grow to `LATEX_LIVE_BUILD_LIMIT`
+  (checked every second, with `--no-build` too; past it, the build folder is
+  emptied but for the instance's own lock file, and the build tried again a
+  few times). The paper folder is mounted read-only and only its build folder
+  writable, with its dot entries at any depth (`.git`, whose config may hold a
+  remote's credentials, `.env`, `chapters/.private/`, ...) hidden; a paper
+  with a dot entry whose name holds a newline, `:` or `,`, which can't be
+  hidden, doesn't build. TeX opens files only below its folder and in the TeX
+  tree. A rebuild stops the run in progress, its containers too, and so does
+  stopping the instance. Builds and downloads share three container slots,
+  and the live build has one of its own. The memory and CPU
   limits need cgroup v2 with those controllers delegated to your user (see
   [SETUP.md](SETUP.md#sharing-a-preview-with-coauthors)).
 - What TeX writes in the build folder counts as written by the coauthors:
   the build's state, its errors and what it published stay in the server's
-  memory, and the PDF is copied and served without following links. The
+  memory, the PDF is copied and served without following links, and what the
+  server reads there (the `.aux` files and the ones they name, file lists,
+  SyncTeX, logs, JSON) it reads only within the build folder, without links,
+  and only up to a bound. The
   downloads built on request (without notes, and with notes in the margin)
   and the change-highlight baselines build in the same containers, each at
   most once per build of the paper and one at a time, however many ask. They
@@ -384,8 +410,8 @@ merging the edits back.
     Mac with MacTeX only). Its containers' memory and CPU limits need cgroup
     v2 with those controllers delegated to your user.
   - **Proxy check:** `LATEX_LIVE_PROXY_UID` looks the connection's user up in
-    Linux's `/proc/net`; elsewhere, while it is set, an identity header counts
-    from no one.
+    Linux's `/proc/net`, so the identity header works on Linux only;
+    elsewhere, coauthors use personal links.
   - **Host tools:** the pre-submission checks run poppler's tools on the host
     (the image has none), on a PDF that editors' LaTeX made: that is why they
     are for editors and the owner only, under limits.

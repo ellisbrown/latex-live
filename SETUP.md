@@ -344,8 +344,8 @@ browser's `Host` header on; if it sends another one, set
 `LATEX_LIVE_STATE` gives the instance a state folder of its own: its own
 owner token (the `token` file there), and no place on the hub of your own
 previews. It is required: without it (or with your previews' folder), the
-instance refuses to start. So is `LATEX_LIVE_PROXY_UID` on Linux, whenever
-`LATEX_LIVE_IDENTITY_HEADER` is set.
+instance refuses to start. So is `LATEX_LIVE_PROXY_UID`, whenever
+`LATEX_LIVE_IDENTITY_HEADER` is set; the identity header works on Linux only.
 
 Expected output, in order:
 
@@ -459,8 +459,9 @@ saved then, merged with your changes.
 - **The identity header counts only from the proxy.** Any program on this
   machine can connect to the port and send that header, so latex-live trusts
   it only as exactly one header, with the `Host` in `LATEX_LIVE_PROXY_HOST`,
-  and (on Linux) from a process of the user in `LATEX_LIVE_PROXY_UID`: set
-  both. Requests that carry it ignore tokens and cookies.
+  and from a process of the user in `LATEX_LIVE_PROXY_UID` (which only Linux
+  can check: elsewhere the instance refuses the header): set both. Requests
+  that carry it ignore tokens and cookies.
 - **Host and Origin.** The instance answers only to loopback names, the
   public URL's host and the proxy's `Host`, so a web page can't reach it under
   another name (DNS rebinding). Notes, saves and other actions count only when
@@ -473,7 +474,10 @@ saved then, merged with your changes.
   `.bib`, `.sty` and `.cls` files, in effect any such file in the copy (an
   `\input` adds one to the paper). The LaTeX they write can read any file
   below the copy's paper folder and typeset it. Keep nothing in the copy that
-  they shouldn't see. Commenters write plain text only. Editors can also
+  they shouldn't see. Commenters write plain text only. Viewers and
+  commenters see the current PDF and what it shows: the notes it shows, not
+  the build's error messages, the earlier versions (baselines, diff) or
+  where in the sources a figure is (see the README's Shared mode). Editors can also
   compare with any commit that the copy's branch builds on, so its whole
   history is visible to them: share a branch whose history you are happy to
   show (e.g. one squashed commit on top of what you would publish).
@@ -484,19 +488,21 @@ saved then, merged with your changes.
   with the host's TeX. The downloads without notes and with notes in the
   margin, the change-highlight baselines, latexdiff and SyncTeX run there too.
   A container has no network, no capabilities, no new privileges, at most
-  4 GB of memory, 2 CPUs, 512 processes, files of 1 GB, and 10 minutes, no
-  shell escape, and the paper folder read-only, with only the build folder
-  writable and the paper's dot entries (`.git` and its config, `.env`, ...)
-  hidden. At most four run at once, one slot kept for the live build. Past
-  `LATEX_LIVE_BUILD_LIMIT` (2 GB unless set), the build is stopped and the
-  build folder emptied. TeX opens files only below the paper folder and in its own tree
+  4 GB of memory, 2 CPUs, 512 processes, files of 1 GB, and 10 minutes (or
+  its caller's shorter deadline), no shell escape, and the paper folder
+  read-only, with only the build folder writable and the paper's dot entries,
+  at any depth (`.git` and its config, `.env`, ...), hidden. At most three
+  run at once, plus the live build. Past `LATEX_LIVE_BUILD_LIMIT` (2 GB unless
+  set), the build is stopped and the build folder emptied. TeX opens files only below the paper folder and in its own tree
   (`openin_any=p`), and writes only into the build folder (`openout_any=p`).
   A rebuild stops the run in progress, containers included, and coauthors can
-  ask for one at most every 20 seconds.
+  ask for one at most every 20 seconds; saves in a row make one build, and
+  builds start at least 2 seconds apart, for everyone.
 - **The build folder is the coauthors'.** TeX can write any file there, so
   the instance keeps the build's state, its errors and what it published in
   memory rather than reading them back, serves the PDF without following
-  links, and never sends its token to a port that a file there names.
+  links, reads the files there only within the folder and up to a bound, and
+  never sends its token to a port that a file there names.
 - **Host tools.** The pre-submission checks read the PDF with poppler's tools
   on the host (the image has none), under time and memory limits; only
   editors and the owner can run them.
