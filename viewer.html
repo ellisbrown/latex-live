@@ -873,18 +873,26 @@ container.addEventListener("dblclick", async (e) => {
   const top = pageView.pdfPage.view[3] - y; // synctex measures y down from the page top
   const q = new URLSearchParams({ file, page: pageView.id, x: x.toFixed(1), y: top.toFixed(1), ...cleanParam() });
   try {
+    let why = null; // (VS Code's failure to open, when the source pane opens instead)
     if (!opensInBrowser()) { // (the server opens VS Code itself)
       const r = await fetch(`synctex?${q}`);
       const text = await r.text();
-      return setStatus(r.ok ? `→ ${text}` : text, r.ok ? "fresh" : "error");
+      // 409: found, but VS Code did not open (e.g. not run in a VS Code terminal); the pane, then
+      if (r.status !== 409 || !editorAllowed()) return setStatus(r.ok ? `→ ${text}` : text, r.ok ? "fresh" : "error");
+      why = text;
     }
     q.set("json", "1"); // (just where it is; the viewer opens it)
     const r = await fetch(`synctex?${q}`);
     const found = await readBody(r);
     if (!r.ok) return setStatus(found.error || `no source line here (${r.status})`, "error");
     if (!found.file) return setStatus(found.reason || "no source file here", "error");
-    setStatus(`→ ${found.file}:${found.line}`, "fresh");
-    openSource(found.file, found.line);
+    if (why === null) {
+      setStatus(`→ ${found.file}:${found.line}`, "fresh");
+      return openSource(found.file, found.line);
+    }
+    if (!editable(found.file)) return setStatus(why, "error");
+    setStatus(`${found.file}:${found.line} is in the source pane (${why})`);
+    showEditor(true, { path: found.file, line: found.line });
   } catch (err) {
     setStatus(`${err.message || err}`, "error");
   }
@@ -939,6 +947,8 @@ const postJSON = (path, body, keepalive = false) => {
   return fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: data,
                        keepalive: keepalive && new TextEncoder().encode(data).length < KEEPALIVE });
 };
+// This page's own name for its saves, so that live.py knows which saves are its own (save_file)
+const EDITOR_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 const KEEPALIVE = 60000; // (a keepalive request outlives the page, for a body of up to 64 KB)
 const fitsKeepalive = (body) => new TextEncoder().encode(JSON.stringify(body)).length < KEEPALIVE;
 // A response's body: its JSON, or {error} with a plain-text or HTML error's message.
@@ -1278,7 +1288,7 @@ async function saveSource({ keepalive = false } = {}) {
   lastSaveAt = Date.now();
   showSaveState();
   try {
-    let body = { path: target.path, base: target.baseVersion, text };
+    let body = { path: target.path, base: target.baseVersion, text, editor: EDITOR_ID };
     if (keepalive && fitsKeepalive({ ...body, base_text: target.base })) body = { ...body, base_text: target.base }; // (no second try once the page is gone)
     let r = await postJSON("file", body, keepalive);
     let res = await readBody(r);
