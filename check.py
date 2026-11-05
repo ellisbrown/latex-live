@@ -160,6 +160,7 @@ def static_checks():
     layout_checks()
     matching_checks()
     bounds_checks()
+    failed_export_checks()
 
 
 def put(path, text):
@@ -268,6 +269,61 @@ def bounds_checks():
         shutil.rmtree(tmp, ignore_errors=True)
     ok("the downloads read TeX's logs, .aux, .bbl and SyncTeX files only up to a bound, past which they stop and say so;"
        " the probe's records are read from its log line by line; a log whose wrapping split a UTF-8 character reads")
+
+
+def failed_export_checks():
+    """An export that failed fails again at once for the same build of the document (live.exact_export, with a
+    stand-in for TeX), as the review copy asks for it after /export did, and so does one that timed out; the
+    next build is exported again."""
+    sys.path.insert(0, HERE)
+    import live
+    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
+    try:
+        root = os.path.join(tmp, "paper")
+        os.makedirs(os.path.join(root, live.BUILD))
+        published = os.path.join(root, "main.pdf")
+        put(published, "%PDF-1.5\n")
+        stand_in = os.path.join(tmp, "tex")
+        os.makedirs(stand_in)
+        put(os.path.join(stand_in, "log"), "This is pdfTeX\n./main.tex:3: Undefined control sequence.\n")
+        put(os.path.join(stand_in, "exit"), "1")
+        server = types.SimpleNamespace(paper_root=root, tex_exec=tex_stand_in(stand_in), export={}, exported={},
+                                       export_lock=threading.Lock())
+
+        def runs(what, error="./main.tex:3: Undefined control sequence."):
+            try:
+                live.exact_export(server, "main.pdf")
+                fail(f"{what} went ahead, though TeX failed")
+            except RuntimeError as e:
+                if not str(e).startswith(error):
+                    fail(f"{what} failed with: {e}")
+            with open(os.path.join(stand_in, "calls")) as f:
+                return len(f.read().splitlines())
+
+        def new_build():
+            st = os.stat(published)
+            os.utime(published, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+
+        if (runs("the export"), runs("the export again, for the same build")) != (1, 1):
+            fail("an export that failed was built again for the same build of the document")
+        new_build()
+        if runs("the export of a new build") != 2:
+            fail("an export that failed was not built again for a new build of the document")
+        new_build()
+
+        def too_long(*args, **kwargs):
+            with open(os.path.join(stand_in, "calls"), "a") as f:
+                f.write("timed out\n")
+            raise subprocess.TimeoutExpired(args[0], 600)
+
+        live.subprocess = types.SimpleNamespace(run=too_long, TimeoutExpired=subprocess.TimeoutExpired)
+        if (runs("an export that times out", "a pass took over 10 minutes"), runs("it again", "a pass took over 10 minutes")) != (3, 3):
+            fail("an export that timed out was built again for the same build of the document")
+    finally:
+        live.subprocess = subprocess
+        shutil.rmtree(tmp, ignore_errors=True)
+    ok("an export that failed or timed out fails again at once for the same build (no second build for the review"
+       " copy), and is built again for the next one")
 
 
 def layout_checks():

@@ -2506,7 +2506,8 @@ def exact_export(server, pdf, keep=None):
     Built in build/export/<doc>/ once per build of the document (the published PDF's mtime), one
     export at a time; with SyncTeX, and with the files its last pass read kept in inputs/, so that
     build_review can repeat that pass. keep(out), if given, runs before another export can replace
-    this one (to copy what it needs). Raises RuntimeError when it fails."""
+    this one (to copy what it needs). Raises RuntimeError when it fails, and at once when it failed
+    for this build already (it would again: for the review copy after /export, say)."""
     root, doc = server.paper_root, pdf[:-4]
     out = os.path.join(root, BUILD, "export", doc)  # (per document: another instance may export another)
     job = f"{doc}-export"
@@ -2522,33 +2523,43 @@ def exact_export(server, pdf, keep=None):
 
     with server.export_lock:
         source = str(mtime(pdf_path(root, pdf)))  # (the build it reflects)
-        if server.exported.get(pdf) != source or not os.path.isfile(os.path.join(root, BUILD, f"{job}.pdf")):
+        built, why = server.exported.get(pdf, (None, None))  # (the build last exported, and what failed then)
+        if built == source and why:
+            raise RuntimeError(why)
+        if built != source or not os.path.isfile(os.path.join(root, BUILD, f"{job}.pdf")):
             server.exported.pop(pdf, None)
-            shutil.rmtree(out, ignore_errors=True)
-            os.makedirs(out)
-            for ext in (".aux", ".bbl", ".brf", ".out", ".toc"):  # (a head start; bibtex and the passes correct them)
-                if os.path.exists(job_file(root, pdf, ext)):
-                    shutil.copyfile(job_file(root, pdf, ext), os.path.join(out, job + ext))
-            tex = (f"pdflatex -interaction=batchmode -halt-on-error -file-line-error -synctex=1 -output-directory='{out}'"
-                   f" -jobname={job} '{latex_report.NOTES_OFF}\\input{{{doc}}}'")
-            for passes in range(1, 7):
-                keep_inputs(out)
-                if not run(tex, root):
-                    first = next((l for l in log().splitlines() if l.startswith("! ") or re.match(r"^\S+:\d+: ", l)), "")
-                    raise RuntimeError(first or f"pdflatex failed; see {BUILD}/export/{doc}/{job}.log")
-                if passes == 1 and "\\bibdata" in (read_output(root, os.path.join(out, f"{job}.aux")) or ""):
-                    if not run(f"bibtex {job}", out, {"BIBINPUTS": f"{root}:", "BSTINPUTS": f"{root}:"}):
-                        raise RuntimeError(f"bibtex failed; see {BUILD}/export/{doc}/{job}.blg")
-                    continue
-                settled = not re.search(r"Rerun to get|may have changed\. Rerun|Please rerun|rerunfilecheck Warning", log())
-                # (lineno places its numbers from the previous pass's .aux without asking for a rerun, so
-                # a first pass seeded with the build-with-notes .aux needs a second: latex_report.uses_lineno)
-                if settled and (passes >= 2 or not latex_report.uses_lineno(os.path.join(out, f"{job}.aux"))):
-                    break
-            else:  # (not exact, so not published)
-                raise RuntimeError(f"the references had not settled after {passes} passes; see {BUILD}/export/{doc}/{job}.log")
+            try:
+                shutil.rmtree(out, ignore_errors=True)
+                os.makedirs(out)
+                for ext in (".aux", ".bbl", ".brf", ".out", ".toc"):  # (a head start; bibtex and the passes correct them)
+                    if os.path.exists(job_file(root, pdf, ext)):
+                        shutil.copyfile(job_file(root, pdf, ext), os.path.join(out, job + ext))
+                tex = (f"pdflatex -interaction=batchmode -halt-on-error -file-line-error -synctex=1 -output-directory='{out}'"
+                       f" -jobname={job} '{latex_report.NOTES_OFF}\\input{{{doc}}}'")
+                for passes in range(1, 7):
+                    keep_inputs(out)
+                    if not run(tex, root):
+                        first = next((l for l in log().splitlines() if l.startswith("! ") or re.match(r"^\S+:\d+: ", l)), "")
+                        raise RuntimeError(first or f"pdflatex failed; see {BUILD}/export/{doc}/{job}.log")
+                    if passes == 1 and "\\bibdata" in (read_output(root, os.path.join(out, f"{job}.aux")) or ""):
+                        if not run(f"bibtex {job}", out, {"BIBINPUTS": f"{root}:", "BSTINPUTS": f"{root}:"}):
+                            raise RuntimeError(f"bibtex failed; see {BUILD}/export/{doc}/{job}.blg")
+                        continue
+                    settled = not re.search(r"Rerun to get|may have changed\. Rerun|Please rerun|rerunfilecheck Warning", log())
+                    # (lineno places its numbers from the previous pass's .aux without asking for a rerun, so
+                    # a first pass seeded with the build-with-notes .aux needs a second: latex_report.uses_lineno)
+                    if settled and (passes >= 2 or not latex_report.uses_lineno(os.path.join(out, f"{job}.aux"))):
+                        break
+                else:  # (not exact, so not published)
+                    raise RuntimeError(f"the references had not settled after {passes} passes; see {BUILD}/export/{doc}/{job}.log")
+            except subprocess.TimeoutExpired:  # (remembered with the build, as every failure: it would fail again)
+                server.exported[pdf] = (source, f"a pass took over 10 minutes; see {BUILD}/export/{doc}/{job}.log")
+                raise RuntimeError(server.exported[pdf][1]) from None
+            except RuntimeError as e:
+                server.exported[pdf] = (source, str(e))
+                raise
             os.replace(os.path.join(out, f"{job}.pdf"), os.path.join(root, BUILD, f"{job}.pdf"))
-            server.exported[pdf] = source
+            server.exported[pdf] = (source, None)
             e = server.export  # (built for the review copy: the download without notes needs no second build)
             if not (e.get("pdf") == pdf and (e.get("state") == "running" or e.get("source") == source)):
                 server.export = {"pdf": pdf, "source": source, "state": "done", "time": time.strftime("%H:%M:%S"), "msg": "",
