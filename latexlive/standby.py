@@ -549,11 +549,17 @@ def build_folders(build):
 # What the paper's folders and B held when a standby started, to tell whether a name appeared since.
 
 def snapshot(build, job):
-    """{folder: [mtime, names]} for the paper root's folders (not dot folders, nor B), and for B and the
+    """{folder: [mtime, names]} for the paper root's folders (not dot folders, nor B), through links to
+    folders too (a file added in one is a name TeX may find), each real folder once; and for B and the
     subfolders of B the last pass wrote in; None past WATCH_LIMIT names."""
-    snap, count = {}, 0
-    for folder, dirs, _ in os.walk("."):
+    snap, count, seen = {}, 0, set()
+    for folder, dirs, _ in os.walk(".", followlinks=True):
         rel = os.path.normpath(folder)
+        real = os.path.realpath(folder)
+        if real in seen:  # (a link back up, or a second link to the same folder)
+            dirs[:] = []
+            continue
+        seen.add(real)
         dirs[:] = [d for d in dirs if not d.startswith(".") and os.path.normpath(os.path.join(rel, d)) != build]
         names = sorted(os.listdir(folder))
         count += len(names)
