@@ -60,7 +60,7 @@ class Runs:
     def feed(self, events):
         lines = []
         for e in events:
-            if e[1] == "run" and self.events:  # (a run began before the last one's line: print what it had)
+            if e[1] == "run" and any(n == "run" for _, n, _ in self.events):  # (a run began before the last one's line: print what it had)
                 lines.append(self.events)
                 self.events = []
             self.events.append(e)
