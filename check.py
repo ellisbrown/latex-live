@@ -741,7 +741,7 @@ def shared_parsing_checks():
     what the builder watches."""
     sys.path.insert(0, HERE)
     import live
-    from latexlive import config, files
+    from latexlive import config, document, files, synctex
     saved = (config.SHARED, config.SYNCTEX_LIMIT, config.RECORD_LIMIT)
     tmp = tempfile.mkdtemp(prefix="latex-live-check-")
     cwd = os.getcwd()
@@ -758,7 +758,7 @@ def shared_parsing_checks():
             "\\@input{chapter.aux}\n")
         put(os.path.join(build, "chapter.aux"), "\\citation{chapterkey}\n")
         tree = files.aux_tree(read_text(os.path.join(build, "main-live.aux")))
-        heads = live.written_contents(os.path.join(build, "main-live.aux"), "toc")
+        heads = document.written_contents(os.path.join(build, "main-live.aux"), "toc")
         if "secretkey" in tree or "chapterkey" not in tree or "Secret heading" in json.dumps(heads):
             fail(f"an .aux's \\@input of an absolute path, of .. or through a link was read: {tree!r} {heads!r}")
 
@@ -778,14 +778,14 @@ def shared_parsing_checks():
                 f.write(head + body)
             began = time.monotonic()
             try:
-                points = live.synctex_points(synctex_gz)
-                live.synctex_boxes(synctex_gz)
+                points = synctex.synctex_points(synctex_gz)
+                synctex.synctex_boxes(synctex_gz)
             except Exception as e:
                 fail(f"a SyncTeX file the paper's TeX could write raised {type(e).__name__}: {e}")
             if time.monotonic() - began > 10 or sum(len(v) for v in points.values()) > 1 << 20:
                 fail("a SyncTeX file was read past config.SYNCTEX_LIMIT")
         put(synctex_gz, "not gzip at all")
-        if live.synctex_points(synctex_gz) or list(live.synctex_records(synctex_gz)):
+        if synctex.synctex_points(synctex_gz) or list(synctex.synctex_records(synctex_gz)):
             fail("a SyncTeX file that isn't gzip gave records")
 
         server = types.SimpleNamespace(paper_root=root)
