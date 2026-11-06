@@ -77,9 +77,10 @@ def status(server, pdf_name, push=False):
 
 
 def server_files():
-    """The files of latex-live this process runs: live.py, VERSION and the modules in latexlive/."""
+    """The files of latex-live this process runs: live.py, VERSION, the modules in latexlive/, and latex_report.py,
+    which they import too (the downloads, the baselines, the checks and shared mode's builder)."""
     package = os.path.join(config.HERE, "latexlive")
-    return [os.path.join(config.HERE, name) for name in ("live.py", "VERSION")] + sorted(
+    return [os.path.join(config.HERE, name) for name in ("live.py", "VERSION", "latex_report.py")] + sorted(
         os.path.join(package, name) for name in os.listdir(package) if name.endswith(".py"))
 
 
@@ -92,9 +93,9 @@ def code_hash(path):
 
 
 def code_updated(started={}):
-    """Whether live.py, VERSION or a module in latexlive/ on disk differs from what this process runs
-    (e.g. after a git pull, or a release that only bumps VERSION), also a module added or removed: the
-    viewer then asks for a restart. latex_report.py and forward.py run anew each time."""
+    """Whether one of server_files on disk differs from what this process runs (e.g. after a git pull, or a
+    release that only bumps VERSION), also a module added or removed: the viewer then asks for a restart.
+    (forward.py, and latex_report.py as latexmk's hooks, run anew each time.)"""
     paths = server_files()
     stamp = [(path, mtime(path)) for path in paths]
     if "hash" not in started:

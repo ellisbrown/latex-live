@@ -427,6 +427,12 @@ def code_updated_checks():
     for name, module in sorted(sys.modules.items()):
         if (name == "latexlive" or name.startswith("latexlive.")) and os.path.realpath(module.__file__) not in watched:
             fail(f"code_updated does not watch {module.__file__}")
+    for path in glob.glob(os.path.join(HERE, "latexlive", "*.py")):  # (and the scripts beside it that they import, maybe late)
+        with open(path) as f:
+            for name in re.findall(r"^\s*(?:import|from)\s+(\w+)", f.read(), re.M):
+                script = os.path.join(HERE, f"{name}.py")
+                if os.path.isfile(script) and script not in watched:
+                    fail(f"code_updated does not watch {name}.py, which {os.path.relpath(path, HERE)} imports")
     saved, tmp = config.HERE, tempfile.mkdtemp(prefix="latex-live-check-")
     try:
         config.HERE = tmp

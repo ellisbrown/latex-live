@@ -50,9 +50,11 @@ describes what it does and indexes the user docs in [docs/](docs/):
 
 `viewer.html` and `viewer/` are served from the checkout on each request (the
 browser revalidates them), so a viewer change shows on reload.
-`latex_report.py` and `forward.py` run anew each time. Changes to `live.py`
-and `latexlive/` take effect only once a preview restarts; its viewer then
-shows "restart to update".
+`forward.py` runs anew each time, and so does `latex_report.py` as latexmk's
+hook. Changes to `live.py` and `latexlive/` take effect only once a preview
+restarts, and so do those to `latex_report.py` where the server imports it
+(the downloads, the baselines, the checks, shared mode's builder); its viewer
+then shows "restart to update".
 
 ## Rules
 
