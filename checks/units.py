@@ -26,7 +26,7 @@ def unit_checks():
     for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
                   code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks,
-                  baseline_failure_checks):
+                  baseline_failure_checks, connection_cap_checks):
         check()
 
 
@@ -565,3 +565,50 @@ def forward_cache_checks():
         fail(f"forward search's misses are kept for the build, or not shared for a moment: {first[0]}, {again[0]}, {later[0]},"
              f" {found[0]}, {cached[0]} after {len(calls)} lookups")
     ok("forward search looks a line up again a few seconds after it found nothing, and keeps what it finds for the build")
+
+
+def connection_cap_checks():
+    """Every server (an instance's, a shared one's, the hub's) takes at most DualStackServer.CONNECTIONS connections
+    at once: past that, it closes a new one at once, and takes new ones again as the others end."""
+    import http.server
+    import socket
+    from latexlive import hub, web
+    if not (issubclass(hub.HubServer, web.DualStackServer) and issubclass(web.LoopbackServer, web.DualStackServer)
+            and web.DualStackServer.CONNECTIONS == 64):
+        fail("not every server of latex-live keeps to the connection cap")
+
+    class Quiet(http.server.BaseHTTPRequestHandler):
+        timeout = 10
+
+        def do_GET(self):
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = type("Capped", (web.DualStackServer,), {"CONNECTIONS": 2, "daemon_threads": True})(("::", 0), Quiet)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port, held = server.server_address[1], []
+    try:
+        for _ in range(2):  # (two idle connections hold both slots)
+            held.append(socket.create_connection(("127.0.0.1", port), timeout=5))
+        time.sleep(0.3)
+        third = socket.create_connection(("127.0.0.1", port), timeout=5)
+        third.sendall(b"GET / HTTP/1.0\r\n\r\n")
+        dropped = third.recv(100) == b""
+        third.close()
+        for s in held:
+            s.close()
+        wait_for("the slots to free", lambda: server.slots._value == 2, timeout=10, step=0.1)
+        fourth = socket.create_connection(("127.0.0.1", port), timeout=5)
+        fourth.sendall(b"GET / HTTP/1.0\r\n\r\n")
+        answered = fourth.recv(100).startswith(b"HTTP/1.0 204")
+        fourth.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+    if not dropped or not answered:
+        fail(f"a server at its connection cap: the next connection {'was dropped' if dropped else 'was served'}, and once"
+             f" the others ended, a new one {'was' if answered else 'was not'} served")
+    ok("every server takes at most 64 connections at once, dropping new ones past that, and takes them again as others end")
