@@ -1,0 +1,463 @@
+"""The unit checks: the server's parts on their own, without an instance (made-up input, stand-ins for TeX), in the
+order unit_checks runs them: the review copy's layout and matching, shared mode's (shared_units), the downloads'
+bounds, failures and waits, the bibliography's SyncTeX lookups, tool timeouts, the warm standby's snapshot, the
+timing lines, the restart prompt, and the static files the server sends."""
+
+import glob
+import gzip
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import types
+
+from .base import HERE, fail, ok, wait_for
+from .helpers import put, put_bytes, tex_stand_in
+from .shared_units import confinement_checks, shared_build_checks
+
+
+def unit_checks():
+    """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
+    for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
+                  bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
+                  code_updated_checks, static_file_checks):
+        check()
+
+
+def timing_checks():
+    """LATEX_LIVE_TIMING=1's lines (timing.Runs): a notes-free pass's events count only in the line of the run that
+    started or kept it, so that a pass a newer run superseded neither adds to the newer run's line nor ends it before
+    the newer run's own pass does; the lines don't show the passes' names."""
+    from latexlive import timing
+    runs, lines = timing.Runs(), []
+    feed = lambda *events: lines.extend(runs.feed([(float(i), name, detail) for i, name, detail in events]))
+    feed((0, "run", ""), (1, "pass", ""), (2, "clean-start", "a"), (3, "run-end", ""))
+    feed((4, "run", ""), (5, "clean-tex", "a"), (6, "pass", ""), (7, "clean-published", "a"), (8, "clean-start", "b"),
+         (9, "run-end", ""))
+    early = len(lines)
+    feed((10, "clean-tex", "b"), (11, "clean-published", "b"))
+    feed((12, "run", ""), (13, "clean-early", "seed-1"), (14, "pass", ""), (15, "clean-kept", "seed-1"), (16, "run-end", ""),
+         (17, "clean-tex", "seed-1"), (18, "clean-published", "seed-1"))
+    names = [[name for _, name, _ in run] for run in lines]
+    if early != 1 or names != [["run", "pass", "clean-start", "run-end"],
+                               ["run", "pass", "clean-start", "run-end", "clean-tex", "clean-published"],
+                               ["run", "clean-early", "pass", "clean-kept", "run-end", "clean-tex", "clean-published"]]:
+        fail(f"the timing lines take a superseded notes-free pass's events, or end early: {names} (lines before the second"
+             f" run's pass ended: {early})")
+    if "(" in timing.line("main", lines[1]).split("): ", 1)[1]:
+        fail(f"a timing line shows the notes-free pass's name: {timing.line('main', lines[1])}")
+    ok("timing lines leave out a superseded notes-free pass's events, which no longer end the next run's line early")
+
+
+def code_updated_checks():
+    """The viewer asks for a restart when the code on disk changes (status.code_updated): every module the
+    server imports is watched, and a module changed, added or removed counts, but a file only touched or
+    changed back does not."""
+    from latexlive import config, status
+    __import__("latexlive.main")  # (and with it every module the server imports)
+    watched = set(status.server_files())
+    for name, module in sorted(sys.modules.items()):
+        if (name == "latexlive" or name.startswith("latexlive.")) and os.path.realpath(module.__file__) not in watched:
+            fail(f"code_updated does not watch {module.__file__}")
+    for path in glob.glob(os.path.join(HERE, "latexlive", "*.py")):  # (and the scripts beside it that they import, maybe late)
+        with open(path) as f:
+            for name in re.findall(r"^\s*(?:import|from)\s+(\w+)", f.read(), re.M):
+                script = os.path.join(HERE, f"{name}.py")
+                if os.path.isfile(script) and script not in watched:
+                    fail(f"code_updated does not watch {name}.py, which {os.path.relpath(path, HERE)} imports")
+    saved, tmp = config.HERE, tempfile.mkdtemp(prefix="latex-live-check-")
+    try:
+        config.HERE = tmp
+        for name in ("live.py", "VERSION", "latexlive/a.py", "latexlive/b.py"):
+            put(os.path.join(tmp, name), f"{name}\n")
+        started = {}
+        b, c = os.path.join(tmp, "latexlive", "b.py"), os.path.join(tmp, "latexlive", "c.py")
+
+        def updated(what, expected, stamps=iter(range(10, 100))):
+            if os.path.exists(b):
+                os.utime(b, ns=(next(stamps),) * 2)  # (each step a new time, however coarse the file system's)
+            if status.code_updated(started) != expected:
+                fail(f"code_updated after {what}: {not expected}")
+
+        updated("starting", False)
+        updated("touching a module", False)
+        put(b, "changed\n")
+        updated("changing a module", True)
+        put(b, "latexlive/b.py\n")
+        updated("changing it back", False)
+        put(c, "new\n")
+        updated("adding a module", True)
+        os.remove(c)
+        updated("removing it again", False)
+        os.remove(b)
+        updated("removing a module", True)
+    finally:
+        config.HERE = saved
+        shutil.rmtree(tmp)
+    ok("a restart is asked for when a module of the server changes, is added or is removed")
+
+
+def static_file_checks():
+    """The server sends the viewer's own files from the checkout (handler.static_file): viewer.html and the
+    files in pdfjs/, codemirror/ and viewer/, never a folder, a file elsewhere in the checkout, a path through
+    .., or a link out of the file's folder (a link within it is followed)."""
+    from latexlive import config, handler
+    saved, tmp = config.HERE, tempfile.mkdtemp(prefix="latex-live-check-")
+    try:
+        config.HERE = tmp
+        for name in ("viewer.html", "live.py", "viewer/main.js", "viewer/viewer.css", "pdfjs/build/pdf.min.mjs", "codemirror/view.js"):
+            put(os.path.join(tmp, name), "x\n")
+        os.symlink(os.path.join(tmp, "live.py"), os.path.join(tmp, "viewer", "out.js"))
+        os.symlink(os.path.join(tmp, "viewer", "main.js"), os.path.join(tmp, "viewer", "in.js"))
+        os.symlink(os.path.join(tmp, "pdfjs"), os.path.join(tmp, "viewer", "pdfjs"))
+        served = ("/viewer.html", "/viewer/main.js", "/viewer/viewer.css", "/viewer/in.js", "/pdfjs/build/pdf.min.mjs",
+                  "/codemirror/view.js", "/viewer/nope.js")  # (a missing file: SimpleHTTPRequestHandler answers 404)
+        refused = ("/live.py", "/viewer/", "/viewer", "/viewer/../live.py", "/viewer/out.js", "/viewer/pdfjs/build/pdf.min.mjs",
+                   "/viewer/\0.js", "/viewer.html/", "/latexlive/config.py", "/pdfjsx/a.js")
+        wrong = [p for p in served if not handler.static_file(p)] + [p for p in refused if handler.static_file(p)]
+        if wrong:
+            fail(f"static_file is wrong about {wrong}")
+    finally:
+        config.HERE = saved
+        shutil.rmtree(tmp)
+    ok("the server sends only the viewer's own files from the checkout, never through .. or a link out of their folder")
+
+
+def bounds_checks():
+    """The downloads read TeX's output within bounds (config.OUTPUT_LIMIT and config.SYNCTEX_LIMIT, made smaller here),
+    without TeX: a log, an .aux or a .bbl past its bound (files.read_output), the probe pass's log (review.run_probe,
+    with a stand-in for TeX) and a SyncTeX file uncompressed (review_anchors.synctex_pages) stop a download with a message
+    that says so, before they are read whole; within them, the probe's records are read as before, and so is a log
+    whose wrapped lines split a UTF-8 character."""
+    from latexlive import config, files, review, review_anchors, review_layout
+    saved, tmp = (config.OUTPUT_LIMIT, config.SYNCTEX_LIMIT), tempfile.mkdtemp(prefix="latex-live-check-")
+    try:
+        config.OUTPUT_LIMIT = config.SYNCTEX_LIMIT = 1 << 20
+        root = os.path.join(tmp, "paper")
+        out = os.path.join(root, "build", "review", "main")
+        os.makedirs(out)
+        aux = os.path.join(out, "main-export.aux")
+        put(aux, "\\relax\n" * 1000)
+        if files.read_output(root, aux) != "\\relax\n" * 1000 or files.read_output(root, aux + ".gone") is not None:
+            fail("files.read_output does not read a file within its bound as it is, or has a file that is gone")
+        put_bytes(aux, b"Overfull \\hbox in caf\xc3\n\xa9\n")  # (TeX wraps its log at 79 bytes, splitting a UTF-8 character)
+        try:
+            if "Overfull" not in (files.read_output(root, aux) or ""):
+                raise ValueError("nothing read")
+        except ValueError as e:
+            fail(f"files.read_output does not read a log whose wrapping split a UTF-8 character: {e}")
+        put(aux, "\\relax\n" * 200_000)
+        try:
+            files.read_output(root, aux)
+            fail("files.read_output read a file past its bound")
+        except RuntimeError as e:
+            if "build/review/main/main-export.aux is over 1 MB" not in str(e):
+                fail(f"a file past its bound: {e}")
+
+        stand_in = os.path.join(tmp, "tex")
+        os.makedirs(stand_in)
+        server = types.SimpleNamespace(paper_root=root, tex_exec=tex_stand_in(stand_in))
+        geo = review_layout.review_geometry({"W": 612, "H": 792, "columns": 1})
+        notes = [{"id": 1, "macro": "eb", "body": "Check this", "call": "\\eb{Check this}"}]
+        records = ("latex-live|pos|./body.tex|7|1|4000000|50000000|[EB: Check this]\n"
+                   "latex-live|snippet|1|0|2|100.0pt|10.0pt|2.0pt\nlatex-live|snippet|1|1|3|90.0pt|8.0pt|1.0pt\n"
+                   "latex-live|pages|1\n")
+        put(os.path.join(stand_in, "log"), f"This is pdfTeX\n{'Overfull hbox in a paragraph' * 3}\n{records}"
+                                           "Output written on main-export.pdf (3 pages, 1234 bytes).\n")
+        put(os.path.join(stand_in, "pdf"), "%PDF-1.5\n")
+        probe = review.run_probe(server, out, "main-export", "main", notes, geo)
+        if (probe.get("pages"), [r[:3] for r in probe.get("pos", [])], sorted(probe.get("snippets", {}).get(1, {})),
+                probe.get("pdf")) != (1, [["body.tex", 7, 1]], [0, 1], True) or not os.path.isfile(os.path.join(out, "probe.pdf")):
+            fail(f"the probe's records, read from its log line by line, are not as written: {probe}")
+        put(os.path.join(stand_in, "log"), "x" * 99 + "\n" + ("latex-live|seen|./body.tex|7|[EB: Check this]\n" * 30_000) + records)
+        try:
+            review.run_probe(server, out, "main-export", "main", notes, geo)
+            fail("the probe's log was read past its bound")
+        except RuntimeError as e:
+            if "build/review/main/main-export.log is over 1 MB" not in str(e):
+                fail(f"the probe's log past its bound: {e}")
+
+        synctex = os.path.join(tmp, "export.synctex.gz")
+        head = ("SyncTeX Version:1\nInput:1:/paper/body.tex\nContent:\n{1\n[1,7:4736286,4736286:30000000,40000000,0\n"
+                "(1,7:4736286,9000000:30000000,655360,0\n")
+        with gzip.open(synctex, "wt") as f:
+            f.write(head + "h1,7:4736286,9000000:100000\n" * 10 + ")\n]\n}1\n")
+        if list(review_anchors.synctex_pages(synctex)) != [1]:
+            fail(f"review_anchors.synctex_pages does not read a small SyncTeX file: {review_anchors.synctex_pages(synctex)}")
+        with gzip.open(synctex, "wt") as f:  # (a few KB compressed)
+            f.write(head + "h1,7:4736286,9000000:100000\n" * 50_000 + ")\n]\n}1\n")
+        try:
+            review_anchors.synctex_pages(synctex)
+            fail("a SyncTeX file was read past its bound")
+        except RuntimeError as e:
+            if "export.synctex.gz is over 1 MB uncompressed" not in str(e):
+                fail(f"a SyncTeX file past its bound: {e}")
+    finally:
+        config.OUTPUT_LIMIT, config.SYNCTEX_LIMIT = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+    ok("the downloads read TeX's logs, .aux, .bbl and SyncTeX files only up to a bound, past which they stop and say so;"
+       " the probe's records are read from its log line by line; a log whose wrapping split a UTF-8 character reads")
+
+
+SYNCTEX_STUB = """#!/bin/sh
+# A stand-in for synctex view -i LINE:0:FILE -o PDF: a box for lines 1 and 7 of FILE, none for the others.
+echo "$3" >> "$(dirname "$0")/calls"
+line=${3%%:*}
+echo "This is SyncTeX command line utility, version 1.5"
+echo "SyncTeX result begin"
+case $line in
+  1) printf 'Output:%s\\nPage:3\\nx:1\\ny:2\\nh:10.5\\nv:200.0\\nW:50\\nH:12.0\\nd:3\\n' "$5" ;;
+  7) printf 'Output:%s\\nPage:5\\nx:1\\ny:2\\nh:72.0\\nv:400.5\\nW:50\\nH:10.0\\nd:3\\n' "$5" ;;
+esac
+echo "SyncTeX result end"
+"""
+
+
+def bib_span_checks():
+    """Where the bibliography starts and ends (bib_span, with a stand-in for synctex): its SyncTeX lookups run
+    batched (run_synctexes), each with the records it gets alone (run_synctex), on the same lines as before; without wait, bib_span
+    answers PENDING at once while it looks up in a thread, then what a lookup that waits gives."""
+    from latexlive import synctex
+    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
+    path = os.environ.get("PATH", "")
+    try:
+        os.makedirs(os.path.join(tmp, "bin"))
+        put(os.path.join(tmp, "bin", "synctex"), SYNCTEX_STUB)
+        os.chmod(os.path.join(tmp, "bin", "synctex"), 0o755)
+        os.environ["PATH"] = f"{os.path.join(tmp, 'bin')}{os.pathsep}{path}"
+        files = [os.path.join(tmp, name) for name in ("main.synctex.gz", "my refs.bbl", "main.pdf")]
+        put(files[0], "")
+        put(files[1], "x\n" * 9)  # (10 lines: 1, then 10 down to 3 are looked up)
+        runs = [("view", "-i", f"{line}:0:{files[1]}", "-o", files[2]) for line in (1, 2, 7)]
+        alone = [synctex.run_synctex(tmp, *args) for args in runs]
+        if synctex.run_synctexes(tmp, runs) != alone or [len(r) for r in alone] != [1, 0, 1] or alone[0][0].get("Page") != "3":
+            fail(f"SyncTeX lookups in one run differ from each alone: {synctex.run_synctexes(tmp, runs)} vs {alone}")
+        want = ({"page": 3, "x": 10.5, "y": 188.0}, {"page": 5, "x": 72.0, "y": 390.5})
+        os.remove(os.path.join(tmp, "bin", "calls"))
+        if synctex.bib_span(tmp, files, cache={}) != want:
+            fail(f"bib_span with the stand-in: {synctex.bib_span(tmp, files, cache={})}")
+        with open(os.path.join(tmp, "bin", "calls")) as f:
+            if f.read().splitlines() != [f"{n}:0:{files[1]}" for n in (1, *range(10, 2, -1))]:
+                fail("bib_span looks up other lines than the first and the last eight")
+        cache = {}
+        if synctex.bib_span(tmp, files, cache=cache, wait=False) is not synctex.PENDING:
+            fail("bib_span without wait does not answer PENDING while it looks up")
+        found = wait_for("bib_span's lookup in a thread", lambda: (lambda r: r if r is not synctex.PENDING else None)(
+            synctex.bib_span(tmp, files, cache=cache, wait=False)), timeout=20)
+        if found != want:
+            fail(f"bib_span without wait, once looked up: {found}")
+        ok("bib_span looks up the bibliography's extent in batched SyncTeX runs (each lookup as alone), and without wait answers"
+           " PENDING at once, then the result")
+    finally:
+        os.environ["PATH"] = path
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def failed_export_checks():
+    """An export that failed fails again at once for the same build of the document (export.exact_export, with a
+    stand-in for TeX), as the review copy asks for it after /export did, and so does one that timed out; the
+    next build is exported again."""
+    from latexlive import config, export
+    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
+    try:
+        root = os.path.join(tmp, "paper")
+        os.makedirs(os.path.join(root, config.BUILD))
+        published = os.path.join(root, "main.pdf")
+        put(published, "%PDF-1.5\n")
+        stand_in = os.path.join(tmp, "tex")
+        os.makedirs(stand_in)
+        put(os.path.join(stand_in, "log"), "This is pdfTeX\n./main.tex:3: Undefined control sequence.\n")
+        put(os.path.join(stand_in, "exit"), "1")
+        server = types.SimpleNamespace(paper_root=root, tex_exec=tex_stand_in(stand_in), export={}, exported={},
+                                       export_lock=threading.Lock(), download_lock=threading.Lock())
+
+        def runs(what, error="./main.tex:3: Undefined control sequence."):
+            try:
+                export.exact_export(server, "main.pdf")
+                fail(f"{what} went ahead, though TeX failed")
+            except RuntimeError as e:
+                if not str(e).startswith(error):
+                    fail(f"{what} failed with: {e}")
+            with open(os.path.join(stand_in, "calls")) as f:
+                return len(f.read().splitlines())
+
+        def new_build():
+            st = os.stat(published)
+            os.utime(published, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+
+        if (runs("the export"), runs("the export again, for the same build")) != (1, 1):
+            fail("an export that failed was built again for the same build of the document")
+        new_build()
+        if runs("the export of a new build") != 2:
+            fail("an export that failed was not built again for a new build of the document")
+        new_build()
+
+        def too_long(*args, **kwargs):  # (run_tool's answer for a run it stopped at its deadline)
+            with open(os.path.join(stand_in, "calls"), "a") as f:
+                f.write("timed out\n")
+            return None, ""
+
+        saved, export.run_tool = export.run_tool, too_long
+        try:
+            if (runs("an export that times out", "a pass took over 10 minutes"),
+                    runs("it again", "a pass took over 10 minutes")) != (3, 3):
+                fail("an export that timed out was built again for the same build of the document")
+        finally:
+            export.run_tool = saved
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    ok("an export that failed or timed out fails again at once for the same build (no second build for the review"
+       " copy), and is built again for the next one")
+
+
+def waiting_download_checks():
+    """/export and /review wait while the document builds (export.start_export, review.start_review): a pass may publish
+    the PDF before the run ends, and a download made then would lack the run's last pass; once the run ends, they
+    start (a build of theirs that runs is reported as it is). With --no-build, a stale marker holds nothing up."""
+    from latexlive import config, export, files, review
+    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
+    try:
+        root = os.path.join(tmp, "paper")
+        os.makedirs(os.path.join(root, config.BUILD))
+        put(os.path.join(root, "main.pdf"), "%PDF-1.5\n")
+        status, building = files.job_file(root, "main.pdf", ".status.json"), files.job_file(root, "main.pdf", ".building")
+        put(status, "{}")
+        put(building, "")
+        os.utime(building, (time.time() + 5, time.time() + 5))  # (a run that started after the last one ended)
+        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", export={}, review={}, no_build=True,
+                                       download_lock=threading.Lock())
+        if export.waiting_for_build(server, "main.pdf", {}) is not None:
+            fail("with --no-build, the downloads wait for a build that a stopped one left marked as running")
+        server.no_build = False
+        for name, start in (("/export", export.start_export), ("/review", review.start_review)):
+            code, state = start(server)
+            if (code, state.get("state"), state.get("step")) != (200, "running", "waiting for the build in progress") or server.export or server.review:
+                fail(f"{name} during a build: {code} {state}, {server.export or server.review}")
+        server.export = {"pdf": "main.pdf", "state": "running", "step": "its own"}
+        if export.start_export(server)[1].get("step") != "its own":
+            fail("/export during a build did not report its own build that runs")
+        os.utime(status, (time.time() + 10, time.time() + 10))  # (the run ended)
+        if export.waiting_for_build(server, "main.pdf", {}) is not None:
+            fail("/export still waits after the build ended")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    ok("the downloads wait while the document builds, and start once the run ends (with --no-build, at once)")
+
+
+def layout_checks():
+    """The review copy's gutters (review_layout.place_notes, review_layout.review_layout), on made-up notes."""
+    import random
+    from latexlive import review_layout
+    rng = random.Random(7)
+    for _ in range(200):
+        n = rng.randint(1, 12)
+        heights = [rng.uniform(5, 60) for _ in range(n)]
+        want = sorted(rng.uniform(0, 800) for _ in range(n))
+        if sum(heights) + 5 * (n - 1) > 700:
+            continue
+        tops = review_layout.place_notes(want, heights, 40, 740, 5)
+        if any(tops[i] + heights[i] + 5 > tops[i + 1] + 1e-6 for i in range(n - 1)) or tops[0] < 40 - 1e-6 \
+                or tops[-1] + heights[-1] > 740 + 1e-6:
+            fail(f"place_notes overlaps or leaves the gutter: {want} {heights} -> {tops}")
+    geo = review_layout.review_geometry({"W": 612, "H": 792, "columns": 2})
+    notes = [{"id": i, "page": 1 + i // 40, "x": 100 + 300 * (i % 2), "y": 60 + (i * 17) % 700, "author": "EB", "body": "x",
+              "macro": "eb", "file": "a.tex", "line": i, "how": "exact"} for i in range(80)]
+    sizes = {i: {0: [100 + 2 * i, 150, 6, 40], 1: [101 + 2 * i, 150, 5, 30]} for i in range(80)}
+    plan = review_layout.review_layout(notes, {"pdf": True, "snippets": sizes}, geo, 2)
+    if sorted(n["id"] for n in plan["notes"]) != list(range(80)) or [n["n"] for n in plan["notes"]] != list(range(1, 81)):
+        fail("review_layout lost or renumbered notes")
+    gutters = {}
+    for n in plan["notes"]:
+        gutters.setdefault((n["page"], n["side"]), []).append(n)
+    for (page, side), group in gutters.items():
+        placed = [n for n in group if n["top"] is not None]
+        if [n["n"] for n in placed] != sorted(n["n"] for n in placed) or any(n["continued"] for n in placed):
+            fail(f"page {page}, {side} gutter: notes out of order")
+        for a, b in zip(placed, placed[1:]):
+            if a["top"] + a["sizes"][a["size"]]["h"] > b["top"] + 1e-6:
+                fail(f"page {page}, {side} gutter: notes {a['n']} and {b['n']} overlap")
+        if any(n["top"] is None and not n["continued"] for n in group) or not all(n["size"] == 1 for n in group):
+            fail(f"page {page}, {side} gutter: crowded notes not set smaller and continued")
+    if plan["pages"] <= plan["paper"]:
+        fail("crowded notes did not continue on pages after the paper")
+    ok("the review copy's gutters keep notes in order and apart, set crowded ones smaller, then continue them")
+
+
+def matching_checks():
+    """The review copy's matching of the probe's records to notes (review_anchors.match_records): two authors'
+    notes with the same text, on one line, each get their own record; a protected marker (no note, but
+    recorded as its macro typesets it) whose text holds a note's, in another file or below the note in
+    its own, gives that note no record, while a note whose typeset text no record has (an unusual macro)
+    still gets the record that holds its text."""
+    from latexlive import review_anchors
+    templates = {"eb": r"{\color{Emerald}[\textbf{EB:} #1]}", "ab": r"{\color{Blue}[\textbf{AB:} #1]}"}
+    notes = [{"id": i, "macro": macro, "file": "a.tex", "line": 5, "last": 5, "body": "Check this",
+              "typeset": review_anchors.squeeze(templates[macro].replace("#1", "Check this"))} for i, macro in ((1, "eb"), (2, "ab"))]
+    records = [("pos", "a.tex", 5, 1, 100.0, 200.0, r"{\color {Emerald}[\textbf {EB:} Check this]}"),
+               ("pos", "a.tex", 5, 1, 300.0, 200.0, r"{\color {Blue}[\textbf {AB:} Check this]}")]
+    matched = {k: [r[4] for r in v] for k, v in review_anchors.match_records(notes, records).items()}
+    if matched != {1: [100.0], 2: [300.0]}:
+        fail(f"two authors' notes with the same text got each other's records: {matched}")
+    note = {"id": 3, "macro": "eb", "file": "b.tex", "line": 43, "last": 44, "body": "human-written",
+            "typeset": review_anchors.squeeze(templates["eb"].replace("#1", "human-written"))}
+    own = ("pos", "b.tex", 44, 8, 415.0, 207.0, r"{\color {Emerald}[\textbf {EB:} human-written]}")
+    for where in ("a.tex", "b.tex"):  # (the marker's record comes first, as its page does)
+        marker = ("pos", where, 213, 5, 170.0, 222.0, r"{\color {Cyan}{[\textbf {CH:} human-written]}}")
+        matched = {k: [r[3] for r in v] for k, v in review_anchors.match_records([note], [marker, own]).items()}
+        if matched != {3: [8]}:
+            fail(f"a protected marker in {where} (page 5) and a note with its text in b.tex (page 8): the note got pages {matched}")
+    odd = {**note, "typeset": "[EB:human-written]"}  # (as review_notes would make it of a macro it reads otherwise than TeX)
+    if review_anchors.match_records([odd], [own]) != {3: [own]}:
+        fail("a note whose typeset text no record has lost the record that holds its text")
+    ok("the review copy tells apart two authors' notes with the same text, and gives no note a protected marker's record")
+
+
+def tool_timeout_checks():
+    """A tool run in a process group of its own (latexlive.tools.run_tool with group: a shell running tools in
+    turn, as the batched SyncTeX lookups do) is stopped whole past its timeout, rather than the shell alone,
+    whose child would hold the output (and the slot) until it ended."""
+    from latexlive import tools
+    began = time.monotonic()
+    code, _ = tools.run_tool(["sh", "-c", "for n in 1 2; do sleep 20; done"], tempfile.gettempdir(), timeout=1, kind="check",
+                             capture=1000, group=True)
+    if code is not None or time.monotonic() - began > 5:
+        fail(f"a shell's tool run past its timeout: exit {code} after {time.monotonic() - began:.1f} s (not stopped whole)")
+    ok("a tool run in a process group of its own is stopped whole past its timeout")
+
+
+def standby_snapshot_checks():
+    """The warm standby notices a name that appears in a folder the paper links to (latexlive/standby.snapshot and
+    new_name, which look at the working directory: run in a process of their own), as TeX would find it
+    (\\IfFileExists of a file that was missing), and a link back up doesn't loop."""
+    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
+    try:
+        os.makedirs(os.path.join(tmp, "paper", "build"))
+        os.makedirs(os.path.join(tmp, "assets"))
+        os.symlink(os.path.join(tmp, "assets"), os.path.join(tmp, "paper", "assets"))
+        os.symlink(".", os.path.join(tmp, "paper", "loop"))
+        script = ("import os, sys, time\n"
+                  f"sys.path.insert(0, {HERE!r})\n"
+                  "from latexlive import standby\n"
+                  "snap = standby.snapshot('build', 'main-live')\n"
+                  "before = None if snap is None else standby.new_name(snap, 'build', 'main-live')\n"
+                  "time.sleep(0.01)\n"
+                  "open(os.path.join('..', 'assets', 'optional.tex'), 'w').close()\n"
+                  "print(snap is not None, before, standby.new_name(snap, 'build', 'main-live') if snap else None)\n"
+                  "os.makedirs(os.path.join('build', 'clean'), exist_ok=True)\n"
+                  "clean = standby.snapshot('build', 'main-clean', os.path.join('build', 'clean'))\n"
+                  "time.sleep(0.01)\n"
+                  "open(os.path.join('build', 'pdflatex4242.fls'), 'w').close()\n"
+                  "transient = standby.new_name(clean, os.path.join('build', 'clean'), 'main-clean')\n"
+                  "open(os.path.join('build', 'generated.tex'), 'w').close()\n"
+                  "print(transient, standby.new_name(clean, os.path.join('build', 'clean'), 'main-clean'))\n")
+        r = subprocess.run([sys.executable, "-c", script], cwd=os.path.join(tmp, "paper"), capture_output=True, text=True, timeout=60)
+        if r.stdout.split() != ["True", "None", os.path.join("assets", "optional.tex"), "None", os.path.join("build", "generated.tex")]:
+            fail(f"a file added in a folder the paper links to went unnoticed by the warm standby's snapshot: {r.stdout}{r.stderr}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    ok("the warm standby notices a file added in a folder the paper links to (and a link back up doesn't loop), and a"
+       " notes-free standby one added to build/ (but not pdflatex's passing recorder file)")
