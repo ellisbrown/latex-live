@@ -1,7 +1,8 @@
 // The toolbar: the ⋯ menu, the controls that move into it when the toolbar runs out of room, the list of shortcuts, and
 // dark mode.
 
-import { $, isDiff } from "./page.js";
+import { $, file, isDiff, setStatus } from "./page.js";
+import { postJSON } from "./net.js";
 import { canComment, editorAllowed, opensSources, openWhere } from "./role.js";
 import { setToggle } from "./layout.js";
 
@@ -23,6 +24,15 @@ export function showKeys(open) {
   $("keys").hidden = !open;
 }
 $("keysBtn").onclick = () => { showMore(false); showKeys(true); };
+// Sign out (⋯ menu): live.py forgets this browser's session, which is the address's (whatever the port), so every
+// preview there needs its link again; the page then says so (?signed-out=1).
+$("signOut").onclick = async () => {
+  showMore(false);
+  if (!confirm(`Sign out of latex-live in this browser? Every preview at ${location.hostname} will need its link (with ?t=) again.`)) return;
+  const r = await postJSON("logout", {}).catch(() => null);
+  if (!r || !r.ok) return setStatus(`couldn't sign out (${r ? r.status : "no answer"})`, "error");
+  location.replace(`viewer.html?${new URLSearchParams({ file, "signed-out": "1" })}`);
+};
 $("keys").querySelector(".close").onclick = () => showKeys(false);
 document.addEventListener("mousedown", (e) => { // (not the welcome guide: it closes with its own buttons, or Esc)
   if (!$("moreMenu").hidden && !$("moreMenu").contains(e.target) && !$("more").contains(e.target)) showMore(false);

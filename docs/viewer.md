@@ -38,7 +38,7 @@ From left to right:
 | Name badge | In a shared preview, your name and role. |
 | ⚠ TeX image missing | The TeX Live image is not pulled ([setup](setup.md#2-get-the-code-and-the-tex-image)). |
 | ⟳ restart to update | latex-live changed on disk since this preview started; restart its task, then reload. |
-| ⋯ | Dark mode (it inverts the PDF), Compare with an earlier version, Keyboard shortcuts, the Welcome guide, and the version, which links to the repository. On a narrow window, the toolbar stays one row: the controls that don't fit move into this menu, least used first. |
+| ⋯ | Dark mode (it inverts the PDF), Compare with an earlier version, Keyboard shortcuts, the Welcome guide, Sign out (the browser forgets its sign-in, for every preview at that address, until you open the link with `?t=` again), and the version, which links to the repository. On a narrow window, the toolbar stays one row: the controls that don't fit move into this menu, least used first. |
 | ↻ | Rebuilds from scratch, e.g. after another build (`make`) replaced the PDF and SyncTeX no longer matches it. |
 | Pages, status | The [page badge](#page-limit-and-space) and the build's status. |
 

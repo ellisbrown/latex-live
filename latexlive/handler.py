@@ -37,7 +37,8 @@ def me(server, user):
     note macro, without which a coauthor can't comment; openHost, in shared mode: whether the owner's
     editor opens here (a service has none); download: whether they may download the builds made on
     request, the paper without its notes (export) and with its notes in the margin (review), which
-    take the same role."""
+    take the same role; signOut: whether the browser signed in with a token (POST logout forgets it),
+    not through the proxy."""
     defined = bool(user["macro"]) and user["macro"] in paper_note_kinds(server.paper_root, server.default_pdf)
     can = lambda path: allowed(user, "POST", path)
     return {"id": user["id"], "name": user["name"] or owner_name(server), "macro": user["macro"], "role": user["role"],
@@ -45,7 +46,8 @@ def me(server, user):
             "can": {"comment": can("/note") and (user["role"] == "owner" or defined), "edit": can("/file"),
                     "rebuild": can("/rebuild"), "compare": can("/diff"), "switch": can("/switch"),
                     "openHost": can("/open") and (not config.SHARED or editor_cli() is not None),
-                    "download": can("/export") and can("/review"), "checks": allowed(user, "GET", "/check/")}}
+                    "download": can("/export") and can("/review"), "checks": allowed(user, "GET", "/check/"),
+                    "signOut": user["via"] != "proxy"}}
 
 
 STATIC = {"/viewer.html"}  # plus the files in the folders of STATIC_DIRS (static_file)
@@ -182,8 +184,8 @@ class Handler(BaseHandler):
             self.send_error(404)
 
     def do_POST(self):
-        """Actions (POST /note, /file, /rebuild, /switch, /diff, /open, /commit), and the builds made on
-        request (POST /export, /review, and in shared mode /baseline). Only with the cookie, which
+        """Actions (POST /note, /file, /rebuild, /switch, /diff, /open, /commit, /logout), and the builds made on
+        request (POST /export, /review, and in shared mode /baseline). Only with the session cookie, which
         SameSite=Strict keeps off other sites' requests, a JSON body, which other sites can't send without asking
         first, and from the viewer's own page (origin_allowed), as the role allows; both are checked before the body
         is read (a refusal reads a small body still, so that the answer isn't lost to a reset; a large one, not)."""
@@ -221,6 +223,8 @@ class Handler(BaseHandler):
             self.send_json(*note_request(self.server, req, self.principal))
         elif path == "/file" and isinstance(req, dict):
             self.send_json(*save_request(self.server, req, self.principal))
+        elif path == "/logout":
+            self.logout()
         elif path == "/commit":
             self.send_json(*commit_request(self.server))
         elif path == "/rebuild" and config.SHARED:

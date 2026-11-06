@@ -77,7 +77,9 @@ Expected output, in order:
 1. `=== latex-live: viewer (on a remote machine, forward port 44100 first): http://localhost:44100/p/...?t=...`
    (a second, direct URL follows with `LATEX_LIVE_HOST`). The first run
    creates the token, `~/.config/latex-live/token` (mode 0600), which every
-   checkout shares.
+   checkout shares. If others can read an existing token file, latex-live makes
+   it private (`chmod 600`) and says so: delete it and restart your previews for
+   a new token if anyone may have read it.
 2. `=== latex-live <version>: building <doc>.tex`, naming the other root files.
 3. `=== latex-live: TeX Live 2024 (podman)`, or without podman
    `=== latex-live: TeX from the host (no podman)`.
@@ -177,8 +179,9 @@ The problem matcher sends LaTeX errors and warnings to the Problems panel. The
      often does it by itself).
    - Open the task's `http://localhost:44100/p/.../?t=...` URL in any browser,
      or in VS Code (*Simple Browser: Show*).
-   - The token becomes a cookie, so later visits work without it, and
-     `http://localhost:44100/` lists every running preview.
+   - The token becomes a sign-in cookie, so later visits work without it, and
+     `http://localhost:44100/` lists every running preview. *Sign out* in the ⋯
+     menu forgets it.
 4. **Optional: a key for forward search.** Add this to your
    `keybindings.json` (use `ctrl+alt+j` on Linux and Windows):
 
@@ -229,9 +232,14 @@ page. To stay on a release, check out its tag, e.g.
   44100 is fine there. When the port is taken, the message says whether this
   is why, and suggests a port.
 - **The token.** Every request needs the token in the state folder's `token`
-  file: `?t=` once, after which it is a cookie. Anything that reaches the port
-  can send requests, so the token is required even on a laptop. Your browser
-  keeps one cookie per host name, whatever the port.
+  file: `?t=` once, after which the browser has a sign-in cookie. Anything that
+  reaches the port can send requests, so the token is required even on a
+  laptop. The cookie is never the token itself: it is a new one for each link
+  you open, it lasts a year (renewed each day you use it), and it stops working
+  when the token changes. Your browser keeps one cookie per host name, whatever
+  the port, so *Sign out* in the viewer's ⋯ menu signs that browser out of
+  every preview at that address. To end every sign-in at once, delete the
+  `token` file and restart your previews: they make a new one.
 - **Host names.** A preview and the hub answer only to `localhost`,
   `127.0.0.1` and `[::1]` on their own ports (the hub's, and each preview's),
   to the name in `LATEX_LIVE_HOST` on those ports, and to the names in

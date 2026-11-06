@@ -1,9 +1,15 @@
 """Who may reach the owner's own previews, and how (access_checks): the Host allowlist (loopback names on the
 instance's and the hub's ports, LATEX_LIVE_HOST's name, LATEX_LIVE_ALLOWED_HOSTS'), the Origin rules for POSTs,
-checked before the body is read, and the security headers."""
+checked before the body is read, the security headers, and the sessions: the cookie a link's token is exchanged
+for, renewed, refused once forged or expired, and forgotten on sign-out; the token file made private at the start."""
 
+import base64
+import hashlib
+import hmac
 import http.client
 import json
+import os
+import re
 import time
 
 from .base import PORT, fail, hub, ok
@@ -33,7 +39,20 @@ def raw(port, method, path, headers, body=None):
         conn.close()
 
 
-def access_checks(token, own):
+def session(token, issued, subject="o"):
+    """A session cookie as live.py signs one (auth.new_session), issued at a given time."""
+    payload = f"s1.{int(issued)}.checknonce.{subject}"
+    mac = hmac.new(token.encode(), b"latex-live session\0" + payload.encode(), hashlib.sha256).digest()[:24]
+    return f"{payload}.{base64.urlsafe_b64encode(mac).rstrip(b'=').decode()}"
+
+
+def cookie_of(headers):
+    """The latex_live cookie's value in a Set-Cookie header, or None."""
+    m = re.match(r"latex_live=([^;]*)", headers.get("set-cookie", ""))
+    return m and m.group(1)
+
+
+def access_checks(token, own, state, log):
     """The owner's preview (own: its port) and the hub (PORT), as a browser reaches them."""
     base, probe = hub["base"], {"path": "body.tex", "base": "0" * 20, "text": "x\n"}  # (a save on a version never seen: 409)
     cookie = ("Cookie", f"latex_live={token}")
@@ -89,3 +108,66 @@ def access_checks(token, own):
                 fail(f"GET {path} on port {port} is sent with {name}: {headers.get(name)!r}, not {want!r}")
     ok("the hub and the previews send nosniff, no referrer, and frame-ancestors (themselves and VS Code's Simple Browser"
        " only)")
+
+    # Sessions: a link's token becomes a signed cookie (never the token), new on each link, working on the hub and the
+    # preview alike; one older than a day is renewed; a forged, expired or other instance's one is refused.
+    host = [("Host", f"localhost:{PORT}")]
+    first = raw(PORT, "GET", f"{base}main/me?t={token}", host)
+    second = raw(PORT, "GET", f"{base}main/me?t={token}", host + [("Cookie", f"latex_live={cookie_of(first[1])}")])
+    sessions = [cookie_of(r[1]) for r in (first, second)]
+    attrs = first[1].get("set-cookie", "").lower()
+    if (not all(s and s.startswith("s1.") and token not in s for s in sessions) or sessions[0] == sessions[1]
+            or "httponly" not in attrs or "samesite=strict" not in attrs or "max-age=31536000" not in attrs or "secure" in attrs):
+        fail(f"a link's token sets the cookies {[s and s[:12] for s in sessions]} ({attrs.replace(token, 'TOKEN')!r}): want a new"
+             " signed session each time, never the token, HttpOnly, SameSite=Strict, for a year, not Secure (http)")
+    for value in sessions:
+        for port, path in ((PORT, f"{base}main/me"), (own, "/me")):
+            r = raw(port, "GET", path, [("Host", f"localhost:{port}"), ("Cookie", f"latex_live={value}")])
+            if r[0] != 200 or "set-cookie" in r[1]:
+                fail(f"a session cookie on port {port}: {r[0]} (want 200, and no new cookie for a fresh one)")
+    legacy = raw(PORT, "GET", f"{base}main/me", host + [cookie])
+    if legacy[0] != 200 or not (cookie_of(legacy[1]) or "").startswith("s1."):
+        fail(f"a cookie from before sessions (the token): {legacy[0]}, not 200 with a session cookie in its place")
+    old = session(token, time.time() - 2 * 86400)
+    renewed = raw(own, "GET", "/me", [("Host", f"localhost:{own}"), ("Cookie", f"latex_live={old}")])
+    if renewed[0] != 200 or not (cookie_of(renewed[1]) or "").startswith("s1.") or cookie_of(renewed[1]) == old:
+        fail(f"a session two days old: {renewed[0]}, not 200 with a new session cookie")
+    good = sessions[0]
+    for value, what in ((session(token, time.time() - 400 * 86400), "a session older than a year"),
+                        (session(token, time.time() + 86400), "a session issued tomorrow"),
+                        (session("another-instance-token", time.time()), "a session signed with another token"),
+                        (good[:-2] + ("AA" if not good.endswith("AA") else "BB"), "a session with its signature changed"),
+                        (good.replace("s1.", "s1.1", 1), "a session with its time changed"),
+                        (session(token, time.time(), "u" + base64.urlsafe_b64encode(b"owner").decode().rstrip("=")),
+                         "a user's session, outside shared mode")):
+        if raw(PORT, "GET", f"{base}main/me", host + [("Cookie", f"latex_live={value}")])[0] != 403:
+            fail(f"{what} is accepted")
+    me = json.loads(raw(PORT, "GET", f"{base}main/me", host + [("Cookie", f"latex_live={good}")])[2])
+    if me.get("can", {}).get("signOut") is not True:
+        fail(f"GET me for the owner signed in with a token does not offer to sign out: {me.get('can')}")
+    ok("a link's token becomes a signed session cookie (a new one each time, never the token) that the hub and the previews"
+       " take; a cookie from before sessions is replaced; one older than a day is renewed; forged, expired or other"
+       " instances' ones are refused")
+
+    # Signing out: a POST from the viewer's page, through the hub or on the preview's own port, expires the cookie;
+    # the page then says so.
+    for port, path in ((PORT, f"{base}main/logout"), (own, "/logout")):
+        refused = raw(port, "POST", path, [("Host", f"localhost:{port}"), ("Cookie", f"latex_live={good}"),
+                                           ("Origin", "http://evil.example")], {})
+        out = raw(port, "POST", path, [("Host", f"localhost:{port}"), ("Cookie", f"latex_live={good}"),
+                                       ("Origin", f"http://localhost:{port}")], {})
+        if refused[0] != 403 or "set-cookie" in refused[1]:
+            fail(f"a sign-out from another site's page on port {port}: {refused[0]}")
+        if out[0] != 200 or cookie_of(out[1]) != "" or "max-age=0" not in out[1].get("set-cookie", "").lower():
+            fail(f"POST logout on port {port}: {out[0]} {out[1].get('set-cookie')!r}, not 200 with a cookie that expires at once")
+    page = raw(PORT, "GET", f"{base}main/viewer.html?file=main.pdf&signed-out=1", host + [("Accept", "text/html")])
+    if page[0] != 403 or b"Signed out" not in page[2]:
+        fail(f"the page after signing out: {page[0]} {page[2][:200]!r}")
+    ok("signing out (a POST from the viewer's page, through the hub or not) expires the cookie, and the page says so")
+
+    mode = os.stat(os.path.join(state, "token")).st_mode & 0o777
+    with open(log, errors="replace") as f:
+        said = "readable by you only now" in f.read()
+    if mode != 0o600 or not said:
+        fail(f"a token file that others could read is {oct(mode)} after the start ({'said' if said else 'not said'}), not 600")
+    ok("a token file that others could read is made private at the start, saying so")

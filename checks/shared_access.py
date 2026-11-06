@@ -79,9 +79,13 @@ def identity_checks(sh):
         first = send("GET", f"/me?t={token}")
         check_me(expect_dict(first, 200, f"{what} as ?t="), f"{what} as ?t=", role, **fields)
         set_cookie = header(first, "Set-Cookie") or ""
-        if (not set_cookie.startswith(f"latex_live={token}") or "httponly" not in set_cookie.lower()
+        session = re.match(r"latex_live=(s1\.[^;]+)", set_cookie)
+        if (not session or token in set_cookie or "httponly" not in set_cookie.lower()
                 or "samesite=strict" not in set_cookie.lower() or re.search(r";\s*secure\b", set_cookie, re.I)):
-            fail(f"{what} as ?t= sets the cookie {redact(set_cookie)!r}: want latex_live, HttpOnly, SameSite=Strict, not Secure (http)")
+            fail(f"{what} as ?t= sets the cookie {redact(set_cookie)!r}: want latex_live, a session (not the token), HttpOnly,"
+                 " SameSite=Strict, not Secure (http)")
+        check_me(expect_dict(with_token(session.group(1), "/me"), 200, f"{what}'s session cookie"), f"{what}'s session cookie",
+                 role, **fields)
         check_me(expect_dict(with_token(token, "/me"), 200, f"{what} as a cookie"), f"{what} as a cookie", role, **fields)
     for path, headers, what in (("/me?t=%C3%A9", [], "?t= with a non-ASCII character"),
                                 ("/me", [("Cookie", "latex_live=\u00e9")], "a cookie with a non-ASCII character"),
@@ -91,7 +95,7 @@ def identity_checks(sh):
             fail(f"{what} drops the connection (hmac.compare_digest raised?)")
         if r[0] != 403 or (header(r, "Content-Type") or "").startswith("text/html"):
             fail(f"{what}: {r[0]} {header(r, 'Content-Type')}, not 403 (and no page: the client did not ask for HTML)")
-    ok("GET me answers for each role, through the proxy or a personal link (its cookie: HttpOnly, SameSite=Strict),"
+    ok("GET me answers for each role, through the proxy or a personal link (its session cookie: HttpOnly, SameSite=Strict),"
        " and says whether the paper defines the user's note macro (commenting needs it); no one switches documents")
 
     for path, what in ((f"/viewer.html?file=main.pdf&t={secrets.token_urlsafe(18)}", "a personal link that is not (or no longer) valid"),
