@@ -402,7 +402,6 @@ def timing_checks():
     """LATEX_LIVE_TIMING=1's lines (timing.Runs): a notes-free pass's events count only in the line of the run that
     started or kept it, so that a pass a newer run superseded neither adds to the newer run's line nor ends it before
     the newer run's own pass does; the lines don't show the passes' names."""
-    sys.path.insert(0, HERE)
     from latexlive import timing
     runs, lines = timing.Runs(), []
     feed = lambda *events: lines.extend(runs.feed([(float(i), name, detail) for i, name, detail in events]))
@@ -428,7 +427,6 @@ def code_updated_checks():
     """The viewer asks for a restart when the code on disk changes (status.code_updated): every module the
     server imports is watched, and a module changed, added or removed counts, but a file only touched or
     changed back does not."""
-    sys.path.insert(0, HERE)
     from latexlive import config, status
     __import__("latexlive.main")  # (and with it every module the server imports)
     watched = set(status.server_files())
@@ -477,7 +475,6 @@ def static_file_checks():
     """The server sends the viewer's own files from the checkout (handler.static_file): viewer.html and the
     files in pdfjs/, codemirror/ and viewer/, never a folder, a file elsewhere in the checkout, a path through
     .., or a link out of the file's folder (a link within it is followed)."""
-    sys.path.insert(0, HERE)
     from latexlive import config, handler
     saved, tmp = config.HERE, tempfile.mkdtemp(prefix="latex-live-check-")
     try:
@@ -538,7 +535,6 @@ def bounds_checks():
     with a stand-in for TeX) and a SyncTeX file uncompressed (review_anchors.synctex_pages) stop a download with a message
     that says so, before they are read whole; within them, the probe's records are read as before, and so is a log
     whose wrapped lines split a UTF-8 character."""
-    sys.path.insert(0, HERE)
     from latexlive import config, files, review, review_anchors, review_layout
     saved, tmp = (config.OUTPUT_LIMIT, config.SYNCTEX_LIMIT), tempfile.mkdtemp(prefix="latex-live-check-")
     try:
@@ -627,7 +623,6 @@ def bib_span_checks():
     """Where the bibliography starts and ends (bib_span, with a stand-in for synctex): its SyncTeX lookups run
     batched (run_synctexes), each with the records it gets alone (run_synctex), on the same lines as before; without wait, bib_span
     answers PENDING at once while it looks up in a thread, then what a lookup that waits gives."""
-    sys.path.insert(0, HERE)
     from latexlive import synctex
     tmp = tempfile.mkdtemp(prefix="latex-live-check-")
     path = os.environ.get("PATH", "")
@@ -668,7 +663,6 @@ def failed_export_checks():
     """An export that failed fails again at once for the same build of the document (export.exact_export, with a
     stand-in for TeX), as the review copy asks for it after /export did, and so does one that timed out; the
     next build is exported again."""
-    sys.path.insert(0, HERE)
     from latexlive import config, export
     tmp = tempfile.mkdtemp(prefix="latex-live-check-")
     try:
@@ -726,7 +720,6 @@ def waiting_download_checks():
     """/export and /review wait while the document builds (export.start_export, review.start_review): a pass may publish
     the PDF before the run ends, and a download made then would lack the run's last pass; once the run ends, they
     start (a build of theirs that runs is reported as it is). With --no-build, a stale marker holds nothing up."""
-    sys.path.insert(0, HERE)
     from latexlive import config, export, files, review
     tmp = tempfile.mkdtemp(prefix="latex-live-check-")
     try:
@@ -759,7 +752,6 @@ def waiting_download_checks():
 
 def layout_checks():
     """The review copy's gutters (review_layout.place_notes, review_layout.review_layout), on made-up notes."""
-    sys.path.insert(0, HERE)
     import random
     from latexlive import review_layout
     rng = random.Random(7)
@@ -803,7 +795,6 @@ def matching_checks():
     recorded as its macro typesets it) whose text holds a note's, in another file or below the note in
     its own, gives that note no record, while a note whose typeset text no record has (an unusual macro)
     still gets the record that holds its text."""
-    sys.path.insert(0, HERE)
     from latexlive import review_anchors
     templates = {"eb": r"{\color{Emerald}[\textbf{EB:} #1]}", "ab": r"{\color{Blue}[\textbf{AB:} #1]}"}
     notes = [{"id": i, "macro": macro, "file": "a.tex", "line": 5, "last": 5, "body": "Check this",
@@ -835,7 +826,6 @@ def confinement_checks():
     TeX doesn't read there, though that list names them: the paper's TeX can write it); the inputs kept for its
     probe leave out symbolic links; a failure names no folder of the server's (the paper's, latex-live's), nor the
     command line of a TeX run that took too long. Outside shared mode, links count as before, and so do failures."""
-    sys.path.insert(0, HERE)
     from latexlive import config, export, review
     saved, tmp = (config.SHARED, export.image_pulled, review.image_pulled), tempfile.mkdtemp(prefix="latex-live-check-")
     try:
@@ -920,7 +910,6 @@ def confinement_checks():
 def shared_build_checks():
     """Shared mode's builder (shared_build.shared_run) prints the page layout as latexmk does: shared_build.LAYOUT_TEX is
     latexmkrc's $pre_tex_code."""
-    sys.path.insert(0, HERE)
     from latexlive import config, files, shared_build
     with open(os.path.join(HERE, "latexmkrc")) as f:
         rc = re.search(r"^\$pre_tex_code = (.*?);$", f.read(), re.S | re.M).group(1)
@@ -960,7 +949,6 @@ def shared_parsing_checks():
     aren't, a file that isn't gzip) are read only up to their bounds, quickly; and the bibliographies and styles that the
     .aux and .bcf name, at any depth and even before they exist, are what bibtex's and biber's states depend on and
     what the builder watches."""
-    sys.path.insert(0, HERE)
     from latexlive import config, document, files, shared_build, shared_watch, synctex
     saved = (config.SHARED, config.SYNCTEX_LIMIT, config.RECORD_LIMIT)
     tmp = tempfile.mkdtemp(prefix="latex-live-check-")
@@ -1795,7 +1783,6 @@ def standby_containers(paper, job="main-live"):
     """The ids of the containers of a document's warm standbys (none without podman)."""
     if not shutil.which("podman"):
         return []
-    sys.path.insert(0, HERE)
     from latexlive.standby import label_of
     return subprocess.run(["podman", "ps", "-aq", "--filter", f"label=latex-live.standby={label_of(paper, 'build', job)}"],
                           capture_output=True, text=True, timeout=60).stdout.split()
@@ -1830,7 +1817,6 @@ def tool_timeout_checks():
     """A tool run in a process group of its own (latexlive.tools.run_tool with group: a shell running tools in
     turn, as the batched SyncTeX lookups do) is stopped whole past its timeout, rather than the shell alone,
     whose child would hold the output (and the slot) until it ended."""
-    sys.path.insert(0, HERE)
     from latexlive import tools
     began = time.monotonic()
     code, _ = tools.run_tool(["sh", "-c", "for n in 1 2; do sleep 20; done"], tempfile.gettempdir(), timeout=1, kind="check",
@@ -2428,7 +2414,6 @@ def tex_exec_check(tmp):
                                    "LATEX_LIVE_RUN": "main-7", "LATEX_LIVE_TIMEOUT": "60",
                                    "PATH": stub + os.pathsep + ENV.get("PATH", os.defpath)},
                               capture_output=True, text=True, timeout=60)
-    sys.path.insert(0, HERE)
     from latexlive import config, tools
     shared, config.SHARED = config.SHARED, True
     started = tools.container_argv(tmp)
@@ -3808,7 +3793,6 @@ def rebuild_stop_checks(sh):
              " openin_any, would too")
     ok("a shared-mode container sees no .git or other dot entry of the paper, at any depth (empty in their place)")
 
-    sys.path.insert(0, HERE)
     from latexlive import config, tools
     saved = config.SHARED, config.INSTANCE
     config.SHARED, config.INSTANCE = True, f"{pid}-timeoutcheck"
