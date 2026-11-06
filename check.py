@@ -45,7 +45,7 @@
      another instance on the same port, and a hub that no longer answers is replaced;
    - stopping the instance removes it from /instances, and no instance's warm standby leaves a keeper, a
      container or a folder behind.
-   Beside these, in a thread of its own, the warm standby (standby_checks) on a paper and an instance of its own,
+   Beside these, in a thread of its own, the warm standby (standby_run) on a paper and an instance of its own,
    whose preamble reads a file and typesets a box: once a body edit runs from the standby, its PDF has a normal
    pass's pages and text; both passes of an edit that adds a reference run from it (and with LATEX_LIVE_TIMING=1,
    its timing line names each phase in order, and /status gives the server's clock); a preamble edit runs normally
@@ -194,8 +194,8 @@ if os.environ.get("LATEX_LIVE_CHECK_PORT") and any(ephemeral(port) for port in r
           " so an instance may find its port held by one", flush=True)
 SHARED_PORT = PORT + 11  # the shared-mode instance's (shared_setup), past the previews' ports
 DECOY_PORT = PORT + 12  # a stand-in for a program that a lock file written in build/ points to (lock_spoof_checks)
-STANDBY_PORT = PORT + 13  # the hub of the warm standby's checks (standby_checks), with state of its own; its preview's follow
-EARLY_PORT = PORT + 16  # the hub of the early notes-free pass's checks (early_checks), with state of its own; its preview's follow
+STANDBY_PORT = PORT + 13  # the hub of the warm standby's checks (standby_run), with state of its own; its preview's follow
+EARLY_PORT = PORT + 16  # the hub of the early notes-free pass's checks (early_run), with state of its own; its preview's follow
 CLEAN_PORT = PORT + 19  # the hub of the notes-free pass's warm standby's checks (clean_standby_run), likewise
 PUBLIC = "http://paper.invalid:8443"  # its LATEX_LIVE_PUBLIC_URL: the origin browsers would use
 PROXY_HOST = "proxy.invalid"  # its LATEX_LIVE_PROXY_HOST: the Host of the proxy's requests (via_proxy)
@@ -230,7 +230,7 @@ words after it.\footnote{A footnote \eb{a note in a footnote}.} \ifnum0=1 \eb{a 
 \immediate\write\planted{\noexpand\typeout{latex-live-check: a package that TeX wrote ran}}\immediate\closeout\planted\fi\makeatother
 \end{document}
 """
-# The paper of the warm standby's checks (standby_checks): its preamble reads macros.tex and typesets a box, which
+# The paper of the warm standby's checks (standby_run): its preamble reads macros.tex and typesets a box, which
 # the body uses (SyncTeX then maps it to the preamble's line 4).
 STANDBY_PAPER = r"""\documentclass{article}
 \usepackage{hyperref}
@@ -1196,7 +1196,7 @@ def live_checks(tmp):
         with open(os.path.join(paper, f"{name}.tex"), "w") as f:
             f.write(f"\\documentclass{{article}}\n\\begin{{document}}\nThe {name}.\n\\end{{document}}\n")
     procs, sharing = [start(paper)], []  # (sharing: the shared-mode instance, shared_setup)
-    standby = standby_checks(tmp)  # (beside the rest, with an instance of its own)
+    standby = in_thread("warm standby checks", standby_run, tmp)  # (beside the rest, with an instance of its own)
     early = in_thread("early notes-free pass checks", early_run, tmp)  # (likewise)
     clean_standby = in_thread("notes-free standby checks", clean_standby_run, tmp)  # (likewise)
     try:
@@ -1743,25 +1743,15 @@ def shared_checks(sh, sharing, own, token):
     paper of their own, so they run beside the others. The first ones run here, before the takeover checks replace
     the owner's preview, which they reach. Returns the thread; its .failed says whether a check failed."""
     shared_start_checks(sh, own, token)
+    return in_thread("shared-mode checks", shared_run, sh, sharing)
 
-    def run():
-        try:
-            for check in (identity_checks, role_checks, export_checks, review_shared_checks, note_checks, editor_checks,
-                          rebuild_stop_checks, commit_checks):
-                check(sh)
-            shared_stop_checks(sh, sharing)
-        except SystemExit:  # (fail said why)
-            thread.failed = True
-        except BaseException:
-            thread.failed = True
-            with OUT_LOCK:
-                STOPPING.set()
-                traceback.print_exc()
 
-    thread = threading.Thread(target=run, name="shared-mode checks", daemon=True)
-    thread.failed = False
-    thread.start()
-    return thread
+def shared_run(sh, sharing):
+    """The shared-mode checks after the first ones, in order, ending with the instance's stop."""
+    for check in (identity_checks, role_checks, export_checks, review_shared_checks, note_checks, editor_checks,
+                  rebuild_stop_checks, commit_checks):
+        check(sh)
+    shared_stop_checks(sh, sharing)
 
 
 def standby_keepers(paper):
@@ -1858,12 +1848,6 @@ def standby_snapshot_checks():
         shutil.rmtree(tmp, ignore_errors=True)
     ok("the warm standby notices a file added in a folder the paper links to (and a link back up doesn't loop), and a"
        " notes-free standby one added to build/ (but not pdflatex's passing recorder file)")
-
-
-def standby_checks(tmp):
-    """Start the warm standby's checks (latexlive/standby.py) in a thread of their own, with a paper, a state folder
-    and an instance of their own, beside the others. Returns the thread; its .failed says whether a check failed."""
-    return in_thread("warm standby checks", standby_run, tmp)
 
 
 def in_thread(name, target, *args):
