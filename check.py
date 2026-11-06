@@ -2984,11 +2984,14 @@ def wait_commit(sh, uid, paths, what):
     root = sh["root"]
 
     def landed():
+        unsaved = subprocess.run(["git", "-C", root, "diff", "--quiet", "HEAD", "--", *paths],
+                                 env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"}).returncode
+        # The commits are read after the files are found committed, so that they include the commit that did it: read
+        # before, they could miss one that landed in between (uid's edits in two commits, the second just then), whose
+        # sha would then not be the tip, and the next check would count it as a commit made after this.
         new = git_out(root, "rev-list", f"{sh['tip']}..shared").split()
         if any(commit_user(root, sha) != uid for sha in new):
             fail(f"a commit not of {uid}'s appeared while only {uid} wrote: {[(sha[:9], commit_user(root, sha)) for sha in new]}")
-        unsaved = subprocess.run(["git", "-C", root, "diff", "--quiet", "HEAD", "--", *paths],
-                                 env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"}).returncode
         return new if new and not unsaved else None
 
     sh["tip"] = wait_for(f"the auto-commit of {what}", landed, timeout=20)[0]
