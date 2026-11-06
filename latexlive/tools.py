@@ -140,13 +140,15 @@ def container_exec(paper_root):
 def stop_containers(run=None, kind=None):
     """Stop this shared instance's containers (tex-exec labels them with INSTANCE), or one run's (its
     LATEX_LIVE_RUN label, e.g. "main-12"), or those of one kind of run ("main", "clean"), at once. Once
-    the podman client is stopped, a container keeps running; this stops the container itself."""
+    the podman client is stopped, a container keeps running; this stops the container itself. In every state,
+    not only running: a client stopped between creating its container and starting it (as stopping the
+    instance stops its process group) leaves the container created, which nothing else would remove."""
     if not config.SHARED:
         return
     filters = ["--filter", f"label=latex-live.instance={config.INSTANCE}"]
     filters += ["--filter", f"label=latex-live.run={run}"] if run else ["--filter", f"label=latex-live.kind={kind}"] if kind else []
     try:
-        ids = subprocess.run(["podman", "ps", "-q", *filters], capture_output=True, text=True, timeout=30).stdout.split()
+        ids = subprocess.run(["podman", "ps", "-aq", *filters], capture_output=True, text=True, timeout=30).stdout.split()
         if ids:
             subprocess.run(["podman", "rm", "-f", "-t", "0", *ids], capture_output=True, timeout=60)
     except (OSError, subprocess.SubprocessError):

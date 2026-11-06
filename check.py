@@ -105,7 +105,7 @@
      busy), and every write waits out a merge in the shared copy (503); the HEAD baseline is not
      rebuilt for each commit; the edits build; a GET of the status builds no baseline, a viewer's
      POST baseline does;
-   - stopping the instance leaves no container running; an edit still uncommitted when it stops
+   - stopping the instance leaves no container, running or created and never started; an edit still uncommitted when it stops
      (a merge in progress) is committed as its writer's at the next start; restarted with an https public URL, cookies are Secure on its
      Host; the identity header from a peer whose uid is not LATEX_LIVE_PROXY_UID is not trusted
      (Linux).
@@ -3390,14 +3390,20 @@ def editor_checks(sh):
        " POST open runs the editor")
 
 
-def instance_containers(pid, run=None):
+def instance_containers(pid, run=None, every=False):
     """The running containers that tex-exec labelled for the shared instance in process pid (config.INSTANCE starts
-    with its pid), or those of one kind of run ("main", "clean"; each run has a label of its own, main-12 say)."""
-    r = subprocess.run(["podman", "ps", "--filter", "label=latex-live.instance", "--format",
+    with its pid), or those of one kind of run ("main", "clean"; each run has a label of its own, main-12 say); with
+    every, those in any state (created but never started too)."""
+    return {f[0] for f in labelled_containers(every) if f[1].startswith(f"{pid}-") and run in (None, f[2])}
+
+
+def labelled_containers(every=False):
+    """(id, instance label, kind) of each container that tex-exec labelled for a shared instance (running ones, or
+    with every, those in any state)."""
+    r = subprocess.run(["podman", "ps", *(["-a"] if every else []), "--filter", "label=latex-live.instance", "--format",
                         '{{.ID}} {{index .Labels "latex-live.instance"}} {{index .Labels "latex-live.kind"}}'],
                        capture_output=True, text=True, timeout=60)
-    found = [line.split() for line in r.stdout.splitlines()]
-    return {f[0] for f in found if len(f) == 3 and f[1].startswith(f"{pid}-") and run in (None, f[2])}
+    return [f for f in (line.split() for line in r.stdout.splitlines()) if len(f) == 3]
 
 
 def rebuild_stop_checks(sh):
@@ -3413,6 +3419,7 @@ def rebuild_stop_checks(sh):
         wait_for("a container of the rebuild", lambda: instance_containers(pid, "main"), timeout=60, step=0.2)
         time.sleep(3)  # (a pass without slow.tex is over by now)
         busy = wait_for("a pass that slow.tex keeps busy", lambda: instance_containers(pid, "main"), timeout=30, step=0.2)
+        sh["instance"] = next((f[1] for f in labelled_containers() if f[0] in busy), None)  # (its config.INSTANCE: shared_stop_checks)
         expect(with_token(owner, "/rebuild", "POST", {}), 202, "the owner rebuilding during that pass")
         wait_for("the busy pass's container to be gone", lambda: not busy & instance_containers(pid), timeout=20, step=0.2)
     finally:
@@ -3743,12 +3750,20 @@ def shared_stop_checks(sh, sharing):
     last = with_paragraph(current["text"], 11, "Paragraph eleven, saved just before the stop.")
     save("ed", {"path": "body.tex", "base": current["version"], "text": last}, 200, "a save just before the stop")
     git(root, "-c", "core.hooksPath=/dev/null", "merge", "--no-ff", "--no-commit", "side")  # (before the save's quiet period ends)
+    # A container as a podman client leaves it when it is stopped between creating the container and starting it (as
+    # stopping the instance's process group may do to a pass's): created, never started. The stop removes it too.
+    if sh.get("instance"):
+        subprocess.run(["podman", "create", "--pull=never", "--entrypoint=", "--label", f"latex-live.instance={sh['instance']}",
+                        "--label", "latex-live.run=clean-0", "--label", "latex-live.kind=clean", texlive_image()[0], "true"],
+                       capture_output=True, timeout=60, check=True)
     stop(sh["proc"])
     sharing.remove(sh["proc"])
     if recorded(sh["state"]):
         fail(f"the stopped shared-mode instance is still listed: {recorded(sh['state'])}")
-    if left := instance_containers(sh["proc"].pid):
-        fail(f"the stopped shared-mode instance left {len(left)} containers running")
+    if left := instance_containers(sh["proc"].pid, every=True):
+        subprocess.run(["podman", "rm", "-f", "-t", "0", *left], capture_output=True, timeout=60)
+        fail(f"the stopped shared-mode instance left {len(left)} containers (running, or created and never started)")
+    ok("stopping the shared-mode instance removes its containers, also one created and never started")
     kept = [read_json_file(p) or {} for p in glob.glob(pending)]
     if (git_out(root, "rev-parse", "shared") != tip
             or [k.get("pending", {}).get("ed", {}).get("paths") for k in kept] != [{"body.tex": "edit"}]):
