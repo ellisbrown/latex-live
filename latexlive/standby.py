@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""The warm standby of the live build: a pdflatex run that has already read the paper's preamble and
-waits, so that a save pays only for the body.
+"""The warm standbys of the live build and of its pass without notes: a pdflatex run that has already
+read the paper's preamble and waits, so that a save pays only for the body.
 
 latexmkrc runs each pdflatex pass of the owner's previews through this file (run_pass) when live.py
 asks for standbys (LATEX_LIVE_STANDBY_OWNER, its pid; on unless LATEX_LIVE_STANDBY=0), as
 `standby.py pdflatex ARGS...` with the arguments latexmk gives pdflatex; the TeX command's prefix is
 LATEX_LIVE_EXEC, as before. A pass either takes a standby or runs pdflatex as it always did, and
-starts the next standby. live.py stops a document's standbys when it starts, switches documents,
-rebuilds from scratch and stops (stop_standbys). Shared mode builds without latexmk: no standby.
+starts the next standby. latex_report.py runs the notes-free pass's TeX runs through run_tex the same
+way (see "The notes-free pass" below). live.py stops a document's standbys when it starts, switches
+documents, rebuilds from scratch and stops (stop_standbys). Shared mode builds without latexmk: no
+standby.
 
 The mechanism
 - A standby runs the pass's own command with TeX's output directory moved to
-  build/standby/<job>-<id>/out/ (S) and the build folder (B) first on TEXINPUTS: TeX looks for a file
-  in S, then in B, then where it always does (a normal pass looks in B, then there). S holds a copy of
+  R/standby/<job>-<id>/out/ (S; R: the build folder) and the pass's output directory (B: R itself, or
+  R/clean/ for the notes-free pass) first on TEXINPUTS: TeX looks for a file in S, then in B, then where
+  it always does (a normal pass looks in B, then there). S holds a copy of
   the root file's lines before line L, the line that \\begin{document} starts, under the root's name,
   so `\\input{<root>}` reads the copy (and LaTeX's file name, \\CurrentFile and hooks are a normal
   pass's). The copy ends in TAIL, which, in a group, checks that the preamble ended outside any group
@@ -36,16 +39,19 @@ The mechanism
 
 The invariant: a pass's PDF, log, .fls and SyncTeX file say what a normal pass at that moment would
 have written, or the pass is a normal one. The PDF's bytes differ only in its creation date and ID,
-which are the standby's start (at most MAX_AGE earlier).
+which are the standby's start (at most MAX_AGE earlier). (The SyncTeX file numbers the root file twice,
+as the copy and as itself, so the numbers of the files read after it are one higher: it maps the same
+places to the same files and lines.)
 
 A pass runs normally, saying why once, unless all of these hold:
-- live.py runs it (not a manual latexmk), the engine is pdflatex, and its arguments are latexmk's usual
-  ones: -recorder, one output directory (B), one job name, \\input of a root file in the paper root,
+- live.py runs it (not a manual latexmk), the engine is pdflatex, and its arguments are the usual
+  ones: -recorder, one output directory (B: R or a folder in it), one job name, \\input of a root file
+  (with .tex) in the paper root, after anything (the notes-free pass's NOTES_OFF),
   no shell escape; LATEX_LIVE_EXEC is empty (the host's TeX) or tex-exec (the image only); the root's
   first \\begin{document} starts a line after the first, and no earlier line has one;
 - a standby of the same key waits (else one is started for the next pass). The key covers the
-  arguments but the output directory, the working folder, LATEX_LIVE_EXEC, the environment, the
-  root's name, L and the preamble's bytes. Standbys of other keys are stopped;
+  arguments, B, the working folder, LATEX_LIVE_EXEC, the environment, the root's name, L and the
+  preamble's bytes. Standbys of other keys are stopped;
 - the key is verified for the current contents of the files its preamble read, with the same TeX
   format as the last pass. Until then (after a preamble edit, say), a pass runs normally, with a
   standby beside it on the same inputs (the waiting one, or one it starts); when both succeed, no file
@@ -67,16 +73,39 @@ until a file it read changes; one that can't start (e.g. the image is missing) i
 Files outside the paper and B (the TeX installation, personal TeX trees) are taken not to change
 while a standby waits, at most MAX_AGE.
 
-At most one standby waits per document, plus the one a pass is using. A pass removes the remains of
-dead standbys; a keeper stops its TeX run when live.py dies (also after kill -9) or the pass that
-took it does, and its TeX run gets SIGTERM if the keeper dies (on Linux); a container stops at its
-deadline (DEADLINE) whatever happens, and live.py removes leftovers by label (stop_standbys).
+The notes-free pass (latex_report.py notes_free_pass, run_tex): job <doc>-clean, B = R/clean/; its
+standbys and records are in R/standby/ beside the live build's (<doc>-clean-<id>/, <doc>-clean.json).
+- Its arguments start the root's \\input with NOTES_OFF, which the standby runs before the copy: part of
+  its preamble (and of the key). They have -recorder, and the root's name with .tex (given a name
+  without it, LaTeX compares the sizes of the files found with and without it, which differ between the
+  copy and the root file); a pass without standbys runs as before.
+- What it reads of B, the main build's .aux, .bbl and the like that latex_report.py copies there
+  (SEED_EXTS) and its own last run's files, are the job's files in B: seed copies them into S.
+- With lineno it runs twice (latex_report.py uses_lineno), each run a pass: the first starts the next
+  standby once released, and the second takes that one (ready waits while it reads the preamble).
+- An early notes-free pass (latex_report.py run_early) is one too, run in place in B. When it is
+  stopped mid-run (its process group: the SIGTERM handler stops its standby), latex_report.py stop_early
+  calls stop_taken, which waits until the standby it took or was verifying against, its keeper and its
+  container are gone, before it puts B back as it was; the standby it started for the next pass waits.
+  Its run's container never gets the early pass's label (LATEX_LIVE_EARLY_LABEL: keeper_env).
+- One pass at a time per job uses standbys (a lock, R/standby/<job>.lock; another one waits LOCK_WAIT,
+  else runs normally); TeX's output goes nowhere; past its timeout a run is stopped (TimedOut); its
+  phases go into the live build's timing file as clean-* (Pass.timing). Anything doubtful or failing
+  hands the run back to latex_report.py, which runs it as it always did.
+LATEX_LIVE_CLEAN_STANDBY=0 turns these off alone (live.py passes LATEX_LIVE_CLEAN_STANDBY=1 otherwise).
+
+At most one standby waits per job (a document's live build, and its notes-free pass), plus the one a pass
+is using (and, briefly, one being verified). A pass removes the remains of dead standbys; a keeper stops
+its TeX run when live.py dies (also after kill -9) or the pass that took it does, and its TeX run gets
+SIGTERM if the keeper dies (on Linux); a container stops at its deadline (DEADLINE) whatever happens, and
+live.py removes leftovers by label (stop_standbys).
 
 This file imports nothing from latexlive: latexmkrc runs it as a script (python3 -I).
 """
 
 import ctypes
 import errno
+import fcntl
 import gzip
 import hashlib
 import json
@@ -95,12 +124,15 @@ DEADLINE = 3600  # (s: a standby's container stops after this long, whatever hap
 READY_WAIT = 60  # (s: how long a pass waits for a standby still reading its preamble)
 RETRY = 60  # (s: after a standby could not start, how long until the next try)
 WATCH_LIMIT = 20000  # (the most names in the paper's folders that a standby watches)
-SCHEME = "1"  # (part of every key: a change to how standbys work voids the records)
-NOT_KEY = {"_", "SHLVL", "PWD", "OLDPWD", "TRACEPARENT", "TRACESTATE", "LATEX_LIVE_STANDBY_OWNER"}  # (not in the key: they vary by process)
+SCHEME = "2"  # (part of every key: a change to how standbys work voids the records)
+PASS_ONLY = ("LATEX_LIVE_EARLY_LABEL", "LATEX_LIVE_CLEAN_PASS")  # (what ties a notes-free pass's runs to it: never a standby's)
+NOT_KEY = {"_", "SHLVL", "PWD", "OLDPWD", "TRACEPARENT", "TRACESTATE", "LATEX_LIVE_STANDBY_OWNER", *PASS_ONLY}  # (they vary by process)
+LOCK_WAIT = 10  # (s: how long a notes-free pass waits for another one's standby work, run_tex, before it runs normally)
 NAME_RE = re.compile(r"[A-Za-z0-9_+-][A-Za-z0-9_.+-]*")
 OUTDIR_RE = re.compile(r"--?output-directory=(.*)")
 JOBNAME_RE = re.compile(r"--?jobname=(.*)")
 SOURCE_RE = re.compile(r"(?s)(.*)\\input\{(" + NAME_RE.pattern + r"\.tex)\}")
+FOLDER_RE = re.compile(r"(" + NAME_RE.pattern + r")-[0-9a-f]+-[0-9]+")
 REFUSED_RE = re.compile(r"--?(shell-escape|enable-write18|aux-directory=.*|ini|output-format=.*)")
 BEGIN_RE = re.compile(rb"\\begin\s*\{\s*document\s*\}")
 COMMENT_RE = re.compile(rb"(?<!\\)%.*")
@@ -141,11 +173,17 @@ def say(message):
 
 
 def note_time(p, event, detail=""):
-    """With LATEX_LIVE_TIMING=1, note when a phase of pass p happened, in B/<job>.timing (latexlive/timing.py)."""
+    """With LATEX_LIVE_TIMING=1, note when a phase of pass p happened, in B/<job>.timing, or in the file its caller
+    named, with a prefix and the name of the pass (p.timing: the notes-free pass's go in the live build's, as clean-*,
+    each naming its pass; how a run went is then the event: clean-standby, clean-verify or clean-normal;
+    latexlive/timing.py)."""
     if p.env.get("LATEX_LIVE_TIMING") == "1" and p.job:
+        path, prefix, name = p.timing or (p.file(".timing"), "", "")
+        if name:
+            event, detail = ("standby" if detail == "verified" else detail) if event == "standby" else event, name
         try:
-            with open(p.file(".timing"), "a") as f:
-                f.write(f"{time.time():.6f} {event}{' ' + detail if detail else ''}\n")
+            with open(path, "a") as f:
+                f.write(f"{time.time():.6f} {prefix}{event}{' ' + detail if detail else ''}\n")
         except OSError:
             pass
 
@@ -268,13 +306,18 @@ def tex_format(log):
 # A pass: what latexmk asked for, and whether a standby can do it.
 
 class Pass:
-    """One pdflatex pass that latexmk asked for (argv: pdflatex and its arguments), run from the paper root.
-    why: why a standby can't run it, else None."""
+    """One pdflatex pass (argv: pdflatex and its arguments), run from the paper root: one that latexmk asked for,
+    or the notes-free pass (run_tex). build: the build folder (R, which holds the standbys' folder); out: the
+    pass's output directory (B: R itself, or the notes-free pass's R/clean/). why: why a standby can't run it, else
+    None. timing: where note_time notes its phases, their prefix and the pass's name (default B/<job>.timing); timeout: how
+    long its TeX run may take (s), else TimedOut; quiet: whether TeX's output goes nowhere (else to stdout)."""
 
-    def __init__(self, argv, env):
+    def __init__(self, argv, env, timing=None, timeout=None, quiet=False):
         self.argv, self.env, self.cwd = list(argv), env, os.getcwd()
         self.exec = shlex.split(env.get("LATEX_LIVE_EXEC", ""))
         self.build = os.path.normpath(env.get("LATEX_LIVE_BUILD", "build"))
+        self.out = self.build
+        self.timing, self.timeout, self.quiet = timing, timeout, quiet
         self.owner = self.job = self.root = None
         self.why = self.check()
 
@@ -298,10 +341,15 @@ class Pass:
             return "pdflatex runs without -recorder"
         outdirs = [os.path.normpath(o.group(1)) for o in map(OUTDIR_RE.fullmatch, options) if o]
         jobs = [o.group(1) for o in map(JOBNAME_RE.fullmatch, options) if o]
-        if outdirs != [self.build] or len(jobs) != 1 or not NAME_RE.fullmatch(jobs[0]) or not m:
-            return "latexmk's arguments to pdflatex are not the usual ones"
-        if os.path.isabs(self.build) or ".." in self.build.split(os.sep) or not re.fullmatch(r"[A-Za-z0-9_./+-]+", self.build):
-            return f"the build folder's name ({self.build})"
+        if len(outdirs) != 1 or len(jobs) != 1 or not NAME_RE.fullmatch(jobs[0]) or not m:
+            return "pdflatex's arguments are not the usual ones"
+        self.out = outdirs[0]
+        for name in (self.build, self.out):
+            if os.path.isabs(name) or ".." in name.split(os.sep) or not re.fullmatch(r"[A-Za-z0-9_./+-]+", name):
+                return f"the build folder's name ({name})"
+        if self.out != self.build and (not self.out.startswith(self.build + os.sep)
+                                       or os.path.relpath(self.out, self.build).split(os.sep)[0] == "standby"):
+            return f"the output directory ({self.out}) is not the build folder or one in it"
         self.job, self.root = jobs[0], m.group(2)
         if not os.path.isfile(self.root):
             return f"{self.root} is not in the paper root"
@@ -312,6 +360,11 @@ class Pass:
         sys.stdout.flush()
         argv = [*self.exec, *self.argv]
         os.execvp(argv[0], argv)
+
+    def popen(self):
+        """Start the pass as a normal one, beside this process."""
+        quiet = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL} if self.quiet else {}
+        return subprocess.Popen([*self.exec, *self.argv], env=self.env, **quiet)
 
     def preamble(self):
         """(the root's lines before \\begin{document}, L: the line it starts), or (None, why not)."""
@@ -331,7 +384,7 @@ class Pass:
     def key(self, lines, line):
         args = [a for a in self.argv if not OUTDIR_RE.fullmatch(a)]
         env = sorted((k, v) for k, v in self.env.items() if k not in NOT_KEY)
-        h = hashlib.sha256(json.dumps([SCHEME, args, os.path.realpath(self.cwd), self.exec, env, self.root, line]).encode())
+        h = hashlib.sha256(json.dumps([SCHEME, args, self.out, os.path.realpath(self.cwd), self.exec, env, self.root, line]).encode())
         h.update(b"\n".join(lines))
         return h.hexdigest()[:32]
 
@@ -339,7 +392,7 @@ class Pass:
         return os.path.join(self.build, "standby")
 
     def file(self, ext):
-        return os.path.join(self.build, f"{self.job}{ext}")
+        return os.path.join(self.out, f"{self.job}{ext}")
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -455,7 +508,14 @@ def standbys(p):
     except OSError:
         return []
     return [Standby(os.path.join(p.folder(), n)) for n in names
-            if n.startswith(p.job + "-") and os.path.isdir(os.path.join(p.folder(), n, "out"))]
+            if is_folder_of(n, p.job) and os.path.isdir(os.path.join(p.folder(), n, "out"))]
+
+
+def is_folder_of(name, job=None):
+    """Whether name is that of a standby's folder (of job, or of any): <job>-<id>-<pid>, as start_standby names it
+    (so that the job x-live's standbys are not taken for those of x-live-clean, say)."""
+    m = FOLDER_RE.fullmatch(name)
+    return bool(m) and (job is None or m.group(1) == job)
 
 
 def tidy(p, records, key):
@@ -528,18 +588,25 @@ def start_standby(p, records, key, lines, line):
     with open(os.path.join(out, p.root), "wb") as f:
         f.write(b"\n".join(lines) + b"\n" + tail.encode())
     os.mkfifo(os.path.join(out, fifo), 0o600)
-    for sub in build_folders(p.build):  # (TeX writes an \include's .aux in B's subfolders, which latexmk makes)
+    for sub in build_folders(p.out):  # (TeX writes an \include's .aux in B's subfolders, which latexmk makes)
         os.makedirs(os.path.join(out, sub), exist_ok=True)
     texinputs = p.env.get("TEXINPUTS")
-    env = {"TEXINPUTS": f"{p.build}:{texinputs or ''}", "LATEX_LIVE_STANDBY_LABEL": label_of(p.cwd, p.build, p.job),
+    env = {"TEXINPUTS": f"{p.out}:{texinputs or ''}", "LATEX_LIVE_STANDBY_LABEL": label_of(p.cwd, p.build, p.job),
            "LATEX_LIVE_RUN": os.path.basename(folder), "LATEX_LIVE_TIMEOUT": str(DEADLINE)}
     argv = [f"-output-directory={out}" if OUTDIR_RE.fullmatch(a) else a for a in p.argv]
     write_json(os.path.join(folder, "standby.json"), {
-        "key": key, "job": p.job, "root": p.root, "line": line, "build": p.build, "argv": [*p.exec, *argv], "env": env,
-        "pass": p.argv, "owner": p.owner, "owner_start": process_start(p.owner), "created": time.time(), "host": not p.exec})
-    subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "--keep", folder], cwd=p.cwd, start_new_session=True,
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        "key": key, "job": p.job, "root": p.root, "line": line, "build": p.build, "out": p.out, "argv": [*p.exec, *argv],
+        "env": env, "pass": p.argv, "owner": p.owner, "owner_start": process_start(p.owner), "created": time.time(),
+        "host": not p.exec})
+    keeper_env = {k: v for k, v in p.env.items() if k not in PASS_ONLY}  # (the pass's, but what ties a run to it)
+    subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "--keep", folder], cwd=p.cwd, env=keeper_env,
+                     start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return Standby(folder)
+
+
+def out_of(info):
+    """A standby's B (standby.json; one written before "out" was there has B = R)."""
+    return info.get("out", info["build"])
 
 
 def build_folders(build):
@@ -558,10 +625,11 @@ def build_folders(build):
 # ---------------------------------------------------------------------------------------------------
 # What the paper's folders and B held when a standby started, to tell whether a name appeared since.
 
-def snapshot(build, job):
-    """{folder: [mtime, names]} for the paper root's folders (not dot folders, nor B), through links to
-    folders too (a file added in one is a name TeX may find), each real folder once; and for B and the
-    subfolders of B the last pass wrote in; None past WATCH_LIMIT names."""
+def snapshot(build, job, out=None):
+    """{folder: [mtime, names]} for the paper root's folders (not dot folders, nor R: build), through links to
+    folders too (a file added in one is a name TeX may find), each real folder once; and for B (out, default R)
+    and the subfolders of B the last pass wrote in; None past WATCH_LIMIT names."""
+    out = out or build
     snap, count, seen = {}, 0, set()
     for folder, dirs, _ in os.walk(".", followlinks=True):
         rel = os.path.normpath(folder)
@@ -576,31 +644,31 @@ def snapshot(build, job):
         if count > WATCH_LIMIT:
             return None
         snap[rel] = [os.stat(folder).st_mtime_ns, names]
-    for rel in [build, *(os.path.join(build, d) for d in written_folders(build, job))]:
+    for rel in [out, *(os.path.join(out, d) for d in written_folders(out, job))]:
         try:
-            snap[rel] = [os.stat(rel).st_mtime_ns, names_in(rel, build, job)]
+            snap[rel] = [os.stat(rel).st_mtime_ns, names_in(rel, out, job)]
         except OSError:
             pass
     return snap
 
 
-def names_in(folder, build, job):
-    """The names in a folder; in B, but temporary files, the standbys' folder and the job's files that TeX
+def names_in(folder, out, job):
+    """The names in a folder; in B (out), but temporary files, the standbys' folder and the job's files that TeX
     doesn't read (NOT_READ: one read all the same puts the pass in doubt)."""
-    if folder != build and not folder.startswith(build + os.sep):
+    if folder != out and not folder.startswith(out + os.sep):
         return sorted(os.listdir(folder))
-    return sorted(n for n in os.listdir(folder) if not n.endswith(".tmp") and not (folder == build and n == "standby")
+    return sorted(n for n in os.listdir(folder) if not n.endswith(".tmp") and not (folder == out and n == "standby")
                   and not (n.startswith(job + ".") and n.endswith(NOT_READ)))
 
 
-def new_name(snap, build, job):
+def new_name(snap, out, job):
     """A name (folder/name) that has appeared in a snapshot's folders since it was taken, or None. (A name
     that went away can't make TeX find what it missed; what TeX read from it is checked by its stamp.)"""
     for folder, (mtime, names) in snap.items():
         try:
             if os.stat(folder).st_mtime_ns == mtime:
                 continue
-            added = set(names_in(folder, build, job)) - set(names)
+            added = set(names_in(folder, out, job)) - set(names)
         except OSError:
             continue
         if added:
@@ -619,7 +687,7 @@ def keep(folder):
     stopping = []
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, lambda *_: stopping.append(True))
-    snap = snapshot(info["build"], info["job"])
+    snap = snapshot(info["build"], info["job"], out_of(info))
     if snap is None:
         if sb.claim("keeper"):
             write_json(sb.path("done.json"), {"code": None, "error": True,
@@ -732,14 +800,14 @@ def seed(p, sb):
     pass wrote in B. Never over a file TeX has made in S itself (its preamble may write some)."""
     names = set()
     try:
-        names.update(n for n in os.listdir(p.build) if n.startswith(p.job + ".") and not n.endswith(NOT_READ))
+        names.update(n for n in os.listdir(p.out) if n.startswith(p.job + ".") and not n.endswith(NOT_READ))
     except OSError:
         pass
     for kind, path in fls_entries(p.file(".fls")):
-        if kind == "OUTPUT" and path.startswith(p.build + os.sep) and not path.endswith(NOT_READ):
-            names.add(os.path.relpath(path, p.build))
+        if kind == "OUTPUT" and path.startswith(p.out + os.sep) and not path.endswith(NOT_READ):
+            names.add(os.path.relpath(path, p.out))
     for rel in sorted(names):
-        src, dst = os.path.join(p.build, rel), os.path.join(sb.out, rel)
+        src, dst = os.path.join(p.out, rel), os.path.join(sb.out, rel)
         try:
             with open(src, "rb") as g:
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -783,9 +851,14 @@ def release(sb, fd):
         os.close(fd)
 
 
-def wait_done(sb):
-    """The standby's TeX run's exit status once it ends, or None if its keeper died first."""
-    checked = time.monotonic()
+class TimedOut(Exception):
+    """A pass with a timeout (Pass.timeout) took longer: its TeX run was stopped."""
+
+
+def wait_done(sb, timeout=None):
+    """The standby's TeX run's exit status once it ends, or None if its keeper died first; past timeout (s), stop
+    it and raise TimedOut."""
+    checked = start = time.monotonic()
     while True:
         done = sb.done()
         if done is not None:
@@ -794,7 +867,20 @@ def wait_done(sb):
             checked = time.monotonic()
             if not sb.keeper_alive() and sb.done() is None:
                 return None
+            if timeout is not None and checked - start > timeout:
+                sb.stop()
+                raise TimedOut()
         time.sleep(0.005)
+
+
+def wait_normal(p, proc):
+    """The exit status of the normal pass proc; past p.timeout, stop it and raise TimedOut."""
+    try:
+        return proc.wait(p.timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise TimedOut() from None
 
 
 def before_release(p, sb, record):
@@ -807,7 +893,7 @@ def before_release(p, sb, record):
         return "it is too old"
     if today(t0 / 1e9) != today():
         return "the date has changed since it started"
-    name = new_name(sb.keeper["snapshot"], p.build, p.job)
+    name = new_name(sb.keeper["snapshot"], p.out, p.job)
     if name:
         return f"{name} appeared after it started"
     for path, st in record["inputs"] if record else []:
@@ -820,7 +906,7 @@ def preamble_reads(sb, t0):
     """(the files that the standby's preamble read and that can change, [[path, stamp]...]: in the paper, in
     B, and on a host run anywhere; why the run is in doubt, or None), from its .fls."""
     info, out = sb.info, os.path.normpath(sb.out)
-    build, job = info["build"], info["job"]
+    build, job = out_of(info), info["job"]
     fifo = os.path.join(out, f"{job}-standby.fifo")
     entries = fls_entries(os.path.join(out, f"{job}.fls"))
     doubt = None if ("INPUT", fifo) in entries else "its TeX run did not stop at its release"
@@ -867,7 +953,7 @@ def after_release(p, sb, record, code, root_stamp):
 
 def rewrite(sb):
     """The (old, new) replacements that turn S's paths in TeX's output into B's, and the copy's into the root's."""
-    out, root, build = os.path.normpath(sb.out), sb.info["root"], sb.info["build"]
+    out, root, build = os.path.normpath(sb.out), sb.info["root"], out_of(sb.info)
     return [(f"{out}/{root}".encode(), f"./{root}".encode()), (f"{out}/".encode(), f"{build}/".encode())]
 
 
@@ -898,7 +984,7 @@ def finish(p, sb):
         if kind != "OUTPUT" or not path.startswith(os.path.normpath(out) + os.sep):
             continue
         rel = os.path.relpath(path, out)
-        src, dst = os.path.join(out, rel), os.path.join(p.build, rel)
+        src, dst = os.path.join(out, rel), os.path.join(p.out, rel)
         if rel in (f"{job}.log", f"{job}.synctex.gz"):  # (rewritten above)
             continue
         if os.path.isfile(src):
@@ -947,7 +1033,7 @@ def judge(sb):
     if (sb.done() or {}).get("code") != 0:
         doubt = "its run failed"
     for kind, path in fls_entries(sb.path("reference.fls")):
-        st = stamp(path) if kind == "INPUT" and not os.path.isabs(path) and not path.startswith(sb.info["build"] + os.sep) else None
+        st = stamp(path) if kind == "INPUT" and not os.path.isabs(path) and not path.startswith(out_of(sb.info) + os.sep) else None
         if st and changed_since(st, started):
             doubt = doubt or f"{path} changed during the pass"
     verdict = {"key": sb.info["key"], "inputs": reads, "format": tex_format(os.path.join(out, f"{job}.log")), "doubt": doubt}
@@ -994,13 +1080,14 @@ def take(p, records, key, sb, lines, line):
         note_time(p, "released")
     start_standby(p, records, key, lines, line)  # (for the next pass)
     if why is None:
-        code = wait_done(sb)
+        code = wait_done(sb, p.timeout)
         note_time(p, "tex-end")
         why = after_release(p, sb, record, code, root_stamp)
         if why is None:
             finish(p, sb)
             note_time(p, "moved")
-            show_output(sb)
+            if not p.quiet:
+                show_output(sb)
             remove(sb.dir)
             records.last("standby")
             return code
@@ -1016,7 +1103,7 @@ def beside(p, records, key, sb, lines, line):
     once it ends. Returns the normal pass's exit status."""
     started = time.time_ns()
     seed(p, sb)
-    normal = subprocess.Popen([*p.exec, *p.argv])
+    normal = p.popen()
     fd = ready(sb, time.monotonic() + READY_WAIT, normal)
     if fd is None:
         why = stopped(records, key, sb) if normal.poll() is None else "the normal pass ended first"
@@ -1027,13 +1114,17 @@ def beside(p, records, key, sb, lines, line):
         elif not release(sb, fd):
             why = "its release failed"
     start_standby(p, records, key, lines, line)  # (for the next pass)
-    status = normal.wait()
+    try:
+        status = wait_normal(p, normal)
+    except TimedOut:
+        sb.stop()
+        raise
     note_time(p, "tex-end")
     records.last("verify", why)
     if why is not None or status != 0:
         sb.stop()
         return status
-    write_json(sb.path("verify.json"), {"started": started})
+    write_json(sb.path("verify.json"), {"started": started, "pass": os.getpid()})
     try:
         shutil.copyfile(p.file(".pdf"), sb.path("reference.pdf"))
         shutil.copyfile(p.file(".fls"), sb.path("reference.fls"))
@@ -1066,11 +1157,9 @@ def show_output(sb):
         pass
 
 
-def run_pass(argv):
-    """latexmkrc's pdflatex command: the pass argv (pdflatex and its arguments), with a standby when it can."""
-    p = Pass(argv, os.environ)
-    if p.why:
-        p.run_plain()
+def attempt(p):
+    """Run pass p (one a standby can run: p.why is None) with a standby when it can. Returns TeX's exit status, or
+    None when the caller is to run it normally."""
     os.makedirs(p.folder(), exist_ok=True)
     records = Records(p)
     lines, line = p.preamble()
@@ -1078,7 +1167,7 @@ def run_pass(argv):
         records.say_once(f"preamble:{p.root}", f"no warm standby for {p.root}: {line}")
         records.last("normal", line)
         records.save()
-        p.run_plain()
+        return None
     key = p.key(lines, line)
     taken, paths = None, records.paths(key)
     for sb in tidy(p, records, key):
@@ -1086,30 +1175,98 @@ def run_pass(argv):
             taken = sb
         else:
             sb.stop()  # (only one waits; one whose preamble read a file that has changed since is no use)
-    if taken is not None:
-        note_time(p, "standby", "verified" if records.find("verified", key) else "verify")
-
-        def stopped(*_):
-            taken.stop()
-            sys.exit(143)
-        signal.signal(signal.SIGTERM, stopped)
-        code = take(p, records, key, taken, lines, line)
-        signal.signal(signal.SIGTERM, signal.SIG_DFL)
-        records.save()
-        if code is not None:
-            sys.exit(code)
-    else:
+    if taken is None:
         refused = records.find("refused", key)
         fresh = start_standby(p, records, key, lines, line)
-        if fresh is not None and not records.find("verified", key) and fresh.claim(os.getpid()):
-            note_time(p, "standby", "verify")
-            code = take(p, records, key, fresh, lines, line)  # (verified on this pass, beside it: see take)
+        if fresh is None or records.find("verified", key) or not fresh.claim(os.getpid()):
+            records.last("normal", refused["reason"] if refused else "no standby was waiting")
             records.save()
-            sys.exit(code)
-        records.last("normal", refused["reason"] if refused else "no standby was waiting")
+            note_time(p, "standby", "normal")
+            return None
+        taken = fresh  # (verified on this pass, beside it: see take)
+    note_time(p, "standby", "verified" if records.find("verified", key) else "verify")
+
+    def stopped(*_):
+        taken.stop()
+        sys.exit(143)
+    previous = signal.signal(signal.SIGTERM, stopped)
+    try:
+        code = take(p, records, key, taken, lines, line)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
         records.save()
-    note_time(p, "standby", "normal")
-    p.run_plain()
+    if code is None:
+        note_time(p, "standby", "normal")
+    return code
+
+
+def run_pass(argv):
+    """latexmkrc's pdflatex command: the pass argv (pdflatex and its arguments), with a standby when it can."""
+    p = Pass(argv, os.environ)
+    if p.why:
+        p.run_plain()
+    code = attempt(p)
+    if code is None:
+        p.run_plain()
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------------------------------------------
+# For latex_report.py: the notes-free pass.
+
+def run_tex(argv, env, timeout=None, timing=None):
+    """Run the notes-free pass argv (pdflatex and its arguments, -recorder among them; env: its environment, with
+    LATEX_LIVE_EXEC; from the paper root) from a standby of its own when it can, as run_pass does the live build's
+    passes, with TeX's output going nowhere. Returns TeX's exit status, or None when the caller is to run it
+    normally (as without standbys); raises TimedOut past timeout (s). timing: (file, prefix, pass name) for its phases
+    (note_time). One such pass at a time per job uses the standbys (a lock); another one waits for it, at most
+    LOCK_WAIT, else runs normally."""
+    p = Pass(argv, env, timing=timing, timeout=timeout, quiet=True)
+    if p.why:
+        return None
+    try:
+        os.makedirs(p.folder(), exist_ok=True)
+        with open(os.path.join(p.folder(), f"{p.job}.lock"), "a") as lock:
+            end = time.monotonic() + LOCK_WAIT
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() > end:
+                        return None
+                    time.sleep(0.02)
+            return attempt(p)
+    except TimedOut:
+        raise
+    except Exception:  # (a bug here must not stop the pass: it runs normally, which is always right)
+        try:
+            with open(os.path.join(p.folder(), "error.log"), "a") as f:
+                f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + traceback.format_exc())
+        except OSError:
+            pass
+        return None
+
+
+def stop_taken(build, pid):
+    """Stop the standbys that the pass pid took, or was verifying against, waiting until their keepers, TeX runs
+    and containers are gone, and remove their folders (latex_report.py: once it has stopped an early notes-free
+    pass, whose standby would otherwise stop a moment later). Run from the paper root."""
+    folder = os.path.join(build, "standby")
+    try:
+        names = sorted(n for n in os.listdir(folder) if is_folder_of(n))
+    except OSError:
+        return
+    taken = []
+    for name in names:
+        sb = Standby(os.path.join(folder, name))
+        who = sb.claimed()
+        if who == str(pid) or who == "verify" and (read_json(sb.path("verify.json")) or {}).get("pass") == pid:
+            taken.append(sb)
+    halt(taken)
+    for sb in taken:
+        if sb.info and not sb.info.get("host"):
+            remove_containers("latex-live.run", sb.info["env"]["LATEX_LIVE_RUN"])
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -1120,12 +1277,23 @@ def stop_standbys(paper_root, build, job):
     them (live.py: when it starts, switches documents, rebuilds from scratch and stops)."""
     folder = os.path.join(paper_root, build, "standby")
     try:
-        names = [n for n in os.listdir(folder) if n.startswith(job + "-")]
+        names = [n for n in os.listdir(folder) if is_folder_of(n, job)]
     except OSError:
         names = []
+    halt([Standby(os.path.join(folder, name)) for name in names])
+    remove_containers("latex-live.standby", label_of(paper_root, build, job))
+    records = read_json(os.path.join(folder, f"{job}.json"))
+    if records and records.get("said"):
+        records["said"] = []
+        write_json(os.path.join(folder, f"{job}.json"), records)
+
+
+def halt(sbs):
+    """Stop these standbys' keepers (or TeX runs whose keeper was killed), waiting for them (then SIGKILL), and
+    remove their folders."""
     keepers = []
-    for name in names:
-        sb = Standby(os.path.join(folder, name))
+    for sb in sbs:
+        name = os.path.basename(sb.dir)
         if sb.keeper_alive() and name in command_line(sb.keeper["pid"]):
             try:
                 os.kill(sb.keeper["pid"], signal.SIGTERM)
@@ -1146,13 +1314,8 @@ def stop_standbys(paper_root, build, job):
             os.kill(sb.keeper["pid"], signal.SIGKILL)
         except OSError:
             pass
-    for name in names:
-        remove(os.path.join(folder, name))
-    remove_containers("latex-live.standby", label_of(paper_root, build, job))
-    records = read_json(os.path.join(folder, f"{job}.json"))
-    if records and records.get("said"):
-        records["said"] = []
-        write_json(os.path.join(folder, f"{job}.json"), records)
+    for sb in sbs:
+        remove(sb.dir)
 
 
 def main(argv):
