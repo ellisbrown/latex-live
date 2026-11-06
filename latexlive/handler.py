@@ -49,6 +49,7 @@ def me(server, user):
 
 
 STATIC = {"/viewer.html"}  # plus the files in the folders of STATIC_DIRS (static_file)
+ACTIONS = ("/open", "/diff", "/switch", "/export", "/review")  # (POST only: a GET of one is answered 405)
 
 
 def static_file(path):
@@ -159,20 +160,12 @@ class Handler(BaseHandler):
             self.send_json(200, files_listing(self.server))
         elif path == "/file":
             self.send_json(*file_request(self.server, query))
-        elif path in ("/open", "/diff", "/switch", "/export", "/review") and config.SHARED:  # (only as POST, which checks the Origin)
-            self.send_error(405, "use POST")
-        elif path == "/open":
-            self.send_text(*open_source(self.server.paper_root, query))
+        elif path in ACTIONS:  # (only as POST, which checks the Origin; a viewer from before says this)
+            self.send_json(405, {"error": "this preview takes that as a POST now: reload the page"})
         elif path == "/forward":
             self.send_json(*forward_request(self.server, query, self.principal))
         elif path == "/commits":
             self.send_json(200, commits(self.server.paper_root))
-        elif path == "/export":
-            self.send_json(*start_export(self.server))
-        elif path == "/review":
-            self.send_json(*start_review(self.server))
-        elif path == "/diff":
-            self.send_json(*start_diff(self.server, query.get("rev", [""])[0]))
         elif path == "/instances":
             self.send_json(200, {"self": os.getpid(), "instances": instances()})
         elif path == "/papers":
@@ -180,8 +173,6 @@ class Handler(BaseHandler):
         elif path == "/docs":  # (a coauthor sees only the shared document)
             docs = root_docs(self.server.paper_root) if self.principal["role"] == "owner" else [self.server.default_pdf[:-4]]
             self.send_json(200, {"doc": self.server.default_pdf[:-4], "docs": docs})
-        elif path == "/switch":
-            self.send_json(*request_switch(self.server, query))
         elif path == "/favicon.ico":  # (no icon; nothing to refuse either: browsers ask on every page)
             self.send_response(204)
             self.end_headers()

@@ -19,7 +19,7 @@ from .base import ENV, HERE, PORT, TOKEN, _quiet, fail, hub, in_thread, ok, wait
 from .clean_standby import clean_standby_run
 from .early import early_run
 from .helpers import (
-    CAPS, JS_TYPE_RE, editor_calls, editor_stub, get, hub_get, post_length, read_bytes, read_hub, request, start, stop,
+    CAPS, JS_TYPE_RE, editor_calls, editor_stub, get, hub_get, post, post_length, read_bytes, read_hub, request, start, stop,
     texlive_image, text_point)
 from .papers import composed, make_paper
 from .shared import shared_checks
@@ -168,22 +168,21 @@ def live_checks(tmp):
         wait_for("the rebuild that POST /rebuild started", lambda: _quiet(rebuilt))
         ok("POST /rebuild works through the hub")
         exported = wait_for("the PDF without notes", lambda: (lambda e: e if e.get("state") in ("done", "failed") else None)(
-            get("/export", token)), timeout=240)
+            post("/export", token)), timeout=240)
         if exported["state"] != "done":
             fail(f"the build without notes failed: {exported.get('msg')}")
         pdf = get("/pdf/main-export.pdf", token)
         log = open(os.path.join(build, "export", "main", "main-export.log"), errors="replace").read()
         if not pdf.startswith(b"%PDF") or re.search(r"Rerun to get|may have changed\. Rerun", log):
             fail("the PDF without notes is missing, or its references had not settled")
-        if get("/export", token).get("version") != exported["version"]:
+        if post("/export", token).get("version") != exported["version"]:
             fail("asking again rebuilt the PDF without notes, though the document had not changed")
-        status, _, data = request(f"{hub['base']}main/export", method="POST", body={}, cookie=token)  # (as the viewer asks)
-        if status != 200 or json.loads(data).get("version") != exported["version"]:
-            fail(f"POST /export through the hub: {status} {data[:200]!r}, not the same download")
+        status, _, data = request(f"{hub['base']}main/export", cookie=token)  # (as a viewer from before asked)
+        if status != 405 or "reload the page" not in _quiet(lambda: json.loads(data)["error"]):
+            fail(f"GET /export through the hub: {status} {data[:200]!r}, not 405 with a message for the viewer")
         if ln_records(os.path.join(build, "export", "main", "main-export.aux")) != ln_records(os.path.join(build, "clean", "main-clean.aux")):
             fail("the download without notes has its line numbers in other places than the notes-free view")
-        ok("the download without notes is an exact build (line numbers too), made once per build; the viewer's POST asks"
-           " for the same one")
+        ok("the download without notes is an exact build (line numbers too), made once per build; a GET of it is 405")
         review_checks(build, token)
         switch_checks(token)
 
@@ -201,7 +200,7 @@ def live_checks(tmp):
             fail(f"/papers does not link both documents through the hub:\n{page[:600]}")
         ok("a second document gets its own process, behind the same port")
         failed = wait_for("the appendix's review copy", lambda: _quiet(lambda: (lambda e: e if e.get("state") in ("done", "failed")
-                                                                          else None)(get("/review", token, "appendix"))), timeout=120)
+                                                                          else None)(post("/review", token, "appendix"))), timeout=120)
         if failed.get("state") != "failed" or "no notes" not in failed.get("msg", "") or \
                 os.path.exists(os.path.join(build, "appendix-review.pdf")):
             fail(f"a review copy of a document without notes: {failed}")
@@ -215,11 +214,11 @@ def live_checks(tmp):
         if status != 502:
             fail(f"the hub forwarded a request for another paper to this preview's port: {status} {data[:200]!r}")
         ok("the hub, refused by a preview that is another paper's, looks again and doesn't misroute")
-        if get("/switch?doc=extra", token).get("doc") != "extra":
+        if post("/switch", token, body={"doc": "extra"}).get("doc") != "extra":
             fail("switching main's preview to extra failed")
         if wait_for("main's old route", lambda: _quiet(lambda: get("/docs", token)["doc"]), timeout=20) != "extra":
             fail("after a switch, the old document's viewers no longer reach their preview")
-        if get("/switch?doc=main", token, "extra").get("doc") != "main":
+        if post("/switch", token, "extra", {"doc": "main"}).get("doc") != "main":
             fail("switching back to main failed")
         wait_for("main again", lambda: _quiet(lambda: get("/docs", token)["doc"] == "main"), timeout=20)
         ok("after a switch (two documents running), the old document's viewers still reach their preview")
@@ -327,7 +326,7 @@ def review_checks(build, token):
     are there for shared mode's checks, at the start of body.tex: NOTE_PARAGRAPHS; outside shared mode,
     "as written" is a note like any other.)"""
     reviewed = wait_for("the review copy", lambda: (lambda e: e if e.get("state") in ("done", "failed") else None)(
-        get("/review", token)), timeout=240)
+        post("/review", token)), timeout=240)
     if reviewed["state"] != "done":
         fail(f"the review copy failed: {reviewed.get('msg')}")
     review = get("/pdf/main-review.pdf", token)
@@ -361,11 +360,11 @@ def review_checks(build, token):
             if a is not b and (a["page"], a["side"]) == (b["page"], b["side"]) and a["top"] <= b["top"] < a["top"] + a["sizes"][a["size"]]["h"]:
                 fail(f"notes {a['n']} and {b['n']} overlap")
     composed(build)
-    if reviewed.get("version") != get("/review", token).get("version"):
+    if reviewed.get("version") != post("/review", token).get("version"):
         fail("asking again rebuilt the review copy, though the document had not changed")
-    status, _, data = request(f"{hub['base']}main/review", method="POST", body={}, cookie=token)  # (as the viewer asks)
-    if status != 200 or json.loads(data).get("version") != reviewed["version"]:
-        fail(f"POST /review through the hub: {status} {data[:200]!r}, not the same review copy")
+    status, _, data = request(f"{hub['base']}main/review", cookie=token)  # (as a viewer from before asked)
+    if status != 405 or "reload the page" not in _quiet(lambda: json.loads(data)["error"]):
+        fail(f"GET /review through the hub: {status} {data[:200]!r}, not 405 with a message for the viewer")
     ok(f"the review copy: {pages} pages as exported, unscaled on wider ones, with {len(texts)} notes in both gutters, apart"
        " (the protected marker, the resolved note, and the one in a branch that is off left out); its last pass loads no"
        " package that the paper's TeX wrote")
@@ -373,7 +372,7 @@ def review_checks(build, token):
 
 def owner_checks(token, own, editor_log):
     """The owner's own preview (not shared): GET me, the editor's modules, SyncTeX as JSON, the editor
-    stand-in through GET /open (kept outside shared mode), POST /open and plain /synctex, and the POST
+    stand-in through POST /open and plain /synctex (GET /open is 405, as in shared mode), and the POST
     body limits of the hub and of the preview's own port (own; a source file's save may be bigger than
     other actions)."""
     me = hub_get("/me", token)
@@ -398,18 +397,20 @@ def owner_checks(token, own, editor_log):
     page, x, y = text_point(lambda path: hub_get(path, token), "main.tex", 9)
     if editor_calls(editor_log):
         fail(f"synctex with json=1 opened the editor: {editor_calls(editor_log)}")
-    for path, method, body in ((f"{hub['base']}main/open?file=main.tex&line=9", "GET", None),
-                               (f"{hub['base']}main/open", "POST", {"file": "main.tex", "line": 10}),
+    status, _, data = request(f"{hub['base']}main/open?file=main.tex&line=9", cookie=token)
+    if status != 405:
+        fail(f"GET /open (not shared): {status} {data[:200]!r}, not 405")
+    for path, method, body in ((f"{hub['base']}main/open", "POST", {"file": "main.tex", "line": 10}),
                                (f"{hub['base']}main/synctex?file=main.pdf&page={page}&x={x:.2f}&y={y:.2f}", "GET", None)):
         status, _, data = request(path, method=method, body=body, cookie=token)
         if status != 200:
             fail(f"{method} {path} (not shared): {status} {data[:200]!r}")
-    calls = wait_for("the editor stand-in, three times", lambda: len(editor_calls(editor_log)) >= 3 and editor_calls(editor_log),
+    calls = wait_for("the editor stand-in, twice", lambda: len(editor_calls(editor_log)) >= 2 and editor_calls(editor_log),
                      timeout=10, step=0.2)
-    if (len(calls) != 3 or not all(c.startswith("-g ") and re.search(r"/main\.tex:\d+$", c) for c in calls)
-            or not any(c.endswith("main.tex:9") for c in calls) or not any(c.endswith("main.tex:10") for c in calls)):
-        fail(f"the editor stand-in got {calls}, not -g .../main.tex:9, :10 and the double-clicked line")
-    ok("SyncTeX answers JSON without opening the editor; GET /open, POST /open and plain /synctex open it")
+    if (len(calls) != 2 or not all(c.startswith("-g ") and re.search(r"/main\.tex:\d+$", c) for c in calls)
+            or not any(c.endswith("main.tex:10") for c in calls)):
+        fail(f"the editor stand-in got {calls}, not -g .../main.tex:10 and the double-clicked line")
+    ok("SyncTeX answers JSON without opening the editor; POST /open and plain /synctex open it, GET /open is 405")
 
     status, _, data = request(f"{hub['base']}main/file", method="POST", cookie=token,
                               body={"path": "body.tex", "base": "0" * 20, "text": "x" * (1 << 20)})
@@ -433,19 +434,21 @@ def owner_checks(token, own, editor_log):
 
 
 def switch_checks(token):
-    """Outside shared mode, through the hub: POST /switch (as the viewer sends it) builds another document and
-    GET /switch (as older viewers send it) goes back; POST /diff and GET /diff each build a latexdiff against
-    HEAD."""
+    """Outside shared mode, through the hub: POST /switch (as the viewer sends it) builds another document, and back;
+    GET /switch (as older viewers sent it) is 405; POST /diff builds a latexdiff against HEAD, and GET /diff is 405."""
     status, _, data = request(f"{hub['base']}main/switch", method="POST", body={"doc": "appendix"}, cookie=token)
     if status != 200 or _quiet(lambda: json.loads(data)["doc"]) != "appendix":
         fail(f"POST /switch {{doc: appendix}} through the hub: {status} {data[:200]!r}")
     wait_for("appendix.pdf, after POST /switch", lambda: _quiet(lambda: get("/status/appendix.pdf", token, "appendix")["version"]))
     status, _, data = request(f"{hub['base']}appendix/switch?doc=main", token)
+    if status != 405 or hub_get("/docs", token)["doc"] != "appendix":
+        fail(f"GET /switch?doc=main through the hub: {status} {data[:200]!r}, not 405 (it switches only by POST)")
+    status, _, data = request(f"{hub['base']}appendix/switch", method="POST", body={"doc": "main"}, cookie=token)
     if status != 200 or _quiet(lambda: json.loads(data)["doc"]) != "main" or hub_get("/docs", token)["doc"] != "main":
-        fail(f"GET /switch?doc=main through the hub: {status} {data[:200]!r}")
-    ok("POST /switch builds another document, and GET /switch goes back (outside shared mode, through the hub)")
+        fail(f"POST /switch {{doc: main}} through the hub: {status} {data[:200]!r}")
+    ok("POST /switch builds another document, and back; GET /switch is 405 (outside shared mode, through the hub)")
     if not texlive_image()[1] and not shutil.which("latexdiff"):
-        return print("skip: no TeX Live image and no latexdiff here, so POST /diff and GET /diff are not checked", flush=True)
+        return print("skip: no TeX Live image and no latexdiff here, so POST /diff is not checked", flush=True)
 
     def diffed():
         diff = hub_get("/status/main-diff.pdf", token).get("diff") or {}
@@ -453,12 +456,14 @@ def switch_checks(token):
             fail(f"the latexdiff against HEAD failed: {diff.get('msg')}")
         return diff.get("state") == "done"
 
-    for method, path, body in (("POST", "diff", {"rev": "HEAD"}), ("GET", "diff?rev=HEAD", None)):
-        status, _, data = request(f"{hub['base']}main/{path}", method=method, body=body, cookie=token)
-        if status != 200 or _quiet(lambda: json.loads(data)["state"]) != "running":
-            fail(f"{method} /{path} through the hub: {status} {data[:200]!r}")
-        wait_for(f"the latexdiff that {method} /{path} started", diffed, timeout=120, step=0.2)
+    status, _, data = request(f"{hub['base']}main/diff?rev=HEAD", cookie=token)
+    if status != 405:
+        fail(f"GET /diff?rev=HEAD through the hub: {status} {data[:200]!r}, not 405 (it builds only by POST)")
+    status, _, data = request(f"{hub['base']}main/diff", method="POST", body={"rev": "HEAD"}, cookie=token)
+    if status != 200 or _quiet(lambda: json.loads(data)["state"]) != "running":
+        fail(f"POST /diff through the hub: {status} {data[:200]!r}")
+    wait_for("the latexdiff that POST /diff started", diffed, timeout=120, step=0.2)
     status, headers, _ = request(f"{hub['base']}main/pdf/main-diff.pdf", token)
     if status != 200 or headers.get("Content-Type") != "application/pdf":
         fail(f"/pdf/main-diff.pdf through the hub: {status} {headers.get('Content-Type')}")
-    ok("POST /diff and GET /diff build a latexdiff against HEAD (outside shared mode, through the hub)")
+    ok("POST /diff builds a latexdiff against HEAD, and GET /diff is 405 (outside shared mode, through the hub)")

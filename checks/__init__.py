@@ -29,8 +29,8 @@ does).
      bodies; SyncTeX finds a source line; /instances lists the instance;
    - /me reports the owner with every capability; the viewer's and the editor's modules and the
      viewer's style are served (as JavaScript, and CSS), the viewer's revalidated; SyncTeX answers
-     as JSON without opening the editor, while GET /open, POST /open and plain /synctex still open
-     it (a stand-in that logs its arguments); the hub takes a source file's save above the other
+     as JSON without opening the editor, while POST /open and plain /synctex still open it (a
+     stand-in that logs its arguments), and GET /open is 405; the hub takes a source file's save above the other
      actions' size limit, refuses bodies above its limits, and survives a non-ASCII token;
      /favicon.ico is answered, not refused;
    - the HEAD and last-push baselines build (they differ: one commit is unpushed), and the
@@ -39,14 +39,14 @@ does).
      made once per build of the document, and the review copy places its pages on wider ones with
      every note in a gutter (none overlapping, the protected marker and the resolved note left out),
      and its last pass loads no package that the paper's TeX wrote; a document without notes gets a
-     clear failure, not a file;
+     clear failure, not a file; their GET forms are 405, with a message for an older viewer;
    - who reaches the owner's preview and the hub (access): loopback names on their own and the
      hub's ports, LATEX_LIVE_HOST's name there and LATEX_LIVE_ALLOWED_HOSTS' on its port, nothing
      else; a POST's Origin must be the viewer's own page under the same kind of name (or none, with
      the token), refused before its body is read; nosniff, no referrer, frame-ancestors (VS Code's
      Simple Browser only);
-   - POST /switch moves the preview to another document and GET /switch back, and POST /diff and
-     GET /diff build a latexdiff (the viewer's POST forms and the old GET ones, through the hub);
+   - POST /switch moves the preview to another document and back, and POST /diff builds a latexdiff
+     (through the hub); their GET forms are 405;
    - a second document runs in its own process behind the same port, and /papers links both; the
      hub, refused by a preview that a stale entry says is another paper's, looks again and doesn't
      misroute; after a switch, the old document's viewers still reach their preview;
