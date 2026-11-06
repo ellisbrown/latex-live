@@ -217,3 +217,38 @@ def shared_parsing_checks():
     ok("the host reads no .aux outside build/ (absolute, .., links), and JSON, recorder and SyncTeX files only within"
        " bounds; bibtex's state and the builder's watch cover the .bib and .bst files an .aux names, at any depth, even"
        " before they exist")
+
+
+def baseline_failure_checks():
+    """In shared mode, a diff or a change-highlight baseline that fails says why without the server's folders
+    (failure, as the downloads do): an error that names a file in full names it relative to the paper; outside shared
+    mode, the owner's own preview still names it in full."""
+    from latexlive import baselines, config
+    saved, tmp = (config.SHARED, baselines.run_tool, baselines.image_pulled), tempfile.mkdtemp(prefix="latex-live-check-")
+    try:
+        root = os.path.join(tmp, "paper")
+        put(os.path.join(root, "main.tex"), "\\documentclass{article}\\begin{document}x\\end{document}\n")
+        for args in (["init", "-q"], ["add", "-A"], ["-c", "user.name=check", "-c", "user.email=check@example.com", "commit", "-qm", "x"]):
+            subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+        missing = os.path.join(root, config.BUILD, "diff", "gone.tex")
+
+        def run_tool(*args, **kwargs):
+            raise OSError(2, "No such file or directory", missing)
+        baselines.run_tool, baselines.image_pulled = run_tool, lambda: True
+        said = {}
+        for shared in (True, False):
+            config.SHARED = shared
+            server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", tex_exec="", diff={"rev": "HEAD"},
+                                           bases={"head": {"pdf": "main.pdf"}})
+            baselines.build_diff(server, sha)
+            baselines.build_base(server, "head", sha, "main.pdf")
+            said[shared] = (server.diff.get("msg", ""), server.bases["head"].get("msg", ""))
+    finally:
+        config.SHARED, baselines.run_tool, baselines.image_pulled = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+    if any(root in msg or tmp in msg or "diff/gone.tex" not in msg for msg in said[True]):
+        fail(f"in shared mode, a failed diff or baseline names the server's folders, or not the file: {said[True]}")
+    if not all(root in msg for msg in said[False]):
+        fail(f"outside shared mode, a failed diff or baseline no longer names the file in full: {said[False]}")
+    ok("in shared mode, a failed diff or change-highlight baseline names no folder of the server's")

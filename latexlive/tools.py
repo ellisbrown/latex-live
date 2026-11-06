@@ -22,6 +22,19 @@ def image_pulled():
     return bool(shutil.which("podman")) and subprocess.run(["podman", "image", "exists", config.TEXLIVE_IMAGE]).returncode == 0
 
 
+def failure(server, e):
+    """What a build made on request that failed says in the viewer (the downloads: build_export, build_review; the
+    baselines and the diff: build_base, build_diff), in 300 characters at most. In shared mode, where coauthors read
+    it, without the server's folders (TeX names the paper's files relative to it, but Python's errors name them in
+    full) or the command line of a TeX run that took too long."""
+    if config.SHARED and isinstance(e, subprocess.TimeoutExpired):
+        return f"a TeX run took more than {e.timeout / 60:g} minutes"
+    text = str(e)
+    for folder, name in ((os.path.realpath(server.paper_root), "."), (server.paper_root, "."), (config.HERE, "latex-live")) if config.SHARED else ():
+        text = text.replace(folder + os.sep, "" if name == "." else name + os.sep).replace(folder, name)
+    return text[:300]
+
+
 def synctex_unavailable():
     """Why SyncTeX can't run (no host synctex, and no TeX Live image to run it in), else None."""
     if shutil.which("synctex") or image_pulled():

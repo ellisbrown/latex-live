@@ -448,7 +448,9 @@ instance treats the paper and everything TeX writes as theirs.
   rather than reading them back, serves the PDF without following links, reads
   the files there (the `.aux` files and the ones they name, file lists,
   SyncTeX, logs, JSON) only within the folder, without links, and up to a
-  bound, and never sends its token to a port that a file there names. The build
+  bound, and never sends its token to a port that a file there names. The
+  messages of downloads, diffs and baselines that fail name the paper's files
+  relative to it, never the server's folders. The build
   folder may grow to `LATEX_LIVE_BUILD_LIMIT`, checked every second (with
   `--no-build` too); past it, it is emptied but for the instance's own lock
   file, and the build tried again a few times.

@@ -12,9 +12,9 @@ does).
    review copy reads its notes from the files of the last good build (only the paper's own), and
    the inputs kept for its probe leave out symbolic links; shared mode's builder prints the page
    layout as latexmkrc does, runs biber again when a data source changes, and reads a chapter's .aux
-   for bibtex. LATEX_LIVE_TIMING=1's lines leave out the events of a notes-free pass that a newer run superseded.
-   The editor and the notes never read or write a source through a folder or file swapped for a link after the
-   check.
+   for bibtex; a failed diff or baseline names no folder of the server's there. LATEX_LIVE_TIMING=1's lines
+   leave out the events of a notes-free pass that a newer run superseded. The editor and the notes never read or
+   write a source through a folder or file swapped for a link after the check.
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a git
    repository with a pushed commit and a local one) gets a live.py instance, with the hub on port
    44180, or below the ports that outgoing connections take where 44180 is among them (Linux: 28180), or the first
