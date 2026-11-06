@@ -358,15 +358,16 @@ def static_checks():
         code = viewer_scripts(f.read())
     node = shutil.which("node")
     if not node:
-        return print("skip: no node, so the viewer's script is not checked", flush=True)
-    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
-        for name, text in code.items():  # (each as a .mjs file: Node parses it as a module then)
-            path = os.path.join(tmp, name.replace("/", "-") + ".mjs")
-            put(path, text)
-            r = subprocess.run([node, "--check", path], capture_output=True, text=True)
-            if r.returncode:
-                fail(f"the viewer's {name} does not parse:\n{r.stderr}")
-    ok(f"the viewer's script parses ({len(code)} module{'s' if len(code) > 1 else ''})")
+        print("skip: no node, so whether the viewer's script parses is not checked", flush=True)
+    else:
+        with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
+            for name, text in code.items():  # (each as a .mjs file: Node parses it as a module then)
+                path = os.path.join(tmp, name.replace("/", "-") + ".mjs")
+                put(path, text)
+                r = subprocess.run([node, "--check", path], capture_output=True, text=True)
+                if r.returncode:
+                    fail(f"the viewer's {name} does not parse:\n{r.stderr}")
+        ok(f"the viewer's script parses ({len(code)} module{'s' if len(code) > 1 else ''})")
     with tempfile.TemporaryDirectory(prefix="latex-live-token-") as state:  # (instances starting at once)
         racers = [subprocess.Popen([sys.executable, "-c", "from latexlive.auth import load_token; print(load_token())"], cwd=HERE,
                                    env={**ENV, "LATEX_LIVE_STATE": state}, stdout=subprocess.PIPE, text=True)
