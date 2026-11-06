@@ -68,7 +68,8 @@ does).
    mode builds only in the TeX Live image: where podman or the image is missing, all of this part
    but its first two checks (which need neither) is skipped, with a "skip:" line.
    - tex-exec and --host-tex refuse the host's TeX, and tex-exec's container options are hardened
-     (the paper read-only, limits, labels, 10 minutes at most); an instance refuses the default
+     (the owner's uid, the paper and the root file system read-only, limits, labels, 10 minutes at
+     most, seccomp left on); an instance refuses the default
      state folder, and on Linux the identity header without LATEX_LIVE_PROXY_UID; it builds in the
      hardened image without latexmk (a \\bibdata name that is a shell command, which latexmk would
      run on the host, runs nothing; the paper's latexmkrc doesn't run; TeX can't read absolute
@@ -81,6 +82,10 @@ does).
      no document switch, for anyone) and every endpoint per role (the checks for editors only),
      the Origin rules for POSTs, POST body limits, non-owners pinned to the document, and the
      viewer's security headers;
+   - a real confined container runs as the owner's uid (not root), on a read-only root file system
+     with a sized /tmp, with podman's seccomp filter, no new privileges, capabilities or swap, and
+     leaves files the owner owns; pdflatex (making and caching a bitmap font), bibtex, biber,
+     makeindex, SyncTeX and latexdiff work in it;
    - the download without notes: a viewer may ask; several asking at once share one build, made once
      per build of the document, in the hardened image;
    - the copy with notes in the margin (/review), likewise: a viewer may ask, several asking at once
@@ -121,7 +126,7 @@ Its modules, from the bottom up (each imports only from those below it): base (w
 they report: ok, fail, wait_for, in_thread), helpers (files, git, instances and requests to them, stand-ins, the TeX
 Live image), papers (the scratch paper), static (the checkout as it is), shared_units and units (the server's parts
 without an instance), standby, early and clean_standby (the threads beside the instance checks: the warm standby,
-the early notes-free pass and its warm standby), shared_helpers, shared_setup, shared_access, shared_downloads,
-shared_notes, shared_editor, shared_rebuild, shared_commits and shared (shared mode, the other thread), preview (the
+the early notes-free pass and its warm standby), shared_helpers, shared_setup, shared_access, shared_sandbox,
+shared_downloads, shared_notes, shared_editor, shared_rebuild, shared_commits and shared (shared mode, the other thread), preview (the
 instance checks, which start the threads), and main.
 """

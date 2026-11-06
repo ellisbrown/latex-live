@@ -78,15 +78,23 @@ how coauthors reach the machine.
 
 Every TeX run of a shared instance is a container with memory and CPU limits,
 which rootless podman can set only with cgroup v2 and those controllers
-delegated to your user. This prints `ok` where they work:
+delegated to your user. It runs as your own user inside the container, which
+needs subordinate uids for your user (a line for you in `/etc/subuid` and
+`/etc/subgid`, as rootless podman usually has). This prints `ok` where they
+work:
 
 ```bash
-podman run --rm --pull=never --network=none --memory=4g --cpus=2 --entrypoint= \
+podman run --rm --pull=never --network=none --userns=keep-id --read-only \
+  --memory=4g --memory-swap=4g --cpus=2 --entrypoint= \
   docker.io/minidocks/texlive:2024-full true && echo ok
 ```
 
-If it fails over cgroups, ask an administrator to delegate the `memory` and
-`cpu` controllers to user sessions (systemd's `Delegate=` for `user@.service`).
+- If it fails over cgroups, ask an administrator to delegate the `memory` and
+  `cpu` controllers to user sessions (systemd's `Delegate=` for `user@.service`).
+- The first run takes a while (half a minute or more): podman makes a copy of
+  the image's files for your user's mapping, about 3.5 GB more disk, once for
+  each version of the image. Running this check makes that copy now rather
+  than in the first build.
 
 ### 1. Make a separate copy of the paper
 
@@ -414,19 +422,25 @@ instance treats the paper and everything TeX writes as theirs.
   `latexmkrc` would add (makeglossaries, say) don't run, and a `latexmkrc` in
   the paper is not read.
 - **Every TeX run is confined.** Each run is a container of its own from the
-  TeX Live image, never the host's TeX: pdflatex, bibtex, biber, makeindex, the
-  downloads, the baselines, latexdiff and SyncTeX. A container has no network,
-  no capabilities, no new privileges, no shell escape, at most 4 GB of memory,
-  2 CPUs, 512 processes, files of 1 GB, and 10 minutes (or its caller's shorter
-  deadline). The paper folder is mounted read-only, with only the build folder
-  writable and the paper's dot entries at any depth (`.git`, whose config may
-  hold a remote's credentials, `.env`, `chapters/.private/`, ...) hidden. A
-  paper with a dot entry whose name holds a newline, `:` or `,`, or with more
-  than 1000 dot entries, doesn't build. TeX opens files only below the paper
-  folder and in its own tree (`openin_any=p`), and writes only into the build
-  folder (`openout_any=p`). Builds and downloads share three container slots,
-  and the live build has one of its own. A rebuild stops the run in progress,
-  its containers too, and so does stopping the instance.
+  TeX Live image, never the host's TeX: pdflatex, bibtex, biber, makeindex,
+  the downloads, the baselines, latexdiff and SyncTeX. A container has no
+  network, no capabilities, no new privileges, no shell escape, at most 4 GB
+  of memory and no swap beyond it, 2 CPUs, 512 processes, files of 1 GB, and
+  10 minutes (or its caller's shorter deadline). It runs as your own user, not
+  as root: the container's root is a subordinate uid of yours, not you. Its
+  root file system is read-only, with a 512 MB `/tmp` (counted in its memory)
+  for what TeX caches, such as the bitmap fonts it makes, and podman's default
+  seccomp filter stays on. SELinux labelling is off for these containers
+  (`label=disable`): on an SELinux host, the container could not read the
+  paper otherwise. The paper folder is mounted read-only, with only the build
+  folder writable and the paper's dot entries at any depth (`.git`, whose
+  config may hold a remote's credentials, `.env`, `chapters/.private/`, ...)
+  hidden. A paper with a dot entry whose name holds a newline, `:` or `,`, or
+  with more than 1000 dot entries, doesn't build. TeX opens files only below
+  the paper folder and in its own tree (`openin_any=p`), and writes only into
+  the build folder (`openout_any=p`). Builds and downloads share three
+  container slots, and the live build has one of its own. A rebuild stops the
+  run in progress, its containers too, and so does stopping the instance.
 - **The build folder is the coauthors'.** TeX can write any file there, so the
   instance keeps the build's state, its errors and what it published in memory
   rather than reading them back, serves the PDF without following links, reads
@@ -456,6 +470,15 @@ instance treats the paper and everything TeX writes as theirs.
   personal links.
 - **A killed server** (`kill -9`) can't stop its containers; each still stops
   itself after 10 minutes.
+- **No hard disk quota.** The build folder's size is checked every second,
+  not enforced by the file system, so a build can pass
+  `LATEX_LIVE_BUILD_LIMIT` by what TeX writes in that second before it is
+  stopped.
+- **Only pdflatex, bibtex, biber and makeindex.** Tools that a paper's own
+  `latexmkrc` would add (makeglossaries, say) don't run in shared builds.
+- **poppler on the host.** The pre-submission checks read the PDF with
+  poppler's tools on the host, not in a container (the image has none), so only
+  editors and the owner can run them, under time and memory limits.
 - **No real-time co-editing.** Edits reach others when they are saved, a
   moment after typing stops; each save is merged with what others saved
   meanwhile, and edits to the same lines become a conflict to settle.

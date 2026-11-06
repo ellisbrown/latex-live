@@ -9,9 +9,12 @@
 #
 # In shared mode, where coauthors write the sources, live.py sets LATEX_LIVE_REQUIRE_IMAGE=1: never
 # the host's TeX, so a missing image fails the run; and LATEX_LIVE_SANDBOX=1: the paper folder is
-# mounted read-only and only its build folder ($LATEX_LIVE_BUILD) writable; the container gets no
-# capabilities, no new privileges, at most 512 processes, 4 GB of memory, 2 CPUs, files of at most
-# 1 GB and the caller's deadline ($LATEX_LIVE_TIMEOUT seconds, at most 10 minutes: podman stops it
+# mounted read-only and only its build folder ($LATEX_LIVE_BUILD) writable; the container runs as the
+# caller's own uid rather than root (--userns=keep-id: what it writes stays ours, and container root is no
+# longer us but a subordinate uid), on a read-only root file system with a 512 MB /tmp, where TeX's
+# caches go (TEXMFVAR: fonts that mktexpk makes) and biber unpacks itself; it keeps podman's default
+# seccomp filter (nothing here turns it off), and gets no capabilities, no new privileges, at most 512
+# processes, 4 GB of memory and no swap beyond it, 2 CPUs, files of at most 1 GB and the caller's deadline ($LATEX_LIVE_TIMEOUT seconds, at most 10 minutes: podman stops it
 # then, even when the caller has stopped waiting); it is labelled with the instance
 # ($LATEX_LIVE_INSTANCE), the run ($LATEX_LIVE_RUN, e.g. main-12) and its kind (main), so that live.py
 # can stop it; and TeX gets no shell escape, and no files outside its working directory and the TeX
@@ -22,7 +25,8 @@
 # container, where the paper is the only folder mounted, it leads into the paper, which shows nothing
 # hidden, or into the image. A name with a newline, ':' or ',' can't be hidden this way, so the run
 # is refused.
-# That skips the image's entrypoint, which switches users and so needs a capability.
+# That skips the image's entrypoint, which switches users and so needs a capability. label=disable (no SELinux
+# label for the container) stays: on an SELinux host, the bind mounts of the paper would be unreadable otherwise.
 #
 # A warm standby (latexlive/standby.py: of the live build, or of its notes-free pass) sets LATEX_LIVE_STANDBY_LABEL: its container gets
 # that label, its run's (LATEX_LIVE_RUN) and a deadline (LATEX_LIVE_TIMEOUT seconds, at most 2 hours), so that
@@ -64,7 +68,10 @@ if podman image exists "$image"; then
         IFS=$saved
         set +f
         if [ -n "$mask" ]; then set -- --security-opt "mask=$mask" "$@"; fi
-        set -- --cap-drop=all --security-opt=no-new-privileges --pids-limit=512 --memory=4g --cpus=2 \
+        set -- --userns=keep-id --user "$(id -u):$(id -g)" --read-only --read-only-tmpfs=false \
+            --tmpfs /tmp:rw,size=512m,mode=1777 -e HOME=/tmp -e TMPDIR=/tmp -e TEXMFVAR=/tmp/texmf-var \
+            -e TEXMFCONFIG=/tmp/texmf-config -e TEXMFCACHE=/tmp/texmf-var \
+            --cap-drop=all --security-opt=no-new-privileges --pids-limit=512 --memory=4g --memory-swap=4g --cpus=2 \
             --ulimit fsize=1073741824:1073741824 --timeout="$timeout" --entrypoint= \
             --label "latex-live.instance=$LATEX_LIVE_INSTANCE" --label "latex-live.run=$run" \
             --label "latex-live.kind=$kind" \

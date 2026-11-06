@@ -149,8 +149,9 @@ def make_shared_paper(tmp, state):
 def tex_exec_check(tmp):
     """tex-exec with LATEX_LIVE_REQUIRE_IMAGE=1 (shared mode) refuses to run a tool on the host while the
     image is missing; without it, it falls back to the host as before. With LATEX_LIVE_SANDBOX=1 (shared
-    mode), it confines the container, as a stand-in for podman shows: no capabilities, no new privileges,
-    at most 512 processes, 4 GB, 2 CPUs, 1 GB files and the caller's deadline (LATEX_LIVE_TIMEOUT, at most
+    mode), it confines the container, as a stand-in for podman shows: the owner's own uid rather than root
+    (keep-id), a read-only root file system with a sized /tmp for TeX's caches, podman's seccomp filter left on,
+    no capabilities, no new privileges, at most 512 processes, 4 GB and no swap, 2 CPUs, 1 GB files and the caller's deadline (LATEX_LIVE_TIMEOUT, at most
     10 minutes), labels that name the instance, the run and its kind (for stopping it), the paper read-only
     (its dot entries at any depth, .git among them, hidden) and only build/ writable, no shell escape, and TeX's files
     only below its folder; tools.container_argv in shared mode goes through tex-exec too."""
@@ -180,7 +181,9 @@ def tex_exec_check(tmp):
     shared, config.SHARED = config.SHARED, True
     started = tools.container_argv(tmp)
     config.SHARED = shared
-    want = ("--cap-drop=all", "--security-opt=no-new-privileges", "--pids-limit=512", "--memory=4g", "--cpus=2",
+    want = ("--userns=keep-id", f"{os.getuid()}:{os.getgid()}", "--read-only", "--read-only-tmpfs=false",
+            "/tmp:rw,size=512m,mode=1777", "HOME=/tmp", "TEXMFVAR=/tmp/texmf-var", "--memory-swap=4g",
+            "--cap-drop=all", "--security-opt=no-new-privileges", "--pids-limit=512", "--memory=4g", "--cpus=2",
             "fsize=1073741824:1073741824", "--timeout=60", "latex-live.instance=check-1", "latex-live.run=main-7",
             "latex-live.kind=main", f"{root}:{root}:ro", f"{root}/out:{root}/out", "openin_any=p", "openout_any=p",
             "shell_escape=f")
@@ -190,13 +193,14 @@ def tex_exec_check(tmp):
     if masks != [hidden]:
         fail(f"tex-exec with LATEX_LIVE_SANDBOX=1 masks {masks}, not the paper's dot entries {hidden}")
     if (confined.returncode or not all(w in args for w in want) or f"{root}:{root}" in args
+            or any("seccomp" in a or a == "--privileged" for a in args)
             or args[-3:] != ["localhost/latex-live-check:none", "pdflatex", "x.tex"]):
         fail(f"tex-exec with LATEX_LIVE_SANDBOX=1 runs podman with {args} (exit {confined.returncode}), not with all of {want}"
-             " (and the paper only read-only)")
+             " (and the paper only read-only, and seccomp left on)")
     if started[:1] != [os.path.join(HERE, "tex-exec")]:
         fail(f"tools.container_argv in shared mode is {started}, not through tex-exec")
-    ok("tex-exec refuses the host's TeX when shared mode requires the image, and confines the container there (the paper"
-       " read-only, limits, labels, 10 minutes at most)")
+    ok("tex-exec refuses the host's TeX when shared mode requires the image, and confines the container there (the owner's"
+       " uid, the paper and the root file system read-only, limits, labels, 10 minutes at most)")
 
 
 def refusal_checks(sh):
