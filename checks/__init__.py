@@ -14,7 +14,8 @@ does).
    layout as latexmkrc does, runs biber again when a data source changes, and reads a chapter's .aux
    for bibtex; a failed diff or baseline names no folder of the server's there. LATEX_LIVE_TIMING=1's lines
    leave out the events of a notes-free pass that a newer run superseded. The editor and the notes never read or
-   write a source through a folder or file swapped for a link after the check.
+   write a source through a folder or file swapped for a link after the check. Forward search looks a line up
+   again a few seconds after it found nothing, and keeps what it finds for the build.
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a git
    repository with a pushed commit and a local one) gets a live.py instance, with the hub on port
    44180, or below the ports that outgoing connections take where 44180 is among them (Linux: 28180), or the first

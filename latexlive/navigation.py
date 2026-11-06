@@ -17,12 +17,16 @@ from .synctex import forward_target, inverse_search, synctex_input
 from .tools import synctex_unavailable
 
 
-def shared_result(server, key, compute):
+def shared_result(server, key, compute, miss_ttl=None):
     """compute()'s result for key, computed once: a request for the same key while it runs waits for it,
     and later ones reuse it (keys hold what the result depends on, e.g. the build's version). This keeps
-    many identical requests, e.g. from several open viewers, to one container run. At most 512 kept."""
+    many identical requests, e.g. from several open viewers, to one container run. At most 512 kept.
+    With miss_ttl, an empty result (None: a lookup that found nothing, or failed for now, e.g. while the
+    image is missing or SyncTeX timed out) is reused for only that many seconds, then computed again."""
     with server.results_lock:
         entry = server.results.get(key)
+        if entry is not None and entry.get("expires", float("inf")) < time.monotonic():
+            entry = None
         mine = entry is None
         if mine:
             if len(server.results) >= 512:
@@ -35,6 +39,8 @@ def shared_result(server, key, compute):
         return compute()  # (the first one failed)
     try:
         entry["value"] = compute()
+        if miss_ttl is not None and not entry["value"]:
+            entry["expires"] = time.monotonic() + miss_ttl
     except BaseException:
         with server.results_lock:
             if server.results.get(key) is entry:
@@ -47,7 +53,8 @@ def shared_result(server, key, compute):
 
 def forward_request(server, query, user=None):
     """/forward?file=<relative path>&line=N[&clean=1]: forward search for the viewer's lists. The same
-    lookup is made once per build: requests for it while it runs wait for its answer (shared_result).
+    lookup is made once per build: requests for it while it runs wait for its answer (shared_result), and
+    one that found nothing is made again after 5 s (it may have failed for now: a busy slot, the image).
     In shared mode, below editor, only for the notes the PDF shows them (shown_notes), whose rows are
     what they click: other lines would tell them which source files exist, and where."""
     paper_root = server.paper_root
@@ -65,7 +72,8 @@ def forward_request(server, query, user=None):
     clean = query.get("clean") == ["1"]
     pattern = os.path.join("clean", "*-clean.synctex.gz") if clean else "*-live.synctex.gz"
     builds = tuple(sorted((path, mtime(path)) for path in glob.glob(os.path.join(glob.escape(os.path.join(paper_root, config.BUILD)), pattern))))
-    found = shared_result(server, ("forward", src, line, clean, builds), lambda: forward_target(paper_root, src, line, clean))
+    found = shared_result(server, ("forward", src, line, clean, builds), lambda: forward_target(paper_root, src, line, clean),
+                          miss_ttl=5)
     if found:
         return 200, found[1]
     if missing := synctex_unavailable():
