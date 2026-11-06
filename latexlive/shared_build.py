@@ -282,10 +282,10 @@ def shared_notes_free(server, job, doc):
     sys.path.insert(0, config.HERE)
     import latex_report
     stop_containers(kind="clean")
-    note(server, "clean-start")
     with server.shared["clean_lock"]:
         server.shared["clean_seq"] += 1
         seq = server.shared["clean_seq"]
+    note(server, "clean-start", str(seq))  # (the pass's events name it: timing.NAMING)
     out = os.path.join(config.BUILD, f"clean-{seq}")
     for old in glob.glob(os.path.join(glob.escape(config.BUILD), "clean-*")):
         shutil.rmtree(old, ignore_errors=True)
@@ -318,7 +318,7 @@ def shared_notes_free(server, job, doc):
         with server.shared["clean_lock"]:
             if seq == server.shared["clean_seq"] and not status.get("superseded"):
                 server.shared["clean"] = status
-                note(server, "clean-published" if status.get("ok") else "clean-failed")
+                note(server, "clean-published" if status.get("ok") else "clean-failed", str(seq))
         shutil.rmtree(out, ignore_errors=True)
 
     threading.Thread(target=run, daemon=True).start()

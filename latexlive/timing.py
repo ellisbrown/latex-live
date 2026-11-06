@@ -17,6 +17,12 @@ from . import config
 
 # The events that end a run's line: the notes-free pass's end when the run started one, else the run's end.
 CLEAN_END = ("clean-published", "clean-failed")
+# A notes-free pass's events name the pass (their detail). The run that starts or keeps a pass names it in
+# clean-start, clean-early or clean-kept, and the pass's own events count only in the line of a run that named it: a
+# pass that a newer run superseded may still note its TeX run's end, or even publish, while the newer run goes on,
+# and those events would otherwise land in the newer run's line, where its end could end the line early.
+NAMING = ("clean-start", "clean-early", "clean-kept")
+PASS_EVENTS = ("clean-tex",) + CLEAN_END
 
 
 def note(server, event, detail="", when=None):
@@ -46,7 +52,7 @@ def line(doc, events):
     start = saved[-1][0] if saved else events[0][0]
     since = f"the save of {saved[-1][2]}" if saved else "the run began"
     shown = sorted((e for e in events if e[1] != "saved"), key=lambda e: e[0])
-    parts = [f"{event}{'(' + detail + ')' if detail and event not in ('published', 'clean-published') else ''}"
+    parts = [f"{event}{'(' + detail + ')' if detail and event != 'published' and not event.startswith('clean-') else ''}"
              f" {round((when - start) * 1000)}" for when, event, detail in shown]
     return f"=== latex-live timing: {doc} (ms after {since}): {', '.join(parts)}"
 
@@ -63,6 +69,8 @@ class Runs:
             if e[1] == "run" and any(n == "run" for _, n, _ in self.events):  # (a run began before the last one's line: print what it had)
                 lines.append(self.events)
                 self.events = []
+            if e[1] in PASS_EVENTS and e[2] and e[2] not in {d for _, n, d in self.events if n in NAMING}:
+                continue  # (a superseded pass's: its run's line is printed already)
             self.events.append(e)
             names = {n for _, n, _ in self.events}
             cleaned = "clean-start" in names or "clean-kept" in names  # (an early pass kept may publish before the run's end)
