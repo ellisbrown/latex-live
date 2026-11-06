@@ -24,7 +24,7 @@
 # is refused.
 # That skips the image's entrypoint, which switches users and so needs a capability.
 #
-# A warm standby of the live build (latexlive/standby.py) sets LATEX_LIVE_STANDBY_LABEL: its container gets
+# A warm standby (latexlive/standby.py: of the live build, or of its notes-free pass) sets LATEX_LIVE_STANDBY_LABEL: its container gets
 # that label, its run's (LATEX_LIVE_RUN) and a deadline (LATEX_LIVE_TIMEOUT seconds, at most 2 hours), so that
 # it stops even if nothing stops it, and it never runs on the host's TeX, which a normal pass would not use
 # once the image is back.
