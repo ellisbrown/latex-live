@@ -127,6 +127,9 @@ INSTANCE = f"{os.getpid()}-{secrets.token_hex(4)}"  # (tex-exec labels a shared 
 # The warm standby (standby.py): a pdflatex run that has read the preamble already and waits for the next pass
 # of the live build. On unless LATEX_LIVE_STANDBY=0; never in shared mode, which builds without latexmk.
 STANDBY = os.environ.get("LATEX_LIVE_STANDBY", "").strip() != "0"
+# And a second one for the pass without notes (latex_report.py notes_free_pass): on with STANDBY, unless
+# LATEX_LIVE_CLEAN_STANDBY=0.
+CLEAN_STANDBY = STANDBY and os.environ.get("LATEX_LIVE_CLEAN_STANDBY", "").strip() != "0"
 
 # LATEX_LIVE_TIMING=1: print when each phase of each build happened, from the save to the published PDFs, and have
 # the viewer log when it noticed, fetched, parsed and drew each new PDF in the browser's console (timing).

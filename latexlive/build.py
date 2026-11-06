@@ -59,6 +59,7 @@ def start_latexmk(server, force=False):
     env = {**server.env, "LATEX_LIVE_DOC": doc}
     if config.STANDBY:  # (latexmkrc then runs each pass through standby.py, which stops its standbys when this process is gone)
         env["LATEX_LIVE_STANDBY_OWNER"] = str(os.getpid())
+    env["LATEX_LIVE_CLEAN_STANDBY"] = "1" if config.CLEAN_STANDBY else "0"  # (latex_report.py's notes-free pass)
     if config.PUBLISH:
         env["LATEX_LIVE_PUBLISH"] = os.path.join(config.PUBLISH, server.default_pdf)  # latex_report.py
     # On Linux, PR_SET_PDEATHSIG: latexmk gets SIGTERM if this process dies, however it dies.
@@ -107,9 +108,11 @@ def stop_latexmk(server):
 
 
 def stop_doc_standbys(server, doc=None):
-    """Stop the warm standbys of doc (default: the current document) and remove what they left."""
+    """Stop the warm standbys of doc (default: the current document), its live build's and its notes-free pass's,
+    and remove what they left."""
     if not config.SHARED:
-        stop_standbys(server.paper_root, config.BUILD, f"{doc or server.default_pdf[:-4]}-live")
+        for job in ("live", "clean"):
+            stop_standbys(server.paper_root, config.BUILD, f"{doc or server.default_pdf[:-4]}-{job}")
 
 
 def on_main_thread(server, job):
