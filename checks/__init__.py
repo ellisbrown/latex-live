@@ -44,7 +44,10 @@ does).
      hub's ports, LATEX_LIVE_HOST's name there and LATEX_LIVE_ALLOWED_HOSTS' on its port, nothing
      else; a POST's Origin must be the viewer's own page under the same kind of name (or none, with
      the token), refused before its body is read; nosniff, no referrer, frame-ancestors (VS Code's
-     Simple Browser only);
+     Simple Browser only); a link's token becomes a signed session cookie (new each time, never the
+     token) that both take, a cookie from before sessions is replaced, one older than a day renewed,
+     forged, expired or other instances' ones refused; signing out expires it, and the page says so;
+     a token file that others could read is made private at the start;
    - POST /switch moves the preview to another document and back, and POST /diff builds a latexdiff
      (through the hub); their GET forms are 405;
    - a second document runs in its own process behind the same port, and /papers links both; the
@@ -92,6 +95,10 @@ does).
      no document switch, for anyone) and every endpoint per role (the checks for editors only),
      the Origin rules for POSTs (a loopback one only on the instance's own port), POST body limits,
      non-owners pinned to the document, and the viewer's security headers;
+   - sessions: a personal link's session cookie is new each time, never the token, and works only
+     while its token does; sign-out is offered to those who came with a token and expires the cookie
+     only from the viewer's page, and through the proxy there is nothing to forget; the instance's
+     token file is made private at the start;
    - a real confined container runs as the owner's uid (not root), on a read-only root file system
      with a sized /tmp, with podman's seccomp filter, no new privileges, capabilities or swap, and
      leaves files the owner owns; pdflatex (making and caching a bitmap font), bibtex, biber,
@@ -134,10 +141,10 @@ Exits non-zero on the first failure.
 
 Its modules, from the bottom up (each imports only from those below it): base (where the checks run, and how they
 report: ok, fail, wait_for, in_thread), helpers (files, git, instances and requests to them, stand-ins, the TeX Live
-image), papers (the scratch paper), access (who reaches the owner's preview: hosts and origins), static (the
+image), papers (the scratch paper), access (who reaches the owner's preview: hosts, origins, sessions), static (the
 checkout as it is), shared_units and units (the server's parts without an instance), standby, early and
 clean_standby (the threads beside the instance checks: the warm standby, the early notes-free pass and its warm
-standby), shared_helpers, shared_setup, shared_access, shared_sandbox, shared_downloads, shared_notes,
-shared_editor, shared_rebuild, shared_commits and shared (shared mode, the other thread), preview (the instance
-checks, which start the threads), and main.
+standby), shared_helpers, shared_setup, shared_access, shared_sessions, shared_sandbox, shared_downloads,
+shared_notes, shared_editor, shared_rebuild, shared_commits and shared (shared mode, the other thread), preview (the
+instance checks, which start the threads), and main.
 """

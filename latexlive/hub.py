@@ -72,7 +72,7 @@ def hub_port():
 class HubHandler(BaseHandler):
     """The hub's requests: /p/<id>/<doc>/<path> goes to <path> on that preview's port, with the
     token, so the viewer works there unchanged (its URLs are relative), after the same checks of
-    the Host, the token and a POST's Origin as the preview's own (BaseHandler). /papers lists the
+    the Host, the session and a POST's Origin as the preview's own (BaseHandler). /papers lists the
     previews; / and /viewer.html?file=X (old bookmarks) go to the only matching preview."""
 
     def do_GET(self):
@@ -99,6 +99,8 @@ class HubHandler(BaseHandler):
             id_, doc = urllib.parse.unquote(m[1]), urllib.parse.unquote(m[2])
             if not m[3]:
                 return self.redirect(hub_path(id_, doc))
+            if method == "POST" and m[3] == "/logout":  # (the cookie is the hub's: it drops the previews' Set-Cookie)
+                return self.logout()
             return self.forward(method, id_, doc, m[3] + (f"?{url.query}" if url.query else ""))
         if url.path == "/hub/ping":
             return self.send_json(200, {"pid": os.getpid()})

@@ -96,6 +96,11 @@ HOST = os.environ.get("LATEX_LIVE_HOST", "").strip()
 NAMED_HOSTS = (([] if SHARED else host_entries(HOST, "LATEX_LIVE_HOST")[:1])
                + host_entries(os.environ.get("LATEX_LIVE_ALLOWED_HOSTS", ""), "LATEX_LIVE_ALLOWED_HOSTS"))
 
+# A browser's session: the cookie that a link's token (?t=) is exchanged for, signed with that token, so it works only
+# as long as the token does (auth.new_session). It lasts SESSION_AGE seconds (as long as the cookies before sessions),
+# and a request with one older than SESSION_RENEW gets a new one, so a browser in use keeps its sign-in.
+SESSION_AGE, SESSION_RENEW = 365 * 86400, 86400
+
 
 def public_origin(url):
     """(origin, host name) of LATEX_LIVE_PUBLIC_URL, the origin as browsers send it (scheme://host,

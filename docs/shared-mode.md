@@ -463,8 +463,15 @@ instance treats the paper and everything TeX writes as theirs.
   editors and the owner can run them.
 - **Links and tokens.** Anyone with a personal link is that person: send links
   privately, and delete a token to end that access. The instance's owner token
-  (in `$LATEX_LIVE_STATE`) opens everything: keep it to yourself. The instance
-  prints no token.
+  (in `$LATEX_LIVE_STATE`) opens everything: keep it to yourself; if others can
+  read its file, the instance makes it private at the start and says so. The
+  instance prints no token.
+- **Sessions.** A link's token is exchanged for a sign-in cookie that is never
+  the token itself: a new one each time the link is opened, signed with the
+  token, so it stops working as soon as the token changes or is deleted, and
+  after a year (each day of use renews it). *Sign out* in the ⋯ menu makes the
+  browser forget it; coauthors whom the proxy signs in have nothing to sign
+  out of there.
 
 ## Known gaps
 
@@ -487,6 +494,11 @@ instance treats the paper and everything TeX writes as theirs.
 - **poppler on the host.** The pre-submission checks read the PDF with
   poppler's tools on the host, not in a container (the image has none), so only
   editors and the owner can run them, under time and memory limits.
+- **Signing out forgets, it doesn't revoke.** *Sign out* removes the cookie
+  from that browser; a copy of the cookie taken from it would keep working
+  until its token changes. To end every sign-in of a personal link, give the
+  person a new token; for your own, delete the state folder's `token` file and
+  restart the instance.
 - **No real-time co-editing.** Edits reach others when they are saved, a
   moment after typing stops; each save is merged with what others saved
   meanwhile, and edits to the same lines become a conflict to settle.

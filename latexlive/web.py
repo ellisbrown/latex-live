@@ -15,7 +15,8 @@ import time
 
 from . import config
 from .auth import (
-    ORIGIN_RE, USER_ID_RE, host_kinds, is_loopback, owner_name, owner_principal, peer_uid, principal, same_secret, users)
+    ORIGIN_RE, USER_ID_RE, b64, host_kinds, is_loopback, new_session, owner_name, owner_principal, peer_uid, principal,
+    same_secret, session_mac, session_subject, unb64, users)
 from .files import open_output
 from .instances import is_live_instance
 
@@ -161,13 +162,15 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
     def authorize(self, query):
         """Who is asking (a principal), or None, with self.denial saying why (deny). The Host must be one of this
         server's names (host_kinds: loopback ones on its ports, LATEX_LIVE_HOST's and LATEX_LIVE_ALLOWED_HOSTS', and
-        in shared mode the public and the proxy's). Every client needs ?t=TOKEN once, then the cookie (forwarded
-        traffic arrives via loopback too). In shared mode, a user's own token works the same way, or the trusted proxy
-        names the user (proxy_user)."""
+        in shared mode the public and the proxy's). Every client needs ?t=TOKEN once, which is exchanged for a session
+        cookie (new_session; forwarded traffic arrives via loopback too). In shared mode, a user's own token works the
+        same way, or the trusted proxy names the user (proxy_user)."""
         self.set_cookie, self.hosts = None, set()
         self.denial = (403, f"open the URL with ?t=<token> from {config.TOKEN_FILE}", None)
         if config.SHARED:  # (a browser with an old or revoked personal link, or none, gets a page that says what to do)
             self.denial = (403, "open your link again (the one with ?t= in it)", lambda: bad_link_page(owner_name(self.server)))
+        if "signed-out" in query:  # (the viewer, after signing out: say so, rather than that the link is bad)
+            self.denial = (403, "signed out: open your link again (the one with ?t= in it) to sign in", signed_out_page)
         hosts = self.headers.get_all("Host") or []
         self.hosts = host_kinds(hosts[0], self.allowed_ports()) if len(hosts) == 1 else set()
         if not self.hosts:
@@ -179,25 +182,52 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
             return self.proxy_user()  # (never by token or cookie: they stay out of the proxy's traffic)
         cookie = http.cookies.SimpleCookie(self.headers.get("Cookie", "")).get("latex_live")
         cookie = cookie.value if cookie else ""
-        for value in (cookie, query.get("t", [""])[0]):
-            user = self.token_user(value)
-            if user:
-                if value != cookie:
-                    self.set_cookie = value
-                return user
+        presented = self.token_user(query.get("t", [""])[0])  # (a link: always a new session, whatever the cookie)
+        if presented:
+            user, key, subject = presented
+            self.set_cookie = new_session(key, subject)
+            return user
+        if session := self.session_user(cookie):
+            user, key, subject, issued = session
+            if time.time() - issued > config.SESSION_RENEW:  # (a browser in use keeps its sign-in)
+                self.set_cookie = new_session(key, subject)
+            return user
+        if presented := self.token_user(cookie):  # (the token itself as the cookie: from before sessions, or from the hub)
+            user, key, subject = presented
+            if not self.headers.get("X-Latex-Live-Paper"):  # (the hub keeps its own cookie, and drops a preview's)
+                self.set_cookie = new_session(key, subject)
+            return user
         return None
 
     def token_user(self, value):
-        """The principal a token is for: the owner (the instance's token), or in shared mode the user
-        whose personal link it is; else None."""
+        """(principal, token, session subject) for a token: the owner (the instance's token), or in shared mode the
+        user whose personal link it is; else None."""
         if not value:
             return None
         if same_secret(value, self.server.token):  # (never with an empty token: same_secret refuses one, as load_token does)
-            return owner_principal("owner-token")
+            return owner_principal("owner-token"), self.server.token, "o"
         for entry in users().values() if config.SHARED else ():
             if entry["token"] and same_secret(value, entry["token"]):
-                return principal(entry, "token")
+                return principal(entry, "token"), entry["token"], "u" + b64(entry["id"].encode())
         return None
+
+    def session_user(self, value):
+        """(principal, token, subject, when it was issued) for a session cookie (new_session) that this server
+        issued for a token that still works, within SESSION_AGE; else None."""
+        found = session_subject(value) if value else None
+        if not found:
+            return None
+        issued, subject, payload, mac = found
+        if not -300 < time.time() - issued < config.SESSION_AGE:  # (a few minutes' grace for the clock)
+            return None
+        if subject == "o":
+            user, key = owner_principal("owner-token"), self.server.token
+        else:
+            entry = users().get(unb64(subject[1:]) or "") if config.SHARED and subject.startswith("u") else None
+            if not entry or not entry["token"]:
+                return None
+            user, key = principal(entry, "token"), entry["token"]
+        return (user, key, subject, issued) if same_secret(mac, session_mac(key, payload)) else None
 
     def origin_allowed(self):
         """Whether a POST comes from the viewer's own page, so that no other site can make a browser act: the
@@ -213,6 +243,15 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
             return True
         m = ORIGIN_RE.fullmatch(origin)
         return bool(m and host_kinds(m.group(2), self.allowed_ports(), m.group(1)) & self.hosts & {"loopback", "named"})
+
+    def logout(self):
+        """POST logout: forget this browser's session, by a cookie that expires at once. The cookie is the host's,
+        whatever the port, so every preview on this host name forgets it; the link's token still works. Signed in
+        by the proxy, there is nothing to forget here."""
+        if self.principal["via"] == "proxy":
+            return self.send_json(200, {"proxy": True})
+        self.set_cookie = ""
+        self.send_json(200, {"signedOut": True})
 
     def proxy_user(self):
         """The user the trusted proxy names in IDENTITY_HEADER (exactly once), or None. Any program on
@@ -248,9 +287,10 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
         self.send_error(405)
 
     def end_headers(self):
-        if getattr(self, "set_cookie", None):  # (Secure where the browser reaches it over https: shared mode's public URL)
+        if getattr(self, "set_cookie", None) is not None:  # (Secure where the browser reaches it over https: shared mode's public URL)
             secure = "; Secure" if config.SHARED and (config.PUBLIC_ORIGIN or "").startswith("https:") and "loopback" not in getattr(self, "hosts", ()) else ""
-            self.send_header("Set-Cookie", f"latex_live={self.set_cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000{secure}")
+            age = config.SESSION_AGE if self.set_cookie else 0  # ("": the logout's, which expires at once)
+            self.send_header("Set-Cookie", f"latex_live={self.set_cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age={age}{secure}")
         if self.path.startswith(("/viewer.html", "/viewer/")):  # revalidate, so an update shows on the next reload
             self.send_header("Cache-Control", "no-cache")
         # No other site may frame the viewer, nor learn its URL. Outside shared mode, VS Code's Simple Browser (a
@@ -333,6 +373,15 @@ def unshared_page(name, owner):
 {PAGE_STYLE}
 <h2>This preview isn't shared with you</h2>
 <p>You are signed in as <b>{html.escape(name)}</b>, but this preview isn't shared with you. Ask {html.escape(owner)} to add you.</p>"""
+
+
+def signed_out_page():
+    """The page for a browser that signed out (the viewer reloads with ?signed-out=1)."""
+    return f"""<!doctype html><meta charset="utf-8"><title>latex-live: signed out</title>
+{PAGE_STYLE}
+<h2>Signed out</h2>
+<p>This browser no longer opens the previews on this address. To sign in again, open your link (the one with
+<code>?t=</code> in it).</p>"""
 
 
 def bad_link_page(owner):

@@ -71,6 +71,7 @@ def shared_setup(tmp, sharing):
     where shared mode can't run: it builds only in the TeX Live image, with podman."""
     state = os.path.join(tmp, "shared-state")
     sh = {"tmp": tmp, "state": state, "token": make_state(state), "users": shared_users(), "users_file": os.path.join(tmp, "users.json")}
+    os.chmod(os.path.join(state, "token"), 0o644)  # (others may read it: the instance makes it private, session_checks)
     SECRETS.extend([sh["token"]] + [user["token"] for user in sh["users"].values() if "token" in user])
     sh["root"] = make_shared_paper(tmp, state)
     stub, sh["editor_log"] = editor_stub(tmp, "shared-editor")

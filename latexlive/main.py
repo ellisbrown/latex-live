@@ -12,7 +12,7 @@ import threading
 import time
 
 from . import DESCRIPTION, config
-from .auth import load_token, load_users, users
+from .auth import load_token, load_users, secure_token_file, users
 from .build import retry_build, set_doc, start_latexmk, stop_doc_standbys, stop_latexmk
 from .commits import commit_at_exit, start_commits
 from .files import pdf_path
@@ -234,6 +234,7 @@ def main():
             sys.exit(f"latex-live: {doc}.tex is still locked; retry")
     if not config.SHARED:  # (a shared instance takes no part in the hub)
         replace_stuck_hub()
+    secure_token_file()
     server = serve(os.getcwd(), f"{doc}.pdf", args.port if config.SHARED else args.port + 1, args.page_limit,  # (the hub has --port)
                    None if config.SHARED else args.port)
     code_updated()  # (what this process runs)

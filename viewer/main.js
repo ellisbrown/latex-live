@@ -27,6 +27,7 @@ function applyRole() {
   $("me").textContent = `${me.name || me.id} · ${me.role}`;
   $("me").title = `Signed in as ${me.id}: ${ROLES[me.role] || me.role}`;
   $("welcomeBtn").hidden = $("keys").querySelector(".welcome").hidden = !me.shared; // (the guide is for coauthors)
+  $("signOut").hidden = !me.can.signOut; // (not for a coauthor whom the proxy signs in)
   document.querySelector("#tabs [data-tab=checks]").hidden = isDiff || me.can.checks === false;
   if (me.can.checks === false && tab === "checks") showTab("outline");
 }

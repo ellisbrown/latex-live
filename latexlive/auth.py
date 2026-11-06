@@ -1,6 +1,8 @@
 """Who is asking: the instance's token, shared mode's users file and its personal links, the
 principals that requests come from, and the checks on a request's Host and peer."""
 
+import base64
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -11,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 from . import config
 
@@ -50,6 +53,67 @@ def same_secret(given, secret):
         return bool(secret) and hmac.compare_digest(given.encode("utf-8", "surrogatepass"), secret.encode("utf-8", "surrogatepass"))
     except (AttributeError, TypeError, UnicodeError):
         return False
+
+
+def secure_token_file():
+    """Before an instance serves: the token file, if there is one, readable by its owner only. One that the group
+    or others may read is made so (chmod 600), with a line that says so: it is the owner's own secret, so tightening
+    it never takes anything from anyone, and the previews keep starting. One that belongs to another user stops the
+    start, since its token is not ours to keep."""
+    try:
+        fd = os.open(config.TOKEN_FILE, os.O_RDONLY)
+    except FileNotFoundError:
+        return  # (load_token makes it, readable by its owner only)
+    except OSError as e:
+        sys.exit(f"latex-live: can't read {config.TOKEN_FILE}: {e.strerror or e}")
+    try:
+        st = os.fstat(fd)
+        if st.st_uid != os.getuid():
+            sys.exit(f"latex-live: {config.TOKEN_FILE} belongs to another user; delete it (or use a state folder of your own,"
+                     " LATEX_LIVE_STATE) and start again")
+        if st.st_mode & 0o077:
+            os.fchmod(fd, 0o600)
+            print(f"=== latex-live: {config.TOKEN_FILE} was readable by other users; it is readable by you only now (chmod 600)."
+                  " Anyone who read it could open your previews: to end that, delete it, and restart every preview for a new"
+                  " token", flush=True)
+    finally:
+        os.close(fd)
+
+
+def b64(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def unb64(text):
+    """b64's text decoded as UTF-8, else None."""
+    try:
+        return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4)).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def session_mac(key, payload):
+    """The signature of a session cookie's payload, an HMAC keyed with the token it was issued for."""
+    digest = hmac.new(key.encode("utf-8", "surrogatepass"), b"latex-live session\0" + payload.encode(), hashlib.sha256).digest()
+    return b64(digest[:24])
+
+
+def new_session(key, subject):
+    """A session cookie's value, for the token key presented as a link (?t=) or a cookie from before sessions:
+    s1.<issued>.<nonce>.<subject>.<signature>, where subject says whose token it is ("o": the instance's; "u" and the
+    user's id, base64: a personal link's), and the signature is an HMAC keyed with that token (session_mac). It is
+    never the token itself, a new one each time a token is presented, and it works only while that token does (a new
+    token in the state folder or the users file ends it) and for SESSION_AGE seconds (session_subject)."""
+    payload = f"s1.{int(time.time())}.{secrets.token_urlsafe(9)}.{subject}"
+    return f"{payload}.{session_mac(key, payload)}"
+
+
+def session_subject(value):
+    """(issued, subject, payload, signature) of a session cookie's value in new_session's form, else None."""
+    parts = value.split(".")
+    if len(parts) != 5 or parts[0] != "s1" or not re.fullmatch(r"[0-9]{1,12}", parts[1]) or not parts[3]:
+        return None
+    return int(parts[1]), parts[3], ".".join(parts[:4]), parts[4]
 
 
 LOOPBACK_NAMES = {"localhost", "127.0.0.1", "::1"}

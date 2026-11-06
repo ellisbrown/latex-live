@@ -11,11 +11,10 @@ def least_role(method, path):
     papers, commit). Downloading the paper without its notes (export) or with its notes in the margin
     (review) is reading it: each builds at most once per build of the document (start_export,
     start_review), and the baselines that change highlights compare with (editors) once per commit
-    (base_status); each
-    starts only with a POST, whose Origin says it comes from the viewer's own page (a GET of the
-    downloads is answered 405, so that an old viewer says why). The checks quote the sources'
-    comments and the text in their false branches, and the baselines show earlier versions of the
-    text, which only editors see (shared_pdfs, viewer_status)."""
+    (base_status); each starts only with a POST, whose Origin says it comes from the viewer's own page
+    (a GET of the downloads is answered 405, so that an old viewer says why). Anyone signed in may sign
+    out (logout). The checks quote the sources' comments and the text in their false branches, and the
+    baselines show earlier versions of the text, which only editors see (shared_pdfs, viewer_status)."""
     if method == "GET" and path.startswith("/check/"):  # (the checks quote the sources' comments and hidden text)
         return "editor"
     if method == "GET" and path.startswith(READ_PATHS + STATIC_DIRS):
@@ -27,7 +26,7 @@ def least_role(method, path):
     if path == "/switch":
         return None
     return {"/note": "commenter", "/rebuild": "editor", "/diff": "editor", "/file": "editor", "/export": "viewer",
-            "/review": "viewer", "/baseline": "editor"}.get(path, "owner")
+            "/review": "viewer", "/baseline": "editor", "/logout": "viewer"}.get(path, "owner")
 
 
 def at_least(user, role):
