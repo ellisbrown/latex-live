@@ -13,7 +13,7 @@ def least_role(method, path):
     start_review), and the baselines that change highlights compare with (editors) once per commit
     (base_status); each
     starts only with a POST, whose Origin says it comes from the viewer's own page (a GET of the
-    downloads is answered 405 there, so that an old viewer says why). The checks quote the sources'
+    downloads is answered 405, so that an old viewer says why). The checks quote the sources'
     comments and the text in their false branches, and the baselines show earlier versions of the
     text, which only editors see (shared_pdfs, viewer_status)."""
     if method == "GET" and path.startswith("/check/"):  # (the checks quote the sources' comments and hidden text)

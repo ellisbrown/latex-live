@@ -96,6 +96,15 @@ def get(path, token, doc="main"):
     return json.loads(data) if kind.startswith("application/json") else data.decode() if kind.startswith("text/") else data
 
 
+def post(path, token, doc="main", body=None):
+    """A preview's action or build made on request (POST, as the viewer sends it), through the hub, with the token
+    as the cookie: its JSON answer."""
+    status, _, data = request(f"{hub['base']}{doc}{path}", method="POST", body={} if body is None else body, cookie=token)
+    if status != 200:
+        raise OSError(f"{status} {data[:200]!r}")
+    return json.loads(data)
+
+
 def hub_get(path, token):
     """get, failing the check (with the answer) instead of raising."""
     try:
