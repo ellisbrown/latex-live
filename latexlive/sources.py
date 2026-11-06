@@ -2,10 +2,11 @@
 (a note, a save) takes, writing a file in one step unless it changed meanwhile, and who wrote which
 version of a file."""
 
+import contextlib
+import errno
 import glob
 import hashlib
 import os
-import shutil
 import stat
 import threading
 import time
@@ -23,23 +24,87 @@ class SourceChanged(Exception):
     """The source file changed between reading it and writing it back."""
 
 
+def source_folder(real):
+    """A descriptor of the folder of real, a source's real path (no link in it: os.path.realpath), opened
+    one folder at a time from / without following a link (O_NOFOLLOW): what is read or written in it is
+    the file that was checked (editable_real), even if a folder on the way was swapped for a link since.
+    SourceChanged if one was."""
+    fd = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in os.path.dirname(real).split(os.sep):
+            if part:
+                fd, parent = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd), fd
+                os.close(parent)
+    except OSError as e:
+        os.close(fd)
+        if e.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise SourceChanged() from e
+        raise
+    return fd
+
+
+def open_source(real, folder=None, limit=None):
+    """real (a source's real path), opened for reading in its folder (source_folder, or the descriptor
+    folder) without following a link, and checked once open (fstat): a regular file (of at most limit
+    bytes, if given). SourceChanged if a link or anything else is there now."""
+    own = folder is None
+    folder = source_folder(real) if own else folder
+    try:
+        fd = os.open(os.path.basename(real), os.O_RDONLY | os.O_NOFOLLOW, dir_fd=folder)
+    except OSError as e:
+        if e.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise SourceChanged() from e
+        raise
+    finally:
+        if own:
+            os.close(folder)
+    f = os.fdopen(fd, "rb")
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or limit is not None and st.st_size > limit:
+        f.close()
+        raise SourceChanged()
+    return f
+
+
+def read_editable(real):
+    """The bytes of real, a file the browser editor opens (editable_real), as open_source opens it: a regular
+    file of at most EDITABLE_SIZE."""
+    with open_source(real, limit=EDITABLE_SIZE) as f:
+        return f.read(EDITABLE_SIZE + 1)
+
+
 def read_source(path):
-    """A source file's exact text (line endings kept)."""
-    with open(path, encoding="utf-8", newline="") as f:
-        return f.read()
+    """A source file's exact text (line endings kept), from its real path (open_source)."""
+    with open_source(path) as f:
+        return f.read().decode("utf-8")
 
 
 def write_source(path, old, new):
-    """Write new over a source file in one step (latexmk never reads half of it), unless it no longer
-    holds old: an editor saved it in the meantime."""
-    path = os.path.realpath(path)
-    if read_source(path) != old:
-        raise SourceChanged()
-    tmp = f"{path}.latex-live-{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8", newline="") as f:
-        f.write(new)
-    shutil.copymode(path, tmp)
-    os.replace(tmp, path)
+    """Write new over a source file, at its real path, in one step (latexmk never reads half of it),
+    unless it no longer holds old: an editor saved it in the meantime. The file and the new one beside
+    it are opened in its folder without following links (source_folder), so a link swapped in since
+    the file was checked is never followed (SourceChanged)."""
+    folder = source_folder(path)
+    try:
+        with open_source(path, folder) as f:
+            mode = stat.S_IMODE(os.fstat(f.fileno()).st_mode)
+            if f.read().decode("utf-8") != old:
+                raise SourceChanged()
+        name, tmp = os.path.basename(path), f"{os.path.basename(path)}.latex-live-{os.getpid()}"
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp, dir_fd=folder)  # (one a write that failed left)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(new.encode("utf-8"))
+                os.fchmod(f.fileno(), mode)
+            os.replace(tmp, name, src_dir_fd=folder, dst_dir_fd=folder)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp, dir_fd=folder)
+            raise
+    finally:
+        os.close(folder)
 
 
 # The files the browser editor opens (editable_real): sources of at most 4 MB.
@@ -102,7 +167,7 @@ def cached_version(path, cache={}):
     st = os.stat(path)
     if (version := cache.get((path, st.st_mtime_ns, st.st_size, st.st_ino))) is not None:
         return version
-    with open(path, "rb") as f:
+    with open_source(path) as f:  # (never through a link swapped in since the file was checked)
         st, data = os.fstat(f.fileno()), f.read()  # (the stat of the bytes read, should the file change now)
     if len(cache) >= 64:
         cache.clear()
@@ -117,6 +182,6 @@ def wrote(server, user, rel, version=None):
     if version is None:
         try:
             version = cached_version(os.path.join(os.path.realpath(server.paper_root), rel))
-        except OSError:
+        except (OSError, SourceChanged):
             return
     server.last_writer[rel] = (version, user["name"] or (owner_name(server) if user["role"] == "owner" else user["id"]))

@@ -3,6 +3,7 @@ order unit_checks runs them: the review copy's layout and matching, shared mode'
 bounds, failures and waits, the bibliography's SyncTeX lookups, tool timeouts, the warm standby's snapshot, the
 timing lines, the restart prompt, and the static files the server sends."""
 
+import collections
 import glob
 import gzip
 import os
@@ -24,7 +25,7 @@ def unit_checks():
     """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
     for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
-                  code_updated_checks, static_file_checks):
+                  code_updated_checks, static_file_checks, source_swap_checks):
         check()
 
 
@@ -461,3 +462,68 @@ def standby_snapshot_checks():
         shutil.rmtree(tmp, ignore_errors=True)
     ok("the warm standby notices a file added in a folder the paper links to (and a link back up doesn't loop), and a"
        " notes-free standby one added to build/ (but not pdflatex's passing recorder file)")
+
+
+def source_swap_checks():
+    """The browser editor and the notes read and write a source only as the file that was checked (sources.open_source,
+    write_source): when a folder on its path or the file itself becomes a symbolic link after the check (to a file
+    outside the paper, or to /dev/zero), a read or a save follows no link, writes nothing outside the paper and leaves
+    no temporary file, and the editor answers 404 for the read and 409 for the save; a file that is just as it was
+    reads and saves as before, keeping its mode."""
+    from latexlive import editor, sources
+    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
+    try:
+        root, outside = os.path.join(tmp, "paper"), os.path.join(tmp, "outside")
+        put(os.path.join(root, "main.tex"), "\\documentclass{article}\\begin{document}\\input{sub/ch}\\end{document}\n")
+        put(os.path.join(root, "sub", "ch.tex"), "chapter\n")
+        put(os.path.join(outside, "ch.tex"), "secret\n")
+        os.chmod(os.path.join(root, "sub", "ch.tex"), 0o640)
+        real = sources.editable_real(root, os.path.join("sub", "ch.tex"))
+        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", versions=collections.OrderedDict(),
+                                       versions_lock=threading.Lock(), last_saves=collections.OrderedDict(), last_writer={},
+                                       autocommit=False, pending={}, pending_lock=threading.Lock(), git_name="Owner")
+        listed = {"main.tex": sources.editable_real(root, "main.tex"), os.path.join("sub", "ch.tex"): real}
+        saved = editor.editable_files
+        editor.editable_files = lambda server, fresh=True: listed  # (as checked before the swap)
+        try:
+            status, body = editor.file_request(server, {"path": [os.path.join("sub", "ch.tex")]})
+            if status != 200 or body.get("text") != "chapter\n":
+                fail(f"the editor no longer reads a source: {status} {body}")
+            status, saved_body = editor.save_request(server, {"path": os.path.join("sub", "ch.tex"), "base": body["version"],
+                                                              "text": "chapter, saved\n"}, {"id": "owner", "name": None, "role": "owner"})
+            if (status != 200 or sources.read_source(real) != "chapter, saved\n"
+                    or os.stat(real).st_mode & 0o777 != 0o640):
+                fail(f"the editor no longer saves a source as before (keeping its mode): {status} {saved_body}")
+            os.rename(os.path.join(root, "sub"), os.path.join(root, "sub.was"))
+            os.symlink(outside, os.path.join(root, "sub"))  # (a folder on the checked path, now a link out of the paper)
+            read = editor.file_request(server, {"path": [os.path.join("sub", "ch.tex")]})
+            save = editor.save_request(server, {"path": os.path.join("sub", "ch.tex"), "base": None, "text": "pwned\n",
+                                                "force": True}, {"id": "owner", "name": None, "role": "owner"})
+            try:
+                sources.write_source(real, "secret\n", "pwned\n")
+                wrote_through = True
+            except sources.SourceChanged:
+                wrote_through = False
+            os.remove(os.path.join(root, "sub"))
+            os.rename(os.path.join(root, "sub.was"), os.path.join(root, "sub"))
+            os.remove(real)
+            os.symlink("/dev/zero", real)  # (the file itself, now a link to something endless)
+            try:
+                sources.read_source(real)
+                endless = True
+            except sources.SourceChanged:
+                endless = False
+            final = editor.file_request(server, {"path": [os.path.join("sub", "ch.tex")]})
+        finally:
+            editor.editable_files = saved
+        with open(os.path.join(outside, "ch.tex")) as f:
+            if f.read() != "secret\n" or wrote_through or os.listdir(outside) != ["ch.tex"]:
+                fail("a save followed a folder swapped for a link out of the paper after the check")
+        if read[0] != 404 or "secret" in str(read[1]) or save[0] != 409 or final[0] != 404 or endless:
+            fail(f"after a swap for a link, the editor's read says {read}, its save {save}, and a read of a link to"
+                 f" /dev/zero {final}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    ok("the editor and the notes read and write a source only as the file that was checked: a folder or the file swapped"
+       " for a link since is never followed")
+
