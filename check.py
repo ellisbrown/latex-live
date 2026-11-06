@@ -383,19 +383,14 @@ def static_checks():
         if len(tokens) != 1 or "" in tokens:
             fail(f"instances starting at once got {len(tokens)} different tokens{' (one empty)' if '' in tokens else ''}")
     ok("instances starting at once agree on one token, never an empty one")
-    layout_checks()
-    matching_checks()
-    confinement_checks()
-    shared_build_checks()
-    bounds_checks()
-    failed_export_checks()
-    bib_span_checks()
-    waiting_download_checks()
-    tool_timeout_checks()
-    standby_snapshot_checks()
-    timing_checks()
-    code_updated_checks()
-    static_file_checks()
+
+
+def unit_checks():
+    """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
+    for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
+                  bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
+                  code_updated_checks, static_file_checks):
+        check()
 
 
 def timing_checks():
@@ -4038,6 +4033,7 @@ def _quiet(test):
 
 def main():
     static_checks()
+    unit_checks()
     with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
         live_checks(tmp)
     print("all checks passed")
