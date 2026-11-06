@@ -40,13 +40,14 @@ def identity_checks(sh):
     for each kind of user, and users added (or a broken users file) without a restart."""
     owner, tk = sh["token"], sh["users"]["tk"]["token"]
     cookie, proxy = [("Cookie", f"latex_live={owner}")], [("Host", PROXY_HOST)]
-    for host in ("evil.example", f"evil.example:{SHARED_PORT}", "paper.invalid.evil.example:8443"):
+    for host in ("evil.example", f"evil.example:{SHARED_PORT}", "paper.invalid.evil.example:8443", "localhost:5000",
+                 f"127.0.0.1:{SHARED_PORT + 1}"):
         expect(send("GET", "/me", [("Host", host)] + cookie), 403, f"the owner's cookie with Host {host} (DNS rebinding)")
     for host in (f"localhost:{SHARED_PORT}", "localhost", f"127.0.0.1:{SHARED_PORT}", f"[::1]:{SHARED_PORT}"):
         expect(send("GET", "/me", [("Host", host)] + cookie), 200, f"the owner's cookie with Host {host}")
     expect(send("GET", "/me", [("Host", "paper.invalid:8443"), ("Cookie", f"latex_live={tk}")]), 200,
            "a personal link's cookie with the public Host")
-    ok("the shared instance answers loopback, public and proxy Host names only")
+    ok("the shared instance answers loopback names on its own port, and the public and the proxy's Host names, only")
 
     expect(send("GET", "/me", proxy), 403, "the proxy's Host without the identity header or a token")
     for values in (("ed", "ed"), ("ed", "cm"), ("",)):
@@ -240,7 +241,9 @@ def role_checks(sh):
             (proxy + [("Origin", "http://other.paper.invalid:8443")], False, "a sibling of the public host"),
             (proxy + [("Origin", f"http://localhost:{SHARED_PORT}")], False, "a loopback origin, through the proxy"),
             (owners, True, "a token and no Origin on a loopback Host (curl, check.py)"),
-            (owners + [("Origin", "http://localhost:5000")], True, "a loopback origin on another port"),
+            (owners + [("Origin", "http://localhost:5000")], False, "a loopback origin on another port"),
+            (owners + [("Origin", "http://localhost")], False, "a loopback origin on port 80"),
+            (owners + [("Origin", f"http://localhost:{SHARED_PORT}")], True, "the localhost origin on its own port"),
             (owners + [("Origin", f"http://127.0.0.1:{SHARED_PORT}")], True, "the 127.0.0.1 origin"),
             (owners + [("Origin", f"http://[::1]:{SHARED_PORT}")], True, "the [::1] origin"),
             (owners + [("Origin", PUBLIC)], False, "the public origin on a loopback Host"),
@@ -253,7 +256,8 @@ def role_checks(sh):
         if result[0] != (409 if allowed else 403):
             fail(f"a POST with {what}: {result[0]} {result[2][:200]!r} (want {'409, past the Origin check' if allowed else '403'})")
     expect(send("POST", "/note", proxy + [("Origin", PUBLIC), ("Content-Type", "text/plain")], b"{}"), 415, "a POST that is not JSON")
-    ok("POSTs need the public origin through the proxy and on the public Host, a loopback one (or none, with a token) on loopback")
+    ok("POSTs need the public origin through the proxy and on the public Host, a loopback one on the instance's own port (or"
+       " none, with a token) on loopback")
 
     ed = proxy + [("Origin", PUBLIC)]
     for path, length, wanted, what in (("/note", 100_001, (413,), "a note over 100 000 bytes"),

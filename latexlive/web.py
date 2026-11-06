@@ -11,11 +11,13 @@ import shutil
 import socket
 import sys
 import threading
+import time
 
 from . import config
 from .auth import (
-    USER_ID_RE, host_kinds, is_loopback, owner_name, owner_principal, peer_uid, principal, same_secret, users)
+    ORIGIN_RE, USER_ID_RE, host_kinds, is_loopback, owner_name, owner_principal, peer_uid, principal, same_secret, users)
 from .files import open_output
+from .instances import is_live_instance
 
 
 POST_LIMIT, POST_LIMITS = 100_000, {"/file": 8_000_000}  # bytes of a POST body (the browser editor saves whole files)
@@ -119,6 +121,23 @@ def taken_port_advice(port):
             f" it for a while: choose a port below {first}" + (f", e.g. {instead}." if instead else "."))
 
 
+FRAME_ANCESTORS = "frame-ancestors 'self' vscode-webview: vscode-file:"  # (the owner's previews: VS Code's Simple Browser)
+
+
+def serving_hub_port(cache={}):
+    """The port of the hub serving now (HUB_FILE, if its process is alive), looked up at most every 2 s."""
+    if time.monotonic() - cache.get("at", -9) > 2:
+        try:
+            with open(config.HUB_FILE) as f:
+                hub = json.load(f)
+        except (OSError, ValueError):
+            hub = {}
+        port = hub.get("port") if isinstance(hub, dict) else None
+        cache["port"] = port if isinstance(port, int) and is_live_instance(hub.get("pid")) else None
+        cache["at"] = time.monotonic()
+    return cache["port"]
+
+
 class BaseHandler(http.server.SimpleHTTPRequestHandler):
     """What every request of an instance and of the hub goes through: who is asking (authorize), and
     sending the answer. Without a route of its own (Handler, HubHandler), it answers nothing."""
@@ -129,22 +148,35 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=config.HERE, **kwargs)
 
+    def allowed_ports(self):
+        """The ports that a loopback name in Host or Origin may have here (host_kinds): this server's own, and the
+        hub's (server.hub_port: the port the hub forwards from, for an instance; the hub is its own), plus the port
+        of the hub serving now, should another preview hold it on another port."""
+        ports = {self.server.server_address[1]}
+        if getattr(self.server, "hub_port", None):
+            ports.add(self.server.hub_port)
+            ports.add(serving_hub_port())
+        return ports - {None}
+
     def authorize(self, query):
-        """Who is asking (a principal), or None, with self.denial saying why (deny). Every client needs
-        ?t=TOKEN once, then the cookie (forwarded traffic arrives via loopback too). In shared mode, a
-        user's own token works the same way, or the trusted proxy names the user (proxy_user); and the
-        Host must be one of this instance's names (host_kinds)."""
+        """Who is asking (a principal), or None, with self.denial saying why (deny). The Host must be one of this
+        server's names (host_kinds: loopback ones on its ports, LATEX_LIVE_HOST's and LATEX_LIVE_ALLOWED_HOSTS', and
+        in shared mode the public and the proxy's). Every client needs ?t=TOKEN once, then the cookie (forwarded
+        traffic arrives via loopback too). In shared mode, a user's own token works the same way, or the trusted proxy
+        names the user (proxy_user)."""
         self.set_cookie, self.hosts = None, set()
-        self.denial = (403, "open your link again (the one with ?t= in it)", None)
+        self.denial = (403, f"open the URL with ?t=<token> from {config.TOKEN_FILE}", None)
         if config.SHARED:  # (a browser with an old or revoked personal link, or none, gets a page that says what to do)
-            self.denial = (*self.denial[:2], lambda: bad_link_page(owner_name(self.server)))
-            hosts = self.headers.get_all("Host") or []
-            self.hosts = host_kinds(hosts[0]) if len(hosts) == 1 else set()
-            if not self.hosts:
-                self.denial = (403, "this preview does not answer to that host name", None)
-                return None
-            if config.IDENTITY_HEADER and self.headers.get_all(config.IDENTITY_HEADER) is not None:
-                return self.proxy_user()  # (never by token or cookie: they stay out of the proxy's traffic)
+            self.denial = (403, "open your link again (the one with ?t= in it)", lambda: bad_link_page(owner_name(self.server)))
+        hosts = self.headers.get_all("Host") or []
+        self.hosts = host_kinds(hosts[0], self.allowed_ports()) if len(hosts) == 1 else set()
+        if not self.hosts:
+            name = hosts[0].strip() if len(hosts) == 1 and config.HOST_RE.fullmatch(hosts[0].strip()) else "that host name"
+            self.denial = (403, f"this preview does not answer to {name}" + ("" if config.SHARED else
+                           " (LATEX_LIVE_HOST or LATEX_LIVE_ALLOWED_HOSTS adds a name; see latex-live's setup guide)"), None)
+            return None
+        if config.SHARED and config.IDENTITY_HEADER and self.headers.get_all(config.IDENTITY_HEADER) is not None:
+            return self.proxy_user()  # (never by token or cookie: they stay out of the proxy's traffic)
         cookie = http.cookies.SimpleCookie(self.headers.get("Cookie", "")).get("latex_live")
         cookie = cookie.value if cookie else ""
         for value in (cookie, query.get("t", [""])[0]):
@@ -167,6 +199,21 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
                 return principal(entry, "token")
         return None
 
+    def origin_allowed(self):
+        """Whether a POST comes from the viewer's own page, so that no other site can make a browser act: the
+        Origin is the public one (shared mode) when the Host is the public or the proxy's, else one of this server's
+        own names of the same kind as the Host (host_kinds: a loopback one on its port or the hub's when the Host is
+        loopback, a LATEX_LIVE_HOST or LATEX_LIVE_ALLOWED_HOSTS name when the Host is one). Without Origin (browsers
+        send one with every POST), only from a program with a token (curl, check.py), at one of its own names."""
+        origins = self.headers.get_all("Origin") or []
+        if not origins:
+            return bool(self.hosts & {"loopback", "named"}) and self.principal["via"] != "proxy"
+        origin = origins[0].strip() if len(origins) == 1 else ""
+        if self.hosts & {"public", "proxy"} and config.PUBLIC_ORIGIN and origin == config.PUBLIC_ORIGIN:
+            return True
+        m = ORIGIN_RE.fullmatch(origin)
+        return bool(m and host_kinds(m.group(2), self.allowed_ports(), m.group(1)) & self.hosts & {"loopback", "named"})
+
     def proxy_user(self):
         """The user the trusted proxy names in IDENTITY_HEADER (exactly once), or None. Any program on
         this machine can connect and send that header, so it counts only with the proxy's Host
@@ -188,7 +235,7 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
 
     def deny(self):
         """Answer a request that authorize turned down: 403, as a page for a browser where there is one
-        (made only now, if it is a function)."""
+        (made only now, if it is a function), else as text."""
         status, text, page = self.denial
         page = page() if callable(page) else page
         if page and "text/html" in self.headers.get("Accept", ""):
@@ -206,11 +253,12 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Set-Cookie", f"latex_live={self.set_cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000{secure}")
         if self.path.startswith(("/viewer.html", "/viewer/")):  # revalidate, so an update shows on the next reload
             self.send_header("Cache-Control", "no-cache")
+        # No other site may frame the viewer, nor learn its URL. Outside shared mode, VS Code's Simple Browser (a
+        # webview) may frame the owner's own: modern browsers follow frame-ancestors and ignore X-Frame-Options then.
         self.send_header("X-Content-Type-Options", "nosniff")
-        if config.SHARED:  # (no other site may frame the viewer, nor learn its URL; VS Code's Simple Browser frames an owner's own)
-            self.send_header("X-Frame-Options", "DENY")
-            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
-            self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY" if config.SHARED else "SAMEORIGIN")
+        self.send_header("Content-Security-Policy", "frame-ancestors 'none'" if config.SHARED else FRAME_ANCESTORS)
+        self.send_header("Referrer-Policy", "no-referrer")
         super().end_headers()
 
     def send_json(self, status, value):

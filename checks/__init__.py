@@ -21,7 +21,8 @@ does).
    repository with a pushed commit and a local one) gets a live.py instance, with the hub on port
    44180, or below the ports that outgoing connections take where 44180 is among them (Linux: 28180), or the first
    free block of 24 ports above (LATEX_LIVE_CHECK_PORT sets it), state of its own
-   (not the user's) and none of the user's LATEX_LIVE_* settings:
+   (not the user's) and none of the user's LATEX_LIVE_* settings (but a LATEX_LIVE_HOST and
+   LATEX_LIVE_ALLOWED_HOSTS of its own):
    - the build publishes main.pdf, and the notes-free pass main-clean.pdf;
    - the hub redirects an old bookmark, needs the token or its cookie, and forwards every
      endpoint (POST /rebuild too); the hub and the previews refuse HEAD and bad or oversized POST
@@ -39,6 +40,11 @@ does).
      every note in a gutter (none overlapping, the protected marker and the resolved note left out),
      and its last pass loads no package that the paper's TeX wrote; a document without notes gets a
      clear failure, not a file;
+   - who reaches the owner's preview and the hub (access): loopback names on their own and the
+     hub's ports, LATEX_LIVE_HOST's name there and LATEX_LIVE_ALLOWED_HOSTS' on its port, nothing
+     else; a POST's Origin must be the viewer's own page under the same kind of name (or none, with
+     the token), refused before its body is read; nosniff, no referrer, frame-ancestors (VS Code's
+     Simple Browser only);
    - POST /switch moves the preview to another document and GET /switch back, and POST /diff and
      GET /diff build a latexdiff (the viewer's POST forms and the old GET ones, through the hub);
    - a second document runs in its own process behind the same port, and /papers links both; the
@@ -84,8 +90,8 @@ does).
      cookies, a page that says what to do for a browser without a working link, users added (and a
      broken users file) without a restart, /me (whether the paper defines the user's note macro, and
      no document switch, for anyone) and every endpoint per role (the checks for editors only),
-     the Origin rules for POSTs, POST body limits, non-owners pinned to the document, and the
-     viewer's security headers;
+     the Origin rules for POSTs (a loopback one only on the instance's own port), POST body limits,
+     non-owners pinned to the document, and the viewer's security headers;
    - a real confined container runs as the owner's uid (not root), on a read-only root file system
      with a sized /tmp, with podman's seccomp filter, no new privileges, capabilities or swap, and
      leaves files the owner owns; pdflatex (making and caching a bitmap font), bibtex, biber,
@@ -126,11 +132,12 @@ does).
      (Linux).
 Exits non-zero on the first failure.
 
-Its modules, from the bottom up (each imports only from those below it): base (where the checks run, and how
-they report: ok, fail, wait_for, in_thread), helpers (files, git, instances and requests to them, stand-ins, the TeX
-Live image), papers (the scratch paper), static (the checkout as it is), shared_units and units (the server's parts
-without an instance), standby, early and clean_standby (the threads beside the instance checks: the warm standby,
-the early notes-free pass and its warm standby), shared_helpers, shared_setup, shared_access, shared_sandbox,
-shared_downloads, shared_notes, shared_editor, shared_rebuild, shared_commits and shared (shared mode, the other thread), preview (the
-instance checks, which start the threads), and main.
+Its modules, from the bottom up (each imports only from those below it): base (where the checks run, and how they
+report: ok, fail, wait_for, in_thread), helpers (files, git, instances and requests to them, stand-ins, the TeX Live
+image), papers (the scratch paper), access (who reaches the owner's preview: hosts and origins), static (the
+checkout as it is), shared_units and units (the server's parts without an instance), standby, early and
+clean_standby (the threads beside the instance checks: the warm standby, the early notes-free pass and its warm
+standby), shared_helpers, shared_setup, shared_access, shared_sandbox, shared_downloads, shared_notes,
+shared_editor, shared_rebuild, shared_commits and shared (shared mode, the other thread), preview (the instance
+checks, which start the threads), and main.
 """

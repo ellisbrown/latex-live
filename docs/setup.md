@@ -168,8 +168,10 @@ The problem matcher sends LaTeX errors and warnings to the Problems panel. The
    ```
 
    The first line keeps the laptop's port the same as the remote machine's, so
-   saved URLs keep working. The second stops VS Code from offering to forward
-   each preview's own port, which you never need.
+   saved URLs keep working, and latex-live answers `localhost` only on its own
+   ports (see [Ports and the token](#ports-and-the-token)). The second stops
+   VS Code from offering to forward each preview's own port, which you never
+   need.
 3. **Open the viewer.**
    - On a remote machine, forward port 44100 in the Ports panel (once; VS Code
      often does it by itself).
@@ -230,6 +232,15 @@ page. To stay on a release, check out its tag, e.g.
   file: `?t=` once, after which it is a cookie. Anything that reaches the port
   can send requests, so the token is required even on a laptop. Your browser
   keeps one cookie per host name, whatever the port.
+- **Host names.** A preview and the hub answer only to `localhost`,
+  `127.0.0.1` and `[::1]` on their own ports (the hub's, and each preview's),
+  to the name in `LATEX_LIVE_HOST` on those ports, and to the names in
+  `LATEX_LIVE_ALLOWED_HOSTS`, so that a web page can't reach them under a name
+  of its own (DNS rebinding). Actions (notes, saves, downloads, switching and
+  comparing) count only from the viewer's own page under one of those names,
+  so another site can't make your browser act. Forward a port to the same port
+  number on your laptop (as the settings in step 5 do); for another one, add
+  it, e.g. `LATEX_LIVE_ALLOWED_HOSTS=localhost:8100`.
 - **The state folder** is `~/.config/latex-live` (`$XDG_CONFIG_HOME/latex-live`
   if that is set, or `$LATEX_LIVE_STATE`). It holds the token, the `port` file,
   the hub's lock and the list of running instances, shared by every checkout of
@@ -313,8 +324,14 @@ are in [shared-mode.md](shared-mode.md#settings).
   the pass without notes), in milliseconds after the save; and the viewer logs
   in the browser's console, for each new PDF, how long it took to notice it,
   fetch it, and draw its first page. Off by default.
-- `LATEX_LIVE_HOST`: also print a direct viewer URL on this host name, e.g.
-  the name a tunnel exposes.
+- `LATEX_LIVE_HOST`: a host name under which a browser reaches this machine,
+  e.g. the name a tunnel exposes: the previews answer to it on their ports
+  (see [Ports and the token](#ports-and-the-token)), and a direct viewer URL
+  on it is printed too.
+- `LATEX_LIVE_ALLOWED_HOSTS`: more names the previews answer to, separated by
+  commas: a name alone on their ports, `name:port` on that port only, e.g.
+  `paper.example.org:443` for a reverse proxy on this machine, or
+  `localhost:8100` for a port forwarded to another number.
 - `LATEX_LIVE_PORT`: the hub's port (see [Ports and the token](#ports-and-the-token)).
 - `LATEX_LIVE_STATE`: the state folder (default `~/.config/latex-live`).
 
@@ -354,6 +371,7 @@ missing.
 | `already running for <doc>.tex` | Another instance builds that document, e.g. from another VS Code window, and still answers. It prints that instance's URL; `--replace` stops it and runs here instead. `http://localhost:44100/papers` lists every running preview. |
 | "restart to update" in the viewer | latex-live changed on disk (e.g. after a pull) since the task started. Restart the task, then reload. |
 | 403 in the browser | Open the full URL with `?t=` once. The token is in `~/.config/latex-live/token`. |
+| 403 `this preview does not answer to <name>` | The browser reaches the preview under a name or port it doesn't answer to (see [Ports and the token](#ports-and-the-token)): forward the port to the same number, or add the name to `LATEX_LIVE_HOST` or `LATEX_LIVE_ALLOWED_HOSTS` in the task's `options.env`, and restart the task. |
 | Stopping the task leaves latexmk running | Your `python3` may be a wrapper that doesn't pass signals on. Use the interpreter itself, e.g. `/usr/bin/python3`. On macOS, a server killed with `kill -9` leaves latexmk running; stop it by hand. |
 | Double-click opens the browser editor, not VS Code | latex-live runs outside a VS Code terminal, so `code` can't reach the window. Start it with the VS Code task, or set `LATEX_LIVE_EDITOR`. |
 | Double-click does nothing, or says the image is not pulled | Without a `synctex` on the host, SyncTeX runs in the image: pull it (step 2). |

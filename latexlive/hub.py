@@ -6,6 +6,7 @@ When it exits, another preview takes over the lock and the same port within a se
 free; it waits while another program holds it), so viewer URLs keep working; the last one to exit closes
 it."""
 
+import contextlib
 import fcntl
 import html
 import http.client
@@ -70,7 +71,8 @@ def hub_port():
 
 class HubHandler(BaseHandler):
     """The hub's requests: /p/<id>/<doc>/<path> goes to <path> on that preview's port, with the
-    token, so the viewer works there unchanged (its URLs are relative). /papers lists the
+    token, so the viewer works there unchanged (its URLs are relative), after the same checks of
+    the Host, the token and a POST's Origin as the preview's own (BaseHandler). /papers lists the
     previews; / and /viewer.html?file=X (old bookmarks) go to the only matching preview."""
 
     def do_GET(self):
@@ -84,8 +86,15 @@ class HubHandler(BaseHandler):
             return self.send_error(500, "a shared instance has no hub")
         url = urllib.parse.urlsplit(self.path)
         query = urllib.parse.parse_qs(url.query)
-        if not self.authorize(query if method == "GET" else {}):
-            return self.send_error(403, f"open the URL with ?t=<token> from {config.TOKEN_FILE}")
+        self.principal = self.authorize(query if method == "GET" else {})
+        if not self.principal:
+            return self.deny()
+        if method == "POST" and not self.origin_allowed():  # (before the body is read; the preview checks again)
+            length, error = content_length(self.headers, 1 << 16)
+            if not error and length:  # (a small body is read still, so that the answer isn't lost to a reset)
+                with contextlib.suppress(OSError):
+                    self.rfile.read(length)
+            return self.send_error(403, "not from this preview's own page (Origin)")
         if m := re.match(r"^/p/([^/]+)/([^/]+)(/.*)?$", url.path):
             id_, doc = urllib.parse.unquote(m[1]), urllib.parse.unquote(m[2])
             if not m[3]:
@@ -118,7 +127,8 @@ class HubHandler(BaseHandler):
         if error:
             return self.send_error(error)
         body = self.rfile.read(length) if length else None
-        headers = {k: v for k, v in self.headers.items() if k.lower() in ("content-type", "range", "if-range")}
+        # (the browser's Host and Origin too, which the preview checks as the hub did: its names include the hub's port)
+        headers = {k: v for k, v in self.headers.items() if k.lower() in ("content-type", "range", "if-range", "host", "origin")}
         headers.update({"Cookie": f"latex_live={self.server.token}", "X-Latex-Live-Paper": id_})
         for fresh in (False, True):  # (fresh: after a 421 or a refused connection, look again now)
             target = self.server.find(id_, doc, fresh)

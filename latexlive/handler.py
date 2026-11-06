@@ -8,7 +8,7 @@ import re
 import urllib.parse
 
 from . import config
-from .auth import LOOPBACK_ORIGIN_RE, owner_name
+from .auth import owner_name
 from .baselines import baseline_request, start_diff
 from .build import on_main_thread, rebuild_doc, request_switch
 from .checks import cached_checks
@@ -68,19 +68,6 @@ class Handler(BaseHandler):
     (permitted), then the answer: the viewer and its files and the JSON endpoints (GET), and the actions
     and the builds made on request (POST)."""
 
-    def origin_allowed(self):
-        """Whether a POST in shared mode comes from the viewer's own page, so that no other site can make
-        a coauthor's browser act: Origin is the public one when the Host is the public or the proxy's,
-        a loopback one (any port: forwards remap it) when the Host is a loopback name. Without Origin,
-        only from a program with a token (curl, check.py), at a loopback name."""
-        origins = self.headers.get_all("Origin") or []
-        if not origins:
-            return "loopback" in self.hosts and self.principal["via"] != "proxy"
-        origin = origins[0].strip() if len(origins) == 1 else ""
-        if self.hosts & {"public", "proxy"} and config.PUBLIC_ORIGIN and origin == config.PUBLIC_ORIGIN:
-            return True
-        return "loopback" in self.hosts and bool(LOOPBACK_ORIGIN_RE.fullmatch(origin))
-
     def permitted(self, method, path, query, before=None):
         """Whether the principal's role allows the request (allowed); non-owners see only the shared
         document (shared_pdfs). Answers 403 if not, after calling before (if given). (Without shared
@@ -115,7 +102,7 @@ class Handler(BaseHandler):
         query = urllib.parse.parse_qs(url.query)
         self.principal = self.authorize(query)
         if not self.principal:
-            return self.deny() if config.SHARED else self.send_error(403, f"open the URL with ?t=<token> from {config.TOKEN_FILE}")
+            return self.deny()
         if self.misdirected() or not self.permitted("GET", path, query):
             return
         if path == "/":
@@ -205,15 +192,14 @@ class Handler(BaseHandler):
 
     def do_POST(self):
         """Actions (POST /note, /file, /rebuild, /switch, /diff, /open, /commit), and the builds made on
-        request (POST /export, /review, and in shared mode /baseline). Only with the cookie, which SameSite=Strict keeps off other
-        sites' requests, and a JSON body, which other sites can't send without asking first; in shared
-        mode, also only from the viewer's own page (origin_allowed), and as the role allows, which shared
-        mode checks before it reads the body (a refusal reads a small body still, so that the answer isn't
-        lost to a reset; a large one, not)."""
+        request (POST /export, /review, and in shared mode /baseline). Only with the cookie, which
+        SameSite=Strict keeps off other sites' requests, a JSON body, which other sites can't send without asking
+        first, and from the viewer's own page (origin_allowed), as the role allows; both are checked before the body
+        is read (a refusal reads a small body still, so that the answer isn't lost to a reset; a large one, not)."""
         path = urllib.parse.urlsplit(self.path).path
         self.principal = self.authorize({})
         if not self.principal:
-            return self.deny() if config.SHARED else self.send_error(403, "open the viewer URL with ?t=<token> first")
+            return self.deny()
         if self.misdirected():
             return
         length, error = content_length(self.headers, POST_LIMITS.get(path, POST_LIMIT))
@@ -225,16 +211,14 @@ class Handler(BaseHandler):
                 with contextlib.suppress(OSError):
                     self.rfile.read(length)
 
-        if config.SHARED and not self.origin_allowed():
+        if not self.origin_allowed():
             drain()
             return self.send_error(403, "not from this preview's own page (Origin)")
-        if config.SHARED and not self.permitted("POST", path, {}, before=drain):
+        if not self.permitted("POST", path, {}, before=drain):
             return
         try:
             data = self.rfile.read(length)
         except OSError:  # (the client stopped sending: the timeout)
-            return
-        if not config.SHARED and not self.permitted("POST", path, {}):
             return
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             return self.send_error(415, "expected a JSON body")

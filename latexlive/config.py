@@ -71,7 +71,30 @@ SHARED = bool(USERS_FILE)
 PUBLIC_URL = os.environ.get("LATEX_LIVE_PUBLIC_URL", "").strip()
 IDENTITY_HEADER = os.environ.get("LATEX_LIVE_IDENTITY_HEADER", "").strip()
 PROXY_HOST = os.environ.get("LATEX_LIVE_PROXY_HOST", "").strip()
-HOST_RE = re.compile(r"(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)(?::[0-9]{1,5})?")  # a Host header's value
+HOST_RE = re.compile(r"(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)(?::([0-9]{1,5}))?")  # a Host header's value (name, port)
+
+
+def host_entries(text, setting):
+    """The host names in a setting (LATEX_LIVE_HOST, LATEX_LIVE_ALLOWED_HOSTS: separated by commas or spaces), as
+    [(name in lower case, without brackets; port or None)]: a name alone is allowed on the instance's and the hub's
+    ports, name:port on that port only (host_kinds). One that is not a host name is left out, with a warning."""
+    found = []
+    for entry in re.split(r"[\s,]+", text.strip()):
+        m = HOST_RE.fullmatch(entry)
+        if entry and m:
+            found.append((m.group(1).lower().strip("[]"), int(m.group(2)) if m.group(2) else None))
+        elif entry:  # (warn, not exit: forward.py imports this module too)
+            print(f"=== latex-live: ignoring {entry!r} in {setting}, not a host name (or host:port)", file=sys.stderr, flush=True)
+    return found
+
+
+# The names besides localhost that a browser may reach the previews under (the Host allowlist: host_kinds), each on
+# the instance's and the hub's ports unless it names a port: LATEX_LIVE_HOST (the name a tunnel or the network gives
+# this machine, which also gets a direct viewer URL printed; not in shared mode, which answers this machine only) and
+# LATEX_LIVE_ALLOWED_HOSTS (more of them, e.g. paper.example.org:443 for a reverse proxy on this machine).
+HOST = os.environ.get("LATEX_LIVE_HOST", "").strip()
+NAMED_HOSTS = (([] if SHARED else host_entries(HOST, "LATEX_LIVE_HOST")[:1])
+               + host_entries(os.environ.get("LATEX_LIVE_ALLOWED_HOSTS", ""), "LATEX_LIVE_ALLOWED_HOSTS"))
 
 
 def public_origin(url):
