@@ -30,7 +30,7 @@
   after it (also edit, resolve, reply, and delete). On a remote machine, forward the port (e.g. in VS Code's Ports panel)
   and open the localhost URL; with LATEX_LIVE_HOST set, a direct URL on that host
   is printed too (e.g. a name a tunnel exposes). Anything that reaches the port
-  can send requests, so every request needs the token (in ~/.config/latex-live;
+  can send requests, so every request needs the token (in the state folder;
   ?t=TOKEN once, then a SameSite=Strict cookie).
 - One port for every preview (the hub, 44100): each instance runs on its own
   port from 44101, and the one that holds the hub's lock forwards
