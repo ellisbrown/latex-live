@@ -136,100 +136,31 @@ import sys
 import tempfile
 import threading
 import time
-import traceback
 import types
 import urllib.parse
-import urllib.request
 import zlib
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-from latexlive.web import DualStackServer, ephemeral, ephemeral_ports, port_below_ephemeral  # (once HERE is on the path)
-
-PORTS = 24  # (the block of ports the checks take, from PORT on)
-
-
-def free_ports(count):
-    """The first port of count consecutive ones that are all free now and that no outgoing connection may take
-    later (they are below the ephemeral ports, ephemeral_ports): the hub needs its exact port, and on a busy
-    machine an outgoing connection could otherwise hold one of them just when an instance binds it. From
-    44180 where that is outside the ephemeral ports (macOS), else from a few thousand below them (Linux:
-    28180 below 32768)."""
-    first_ephemeral, last_ephemeral, _ = ephemeral_ports()
-    if not any(ephemeral(port) for port in range(44180, 44180 + count)):
-        first, last = 44180, 44999
-    else:
-        first = port_below_ephemeral(180) or 1024
-        last = first_ephemeral - 1
-    base = first
-    while base + count - 1 <= last:
-        busy = next((port for port in range(base, base + count) if not port_free(port) or ephemeral(port)), None)
-        if busy is None:
-            return base
-        base = busy + 1  # (no block that holds the busy port will do)
-    sys.exit(f"check: no {count} free consecutive ports from {first} to {last} (outside {first_ephemeral}-{last_ephemeral},"
-             " where outgoing connections take theirs); set LATEX_LIVE_CHECK_PORT to the first of a free block")
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))  # (checks/ next to this file, wherever it is run from)
+from checks.base import (  # noqa: E402
+    CLEAN_PORT, DECOY_PORT, EARLY_PORT, ENV, HERE, PORT, SECRETS, SHARED_PORT, STANDBY_PORT, TOKEN, _quiet, fail, hub,
+    in_thread, ok, prints_token, redact, wait_for)
+from checks.helpers import (  # noqa: E402
+    CAPS, JS_TYPE_RE, editor_calls, editor_stub, get, git, git_out, hub_get, make_state, mtime_ns, pdf_pages_and_text,
+    post_length, put, put_bytes, read_bytes, read_hub, read_json_file, read_text, request, start, stop, tex_stand_in,
+    texlive_image, text_point, write_text)
+from checks.papers import NOTE_PARAGRAPHS, PAPER, PEOPLE, composed, make_paper  # noqa: E402
 
 
-def port_free(port):
-    """Whether a server could listen on port now, on every address, with the socket options of live.py's servers
-    (DualStackServer: "::", dual-stack, and its address and port reuse)."""
-    with socket.socket(DualStackServer.address_family) as s:
-        if DualStackServer.allow_reuse_address:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if getattr(DualStackServer, "allow_reuse_port", False) and hasattr(socket, "SO_REUSEPORT"):
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
-        try:
-            s.bind(("::", port))
-            s.listen()
-        except OSError:
-            return False
-    return True
-
-
-PORT = int(os.environ.get("LATEX_LIVE_CHECK_PORT") or free_ports(PORTS))  # the hub's; the previews' own ports follow
-if os.environ.get("LATEX_LIVE_CHECK_PORT") and any(ephemeral(port) for port in range(PORT, PORT + PORTS)):
-    print(f"note: LATEX_LIVE_CHECK_PORT={PORT}: ports {PORT}-{PORT + PORTS - 1} include ones that outgoing connections take,"
-          " so an instance may find its port held by one", flush=True)
-SHARED_PORT = PORT + 11  # the shared-mode instance's (shared_setup), past the previews' ports
-DECOY_PORT = PORT + 12  # a stand-in for a program that a lock file written in build/ points to (lock_spoof_checks)
-STANDBY_PORT = PORT + 13  # the hub of the warm standby's checks (standby_run), with state of its own; its preview's follow
-EARLY_PORT = PORT + 16  # the hub of the early notes-free pass's checks (early_run), with state of its own; its preview's follow
-CLEAN_PORT = PORT + 19  # the hub of the notes-free pass's warm standby's checks (clean_standby_run), likewise
 PUBLIC = "http://paper.invalid:8443"  # its LATEX_LIVE_PUBLIC_URL: the origin browsers would use
 PROXY_HOST = "proxy.invalid"  # its LATEX_LIVE_PROXY_HOST: the Host of the proxy's requests (via_proxy)
-CAPS = ("comment", "edit", "rebuild", "compare", "switch", "openHost", "download")  # what GET me says a user can do
+
 # What each role can do in shared mode (no one switches documents: a shared preview serves one; everyone may download
 # the paper without its notes), and commenting only with a note macro the paper defines (check_me).
 ROLE_CAN = {"viewer": ("download",), "commenter": ("comment", "download"), "editor": ("comment", "edit", "rebuild", "compare", "download"),
             "owner": ("comment", "edit", "rebuild", "compare", "openHost", "download")}
-JS_TYPE_RE = re.compile(r"(?:text|application)/(?:x-)?javascript\b")
+
 SOURCES = ("main.tex", "body.tex", "people.tex", "generated.inc")  # what the shared copy's build reads (settled)
 
-PAPER = r"""\documentclass[twocolumn]{article}
-\usepackage{xcolor}
-\usepackage[switch]{lineno}
-\linenumbers
-\newif\ifshowtodos \showtodostrue
-\newcommand{\todotxt}[1]{\ifshowtodos\textcolor{red}{#1}\fi}
-\newcommand{\eb}[1]{\todotxt{[EB: #1]}}\input{people}
-\begin{document}
-\section{Introduction}
-\eb{A note long enough that hiding it moves the text below it. A note long enough that hiding it
-moves the text below it. A note long enough that hiding it moves the text below it.}
-\input{body}
-\section{Method}\label{sec:method}
-See \ref{sec:method}. A sentence with a note \eb{a note in a paragraph, about \ref{sec:method}} and more
-words after it.\footnote{A footnote \eb{a note in a footnote}.} \ifnum0=1 \eb{a note in a branch that is off}\fi
-% \eb{a resolved note}
-\eb{human-written}
-% In the review copy's probe pass only: a package that TeX writes into that pass's folder, which the
-% copy's last pass uses and must not load from there.
-\makeatletter\ifdefined\latexlive@record\newwrite\planted\immediate\openout\planted=lmodern.sty
-\immediate\write\planted{\noexpand\typeout{latex-live-check: a package that TeX wrote ran}}\immediate\closeout\planted\fi\makeatother
-\end{document}
-"""
 # The paper of the warm standby's checks (standby_run): its preamble reads macros.tex and typesets a box, which
 # the body uses (SyncTeX then maps it to the preamble's line 4).
 STANDBY_PAPER = r"""\documentclass{article}
@@ -246,19 +177,7 @@ STANDBY_PAPER = r"""\documentclass{article}
 # that latex_report.py doesn't take it for a cut-off .aux.
 STANDBY_BODY = ("\\typeout{" + "A message in the log. " * 20 + "}\n"
                 "Aardvark one.\n\nPlatypus two, on the fourth line.\n\nCapybara three.\n")
-# The coauthors' note macros (the users of shared_setup), in a file of their own so that main.tex
-# keeps its line numbers.
-PEOPLE = r"""\newcommand{\ed}[1]{\todotxt{[ED: #1]}}
-\newcommand{\cm}[1]{\todotxt{[CM: #1]}}
-"""
-# The start of body.tex, for the notes in shared mode (note_checks), near the top of page 1: a paragraph
-# with a note of the owner's, and one that the owner's protected-text marker ends (LATEX_LIVE_PROTECTED).
-NOTE_PARAGRAPHS = r"""
-Quokka narwhal axolotl pangolin tapir gecko. \eb{An owner note to resolve.}
 
-Walrus yak zebu ibex okapi. \eb{as written}
-
-"""
 # A change to the shared copy that only the test makes, before the shared instance starts: no one's saves
 # account for it, so the server commits it then, as the owner's (shared_start_checks). It also tells whether
 # TeX can read an absolute path there (shared mode runs it with openin_any=p), and reads slow.tex, disk.tex and
@@ -283,67 +202,12 @@ IMPORT_RES = (re.compile(r"""^\s*(?:import|export)\s[^;'"]*?\bfrom\s*["']([^"']+
               re.compile(r"""\bimport\(\s*["']([^"']+)["']\s*\)"""))
 
 
-LOGS = []  # the instances' output, shown on failure
-# The shared-mode checks run in a thread of their own, beside the others (live_checks): output is printed whole,
-# and the first failure stops both threads.
-OUT_LOCK, START_LOCK, STOPPING = threading.Lock(), threading.Lock(), threading.Event()
-# For the instances: their own token and instance list (live_checks), a protected marker, and none of
-# the user's own settings.
-ENV = {k: v for k, v in os.environ.items() if not k.startswith("LATEX_LIVE_") and k != "VSCODE_IPC_HOOK_CLI"}
-ENV["LATEX_LIVE_PROTECTED"] = r"\\eb\{human-written\}"
-
-
-def redact(text):
-    """Never print a token: as a URL parameter, a cookie, or itself."""
-    text = re.sub(r"(\bt=|latex_live=)[A-Za-z0-9_-]{8,}", r"\1REDACTED", str(text))  # (\b: not TeX's "format=pdflatex")
-    for secret in (TOKEN[0], *SECRETS):
-        if secret:
-            text = text.replace(secret, "REDACTED")
-    return text
-
-
-def prints_token(text):
-    """Whether output shows a token: the instances' own, a personal link's, or one in a ?t= link."""
-    return bool(re.search(r"\bt=[A-Za-z0-9_-]{8,}", text)) or any(secret and secret in text for secret in (TOKEN[0], *SECRETS))
-
-
-def fail(msg):
-    with OUT_LOCK:
-        if not STOPPING.is_set():  # (once: a failure in one thread makes the other stop, and maybe fail too)
-            STOPPING.set()
-            for path in LOGS:
-                with open(path, errors="replace") as f:
-                    print(f"--- {os.path.basename(path)} (last lines)\n{redact(''.join(f.readlines()[-25:]))}", flush=True)
-            print(f"FAIL: {redact(msg)}", file=sys.stderr, flush=True)
-    sys.exit(1)
-
-
-def stopping():
-    """Stop this thread if the other one failed (it said why)."""
-    if STOPPING.is_set():
-        sys.exit(1)
-
-
-def ok(msg):
-    stopping()
-    with OUT_LOCK:
-        print(f"ok: {msg}", flush=True)
-
-
-def wait_for(what, test, timeout=180, step=0.1):
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        stopping()
-        if result := test():
-            return result
-        time.sleep(step)
-    fail(f"timed out waiting for {what}")
-
-
 def python_files():
-    """The Python files of the checkout: the scripts and the server's package (latexlive/)."""
+    """The Python files of the checkout: the scripts, the server's package (latexlive/) and the smoke test's
+    (checks/)."""
     return ["live.py", "latex_report.py", "forward.py", "check.py",
-            *sorted(os.path.relpath(p, HERE) for p in glob.glob(os.path.join(HERE, "latexlive", "*.py")))]
+            *sorted(os.path.relpath(p, HERE) for p in glob.glob(os.path.join(HERE, "latexlive", "*.py"))),
+            *sorted(os.path.relpath(p, HERE) for p in glob.glob(os.path.join(HERE, "checks", "*.py")))]
 
 
 def static_checks():
@@ -490,38 +354,6 @@ def static_file_checks():
         config.HERE = saved
         shutil.rmtree(tmp)
     ok("the server sends only the viewer's own files from the checkout, never through .. or a link out of their folder")
-
-
-def put(path, text):
-    """Replace a file at once, as another editor would (a new inode, so no cached version survives it)."""
-    put_bytes(path, text.encode("utf-8"))
-
-
-def put_bytes(path, data):
-    """put, for bytes (making the folder it goes in, if need be)."""
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path + ".check-new", "wb") as f:
-        f.write(data)
-    os.replace(path + ".check-new", path)
-
-
-def tex_stand_in(tmp):
-    """A stand-in for TeX in the downloads (export.exact_export, review.run_probe: server.tex_exec, a command prefix)
-    that runs no TeX: it logs its arguments to tmp/calls, writes tmp/log as the job's log in its output folder
-    (and tmp/pdf, if there is one, as its PDF), and exits with the code in tmp/exit (0 if none)."""
-    script = os.path.join(tmp, "tex.py")
-    with open(script, "w") as f:
-        f.write("import os, shutil, sys\n"
-                "here, args = os.path.dirname(os.path.abspath(__file__)), sys.argv[1:]\n"
-                "with open(os.path.join(here, 'calls'), 'a') as f:\n"
-                "    f.write(' '.join(args) + '\\n')\n"
-                "out = next((a.split('=', 1)[1] for a in args if a.startswith('-output-directory=')), '.')\n"
-                "job = next((a.split('=', 1)[1] for a in args if a.startswith('-jobname=')), 'texput')\n"
-                "for name, ext in (('log', '.log'), ('pdf', '.pdf')):\n"
-                "    if os.path.exists(os.path.join(here, name)):\n"
-                "        shutil.copyfile(os.path.join(here, name), os.path.join(out, job + ext))\n"
-                "sys.exit(int(open(os.path.join(here, 'exit')).read()) if os.path.exists(os.path.join(here, 'exit')) else 0)\n")
-    return f"{shlex.quote(sys.executable)} {shlex.quote(script)}"
 
 
 def bounds_checks():
@@ -1081,106 +913,9 @@ def bare_imports(code):
     return {n for n in imported(code) if not n.startswith((".", "/")) and not re.match(r"[A-Za-z][A-Za-z0-9+.-]*:", n)}
 
 
-def git(cwd, *args):
-    subprocess.run(["git", "-c", "user.name=check", "-c", "user.email=check@example.com", *args], cwd=cwd, check=True,
-                   capture_output=True)
-
-
-def make_paper(tmp):
-    subprocess.run(["git", "init", "-q", "--bare", os.path.join(tmp, "remote.git")], check=True)
-    paper = os.path.join(tmp, "paper")
-    os.makedirs(paper)
-    with open(os.path.join(paper, "main.tex"), "w") as f:
-        f.write(PAPER)
-    with open(os.path.join(paper, "people.tex"), "w") as f:
-        f.write(PEOPLE)
-    words = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu".split()
-    with open(os.path.join(paper, "body.tex"), "w") as f:
-        f.write(NOTE_PARAGRAPHS + "\n\n".join(" ".join(words[(i * 7 + j) % 12] for j in range(90)) for i in range(24)) + "\n")
-    git(paper, "init", "-q", "-b", "main")
-    git(paper, "add", "-A")
-    git(paper, "commit", "-qm", "first")
-    git(paper, "remote", "add", "origin", os.path.join(tmp, "remote.git"))
-    git(paper, "push", "-q", "-u", "origin", "main")
-    with open(os.path.join(paper, "body.tex"), "a") as f:
-        f.write("\nomega omega omega.\n")
-    git(paper, "commit", "-qam", "unpushed")
-    return paper
-
-
-def start(paper, doc="main", *extra, env=None, port=PORT):
-    """An instance of live.py; its output goes to proc.log."""
-    with START_LOCK:
-        LOGS.append(os.path.join(paper, "..", f"live-{len(LOGS)}.log"))
-        path = LOGS[-1]
-    with open(path, "w") as log:
-        proc = subprocess.Popen([sys.executable, os.path.join(HERE, "live.py"), f"{doc}.tex", "--no-open", "--port", str(port), *extra],
-                                cwd=paper, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=env or ENV)
-    proc.log = path
-    return proc
-
-
-def request(path, token=None, method="GET", body=None, cookie=None, headers=None):
-    """(status, headers, body) of a request to the hub, without following redirects."""
-    conn = http.client.HTTPConnection("127.0.0.1", hub["port"], timeout=30)
-    if token:
-        path += ("&" if "?" in path else "?") + f"t={token}"
-    sent = {"Cookie": f"latex_live={cookie}"} if cookie else {}
-    if body is not None:
-        sent["Content-Type"] = "application/json"
-    sent.update(headers or {})
-    conn.request(method, path, json.dumps(body) if body is not None else None, sent)
-    r = conn.getresponse()
-    data = r.read()
-    conn.close()
-    return r.status, dict(r.getheaders()), data
-
-
-def get(path, token, doc="main"):
-    """A preview's endpoint, through the hub."""
-    status, headers, data = request(f"{hub['base']}{doc}{path}", token)
-    if status != 200:
-        raise OSError(f"{status} {data[:200]!r}")
-    kind = headers.get("Content-Type", "")
-    return json.loads(data) if kind.startswith("application/json") else data.decode() if kind.startswith("text/") else data
-
-
-def hub_get(path, token):
-    """get, failing the check (with the answer) instead of raising."""
-    try:
-        return get(path, token)
-    except Exception as e:
-        fail(f"{path} (through the hub): {type(e).__name__}: {e}")
-
-
-def read_hub():
-    """The hub's port and pid (HUB_FILE), if it answers."""
-    try:
-        with open(os.path.join(ENV["LATEX_LIVE_STATE"], "hub.json")) as f:
-            hub.update(json.load(f))
-        return request("/hub/ping", TOKEN[0])[0] == 200
-    except (OSError, ValueError, KeyError):
-        return False
-
-
-hub, TOKEN = {}, [None]
-SECRETS = []  # the shared-mode instance's tokens (shared_setup): never printed, never in an answer's body
-
-
 def ln_records(path):
     with open(path, errors="replace") as f:
         return [line for line in f if "\\@LN" in line]
-
-
-def stop(proc):
-    try:
-        os.killpg(proc.pid, signal.SIGCONT)
-        os.killpg(proc.pid, signal.SIGTERM)
-        proc.wait(20)
-    except ProcessLookupError:
-        pass
-    except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)
 
 
 def live_checks(tmp):
@@ -1520,17 +1255,6 @@ def review_checks(build, token):
        " package that the paper's TeX wrote")
 
 
-def composed(build):
-    """The review copy's last pass (in build/review/main/.copy/) loaded no package that the paper's TeX wrote into the
-    probe pass's folder (main.tex has the probe pass write lmodern.sty there, a package that the last pass uses)."""
-    with open(os.path.join(build, "review", "main", ".copy", "main-review.log"), errors="replace") as f:
-        log = f.read()
-    if not os.path.isfile(os.path.join(build, "review", "main", "lmodern.sty")):
-        fail("the probe pass wrote no lmodern.sty into its folder (the scratch paper has it write one)")
-    if "latex-live-check: a package that TeX wrote ran" in log:
-        fail("the review copy's last pass loaded lmodern.sty from the folder the paper's TeX writes into")
-
-
 def owner_checks(token, own, editor_log):
     """The owner's own preview (not shared): GET me, the editor's modules, SyncTeX as JSON, the editor
     stand-in through GET /open (kept outside shared mode), POST /open and plain /synctex, and the POST
@@ -1624,32 +1348,6 @@ def switch_checks(token):
     ok("POST /diff and GET /diff build a latexdiff against HEAD (outside shared mode, through the hub)")
 
 
-def text_point(lookup, file, line):
-    """(page, x, y) in main.pdf that SyncTeX maps back to file near line, from a forward search; lookup(path)
-    answers a GET as JSON. This also checks that synctex with json=1 answers {file, line}."""
-    box = lookup(f"/forward?file={urllib.parse.quote(file)}&line={line}")
-    tried = []
-    for share in (0.5, 0.3, 0.7, 0.15, 0.85):
-        page, x, y = box["page"], box["x"] + box["w"] * share, box["y"] + box["h"] / 2
-        found = lookup(f"/synctex?file=main.pdf&page={page}&x={x:.2f}&y={y:.2f}&json=1")
-        if not isinstance(found, dict):
-            fail(f"synctex with json=1 did not answer JSON: {found!r}")
-        if found.get("file") == file and isinstance(found.get("line"), int) and abs(found["line"] - line) <= 3:
-            return page, x, y
-        tried.append(found)
-    fail(f"synctex with json=1 maps no point of the forward search for {file}:{line} back to it: {tried}")
-
-
-def editor_stub(tmp, name):
-    """A stand-in for the editor's command-line tool (LATEX_LIVE_EDITOR) that only logs its arguments, one
-    call per line: (its path, the log's)."""
-    stub, log = os.path.join(tmp, f"{name}.sh"), os.path.join(tmp, f"{name}.log")
-    with open(stub, "w") as f:
-        f.write(f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {shlex.quote(log)}\n")
-    os.chmod(stub, 0o755)
-    return stub, log
-
-
 def host_tex_stub(tmp):
     """Stand-ins for the host's pdflatex and bibtex that log their arguments and fail, for the front of the
     shared instance's PATH: shared mode must never run them (all its TeX runs go through tex-exec, into the
@@ -1661,30 +1359,6 @@ def host_tex_stub(tmp):
             f.write(f"#!/bin/sh\nprintf '{tool} %s\\n' \"$*\" >> {shlex.quote(log)}\nexit 1\n")
         os.chmod(os.path.join(folder, tool), 0o755)
     return folder, log
-
-
-def editor_calls(log):
-    try:
-        with open(log) as f:
-            return f.read().splitlines()
-    except FileNotFoundError:
-        return []
-
-
-def post_length(port, path, length, headers=()):
-    """The status of a POST that announces length bytes but sends none, so the server must refuse it from
-    the header alone (None: no answer within 10 s)."""
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
-    try:
-        conn.putrequest("POST", path, skip_host=any(k.lower() == "host" for k, _ in headers), skip_accept_encoding=True)
-        for key, value in (*headers, ("Content-Type", "application/json"), ("Content-Length", str(length))):
-            conn.putheader(key, value)
-        conn.endheaders()
-        return conn.getresponse().status
-    except (OSError, http.client.HTTPException):
-        return None
-    finally:
-        conn.close()
 
 
 # Shared mode: one instance (shared_setup) serves a copy of the paper to the users of a users file, who
@@ -1780,12 +1454,6 @@ def standby_left(paper, job="main-live"):
     return standby_keepers(paper) + standby_containers(paper, job) + folders
 
 
-def pdf_pages_and_text(pdf):
-    info = subprocess.run(["pdfinfo", pdf], capture_output=True, text=True).stdout
-    m = re.search(r"^Pages:\s+(\d+)", info, re.M)
-    return m and int(m.group(1)), subprocess.run(["pdftotext", "-layout", pdf, "-"], capture_output=True, text=True).stdout
-
-
 def standby_normal_pass(paper, image):
     """(Page count, text) of a normal pdflatex pass over a copy of the paper, with its build folder's job files."""
     copy = f"{paper}-normal-{time.time_ns()}"
@@ -1843,26 +1511,6 @@ def standby_snapshot_checks():
         shutil.rmtree(tmp, ignore_errors=True)
     ok("the warm standby notices a file added in a folder the paper links to (and a link back up doesn't loop), and a"
        " notes-free standby one added to build/ (but not pdflatex's passing recorder file)")
-
-
-def in_thread(name, target, *args):
-    """Run target(*args) in a thread of its own, beside the other checks. Returns the thread; its .failed says
-    whether a check failed."""
-    def run():
-        try:
-            target(*args)
-        except SystemExit:  # (fail said why)
-            thread.failed = True
-        except BaseException:
-            thread.failed = True
-            with OUT_LOCK:
-                STOPPING.set()
-                traceback.print_exc()
-
-    thread = threading.Thread(target=run, name=name, daemon=True)
-    thread.failed = False
-    thread.start()
-    return thread
 
 
 def early_run(tmp):
@@ -2279,31 +1927,6 @@ def timing_check(log, port, token):
     ok("LATEX_LIVE_TIMING=1 prints each build's phases from the save (two passes from the warm standby), and /status the clock")
 
 
-def texlive_image():
-    """(The TeX Live image that live.py builds in, its config.TEXLIVE_IMAGE; whether podman has it here.)"""
-    with open(os.path.join(HERE, "latexlive", "config.py"), encoding="utf-8") as f:
-        image = re.search(r'^TEXLIVE_IMAGE = "([^"]+)"', f.read(), re.M).group(1)
-    return image, bool(shutil.which("podman")) and subprocess.run(["podman", "image", "exists", image], timeout=60).returncode == 0
-
-
-def make_state(path):
-    """A state folder of its own, with a fresh token (so none carries over from this checkout)."""
-    os.makedirs(path, mode=0o700)
-    token = secrets.token_urlsafe(16)
-    fd = os.open(os.path.join(path, "token"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(token)
-    return token
-
-
-def write_text(root, name, text):
-    """Write a file of a scratch paper as given (line endings too)."""
-    path = os.path.join(root, name)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        f.write(text)
-
-
 def make_shared_paper(tmp, state):
     """The copy of the scratch paper that shared mode serves: a clone of its remote on branch "shared", with
     the files that the editor checks need (committed there), a branch that HEAD does not build on ("side"),
@@ -2549,13 +2172,6 @@ def check_me(me, what, role, defined=True, **fields):
         fail(f"GET me for {what}: {got}, can {got_can}; not {want}, can {can}")
 
 
-def mtime_ns(path):
-    try:
-        return os.stat(path).st_mtime_ns
-    except OSError:
-        return 0
-
-
 def shared_status(sh):
     """The shared document's status, as its owner gets it (GET status), or {} while there is no answer."""
     r = send("GET", "/status/main.pdf", [("Cookie", f"latex_live={sh['token']}")], quiet=True)
@@ -2570,16 +2186,6 @@ def settled(sh):
     build = info.get("build") or {}
     newest = max(mtime_ns(os.path.join(sh["root"], name)) for name in SOURCES)
     return info.get("building") is False and isinstance(build.get("began"), int) and build["began"] >= newest
-
-
-def read_bytes(path):
-    with open(path, "rb") as f:
-        return f.read()
-
-
-def read_text(path):
-    with open(path, encoding="utf-8", newline="") as f:
-        return f.read()
 
 
 def version_of(data):
@@ -2598,28 +2204,12 @@ def with_paragraph(text, i, new):
     return "\n".join(lines)
 
 
-def git_out(cwd, *args):
-    """git's output, without its optional locks (so that it never holds up the server's commits)."""
-    r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
-    if r.returncode:
-        fail(f"git {' '.join(args)}: {r.stderr}")
-    return r.stdout.rstrip("\n")
-
-
 def recorded(state):
     """The instances that a state folder lists."""
     try:
         return os.listdir(os.path.join(state, "instances"))
     except FileNotFoundError:
         return []
-
-
-def read_json_file(path):
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return None
 
 
 def outside_address():
@@ -4024,19 +3614,13 @@ def quiet_log(path, what):
         fail(f"{what} printed a traceback:\n{printed[printed.index('Traceback (most recent call last)'):][:2000]}")
 
 
-def _quiet(test):
-    try:
-        return test()
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
-
-
 def main():
     static_checks()
     unit_checks()
     with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
         live_checks(tmp)
     print("all checks passed")
+
 
 
 if __name__ == "__main__":
