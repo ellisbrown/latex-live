@@ -15,7 +15,8 @@
    for bibtex.
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a git
    repository with a pushed commit and a local one) gets a live.py instance, with the hub on port
-   44180 (or the first free block of 13 ports above it; LATEX_LIVE_CHECK_PORT sets it), state of its own
+   44180, or below the ports that outgoing connections take where 44180 is among them (Linux: 28180), or the first
+   free block of 24 ports above (LATEX_LIVE_CHECK_PORT sets it), state of its own
    (not the user's) and none of the user's LATEX_LIVE_* settings:
    - the build publishes main.pdf, and the notes-free pass main-clean.pdf;
    - the hub redirects an old bookmark, needs the token or its cookie, and forwards every
@@ -136,34 +137,55 @@ import urllib.request
 import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from latexlive.web import DualStackServer, ephemeral, ephemeral_ports, port_below_ephemeral  # (once HERE is on the path)
+
+PORTS = 24  # (the block of ports the checks take, from PORT on)
 
 
-def free_ports(first=44180, count=13, last=44999):
-    """The first of count consecutive ports from first on that are all free now. On a busy machine an
-    outgoing connection can hold a port in this range (it is inside Linux's ephemeral range), and the
-    hub needs its exact port; LATEX_LIVE_CHECK_PORT picks the block instead."""
+def free_ports(count):
+    """The first port of count consecutive ones that are all free now and that no outgoing connection may take
+    later (they are below the ephemeral ports, ephemeral_ports): the hub needs its exact port, and on a busy
+    machine an outgoing connection could otherwise hold one of them just when an instance binds it. From
+    44180 where that is outside the ephemeral ports (macOS), else from a few thousand below them (Linux:
+    28180 below 32768)."""
+    first_ephemeral, last_ephemeral, _ = ephemeral_ports()
+    if not any(ephemeral(port) for port in range(44180, 44180 + count)):
+        first, last = 44180, 44999
+    else:
+        first = port_below_ephemeral(180) or 1024
+        last = first_ephemeral - 1
     base = first
     while base + count - 1 <= last:
-        busy = next((port for port in range(base, base + count) if not port_free(port)), None)
+        busy = next((port for port in range(base, base + count) if not port_free(port) or ephemeral(port)), None)
         if busy is None:
             return base
         base = busy + 1  # (no block that holds the busy port will do)
-    sys.exit(f"check: no {count} free consecutive ports from {first} to {last}")
+    sys.exit(f"check: no {count} free consecutive ports from {first} to {last} (outside {first_ephemeral}-{last_ephemeral},"
+             " where outgoing connections take theirs); set LATEX_LIVE_CHECK_PORT to the first of a free block")
 
 
 def port_free(port):
-    """Whether a server could listen on port now, on every address (as live.py does: "::", dual-stack)."""
-    with socket.socket(socket.AF_INET6) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    """Whether a server could listen on port now, on every address, with the socket options of live.py's servers
+    (DualStackServer: "::", dual-stack, and its address and port reuse)."""
+    with socket.socket(DualStackServer.address_family) as s:
+        if DualStackServer.allow_reuse_address:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if getattr(DualStackServer, "allow_reuse_port", False) and hasattr(socket, "SO_REUSEPORT"):
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
         try:
             s.bind(("::", port))
+            s.listen()
         except OSError:
             return False
     return True
 
 
-PORT = int(os.environ.get("LATEX_LIVE_CHECK_PORT") or free_ports(count=24))  # the hub's; the previews' own ports follow
+PORT = int(os.environ.get("LATEX_LIVE_CHECK_PORT") or free_ports(PORTS))  # the hub's; the previews' own ports follow
+if os.environ.get("LATEX_LIVE_CHECK_PORT") and any(ephemeral(port) for port in range(PORT, PORT + PORTS)):
+    print(f"note: LATEX_LIVE_CHECK_PORT={PORT}: ports {PORT}-{PORT + PORTS - 1} include ones that outgoing connections take,"
+          " so an instance may find its port held by one", flush=True)
 SHARED_PORT = PORT + 11  # the shared-mode instance's (shared_setup), past the previews' ports
 DECOY_PORT = PORT + 12  # a stand-in for a program that a lock file written in build/ points to (lock_spoof_checks)
 STANDBY_PORT = PORT + 13  # the hub of the warm standby's checks (standby_checks), with state of its own; its preview's follow
