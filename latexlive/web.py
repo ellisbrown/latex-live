@@ -32,33 +32,20 @@ def content_length(headers, limit):
 
 
 class DualStackServer(http.server.ThreadingHTTPServer):
+    """Every server's (an instance's, the hub's): on every interface, IPv4 too, with at most CONNECTIONS connections
+    at once (each holds a thread until it ends or times out): past that, it drops new ones, which anything that
+    reaches the port (a tunnel, a page in a browser) could otherwise open without end. A viewer takes a few at a
+    time (a poll, a PDF, a module)."""
     address_family = socket.AF_INET6
+    CONNECTIONS = 64
 
     def server_bind(self):
         self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)  # accept IPv4 too
         super().server_bind()
 
-    def handle_error(self, request, client_address):
-        """Print what went wrong in a request, unless the client just left mid-answer (a reload cuts a
-        download short): that is no error, and its traceback would only clutter the log."""
-        if not isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
-            super().handle_error(request, client_address)
-
-
-class LoopbackServer(DualStackServer):
-    """A shared instance's server: on every interface, like the others (so 127.0.0.1 and [::1] both
-    work), but it drops a connection from another machine before reading anything: coauthors come
-    through the proxy, which runs here. At most CONNECTIONS connections at once (each holds a thread
-    until it ends or times out): past that, it drops new ones, which a public tunnel could otherwise
-    open without end."""
-    CONNECTIONS = 64
-
     def server_activate(self):
         self.slots, self.holding, self.slots_lock = threading.BoundedSemaphore(self.CONNECTIONS), set(), threading.Lock()
         super().server_activate()
-
-    def verify_request(self, request, client_address):
-        return is_loopback(client_address[0])
 
     def process_request(self, request, client_address):
         if not self.slots.acquire(blocking=False):
@@ -74,6 +61,21 @@ class LoopbackServer(DualStackServer):
             self.holding.discard(request)
         if held:
             self.slots.release()
+
+    def handle_error(self, request, client_address):
+        """Print what went wrong in a request, unless the client just left mid-answer (a reload cuts a
+        download short): that is no error, and its traceback would only clutter the log."""
+        if not isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            super().handle_error(request, client_address)
+
+
+class LoopbackServer(DualStackServer):
+    """A shared instance's server: on every interface, like the others (so 127.0.0.1 and [::1] both
+    work), but it drops a connection from another machine before reading anything: coauthors come
+    through the proxy, which runs here."""
+
+    def verify_request(self, request, client_address):
+        return is_loopback(client_address[0])
 
 
 def ephemeral_ports():
