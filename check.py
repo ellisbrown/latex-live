@@ -12,7 +12,7 @@
    review copy reads its notes from the files of the last good build (only the paper's own), and
    the inputs kept for its probe leave out symbolic links; shared mode's builder prints the page
    layout as latexmkrc does, runs biber again when a data source changes, and reads a chapter's .aux
-   for bibtex.
+   for bibtex. LATEX_LIVE_TIMING=1's lines leave out the events of a notes-free pass that a newer run superseded.
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a git
    repository with a pushed commit and a local one) gets a live.py instance, with the hub on port
    44180, or below the ports that outgoing connections take where 44180 is among them (Linux: 28180), or the first
@@ -385,8 +385,35 @@ def static_checks():
     waiting_download_checks()
     tool_timeout_checks()
     standby_snapshot_checks()
+    timing_checks()
     code_updated_checks()
     static_file_checks()
+
+
+def timing_checks():
+    """LATEX_LIVE_TIMING=1's lines (timing.Runs): a notes-free pass's events count only in the line of the run that
+    started or kept it, so that a pass a newer run superseded neither adds to the newer run's line nor ends it before
+    the newer run's own pass does; the lines don't show the passes' names."""
+    sys.path.insert(0, HERE)
+    from latexlive import timing
+    runs, lines = timing.Runs(), []
+    feed = lambda *events: lines.extend(runs.feed([(float(i), name, detail) for i, name, detail in events]))
+    feed((0, "run", ""), (1, "pass", ""), (2, "clean-start", "a"), (3, "run-end", ""))
+    feed((4, "run", ""), (5, "clean-tex", "a"), (6, "pass", ""), (7, "clean-published", "a"), (8, "clean-start", "b"),
+         (9, "run-end", ""))
+    early = len(lines)
+    feed((10, "clean-tex", "b"), (11, "clean-published", "b"))
+    feed((12, "run", ""), (13, "clean-early", "seed-1"), (14, "pass", ""), (15, "clean-kept", "seed-1"), (16, "run-end", ""),
+         (17, "clean-tex", "seed-1"), (18, "clean-published", "seed-1"))
+    names = [[name for _, name, _ in run] for run in lines]
+    if early != 1 or names != [["run", "pass", "clean-start", "run-end"],
+                               ["run", "pass", "clean-start", "run-end", "clean-tex", "clean-published"],
+                               ["run", "clean-early", "pass", "clean-kept", "run-end", "clean-tex", "clean-published"]]:
+        fail(f"the timing lines take a superseded notes-free pass's events, or end early: {names} (lines before the second"
+             f" run's pass ended: {early})")
+    if "(" in timing.line("main", lines[1]).split("): ", 1)[1]:
+        fail(f"a timing line shows the notes-free pass's name: {timing.line('main', lines[1])}")
+    ok("timing lines leave out a superseded notes-free pass's events, which no longer end the next run's line early")
 
 
 def code_updated_checks():

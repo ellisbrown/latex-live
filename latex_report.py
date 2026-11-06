@@ -49,7 +49,10 @@ LOG_LIMIT = 64 << 20  # (the most of a log read: the paper decides how much TeX 
 def note_time(root, event, detail="", when=None):
     """With LATEX_LIVE_TIMING=1, note when a phase of job root's build happened, in build/<root>.timing, which
     live.py reads (latexlive/timing.py); not in shared mode, which notes them itself (and reads nothing back
-    from build/)."""
+    from build/). A notes-free pass's events name the pass ($LATEX_LIVE_CLEAN_PASS, unless detail is given), so
+    that live.py can leave a superseded pass's out of the next run's line (timing.NAMING)."""
+    if event.startswith("clean-") and not detail:
+        detail = os.environ.get("LATEX_LIVE_CLEAN_PASS", "")
     if os.environ.get("LATEX_LIVE_TIMING") == "1" and not os.environ.get("LATEX_LIVE_USERS"):
         try:
             with open(os.path.join(BUILD, f"{root}.timing"), "a") as f:
@@ -221,8 +224,10 @@ def start_notes_free_build(root, doc):
     except (OSError, ValueError):
         pass
     seed_notes_free(root, doc)
-    note_time(root, "clean-start")
+    name = f"{os.getpid()}-{time.time_ns()}"  # (the pass's events name it: note_time)
+    note_time(root, "clean-start", name)
     proc = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--notes-free", root, doc], start_new_session=True,
+                            env={**os.environ, "LATEX_LIVE_CLEAN_PASS": name},
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     with open(os.path.join(out, "pid"), "w") as f:
         f.write(str(proc.pid))
@@ -389,6 +394,7 @@ def run_early(root, doc, seed, began, owner):
     if latexmk has gone."""
     if os.getpgrp() != os.getpid():  # (its own process group, its TeX run's too, which stop_early signals by its pid)
         os.setsid()
+    os.environ["LATEX_LIVE_CLEAN_PASS"] = seed  # (its events name it: note_time)
     seed_dir = os.path.join(EARLY, seed)
     out = os.path.join(BUILD, "clean")
     with early_lock():
@@ -511,11 +517,11 @@ def keep_early(root, doc, drop=False):
             write_json(os.path.join(EARLY, "early.json"), early)
             shutil.rmtree(os.path.join(EARLY, early["seed"]), ignore_errors=True)
             count_early("kept")
-            note_time(root, "clean-kept")
+            note_time(root, "clean-kept", early["seed"])
             return True
         stop_early(early)
         count_early("dropped", why)
-        note_time(root, "clean-dropped")
+        note_time(root, "clean-dropped", early.get("seed") or "")
         return False
 
 
