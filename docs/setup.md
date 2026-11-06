@@ -19,8 +19,8 @@ follow [shared-mode.md](shared-mode.md).
   Only the `.vscode/tasks.json` added in step 4 goes in the paper checkout, and
   it stays out of git.
 - **Stop any instance you start for testing** before handing over. Only one
-  instance runs per document. A leftover one makes the person's VS Code task
-  exit, reporting "already running".
+  instance runs per document, and the person's VS Code task (`--replace`)
+  stops a leftover one and takes over.
 
 ## 1. Check the prerequisites
 
@@ -115,7 +115,9 @@ Contents:
     {
       "label": "LaTeX: live preview",
       "type": "shell",
-      "command": "python3 ${env:HOME}/.local/share/latex-live/live.py --no-open",
+      // --replace: take over an instance already running for this document (say, one left in
+      // a terminal from before VS Code reconnected), instead of reporting "already running".
+      "command": "python3 ${env:HOME}/.local/share/latex-live/live.py --no-open --replace",
       // Optional (regular expressions): affiliations the anonymity check should flag, and
       // codenames that must never reach the arXiv source.
       "options": { "env": { "LATEX_LIVE_ANON_TERMS": "\\bExample University\\b", "LATEX_LIVE_PRIVATE_TERMS": "(?i)projectx" } },
@@ -145,7 +147,7 @@ Contents:
 
 For a folder with several papers (say, a notes repository with each paper in a
 subfolder), add a copy of the first task whose command passes the current file,
-`live.py "${file}" --no-open`, with a label such as `LaTeX: live preview
+`live.py "${file}" --no-open --replace`, with a label such as `LaTeX: live preview
 (current file)` and without `runOn`. It previews the paper of the file in front
 of you (its folder, or the nearest one above with a root file), beside any
 other instance.
@@ -376,7 +378,7 @@ missing.
 | Symptom | Fix |
 | --- | --- |
 | ⚠ TeX image missing in the viewer, or `is not pulled` in the task output | Pull the image (step 2). No restart is needed. If it keeps disappearing, a cleanup job is probably pruning unused podman images (`podman system prune -a`). See [Keeping the image](#keeping-the-image). |
-| `already running for <doc>.tex` | Another instance builds that document, e.g. from another VS Code window, and still answers. It prints that instance's URL; `--replace` stops it and runs here instead. `http://localhost:44100/papers` lists every running preview. |
+| `already running for <doc>.tex` | Another instance builds that document, e.g. from another VS Code window, and still answers. It prints that instance's URL; `--replace` (which the VS Code task in step 4 passes) stops it and runs here instead. `http://localhost:44100/papers` lists every running preview. |
 | "restart to update" in the viewer | latex-live changed on disk (e.g. after a pull) since the task started. Restart the task, then reload. |
 | 403 in the browser | Open the full URL with `?t=` once. The token is in `~/.config/latex-live/token`. |
 | 403 `this preview does not answer to <name>` | The browser reaches the preview under a name or port it doesn't answer to (see [Ports and the token](#ports-and-the-token)): forward the port to the same number, or add the name to `LATEX_LIVE_HOST` or `LATEX_LIVE_ALLOWED_HOSTS` in the task's `options.env`, and restart the task. |
