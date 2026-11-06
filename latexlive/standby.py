@@ -627,8 +627,9 @@ def build_folders(build):
 
 def snapshot(build, job, out=None):
     """{folder: [mtime, names]} for the paper root's folders (not dot folders, nor R: build), through links to
-    folders too (a file added in one is a name TeX may find), each real folder once; and for B (out, default R)
-    and the subfolders of B the last pass wrote in; None past WATCH_LIMIT names."""
+    folders too (a file added in one is a name TeX may find), each real folder once; for B (out, default R)
+    and the subfolders of B the last pass wrote in; and for R too when B is a folder in it (a notes-free pass's
+    preamble may look for a file the live build writes there); None past WATCH_LIMIT names."""
     out = out or build
     snap, count, seen = {}, 0, set()
     for folder, dirs, _ in os.walk(".", followlinks=True):
@@ -644,7 +645,7 @@ def snapshot(build, job, out=None):
         if count > WATCH_LIMIT:
             return None
         snap[rel] = [os.stat(folder).st_mtime_ns, names]
-    for rel in [out, *(os.path.join(out, d) for d in written_folders(out, job))]:
+    for rel in [*([build] if out != build else []), out, *(os.path.join(out, d) for d in written_folders(out, job))]:
         try:
             snap[rel] = [os.stat(rel).st_mtime_ns, names_in(rel, out, job)]
         except OSError:
@@ -652,12 +653,15 @@ def snapshot(build, job, out=None):
     return snap
 
 
+TEMP_NAME_RE = re.compile(r"\.tmp$|^pdflatex\d+\.fls$")  # (files that appear for a moment: pdflatex's recorder file, renamed at its end)
+
+
 def names_in(folder, out, job):
     """The names in a folder; in B (out), but temporary files, the standbys' folder and the job's files that TeX
     doesn't read (NOT_READ: one read all the same puts the pass in doubt)."""
     if folder != out and not folder.startswith(out + os.sep):
-        return sorted(os.listdir(folder))
-    return sorted(n for n in os.listdir(folder) if not n.endswith(".tmp") and not (folder == out and n == "standby")
+        return sorted(n for n in os.listdir(folder) if not TEMP_NAME_RE.search(n))
+    return sorted(n for n in os.listdir(folder) if not TEMP_NAME_RE.search(n) and not (folder == out and n == "standby")
                   and not (n.startswith(job + ".") and n.endswith(NOT_READ)))
 
 

@@ -1857,13 +1857,21 @@ def standby_snapshot_checks():
                   "before = None if snap is None else standby.new_name(snap, 'build', 'main-live')\n"
                   "time.sleep(0.01)\n"
                   "open(os.path.join('..', 'assets', 'optional.tex'), 'w').close()\n"
-                  "print(snap is not None, before, standby.new_name(snap, 'build', 'main-live') if snap else None)\n")
+                  "print(snap is not None, before, standby.new_name(snap, 'build', 'main-live') if snap else None)\n"
+                  "os.makedirs(os.path.join('build', 'clean'), exist_ok=True)\n"
+                  "clean = standby.snapshot('build', 'main-clean', os.path.join('build', 'clean'))\n"
+                  "time.sleep(0.01)\n"
+                  "open(os.path.join('build', 'pdflatex4242.fls'), 'w').close()\n"
+                  "transient = standby.new_name(clean, os.path.join('build', 'clean'), 'main-clean')\n"
+                  "open(os.path.join('build', 'generated.tex'), 'w').close()\n"
+                  "print(transient, standby.new_name(clean, os.path.join('build', 'clean'), 'main-clean'))\n")
         r = subprocess.run([sys.executable, "-c", script], cwd=os.path.join(tmp, "paper"), capture_output=True, text=True, timeout=60)
-        if r.stdout.split() != ["True", "None", os.path.join("assets", "optional.tex")]:
+        if r.stdout.split() != ["True", "None", os.path.join("assets", "optional.tex"), "None", os.path.join("build", "generated.tex")]:
             fail(f"a file added in a folder the paper links to went unnoticed by the warm standby's snapshot: {r.stdout}{r.stderr}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    ok("the warm standby notices a file added in a folder the paper links to (and a link back up doesn't loop)")
+    ok("the warm standby notices a file added in a folder the paper links to (and a link back up doesn't loop), and a"
+       " notes-free standby one added to build/ (but not pdflatex's passing recorder file)")
 
 
 def standby_checks(tmp):
