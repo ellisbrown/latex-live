@@ -295,9 +295,17 @@ are in [shared-mode.md](shared-mode.md#settings).
   normally while a new standby is checked against it, and the passes after
   that use the standby. A pass that can't use the standby runs normally, and
   the task's output says why once (`=== latex-live: ... warm standby ...`).
-  A waiting standby holds about 100-150 MB of memory (pdflatex, its podman
-  client and its keeper). It runs only in the TeX Live image (or with `--host-tex` on the
-  host's TeX), and not in shared mode.
+  When the paper has notes, the view without notes gets a warm standby of
+  its own too, so it shows each change sooner (about a second for each of
+  its TeX runs; two with line numbers), with the same PDF and SyncTeX as
+  without it. A waiting standby holds about 100-150 MB of memory (pdflatex, its podman
+  client and its keeper): each preview keeps at most one waiting for its
+  build and one for the view without notes, plus those in use while it
+  builds. It runs only in the TeX Live image (or with `--host-tex` on the
+  host's TeX), and not in shared mode. `LATEX_LIVE_STANDBY=0` turns off
+  both.
+- `LATEX_LIVE_CLEAN_STANDBY=0`: turn off only the standby of the view
+  without notes (see `LATEX_LIVE_STANDBY`), e.g. to save its memory.
 - `LATEX_LIVE_TIMING=1`: measure where the time goes between a save and the
   page in the viewer. After each build, the task's output gets a line
   `=== latex-live timing: ...` with each phase of the build (latexmk starting
