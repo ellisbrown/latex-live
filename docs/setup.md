@@ -217,8 +217,15 @@ page. To stay on a release, check out its tag, e.g.
   else the number in the `port` file of the state folder
   (`~/.config/latex-live/port`), else 44100; the previews take the ten ports
   after it. Use the file to move every preview at once, e.g.
-  `echo 44200 > ~/.config/latex-live/port`, then restart the preview tasks and
+  `echo 28100 > ~/.config/latex-live/port`, then restart the preview tasks and
   update the ports in step 5.
+- **Choosing the port.** Pick one that outgoing connections don't use. Linux
+  gives them the ports in `/proc/sys/net/ipv4/ip_local_port_range` (often
+  32768 and up, which includes 44100), so on a busy machine a connection can
+  hold the hub's port just when the hub starts; a port a few thousand below
+  that range, such as 28100, avoids it. macOS gives them 49152 and up, so
+  44100 is fine there. When the port is taken, the message says whether this
+  is why, and suggests a port.
 - **The token.** Every request needs the token in the state folder's `token`
   file: `?t=` once, after which it is a cookie. Anything that reaches the port
   can send requests, so the token is required even on a laptop. Your browser
@@ -342,7 +349,7 @@ missing.
 | Stopping the task leaves latexmk running | Your `python3` may be a wrapper that doesn't pass signals on. Use the interpreter itself, e.g. `/usr/bin/python3`. On macOS, a server killed with `kill -9` leaves latexmk running; stop it by hand. |
 | Double-click opens the browser editor, not VS Code | latex-live runs outside a VS Code terminal, so `code` can't reach the window. Start it with the VS Code task, or set `LATEX_LIVE_EDITOR`. |
 | Double-click does nothing, or says the image is not pulled | Without a `synctex` on the host, SyncTeX runs in the image: pull it (step 2). |
-| `port 44100 is taken, so the hub waits for it` | Another program holds 44100. Move latex-live for good with `echo 44200 > ~/.config/latex-live/port` (every preview reads it; the previews' own ports follow, from 44201), restart the preview tasks, and update the ports in step 5. Meanwhile each viewer works on its preview's own port, which the task prints; forward that port by hand. |
+| `port 44100 is taken, so the hub waits for it` | Another program holds 44100, or, if the message says it is among the ports for outgoing connections, a connection may hold it for a while. Move latex-live for good with `echo 28100 > ~/.config/latex-live/port` (or the port the message suggests; every preview reads it; the previews' own ports follow, from 28101), restart the preview tasks, and update the ports in step 5. Meanwhile each viewer works on its preview's own port, which the task prints; forward that port by hand. |
 | Every `localhost:44100/p/...` viewer hangs | The preview serving the hub is paused (Ctrl+Z in its terminal: run `fg` there) or stuck. Starting a preview of another document (or with `--replace`) replaces a stuck one after about 10 s. |
 | `no free port in 44101-44110` | Too many previews: stop old ones (`pgrep -af latex-live/live.py`). |
 | Viewer shows an old PDF with a red banner | The last build failed and the previous PDF was kept. Click the error to open it. |
