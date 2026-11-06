@@ -22,7 +22,8 @@ CLEAN_END = ("clean-published", "clean-failed")
 # pass that a newer run superseded may still note its TeX run's end, or even publish, while the newer run goes on,
 # and those events would otherwise land in the newer run's line, where its end could end the line early.
 NAMING = ("clean-start", "clean-early", "clean-kept")
-PASS_EVENTS = ("clean-tex",) + CLEAN_END
+PASS_EVENTS = ("clean-tex", "clean-standby", "clean-verify", "clean-normal", "clean-released", "clean-tex-end",
+               "clean-moved") + CLEAN_END  # (with its warm standby's: standby.note_time)
 
 
 def note(server, event, detail="", when=None):

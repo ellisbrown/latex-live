@@ -21,11 +21,13 @@ browser editor's files.
 When the sources have inline notes (macros that go through \todotxt), a
 successful run also starts a background pass without them
 (build/<doc>-clean.pdf), for the viewer's notes-free view and its page count as
-it would be for submission. That pass records its result in
+it would be for submission, from a warm standby of its own when it can
+(latexlive/standby.py run_tex). That pass records its result in
 build/clean/<doc>-clean.status.json, for the viewer's banner.
 """
 
 import fcntl
+import importlib.util
 import json
 import os
 import re
@@ -37,6 +39,7 @@ import sys
 import time
 
 BUILD = os.environ.get("LATEX_LIVE_BUILD", "build")  # live.py --build-dir
+HERE = os.path.dirname(os.path.realpath(__file__))
 ERROR_RE = re.compile(r"^(\S+?\.(?:tex|sty|cls|bbl)):(\d+): (.*)$")
 UNDEF_RE = re.compile(r"(Reference|Citation) [`'](.+?)' on page \S+ undefined")
 MULTI_RE = re.compile(r"Label [`'](.+?)' multiply defined")
@@ -344,6 +347,8 @@ def stop_early(early):
                 subprocess.run(["podman", "rm", "-f", "-t", "0", *ids], capture_output=True, timeout=60)
         except (OSError, subprocess.SubprocessError):
             pass
+    if isinstance(pid, int) and os.path.isdir(os.path.join(BUILD, "standby")):
+        standby_module().stop_taken(BUILD, pid)  # (the warm standby it ran from, and its container: notes_free_pass)
     out, stash = os.path.join(BUILD, "clean"), os.path.join(EARLY, "stash")
     if os.path.isdir(stash):
         shutil.rmtree(out, ignore_errors=True)
@@ -551,6 +556,24 @@ def tex_format(log):
     return m.group(1) if m else None
 
 
+def use_standby(env=None):
+    """Whether the notes-free pass runs from a warm standby of its own when it can (latexlive/standby.py run_tex): in
+    live.py's build when its standbys are on (LATEX_LIVE_STANDBY_OWNER) and the notes-free pass's too
+    (LATEX_LIVE_CLEAN_STANDBY=1, which live.py sets unless that setting is 0); never in shared mode."""
+    env = os.environ if env is None else env
+    return bool(env.get("LATEX_LIVE_STANDBY_OWNER")) and env.get("LATEX_LIVE_CLEAN_STANDBY") == "1" and not env.get("LATEX_LIVE_USERS")
+
+
+def standby_module():
+    """latexlive/standby.py, loaded by its path (latexlive/ on Python's path would hide modules of the standard library)."""
+    if "latexlive_standby" not in sys.modules:
+        spec = importlib.util.spec_from_file_location("latexlive_standby", os.path.join(HERE, "latexlive", "standby.py"))
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+    return sys.modules["latexlive_standby"]
+
+
 def notes_free_pass(root, doc, env=None, out=None, publish=None, decide=None):
     """The notes-free pass (start_notes_free_build): publish build/<doc>-clean.pdf, and record the
     result, with the first errors on failure, in build/clean/<doc>-clean.status.json; also returns it.
@@ -559,19 +582,35 @@ def notes_free_pass(root, doc, env=None, out=None, publish=None, decide=None):
     build/clean/); publish(pdf): instead of moving the PDF to build/, what publishes it, returning
     whether it did (live.py's shared mode: only for the newest pass). decide(): called once the TeX runs
     have ended, whether to go on and record the result (an early pass, run_early: whether it was kept);
-    if not, nothing is published or recorded, and None returned.
+    if not, nothing is published or recorded, and None returned. In build/clean/, each TeX run takes a
+    warm standby when it can (use_standby), and is otherwise run as before.
 
     The pass reads the main build's .aux. If that came from another TeX installation (e.g. the
     host's, while the TeX Live image was missing), its package data may not load here: then the
     main document is rebuilt from scratch.
     """
+    standby = out is None and use_standby(env)
     out = out or os.path.join(BUILD, "clean")
     job = f"{doc}-clean"
     env = dict(os.environ if env is None else env, LATEX_LIVE_TIMEOUT="600")
-    argv = [*shlex.split(env.get("LATEX_LIVE_EXEC", "")), "pdflatex", "-interaction=batchmode", "-halt-on-error",
-            "-file-line-error", "-synctex=1", f"-output-directory={out}", f"-jobname={job}", f"{NOTES_OFF}\\input{{{doc}}}"]
+    # (With standbys: -recorder, which they need, and the root's name with .tex, which LaTeX adds anyway; given a name
+    # without it, LaTeX compares the sizes of the files it finds with and without it, which a standby's copy of the
+    # preamble fails.)
+    tex = ["pdflatex", "-interaction=batchmode", "-halt-on-error", "-file-line-error", "-synctex=1",
+           *(["-recorder"] if standby else []), f"-output-directory={out}", f"-jobname={job}",
+           f"{NOTES_OFF}\\input{{{doc}{'.tex' if standby else ''}}}"]
+    argv = [*shlex.split(env.get("LATEX_LIVE_EXEC", "")), *tex]
 
     def run():
+        if standby:  # (from a warm standby of its own when it can: latexlive/standby.py run_tex)
+            module = standby_module()
+            try:
+                code = module.run_tex(tex, env, timeout=600, timing=(os.path.join(BUILD, f"{root}.timing"), "clean-",
+                                                                     env.get("LATEX_LIVE_CLEAN_PASS", "")))
+            except module.TimedOut:
+                return None
+            if code is not None:
+                return code == 0
         try:
             return subprocess.run(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                   timeout=600).returncode == 0
