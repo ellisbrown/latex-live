@@ -18,14 +18,15 @@ import types
 
 from .base import HERE, fail, ok, wait_for
 from .helpers import put, put_bytes, tex_stand_in
-from .shared_units import confinement_checks, shared_build_checks
+from .shared_units import baseline_failure_checks, confinement_checks, shared_build_checks
 
 
 def unit_checks():
     """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
     for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
-                  code_updated_checks, static_file_checks, source_swap_checks):
+                  code_updated_checks, static_file_checks, source_swap_checks,
+                  baseline_failure_checks):
         check()
 
 

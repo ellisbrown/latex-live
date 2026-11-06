@@ -13,7 +13,7 @@ from . import config
 from .build import build_running
 from .files import aux_tree, job_file, mtime, pdf_path, read_output
 from .latex import RERUN_RE
-from .tools import image_pulled, run_tool, tex_argv
+from .tools import failure, image_pulled, run_tool, tex_argv
 
 
 def waiting_for_build(server, pdf, state):
@@ -75,18 +75,6 @@ def build_export(server, pdf, source):
     with server.download_lock:  # (not over a newer export's state: start_export)
         if server.export.get("pdf") == pdf and server.export.get("source") == source:
             server.export = {**server.export, **state}
-
-
-def failure(server, e):
-    """What a download that failed says in the viewer (build_export, build_review), in 300 characters at most. In
-    shared mode, where every coauthor reads it, without the server's folders (TeX names the paper's files relative
-    to it, but Python's errors name them in full) or the command line of a TeX run that took too long."""
-    if config.SHARED and isinstance(e, subprocess.TimeoutExpired):
-        return f"a TeX run took more than {e.timeout / 60:g} minutes"
-    text = str(e)
-    for folder, name in ((os.path.realpath(server.paper_root), "."), (server.paper_root, "."), (config.HERE, "latex-live")) if config.SHARED else ():
-        text = text.replace(folder + os.sep, "" if name == "." else name + os.sep).replace(folder, name)
-    return text[:300]
 
 
 def exact_export(server, pdf, keep=None):

@@ -12,7 +12,7 @@ import time
 from . import config
 from .files import job_file, mtime, pdf_path, read_capped, too_big
 from .git import pushed_commit
-from .tools import container_argv, image_pulled, run_tool, tex_argv
+from .tools import container_argv, failure, image_pulled, run_tool, tex_argv
 
 
 def start_diff(server, rev, any_rev=True):
@@ -100,7 +100,7 @@ def build_diff(server, sha):
         os.replace(pdf, os.path.join(root, config.BUILD, f"{job}.pdf"))
         server.diff = {**server.diff, "state": "done", "time": time.strftime("%H:%M:%S")}
     except Exception as e:  # reported in the diff viewer's banner
-        server.diff = {**server.diff, "state": "failed", "time": time.strftime("%H:%M:%S"), "msg": str(e)[:300]}
+        server.diff = {**server.diff, "state": "failed", "time": time.strftime("%H:%M:%S"), "msg": failure(server, e)}
 
 
 def base_status(server, pdf_name, kind, build=True):
@@ -246,7 +246,7 @@ def build_base(server, kind, sha, pdf_name):
             os.replace(clean_pdf, os.path.join(root, config.BUILD, f"{job}-clean.pdf"))
         state = {"state": "done", "built": sha}
     except Exception as e:  # reported in the viewer's tooltip; the previous baseline stays
-        state = {"state": "failed", "msg": str(e)[:300]}
+        state = {"state": "failed", "msg": failure(server, e)}
     if server.bases[kind].get("pdf") == pdf_name:  # (not after a switch to another document)
         server.bases[kind] = {**server.bases[kind], **state}
 

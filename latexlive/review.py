@@ -12,13 +12,13 @@ import time
 
 from . import config
 from .document import layout
-from .export import exact_export, failure, links_in, waiting_for_build
+from .export import exact_export, links_in, waiting_for_build
 from .files import fls_file, job_file, mtime, pdf_path, project_tex_files, read_output, too_big
 from .latex import blank_comments, brace_group, false_blocks, read_tex
 from .notes import NOTE_DEF_RE, escape_note, note_kinds, note_use_re
 from .review_anchors import BP, note_source, review_anchors, squeeze, synctex_pages
 from .review_layout import review_geometry, review_layout, review_tex
-from .tools import image_pulled, run_tool, tex_argv
+from .tools import failure, image_pulled, run_tool, tex_argv
 
 
 # Where the notes go comes from a probe: the last pass of the export again, with the same inputs,
