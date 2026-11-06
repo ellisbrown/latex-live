@@ -26,7 +26,7 @@ from .shared_watch import watch_build_size
 from .status import code_updated
 from .timing import start_timing
 from .tools import container_exec, image_pulled, stop_containers
-from .web import DualStackServer, LoopbackServer
+from .web import DualStackServer, LoopbackServer, taken_port_advice
 
 
 def serve(paper_root, default_pdf, port, page_limit):
@@ -40,8 +40,8 @@ def serve(paper_root, default_pdf, port, page_limit):
         except OSError:
             continue
     else:
-        sys.exit(f"latex-live: port {port} is taken; a shared instance serves exactly --port" if config.SHARED
-                 else f"latex-live: no free port in {port}-{port + 9}")
+        sys.exit((f"latex-live: port {port} is taken; a shared instance serves exactly --port." if config.SHARED
+                  else f"latex-live: no free port in {port}-{port + 9}.") + taken_port_advice(port))
     server.daemon_threads = True
     server.git_name = None  # (owner_name)
     server.paper_root = paper_root

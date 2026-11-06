@@ -20,7 +20,7 @@ import urllib.request
 from . import config
 from .auth import load_token
 from .instances import instances, is_live_instance, stop_instance
-from .web import BaseHandler, DualStackServer, POST_LIMIT, POST_LIMITS, content_length
+from .web import BaseHandler, DualStackServer, POST_LIMIT, POST_LIMITS, content_length, taken_port_advice
 
 
 def papers_page(server, host):
@@ -210,8 +210,11 @@ def hub_watch(port):
             break
         except OSError:
             if not told:
+                advice = taken_port_advice(port)
                 print(f"=== latex-live: port {port} is taken, so the hub waits for it; meanwhile each viewer works on its own"
-                      " preview's port (a preview from before 0.2 may hold it: restart it)", flush=True)
+                      " preview's port (a preview from before 0.2 may hold it: restart it)." + advice
+                      + (f" To move every preview, write the port in {os.path.join(config.STATE, 'port')}." if advice else ""),
+                      flush=True)
                 told = True
             time.sleep(2)
     if told:

@@ -76,6 +76,47 @@ class LoopbackServer(DualStackServer):
             self.slots.release()
 
 
+def ephemeral_ports():
+    """The ports this machine gives outgoing connections, as (first, last, the ranges in it that it never gives).
+    A connection holds its port while it lasts, so a server that needs one exact port does best outside them:
+    on a busy machine, one of the many connections may hold it just when the server starts. Linux's are in
+    /proc (ip_local_port_range, less ip_local_reserved_ports); elsewhere, the IANA range that macOS uses."""
+    def read(name):
+        try:
+            with open(f"/proc/sys/net/ipv4/{name}") as f:
+                return f.read()
+        except OSError:
+            return ""
+    bounds = re.findall(r"\d+", read("ip_local_port_range"))
+    first, last = (int(bounds[0]), int(bounds[1])) if len(bounds) == 2 else (49152, 65535)
+    reserved = [(int(a), int(b or a)) for a, b in re.findall(r"(\d+)(?:-(\d+))?", read("ip_local_reserved_ports"))]
+    return first, last, reserved
+
+
+def ephemeral(port):
+    """Whether an outgoing connection may hold port (ephemeral_ports)."""
+    first, last, reserved = ephemeral_ports()
+    return first <= port <= last and not any(a <= port <= b for a, b in reserved)
+
+
+def port_below_ephemeral(port):
+    """A port like port (the same last three digits) a few thousand below the ephemeral ports, or None when
+    they start too low for one."""
+    base = (ephemeral_ports()[0] // 1000 - 4) * 1000
+    return base + port % 1000 if base >= 2000 else None
+
+
+def taken_port_advice(port):
+    """For a message that port is taken: when an outgoing connection may hold it, a sentence that says so and
+    which port to choose instead; else ""."""
+    if not ephemeral(port):
+        return ""
+    first, last, _ = ephemeral_ports()
+    instead = port_below_ephemeral(port)
+    return (f" Port {port} is among the ports this machine gives outgoing connections ({first}-{last}), so any of them may hold"
+            f" it for a while: choose a port below {first}" + (f", e.g. {instead}." if instead else "."))
+
+
 class BaseHandler(http.server.SimpleHTTPRequestHandler):
     """What every request of an instance and of the hub goes through: who is asking (authorize), and
     sending the answer. Without a route of its own (Handler, HubHandler), it answers nothing."""
