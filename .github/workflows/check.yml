@@ -12,17 +12,17 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # (Python 3.9 has no build for 26.04)
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           # 3.9 for check.py's "compiles with Python 3.9 too"; the last one is python3.
           python-version: |
             3.9
             3.12
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - run: python3 check.py static units
