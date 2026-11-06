@@ -3,8 +3,8 @@ POST /file saves one, merged (git merge-file) with what was saved meanwhile sinc
 started from.
 
 A file's version is a hash of its bytes; the editor works with \\n line ends, and a file that uses \\r\\n
-gets them back on save. Saves go through write_source under NOTE_LOCK, as notes do, so the two never
-overwrite each other."""
+gets them back on save. Reads and saves go through read_editable and write_source under NOTE_LOCK, as notes
+do, so the two never overwrite each other, and neither follows a link swapped in since the file was checked."""
 
 import os
 import subprocess
@@ -12,8 +12,8 @@ import tempfile
 
 from .commits import commit_others, paused, remember_write, updating
 from .sources import (
-    EDITABLE_SIZE, NOTE_LOCK, SourceChanged, cached_version, editable_files, editable_real, file_version, write_source,
-    wrote)
+    EDITABLE_SIZE, NOTE_LOCK, SourceChanged, cached_version, editable_files, editable_real, file_version, read_editable,
+    write_source, wrote)
 
 
 MERGE_LABELS = ("saved meanwhile", "base", "your edit")  # (git's conflict markers name the two sides)
@@ -61,7 +61,7 @@ def source_status(server, rel):
         return None
     try:
         return {"path": rel, "version": cached_version(real)}
-    except OSError:
+    except (OSError, SourceChanged):
         return None
 
 
@@ -74,10 +74,10 @@ def file_request(server, query):
     if not real:
         return 404, {"error": "not a file the editor opens"}
     try:
-        with open(real, "rb") as f:
-            data = f.read()
+        with NOTE_LOCK:  # (as a save reads it)
+            data = read_editable(real)
         text, eol = editor_text(data.decode("utf-8"))
-    except OSError:
+    except (OSError, SourceChanged):
         return 404, {"error": "not a file the editor opens"}
     except UnicodeDecodeError:
         return 415, {"error": f"{rel} is not UTF-8, so the editor can't open it"}
@@ -141,8 +141,7 @@ def save_file(server, user, rel, real, sent, base, base_text, force, editor=None
     from that text instead, so that the editor's own save doesn't count as someone else's change, and
     an edit undone since (back to the older base) is undone in the file too. Another page's save never
     counts as this one's."""
-    with open(real, "rb") as f:
-        data = f.read()
+    data = read_editable(real)  # (never through a link swapped in since editable_files checked it, nor a big file)
     raw = data.decode("utf-8")
     current, eol = editor_text(raw)
     version = file_version(data)

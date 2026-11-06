@@ -406,7 +406,9 @@ instance treats the paper and everything TeX writes as theirs.
   `.bib`, `.sty` and `.cls` files, in effect any such file in the copy (an
   `\input` adds one to the paper). The LaTeX they write can read any file below
   the copy's paper folder and typeset it. Keep nothing in the copy that they
-  shouldn't see. Commenters write plain text only.
+  shouldn't see. Commenters write plain text only. The browser editor and the
+  notes read and write a file only as it was checked: a folder or file that
+  something on this machine swaps for a link meanwhile is not followed.
 - **No latexmk.** latexmk is a Perl program on the host that reads the files
   TeX writes, and it passes the bibliography names in the `.aux` to a shell, so
   a crafted name would run a command here. live.py itself watches the paper's
