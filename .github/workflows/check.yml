@@ -1,0 +1,28 @@
+# The parts of check.py that need neither TeX nor podman: the static checks and the unit checks.
+# (The preview and shared-mode parts need a TeX Live image; run python3 check.py locally for those.)
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # 3.9 for check.py's "compiles with Python 3.9 too"; the last one is python3.
+          python-version: |
+            3.9
+            3.12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: python3 check.py static units
