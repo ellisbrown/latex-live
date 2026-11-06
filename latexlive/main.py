@@ -29,8 +29,9 @@ from .tools import container_exec, image_pulled, stop_containers
 from .web import DualStackServer, LoopbackServer, taken_port_advice
 
 
-def serve(paper_root, default_pdf, port, page_limit):
-    """The instance's server, set up; main starts serving (server.serve_forever in a thread)."""
+def serve(paper_root, default_pdf, port, page_limit, hub_port=None):
+    """The instance's server, set up; main starts serving (server.serve_forever in a thread). hub_port: the hub's,
+    whose port the browser's Host and Origin name when the hub forwards (BaseHandler.allowed_ports)."""
     # A small range, for tunnels that forward only a few ports. A shared instance takes exactly its
     # port: the proxy sends coauthors there, and must not reach another preview that holds it.
     for p in [port] if config.SHARED else range(port, port + 10):
@@ -43,6 +44,7 @@ def serve(paper_root, default_pdf, port, page_limit):
         sys.exit((f"latex-live: port {port} is taken; a shared instance serves exactly --port." if config.SHARED
                   else f"latex-live: no free port in {port}-{port + 9}.") + taken_port_advice(port))
     server.daemon_threads = True
+    server.hub_port = hub_port
     server.git_name = None  # (owner_name)
     server.paper_root = paper_root
     server.paper_id = paper_id(paper_root)  # (checked against the hub's requests: Handler.misdirected)
@@ -86,8 +88,8 @@ def serve(paper_root, default_pdf, port, page_limit):
 def print_urls(port, path="/"):
     token = load_token()
     print(f"=== latex-live: viewer (on a remote machine, forward port {port} first): http://localhost:{port}{path}?t={token}", flush=True)
-    if (host := os.environ.get("LATEX_LIVE_HOST")) and not config.SHARED:  # (a shared instance answers only on this machine)
-        print(f"=== latex-live: viewer, direct: http://{host}:{port}{path}?t={token}", flush=True)
+    if config.HOST and not config.SHARED:  # (a shared instance answers only on this machine)
+        print(f"=== latex-live: viewer, direct: http://{config.HOST}:{port}{path}?t={token}", flush=True)
 
 
 def print_shared_urls(port):
@@ -232,7 +234,8 @@ def main():
             sys.exit(f"latex-live: {doc}.tex is still locked; retry")
     if not config.SHARED:  # (a shared instance takes no part in the hub)
         replace_stuck_hub()
-    server = serve(os.getcwd(), f"{doc}.pdf", args.port if config.SHARED else args.port + 1, args.page_limit)  # (the hub has --port)
+    server = serve(os.getcwd(), f"{doc}.pdf", args.port if config.SHARED else args.port + 1, args.page_limit,  # (the hub has --port)
+                   None if config.SHARED else args.port)
     code_updated()  # (what this process runs)
     server.lock = lock
     set_doc(server, doc)

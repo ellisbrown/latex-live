@@ -53,7 +53,7 @@ def same_secret(given, secret):
 
 
 LOOPBACK_NAMES = {"localhost", "127.0.0.1", "::1"}
-LOOPBACK_ORIGIN_RE = re.compile(r"http://(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?")  # (any port: forwards remap it)
+ORIGIN_RE = re.compile(r"(https?)://((?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)(?::[0-9]{1,5})?)")  # (scheme, host[:port])
 ROLES = ("viewer", "commenter", "editor", "owner")  # each may do what the ones before it may (least_role)
 USER_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,63}")  # (the proxy's name for a user)
 USER_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")  # (a personal link's secret, e.g. secrets.token_urlsafe(18))
@@ -150,15 +150,24 @@ def owner_name(server):
     return server.git_name or "the owner"
 
 
-def host_kinds(host):
-    """What a Host header's value names, of "loopback", "public" (LATEX_LIVE_PUBLIC_URL's host, any
-    port) and "proxy" (exactly LATEX_LIVE_PROXY_HOST): an empty set for any other name, which a
-    shared instance refuses (a page on a DNS-rebinding name must not reach it)."""
+def host_kinds(host, ports, scheme=None):
+    """What a Host header's value (or an Origin's host[:port], with its scheme) names, of "loopback" (localhost,
+    127.0.0.1 or [::1] on one of ports: the instance's own, and the hub's; or with no port, as a proxy on this machine
+    may send it), "named" (a name in LATEX_LIVE_HOST or LATEX_LIVE_ALLOWED_HOSTS: config.NAMED_HOSTS, on one of ports,
+    or on the port it names), "public" (LATEX_LIVE_PUBLIC_URL's host, any port) and "proxy" (exactly
+    LATEX_LIVE_PROXY_HOST): an empty set for any other name or port, which an instance refuses (a page on a
+    DNS-rebinding name must not reach it). A value without a port has the scheme's (80 or 443; either, for a Host)."""
     m = config.HOST_RE.fullmatch(host.strip())
     if not m:
         return set()
     name = m.group(1).lower().strip("[]")
-    kinds = {"loopback"} if name in LOOPBACK_NAMES else set()
+    port = int(m.group(2)) if m.group(2) else None
+    implied = {port} if port is not None else {80, 443} if scheme is None else {80 if scheme == "http" else 443}
+    kinds = set()
+    if name in LOOPBACK_NAMES and (port in ports or port is None and scheme is None):
+        kinds.add("loopback")
+    if any(name == allowed and (implied & {want} if want else port in ports) for allowed, want in config.NAMED_HOSTS):
+        kinds.add("named")
     if config.PUBLIC_HOST and name == config.PUBLIC_HOST:
         kinds.add("public")
     if config.PROXY_HOST and host.strip().lower() == config.PROXY_HOST.lower():

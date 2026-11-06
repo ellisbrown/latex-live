@@ -349,7 +349,8 @@ Two people can't share a macro or a token.
 
 A shared instance reads these environment variables, beside those in
 [setup.md](setup.md#environment-variables) (`LATEX_LIVE_HOST` doesn't apply:
-it answers this machine only).
+it answers this machine only; `LATEX_LIVE_ALLOWED_HOSTS` does, e.g. for a
+tunnel that sends another `Host`).
 
 - `LATEX_LIVE_USERS`: the users file, which turns on shared mode, e.g.
   `~/.config/latex-live-shared/users.json`.
@@ -394,14 +395,17 @@ instance treats the paper and everything TeX writes as theirs.
   and from a process of the user in `LATEX_LIVE_PROXY_UID` (which only Linux
   can check: elsewhere the instance refuses the header). Requests that carry it
   ignore tokens and cookies.
-- **Host and Origin.** The instance answers only to loopback names, the public
-  URL's host and the proxy's `Host`, so a web page can't reach it under another
-  name (DNS rebinding). Every POST counts only when the browser's `Origin` is
-  `LATEX_LIVE_PUBLIC_URL` (or a loopback page, for a loopback address), so
-  another site can't act through a coauthor's browser. Nothing acts or starts a
-  build on a GET: the downloads built on request and the change-highlight
-  baselines start only with such a POST, each at most once per build of the
-  paper and one at a time, however many ask.
+- **Host and Origin.** The instance answers only to loopback names on its own
+  port, the public URL's host, the proxy's `Host` and the names in
+  `LATEX_LIVE_ALLOWED_HOSTS`, so a web page can't reach it under another name
+  (DNS rebinding). Every POST counts only when the browser's `Origin` is
+  `LATEX_LIVE_PUBLIC_URL` (or a loopback page on the instance's own port, for a
+  loopback address), so another site, or another program's page on this
+  machine, can't act through a coauthor's browser. Both are checked before a
+  POST's body is read. Nothing acts or starts a build on a GET: the downloads
+  built on request and the change-highlight baselines start only with such a
+  POST, each at most once per build of the paper and one at a time, however
+  many ask.
 - **Editors are trusted coauthors.** An editor can change the paper's `.tex`,
   `.bib`, `.sty` and `.cls` files, in effect any such file in the copy (an
   `\input` adds one to the paper). The LaTeX they write can read any file below

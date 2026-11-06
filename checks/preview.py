@@ -14,6 +14,7 @@ import sys
 import threading
 import zlib
 
+from .access import BRIDGE, EXTRA, access_checks
 from .base import ENV, HERE, PORT, TOKEN, _quiet, fail, hub, in_thread, ok, wait_for
 from .clean_standby import clean_standby_run
 from .early import early_run
@@ -38,7 +39,8 @@ def live_checks(tmp):
     for name in ("appendix", "extra"):
         with open(os.path.join(paper, f"{name}.tex"), "w") as f:
             f.write(f"\\documentclass{{article}}\n\\begin{{document}}\nThe {name}.\n\\end{{document}}\n")
-    procs, sharing = [start(paper)], []  # (sharing: the shared-mode instance, shared_setup)
+    named = {**ENV, "LATEX_LIVE_HOST": BRIDGE, "LATEX_LIVE_ALLOWED_HOSTS": EXTRA}  # (the hub's and its preview's other names)
+    procs, sharing = [start(paper, env=named)], []  # (sharing: the shared-mode instance, shared_setup)
     standby = in_thread("warm standby checks", standby_run, tmp)  # (beside the rest, with an instance of its own)
     early = in_thread("early notes-free pass checks", early_run, tmp)  # (likewise)
     clean_standby = in_thread("notes-free standby checks", clean_standby_run, tmp)  # (likewise)
@@ -133,6 +135,7 @@ def live_checks(tmp):
             fail(f"/instances does not list the instance with its paper id: {listed}")
         ok("/instances lists the instance")
         owner_checks(token, own, editor_log)
+        access_checks(token, own)
 
         def baselines():
             info = get("/status/main.pdf?base=push", token)
