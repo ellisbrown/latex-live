@@ -25,7 +25,7 @@ def unit_checks():
     """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
     for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
-                  code_updated_checks, static_file_checks, source_swap_checks,
+                  code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks,
                   baseline_failure_checks):
         check()
 
@@ -528,3 +528,40 @@ def source_swap_checks():
     ok("the editor and the notes read and write a source only as the file that was checked: a folder or the file swapped"
        " for a link since is never followed")
 
+
+def forward_cache_checks():
+    """Forward search (navigation.forward_request) makes a lookup once per build, but one that found nothing (it may
+    have failed for now: a busy slot, the TeX Live image missing) is made again a few seconds later rather than kept
+    for the build; requests for it meanwhile share it."""
+    from latexlive import navigation
+    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
+    calls, answers = [], [None, None]
+    saved = navigation.forward_target, navigation.synctex_unavailable
+    try:
+        root = os.path.join(tmp, "paper")
+        put(os.path.join(root, "main.tex"), "text\n")
+        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", results={}, results_lock=threading.Lock())
+        navigation.synctex_unavailable = lambda: None
+
+        def target(*args):
+            calls.append(args)
+            return answers.pop(0) if answers else ("main.pdf", {"page": 1, "x": 0, "y": 0, "w": 1, "h": 1})
+        navigation.forward_target = target
+        query = {"file": ["main.tex"], "line": ["1"]}
+        first, again = navigation.forward_request(server, query), navigation.forward_request(server, query)
+        for entry in server.results.values():  # (as if the few seconds had passed)
+            entry["expires"] = 0
+        later = navigation.forward_request(server, query)
+        for entry in server.results.values():
+            entry["expires"] = 0
+        found = navigation.forward_request(server, query)
+        if any("expires" in entry for entry in server.results.values()):  # (a lookup that found the line is kept for the build)
+            fail("forward search keeps what it found for only a few seconds")
+        cached = navigation.forward_request(server, query)
+    finally:
+        navigation.forward_target, navigation.synctex_unavailable = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+    if first[0] != 404 or again[0] != 404 or later[0] != 404 or found[0] != 200 or cached[0] != 200 or len(calls) != 3:
+        fail(f"forward search's misses are kept for the build, or not shared for a moment: {first[0]}, {again[0]}, {later[0]},"
+             f" {found[0]}, {cached[0]} after {len(calls)} lookups")
+    ok("forward search looks a line up again a few seconds after it found nothing, and keeps what it finds for the build")
