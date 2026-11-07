@@ -134,7 +134,10 @@ Notes are the paper's note macros: one-argument commands that go through
   (`HEAD`, rebuilt when it moves; the default when nothing was pushed), or the
   previous build. `,` and `.` (or the toolbar arrows) step through the changes.
 - **Compare with an earlier version** (in the ⋯ menu): latexdiff of the working
-  tree against any git commit, in a new tab.
+  tree against any git commit, in a new tab. When the document with latexdiff's
+  marks doesn't build, it is built again with plainer marks (changes in math,
+  figures and citations unmarked), and the tab says "plainer marks". Files that
+  `\input` each other in a loop stop the comparison with a message naming them.
 
 ## Downloads and the review copy
 
