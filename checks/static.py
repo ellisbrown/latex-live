@@ -21,6 +21,13 @@ IMPORT_RES = (re.compile(r"""^\s*(?:import|export)\s[^;'"]*?\bfrom\s*["']([^"']+
               re.compile(r"""\bimport\(\s*["']([^"']+)["']\s*\)"""))
 
 
+# What pdfview.js's swapDocument uses of PDF.js's page views, which are not its public interface: keeping the old
+# canvas while a page redraws, the viewer's document as a field, each view's optional content, and the event that
+# says every view has its page.
+PAGE_SWAP = ["keepCanvasWrapper = false", "this.pdfDocument = pdfDocument;", "this._optionalContentConfigPromise = ",
+             '"pagesloaded"', "case canvasWrapperNode:"]
+
+
 def python_files():
     """The Python files of the checkout: the scripts, the server's package (latexlive/) and the smoke test's
     (checks/)."""
@@ -58,6 +65,11 @@ def static_checks():
                 if r.returncode:
                     fail(f"the viewer's {name} does not parse:\n{r.stderr}")
         ok(f"the viewer's script parses ({len(code)} module{'s' if len(code) > 1 else ''})")
+    pdf_viewer = read_text(os.path.join(HERE, "pdfjs", "web", "pdf_viewer.mjs"))
+    missing = [s for s in PAGE_SWAP if s not in pdf_viewer]
+    if missing:
+        fail(f"the vendored pdf_viewer.mjs lacks what the viewer's in-place reload (pdfview.js swapDocument) uses: {missing}")
+    ok("the vendored PDF.js viewer has what the in-place reload uses")
     with tempfile.TemporaryDirectory(prefix="latex-live-token-") as state:  # (instances starting at once)
         racers = [subprocess.Popen([sys.executable, "-c", "from latexlive.auth import load_token; print(load_token())"], cwd=HERE,
                                    env={**ENV, "LATEX_LIVE_STATE": state}, stdout=subprocess.PIPE, text=True)

@@ -5,7 +5,7 @@ import {
 } from "./page.js";
 import { postJSON, readBody, unreachable } from "./net.js";
 import { isCollaborator, loadAuthors, me } from "./role.js";
-import { assets, doc, eventBus, leaveDocument, pdfjsLib, showDocument, shownVariant } from "./pdfview.js";
+import { assets, doc, eventBus, leaveDocument, pdfjsLib, showDocument, shownVariant, swapDocument } from "./pdfview.js";
 import { resetFind } from "./search.js";
 import { rebuildAt, seeBuild, setBuildVersion, setShown, shown } from "./build.js";
 import { setGutter } from "./layout.js";
@@ -86,13 +86,17 @@ async function load(name, version, variant, info, timed = () => {}) {
   timed("parsed");
   // Text changes only within one build (the notes-free one differs from the live one everywhere).
   const oldWords = variant === shownVariant && wordsPromise && await wordsPromise.catch(() => null);
-  leaveDocument();
-  resetMargin();
-  if (variant !== "clean") setGutter(false);
-  else if (marginOn && !isDiff) setGutter(true, area.columns === 2); // (dropped again if no notes need them)
   hidePreview();
+  // A rebuild of the build on screen goes in place, its margin bubbles kept until the new ones are placed; anything
+  // else (the other build, or other pages) replaces the document, with the gutters it will need from the start.
+  if (!(variant === shownVariant && await swapDocument(next))) {
+    leaveDocument();
+    resetMargin();
+    if (variant !== "clean") setGutter(false);
+    else if (marginOn && !isDiff) setGutter(true, area.columns === 2); // (dropped again if no notes need them)
+    showDocument(next, variant);
+  }
   timed("shown");
-  showDocument(next, variant);
   showMarginButton();
   marks.cut.clear();
   resetFind(); // the find controller starts over with the new document

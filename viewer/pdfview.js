@@ -28,15 +28,17 @@ const saveView = () => localStorage.setItem(viewKey, JSON.stringify(
 container.addEventListener("scroll", saveView, { passive: true });
 
 export let pagesReady = false;
+let pagesLoaded = false; // (every page view has its page: a rebuild can move them to the next document, swapDocument)
 eventBus.on("pagesinit", () => {
   viewer.currentScaleValue = restore?.scale ?? "page-width";
   if (restore) { container.scrollTop = restore.top; container.scrollLeft = restore.left; }
   pagesReady = true;
 });
+eventBus.on("pagesloaded", () => { pagesLoaded = true; });
 // Before the next document replaces the one on screen: its view, to restore, and its pages not ready.
 export function leaveDocument() {
   if (doc) restore = { scale: viewer.currentScaleValue, top: container.scrollTop, left: container.scrollLeft };
-  pagesReady = false;
+  pagesReady = pagesLoaded = false;
 }
 eventBus.on("pagechanging", (e) => { $("page").value = e.pageNumber; });
 eventBus.on("scalechanging", (e) => { showZoom(e); saveView(); });
@@ -99,4 +101,54 @@ export function showDocument(next, variant) {
   doc = next;
   shownVariant = variant;
   docSeq++;
+}
+
+// A rebuild of the document on screen, shown in place: the viewer keeps its pages, which move to the new document,
+// and each drawn page keeps its old drawing (and the marks and bubbles over it) until the new one is drawn, so nothing
+// blanks and the scroll and zoom stay as they are. Only where every page is set up and keeps its size, and the page
+// count is the same; false otherwise (or on any error), and the caller shows the document anew (showDocument).
+// (This moves PDF.js's page views to another document as its own zoom redraws them: pdf_viewer.mjs, 4.10.)
+const DRAWN = 3; // (PDF.js's RenderingStates.FINISHED)
+const KEPT = ":scope > .ll-marks, :scope > .ll-margin, :scope > .sync-flash"; // (redrawn on "pagerendered", or gone soon)
+export async function swapDocument(next) {
+  if (!doc || !pagesReady || !pagesLoaded || next.numPages !== doc.numPages || viewer.pagesCount !== next.numPages) return false;
+  const views = Array.from({ length: viewer.pagesCount }, (_, i) => viewer.getPageView(i));
+  if (views.some((v) => !v?.pdfPage)) return false;
+  let pages;
+  try {
+    pages = await Promise.all(views.map((v) => next.getPage(v.id)));
+  } catch (e) {
+    console.warn(e);
+    return false;
+  }
+  const sameBox = (a, b) => a.rotate === b.rotate && a.view.every((v, i) => v === b.view[i]);
+  if (next.numPages !== viewer.pagesCount || views.some((v, i) => v !== viewer.getPageView(i) || !sameBox(v.pdfPage, pages[i]))) return false;
+  // From here on, nothing waits: no page may draw from one document while the viewer has the other.
+  try {
+    moveTo(next, views, pages);
+  } catch (e) { // (showDocument sets the viewer up anew)
+    console.warn(e);
+    return false;
+  }
+  doc.destroy();
+  doc = next;
+  docSeq++;
+  return true;
+}
+function moveTo(next, views, pages) {
+  const contents = next.getOptionalContentConfig({ intent: "display" });
+  viewer.pdfDocument = next; // (where the viewer gets pages, and the layers their links and storage)
+  viewer._optionalContentConfigPromise = contents;
+  linkService.setDocument(next);
+  findController.setDocument(next); // (a search starts over, from the page on screen)
+  views.forEach((v, i) => {
+    v._optionalContentConfigPromise = contents;
+    if (v.renderingState !== DRAWN) return v.setPdfPage(pages[i]); // (nothing drawn to keep: drawn anew when shown)
+    const kept = [...v.div.querySelectorAll(KEPT)];
+    v.pdfPage = pages[i];
+    v.viewport = pages[i].getViewport({ scale: v.viewport.scale, rotation: v.viewport.rotation });
+    v.reset({ keepCanvasWrapper: true }); // (the new canvas replaces the old one once it is drawn)
+    v.div.append(...kept);
+  });
+  viewer.update(); // (draws the pages in view)
 }
