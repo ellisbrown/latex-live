@@ -799,12 +799,14 @@ def arxiv_strip_checks():
               "50\\% and a break\\\\% then a comment\n\\url{http://x.org/a%20b} and \\verb|50%| stay % but this goes\n"
               "\\foo{%\n  bar}\n%\n\\begin{verbatim}\n% kept \\eb{kept}\n\\end{verbatim}\n\\iffalse\nhidden \\iftrue\\fi\n  \\fi\n"
               "inline \\iffalse x\\fi{} stays\n\\begin{comment}\ngone\n\\end{comment}\n"
-              "A note \\eb{secret\nover two lines} and \\eb{} and \\eb{#1}.\n\\iffalse\nunclosed\n")
+              "A note \\eb{secret\nover two lines} and \\eb{} and \\eb{#1}, \\verb|\\eb{shown}| \\eb{fix \\#42}.\n"
+              "\\iffalse\nunclosed\n")
     want = ("\\documentclass{article}\r\n\\usepackage{url}%\r\n50\\% and a break\\\\%\n"
             "\\url{http://x.org/a%20b} and \\verb|50%| stay %\n\\foo{%\n  bar}\n%\n\\begin{verbatim}\n% kept \\eb{kept}\n"
-            "\\end{verbatim}\ninline \\iffalse x\\fi{} stays\nA note \\eb{} and \\eb{} and \\eb{#1}.\n\\iffalse\nunclosed\n")
+            "\\end{verbatim}\ninline \\iffalse x\\fi{} stays\nA note \\eb{} and \\eb{} and \\eb{#1}, \\verb|\\eb{shown}| \\eb{}.\n"
+            "\\iffalse\nunclosed\n")
     text, found = arxiv.strip_source(source, {"eb": "EB"})
-    if text != want or found != {"comments": 4, "hidden": 2, "notes": 1}:
+    if text != want or found != {"comments": 4, "hidden": 2, "notes": 2}:
         fail(f"the arXiv package's sources: {text!r}, {dict(found)}")
     own = arxiv.strip_source("a\n\\begin{comment}\nshown\n\\end{comment}\n", comment_env=False)[0]
     closed = arxiv.strip_source("a\n\\begin{comment}\ngone\n\\end{comment}\nb\n")[0]
