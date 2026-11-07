@@ -12,7 +12,7 @@ import time
 from . import config
 from .arxiv import ago, arxiv_source
 from .build import build_status
-from .files import clean_file, fls_file, job_file, mtime, pdf_path, project_tex_files, read_capped
+from .files import clean_file, fls_file, job_file, mtime, pdf_path, project_tex_files, read_capped, shown_synctex
 from .latex import read_tex
 from .lints import bib_consistency, float_placement, lint, stale_outputs
 from .notes import notes
@@ -52,8 +52,8 @@ def checks(server, pdf_name):
     pdf = pdf_path(root, f"{doc}-clean.pdf") if clean else pdf_path(root, pdf_name)
     root_tex = read_tex(os.path.join(root, f"{doc}.tex"))
     pages = pdf_pages_text(pdf)
-    f = clean_file if clean else job_file
-    span = bib_span(root, (f(root, pdf_name, ".synctex.gz"), f(root, pdf_name, ".bbl"), f(root, pdf_name, ".pdf")))
+    f, synctex_gz = clean_file if clean else job_file, shown_synctex(root, pdf_name, clean)
+    span = bib_span(root, (synctex_gz, f(root, pdf_name, ".bbl"), synctex_gz[:-len(".synctex.gz")] + ".pdf"))
     in_bib = (lambda p: span[0]["page"] <= p <= (span[1] or span[0])["page"]) if span else (lambda p: False)
     results = []
 

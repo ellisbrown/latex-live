@@ -162,6 +162,29 @@ def keep_inputs(root):
         pass
 
 
+def keep_synctex(path):
+    """Keep a copy of the SyncTeX file of a PDF about to be published (path) in build/shown/, in one step: live.py's
+    lookups read the newer of it and the build's own (files.shown_synctex). A pass that fails removes its PDF and
+    SyncTeX file, while the PDF on show stays the last good pass's, which this copy maps. Never through a symbolic link
+    (in shared mode, build/ is written in the containers)."""
+    shown = os.path.join(BUILD, "shown")
+    dest = os.path.join(shown, os.path.basename(path))
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return
+    with open(fd, "rb") as src:
+        try:
+            if os.path.islink(shown):
+                return
+            os.makedirs(shown, exist_ok=True)
+            with open(dest + ".tmp", "wb") as f:
+                shutil.copyfileobj(src, f)
+            os.replace(dest + ".tmp", dest)
+        except OSError:
+            pass
+
+
 def write_json(path, value):
     """Atomically write value to path (read by live.py's /status endpoint)."""
     with open(path + ".tmp", "w") as f:
@@ -633,6 +656,7 @@ def notes_free_pass(root, doc, env=None, out=None, publish=None, decide=None):
             os.replace(os.path.join(out, f"{job}.pdf"), os.path.join(BUILD, f"{job}.pdf"))
         elif not publish(os.path.join(out, f"{job}.pdf")):
             return {"ok": False, "time": stamp, "superseded": True, "errors": []}
+        keep_synctex(os.path.join(out, f"{job}.synctex.gz"))  # (unless publish moved it: shared mode's, to build/clean/)
         write_status(job, {"ok": True, "time": stamp}, out)
         note_time(root, "clean-published")
         return {"ok": True, "time": stamp}
@@ -708,6 +732,7 @@ def main():
         try:
             if os.path.isfile(os.path.join(BUILD, f"{root}.pdf")):
                 keep_inputs(root)
+                keep_synctex(os.path.join(BUILD, f"{root}.synctex.gz"))
                 if publish(root, publish_dest(root)[1]):
                     note_time(root, "published")
         except OSError:
@@ -728,6 +753,7 @@ def main():
         pass
     if ok:  # (before the status, which ends "building": live.py's downloads then use this PDF)
         keep_inputs(root)
+        keep_synctex(os.path.join(BUILD, f"{root}.synctex.gz"))
         if publish(root, dest):
             note_time(root, "published")
     write_status(root, report)

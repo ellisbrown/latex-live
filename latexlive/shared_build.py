@@ -196,6 +196,7 @@ def shared_run(server):
             if not ok:
                 break
             latex_report.keep_inputs(job)
+            latex_report.keep_synctex(os.path.join(config.BUILD, f"{job}.synctex.gz"))
             shared_publish(server, job)
             note(server, "published")
             aux, log, bcf = read_build(out(".aux")), read_build(out(".log")), read_build(out(".bcf"))

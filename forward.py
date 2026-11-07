@@ -22,7 +22,8 @@ from latexlive.synctex import forward_target  # noqa: E402
 def main():
     src, line = os.path.realpath(sys.argv[1]), int(sys.argv[2])
     root = os.path.dirname(src)
-    while not glob.glob(os.path.join(root, os.environ.get("LATEX_LIVE_BUILD", "build"), "*-live.synctex.gz")):
+    build = os.environ.get("LATEX_LIVE_BUILD", "build")
+    while not any(glob.glob(os.path.join(root, build, folder, "*-live.synctex.gz")) for folder in ("", "shown")):
         if root == os.path.dirname(root):
             sys.exit(f"latex-live: no latex-live build above {src}")
         root = os.path.dirname(root)

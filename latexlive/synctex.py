@@ -1,7 +1,6 @@
 """SyncTeX: running it (synctex view and edit) and reading a build's SyncTeX file, for forward
 search (a source line to a spot in the PDF; forward.py too) and inverse search (a spot to a source line)."""
 
-import glob
 import gzip
 import os
 import re
@@ -11,7 +10,7 @@ import threading
 import zlib
 
 from . import config
-from .files import clean_file, job_file, mtime, open_output, read_capped
+from .files import clean_file, job_file, mtime, open_output, read_capped, shown_synctex, shown_synctexes
 from .tools import container_argv, run_tool, synctex_unavailable
 
 
@@ -148,9 +147,9 @@ def bib_span(paper_root, files, cache={}, wait=True):
 def refs_start(paper_root, pdf_name, clean=False, wait=True):
     """Where the bibliography starts, in the live build or the notes-free one (without wait, PENDING
     while it is being looked up: bib_span)."""
-    f = clean_file if clean else job_file
-    span = bib_span(paper_root, (f(paper_root, pdf_name, ".synctex.gz"), f(paper_root, pdf_name, ".bbl"),
-                                 f(paper_root, pdf_name, ".pdf")), wait=wait)
+    f, synctex_gz = clean_file if clean else job_file, shown_synctex(paper_root, pdf_name, clean)
+    span = bib_span(paper_root, (synctex_gz, f(paper_root, pdf_name, ".bbl"), synctex_gz[:-len(".synctex.gz")] + ".pdf"),
+                    wait=wait)
     return span if span is PENDING else span and span[0]
 
 
@@ -181,14 +180,14 @@ def synctex_boxes(synctex_gz, cache={}):
 
 def forward_target(paper_root, src, line, clean=False):
     """Forward search: where source line src:line (absolute path) is in the most recent build that
-    has it (or in the notes-free build). Returns (pdf, {"page", "x", "y", "w", "h"}) in points from
-    the page's top-left, or None.
+    has it (or in the notes-free build), as published (shown_synctex). Returns (pdf, {"page", "x", "y",
+    "w", "h"}) in points from the page's top-left, or None.
     """
-    pattern = os.path.join("clean", "*-clean.synctex.gz") if clean else "*-live.synctex.gz"
-    jobs = sorted(glob.glob(os.path.join(paper_root, config.BUILD, pattern)), key=os.path.getmtime, reverse=True)
-    for synctex_gz in jobs:
-        pdf = synctex_gz[: -len(".synctex.gz")] + ".pdf"
-        records = [r for r in run_synctex(paper_root, "view", "-i", f"{line}:0:{src}", "-o", pdf) if "Page" in r]
+    for synctex_gz, _ in shown_synctexes(paper_root, clean):
+        job = os.path.basename(synctex_gz)[: -len(".synctex.gz")]
+        pdf = os.path.join(paper_root, config.BUILD, *(["clean"] if clean else []), f"{job}.pdf")  # (the job's, as named)
+        records = [r for r in run_synctex(paper_root, "view", "-i", f"{line}:0:{src}", "-o", synctex_gz[: -len(".synctex.gz")] + ".pdf")
+                   if "Page" in r]
         if not records:
             continue
         # A long source line can span several output lines: cover all of them on the first page.
@@ -235,10 +234,10 @@ def synctex_input(paper_root, name, page, x, y, clean):
     position in the notes-free PDF."""
     if not name.endswith(".pdf") or os.path.basename(name) != name:
         return 400, "bad file"
-    job = clean_file if clean else job_file
-    pdf = job(paper_root, name, ".pdf")  # the job whose .synctex.gz we have
-    if not os.path.isfile(pdf[:-4] + ".synctex.gz"):  # (the notes-free PDF itself moves to build/)
-        return 404, f"no {os.path.relpath(pdf, paper_root)} yet"
+    synctex_gz = shown_synctex(paper_root, name, clean)  # (the notes-free PDF itself moves to build/)
+    pdf = synctex_gz[:-len(".synctex.gz")] + ".pdf"
+    if not os.path.isfile(synctex_gz):
+        return 404, f"no {os.path.relpath((clean_file if clean else job_file)(paper_root, name, '.pdf'), paper_root)} yet"
     result = next((r for r in run_synctex(paper_root, "edit", "-o", f"{page}:{x:.2f}:{y:.2f}:{pdf}") if "Input" in r), {})
     if "Input" not in result:
         missing = synctex_unavailable()
