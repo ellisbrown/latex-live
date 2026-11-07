@@ -68,5 +68,6 @@ macOS with MacTeX should work but has not been tried. Known limits:
 
 Planned work is in the [issues](https://github.com/ellisbrown/latex-live/issues).
 
-PDF.js (Apache-2.0, in `pdfjs/`) and CodeMirror 6 (MIT, in `codemirror/`) are
-vendored as published; see their `LICENSE` and `VERSION` files.
+latex-live is under the MIT License (`LICENSE`). PDF.js (Apache-2.0, in
+`pdfjs/`) and CodeMirror 6 (MIT, in `codemirror/`) are vendored as published;
+see their `LICENSE` and `VERSION` files.
