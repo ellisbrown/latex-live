@@ -117,7 +117,7 @@ class Handler(BaseHandler):
             if not name.endswith(".pdf") or os.path.basename(name) != name:
                 return self.send_error(404)
             pdf = pdf_path(self.server.paper_root, name)
-            doc_pdf = re.sub(r"(-head|-push)?-(clean|diff|head|push|export|review)\.pdf$", ".pdf", name)  # the document a derived PDF belongs to
+            doc_pdf = re.sub(r"(-head|-push)?-(clean|diff|head|push|export|review|annotated)\.pdf$", ".pdf", name)  # the document a derived PDF belongs to
             below_editor = config.SHARED and not at_least(self.principal, "editor")  # (they see the current PDF and what it shows)
             if path.startswith("/status/"):  # (?base=push: a viewer shows changes since the last push; ?open=: its editor's file)
                 info = status(self.server, name, query.get("base") == ["push"])

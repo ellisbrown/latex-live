@@ -4,7 +4,7 @@ Shared mode gives coauthors who don't run LaTeX themselves the live preview of
 your paper, in their own browsers. They open one link and read the PDF, write
 notes as themselves (with their own note macro), and, if they are editors,
 edit the LaTeX beside the PDF. Each can download the paper as built, without
-its notes, or with its notes in the margin. The preview runs on a separate copy
+its notes, or with its notes in the margin or as PDF comments. The preview runs on a separate copy
 of the paper (a git worktree on its own branch) and can commit each person's
 edits to git as theirs, for you to merge.
 
@@ -26,7 +26,8 @@ Each person in the users file has one role, and each role may do what the ones
 before it may:
 
 - **viewer:** reads the PDF, the notes it shows and the outline, and downloads
-  the PDF: with its notes, without them, or with them in the margin;
+  the PDF: with its notes, without them, or with them in the margin or as
+  PDF comments;
 - **commenter:** also writes notes, as their own note macro and in plain text;
   edits and deletes only their own notes, and replies to and resolves anyone's;
 - **editor:** also edits the sources in the browser (notes too, as LaTeX),
@@ -49,8 +50,8 @@ Viewers and commenters see the current PDF and what it shows, nothing more:
   names of files the source pane doesn't open.
 
 The earlier versions (the baselines and the diff) are for editors and the
-owner. The download with notes in the margin shows every note outside a false
-branch, even while `\todotxt` hides them in the PDF.
+owner. The downloads with notes in the margin and as comments show every note
+outside a false branch, even while `\todotxt` hides them in the PDF.
 
 A badge in the toolbar shows each person their name and role. Double-clicking
 the PDF opens the source pane for editors and names the source line for

@@ -1,5 +1,6 @@
 """The review copy's pages: the gutters beside the paper's columns, where each note goes in them,
-the pages after the paper for the notes that don't fit, and the LaTeX that typesets it all."""
+the pages after the paper for the notes that don't fit, and the LaTeX that typesets it all; and the copy
+with the notes as PDF comments, which places the same pages as they are."""
 
 import itertools
 import math
@@ -220,5 +221,52 @@ def review_tex(plan, geo, colors, notes):
                             f"text=black!65] at ({f(x)},{f(H - top)}) {{Page {n['page']}}};\n")
             draw.append(note(n, x + REVIEW_TAG, top + (12 if heading else 0) * scale, 0, scale)[0])
         out.append(f"\\latexlivepage{{{f(plan['width'])}}}{{{f(H)}}}{{0}}{{}}{{%\n{''.join(draw)}}}\n")
+    out.append("\\end{document}\n")
+    return "".join(out)
+
+
+# The copy with the notes as comments: the export's pages at their own size, each note a PDF text annotation (a
+# sticky note) at its spot, for readers who read and reply to comments in their PDF reader (Acrobat, Preview,
+# Zotero). \latexlivepage{width}{height}{page}{annotations}: the annotations (zero-width boxes, each moved to its
+# spot) at the bottom left, then the page.
+COMMENTS_HEAD = r"""\documentclass{article}
+\usepackage{graphicx}
+\pagestyle{empty}
+\newcommand\latexlivepage[4]{\pdfpagewidth=#1bp\relax\pdfpageheight=#2bp\relax\pdfhorigin=0pt\pdfvorigin=0pt
+  \shipout\vbox to\pdfpageheight{\vss\hbox{#4\includegraphics[page=#3]{export.pdf}}}}
+% \latexlivecomment{x}{y}{dictionary}: an annotation, 12bp square, x, y points from the page's bottom left
+\newcommand\latexlivecomment[3]{\rlap{\kern#1bp\raise#2bp\hbox{\pdfannot width 12bp height 12bp depth 0pt{#3}}}}
+\begin{document}
+"""
+
+
+def pdf_text(text):
+    """A PDF text string for any text: UTF-16BE with its byte order mark, in hex (nothing in it for TeX or PDF to read
+    as markup), in lines that TeX joins with spaces, which a hex string skips."""
+    digits = "FEFF" + text.encode("utf-16-be").hex().upper()
+    return "<" + "\n".join(digits[i:i + 96] for i in range(0, len(digits), 96)) + ">"
+
+
+def comments_tex(plan, colors, when):
+    """The LaTeX source of the copy with the notes as comments (plan: review_layout; colors: {macro: (r, g, b)}; when:
+    the PDF date of the comments, D:YYYYMMDDHHmmSS): each page of the paper as it is, and on it each of its notes as a
+    sticky note just above its spot, with the note's text, its author's name, its number and color."""
+    def f(v):
+        return f"{v:.2f}".rstrip("0").rstrip(".")
+    by_page = {}
+    for n in plan["notes"]:
+        by_page.setdefault(n["page"], []).append(n)
+    out = [COMMENTS_HEAD]
+    for p in range(1, plan["paper"] + 1):
+        notes = []
+        for n in sorted(by_page.get(p, []), key=lambda n: n["n"]):
+            r, g, b = colors.get(n["macro"], (1, 0.82, 0.2))
+            number = f"Note {n['n']}"
+            x = min(max(n["x"] - 1, 0), plan["W"] - 12)
+            y = min(max(plan["height"] - n["y"] + 7, 0), plan["height"] - 12)
+            notes.append(f"\\latexlivecomment{{{f(x)}}}{{{f(y)}}}{{/Subtype/Text/Name/Comment/F 28/C[{r} {g} {b}]/M(D:{when})"
+                         f"/NM(latex-live-note-{n['n']})/Subj{pdf_text(number)}/T{pdf_text(n['author'])}\n"
+                         f"/Contents{pdf_text(n['text'])}}}%\n")
+        out.append(f"\\latexlivepage{{{f(plan['W'])}}}{{{f(plan['height'])}}}{{{p}}}{{%\n{''.join(notes)}}}\n")
     out.append("\\end{document}\n")
     return "".join(out)

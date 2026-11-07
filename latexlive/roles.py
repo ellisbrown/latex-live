@@ -45,10 +45,10 @@ def allowed(user, method, path):
 
 def shared_pdfs(server, user):
     """The PDFs a non-owner may ask for: the shared document's and the downloads made from it (export,
-    review); an editor, also its baselines and diff (head, push, diff), which show earlier versions of
+    review, and the review's copy with the notes as comments, annotated); an editor, also its baselines and diff (head, push, diff), which show earlier versions of
     the text: viewers and commenters see the current PDF and what it shows (see viewer_status)."""
     doc = server.default_pdf[:-4]
-    return {f"{doc}{suffix}.pdf" for suffix in ("", "-clean", "-export", "-review",
+    return {f"{doc}{suffix}.pdf" for suffix in ("", "-clean", "-export", "-review", "-annotated",
                                                 *(("-diff", "-head", "-head-clean", "-push", "-push-clean")
                                                   if at_least(user, "editor") else ()))}
 

@@ -329,6 +329,20 @@ def drawn_pages(pdf, left):
     return found
 
 
+def pdf_comments(pdf):
+    """The text annotations (sticky notes) of a PDF that pdfTeX wrote, in its objects or object streams: [(their
+    /T, their /Contents)], each as text (pdfTeX writes what comments_tex gives it: UTF-16BE in hex)."""
+    chunks = [pdf]
+    for m in re.finditer(rb"stream\r?\n", pdf):
+        try:
+            chunks.append(zlib.decompress(pdf[m.end():pdf.find(b"endstream", m.end())]))
+        except zlib.error:
+            continue
+    text = lambda hexes: bytes.fromhex(re.sub(rb"\s", b"", hexes).decode()).decode("utf-16")
+    return [(text(m.group(1)), text(m.group(2))) for chunk in chunks
+            for m in re.finditer(rb"/Subtype\s*/Text\b.*?/T\s*<([0-9A-Fa-f\s]*)>\s*/Contents\s*<([0-9A-Fa-f\s]*)>", chunk, re.S)]
+
+
 def review_checks(build, token):
     """The review copy of the scratch paper: the export's pages on wider ones, every note beside its
     column, numbered and apart, without the protected marker or the resolved note. (Two of its notes
@@ -369,6 +383,14 @@ def review_checks(build, token):
             if a is not b and (a["page"], a["side"]) == (b["page"], b["side"]) and a["top"] <= b["top"] < a["top"] + a["sizes"][a["size"]]["h"]:
                 fail(f"notes {a['n']} and {b['n']} overlap")
     composed(build)
+    annotated = get("/pdf/main-annotated.pdf", token)
+    comments = pdf_comments(annotated)
+    if written_pages(os.path.join(build, "review", "main", ".copy", "main-annotated.log")) != pages or \
+            drawn_pages(annotated, 0) < pages or sorted(text for _, text in comments) != sorted(texts) or \
+            {author for author, _ in comments} != {n["author"] for n in plan["notes"]}:
+        fail(f"the copy with the notes as comments should place the {pages} pages at their own size, with each note as"
+             f" a comment of its author's: {written_pages(os.path.join(build, 'review', 'main', '.copy', 'main-annotated.log'))}"
+             f" pages, {drawn_pages(annotated, 0)} placed, comments {comments}")
     if reviewed.get("version") != post("/review", token).get("version"):
         fail("asking again rebuilt the review copy, though the document had not changed")
     status, _, data = request(f"{hub['base']}main/review", cookie=token)  # (as a viewer from before asked)
@@ -376,7 +398,7 @@ def review_checks(build, token):
         fail(f"GET /review through the hub: {status} {data[:200]!r}, not 405 with a message for the viewer")
     ok(f"the review copy: {pages} pages as exported, unscaled on wider ones, with {len(texts)} notes in both gutters, apart"
        " (the protected marker, the resolved note, and the one in a branch that is off left out); its last pass loads no"
-       " package that the paper's TeX wrote")
+       " package that the paper's TeX wrote; beside it, the same pages at their own size with the notes as PDF comments")
 
 
 def owner_checks(token, own, editor_log, paper):

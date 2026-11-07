@@ -117,6 +117,10 @@ def review_shared_checks(sh):
     if pdf[2] != read_bytes(os.path.join(root, "build", "main-review.pdf")) or not done.get("notes"):
         fail(f"the viewer's copy with notes in the margin is not the one built, or has no notes: {done}")
     expect(via_proxy("vw", "/pdf/appendix-review.pdf"), 403, "GET /pdf/appendix-review.pdf for a viewer (another document's)")
+    annotated = via_proxy("vw", "/pdf/main-annotated.pdf")
+    if annotated[0] != 200 or annotated[2] != read_bytes(os.path.join(root, "build", "main-annotated.pdf")):
+        fail(f"/pdf/main-annotated.pdf (the notes as comments) for a viewer: {annotated[0]}")
+    expect(via_proxy("vw", "/pdf/appendix-annotated.pdf"), 403, "GET /pdf/appendix-annotated.pdf for a viewer (another document's)")
     if editor_calls(sh["host_tex_log"]):
         fail(f"shared mode ran the host's TeX: {editor_calls(sh['host_tex_log'])}")
     try:
