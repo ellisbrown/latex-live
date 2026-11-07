@@ -15,7 +15,7 @@ import { marks, showUnresolved } from "./marks.js";
 import { ed, sourceEpoch, sourceStatus } from "./editor.js";
 import { showForward } from "./links.js";
 import { showAccessEnded, showBuild } from "./banner.js";
-import { checkPages, cleanShown, measureVariant, measuring, notesShown, renderPages, setResult } from "./pages.js";
+import { checkPages, cleanShown, measureVariant, measuring, notesShown, renderPages, setResult, setUncounted } from "./pages.js";
 import { fillSectionPages, renderOutline } from "./outline.js";
 import { loadMargin, loadNotes, marginOn, resetMargin, showMarginButton } from "./notes.js";
 import { updateCut } from "./cut.js";
@@ -166,6 +166,7 @@ export async function poll() {
     if (!isDiff) seeBuild(!!info.building, info.build?.ok === false);
     if (!isDiff && info.doc && info.doc !== docFile) return openDoc(info.doc); // the server builds another document now
     if (info.layout) setArea(info.layout);
+    setUncounted(info.uncounted);
     showBuild(info.building ? null : info.build, info.building ? null : info.cleanBuild, info.building ? null : info.overwritten);
     showDiffInfo(info.diff);
     $("texImage").hidden = !info.texImage; // builds fall back to the host's TeX; SyncTeX may not work

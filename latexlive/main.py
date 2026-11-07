@@ -159,7 +159,7 @@ def main():
                     " its own, from the next one. A shared instance (LATEX_LIVE_USERS) serves exactly this port, without"
                     " the hub, and needs it")
     ap.add_argument("--page-limit", type=int, help="main-text page limit to check in the viewer (default: the venue's,"
-                    " for ICLR, NeurIPS, COLM, ICML, CVPR and ICCV styles)")
+                    " for ICLR, NeurIPS, COLM, ICML, CVPR, ICCV, WACV, ACL, AAAI and ECCV styles)")
     ap.add_argument("--build-dir", default="build", help="build directory, relative to the paper root (default: build);"
                     " any other also receives <doc>.pdf, e.g. to run beside the usual instance")
     ap.add_argument("--no-build", action="store_true", help="viewer only; don't run latexmk")

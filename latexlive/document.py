@@ -41,18 +41,30 @@ def layout(paper_root, pdf_name, cache={}):
 
 
 # Main-text page limits of submission styles, for documents run without --page-limit.
+# The main text's page limit of a venue's style (ACL's for long papers; ECCV's without the references), and the
+# unnumbered sections, beyond the usual ones (pages.js UNCOUNTED), that a venue doesn't count either.
 VENUE_PAGE_LIMITS = {r"iclr\d{4}_conference": 9, r"neurips_\d{4}": 9, r"colm\d{4}_conference": 9, r"icml\d{4}": 8,
-                     r"cvpr": 8, r"iccv": 8}
+                     r"cvpr": 8, r"iccv": 8, r"wacv": 8, r"acl(\d{4})?": 8, r"aaai\d{2,4}": 7, r"eccv": 14}
+VENUE_UNCOUNTED = {r"acl(\d{4})?": ["limitations"]}
 USEPACKAGE_RE = re.compile(r"\\usepackage\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}")
+
+
+def venue_style(server, pdf_name, table):
+    """The value in table (VENUE_PAGE_LIMITS, VENUE_UNCOUNTED) of the venue style the document loads, else None."""
+    packages = {p.strip() for m in USEPACKAGE_RE.finditer(read_tex(os.path.join(server.paper_root, pdf_name[:-4] + ".tex")))
+                for p in m.group(1).split(",")}
+    return next((v for pattern, v in table.items() if any(re.fullmatch(pattern, p) for p in packages)), None)
 
 
 def page_limit(server, pdf_name):
     """--page-limit, else the limit of the venue style the document loads, else None."""
-    if server.page_limit:
-        return server.page_limit
-    packages = {p.strip() for m in USEPACKAGE_RE.finditer(read_tex(os.path.join(server.paper_root, pdf_name[:-4] + ".tex")))
-                for p in m.group(1).split(",")}
-    return next((n for pattern, n in VENUE_PAGE_LIMITS.items() if any(re.fullmatch(pattern, p) for p in packages)), None)
+    return server.page_limit or venue_style(server, pdf_name, VENUE_PAGE_LIMITS)
+
+
+def uncounted_sections(server, pdf_name):
+    """The unnumbered sections that the venue style the document loads leaves out of the main text, beyond the usual
+    ones (the viewer's UNCOUNTED): their headings' first words, lowercase."""
+    return venue_style(server, pdf_name, VENUE_UNCOUNTED) or []
 
 
 TOC_LEVELS = {"part": 0, "chapter": 0, "section": 1, "subsection": 2, "subsubsection": 3, "paragraph": 4}

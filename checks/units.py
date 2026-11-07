@@ -25,7 +25,7 @@ def unit_checks():
     """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
     for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
-                  code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, word_column_checks, diff_retry_checks,
+                  code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, word_column_checks, venue_checks, diff_retry_checks,
                   graphics_synctex_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks):
         check()
 
@@ -771,6 +771,22 @@ def diff_retry_checks():
              f" diff {server.diff} after {calls}")
     ok("a diff whose marked document doesn't build is built again with plainer marks (not after a timeout), and"
        " files that \\input each other in a loop stop it before latexdiff runs")
+
+
+def venue_checks():
+    """The page limit and the sections left out of the main text, from the venue style the document loads
+    (document.page_limit, uncounted_sections), and --page-limit over it."""
+    from latexlive import document
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
+        found = []
+        for style, limit in (("{iclr2027_conference}", None), ("[review]{acl}", None), ("[submission]{aaai2026}", None),
+                             ("[review,year=2026,ID=1]{eccv}", None), ("{times}", None), ("[review]{acl}", 9)):
+            put(os.path.join(tmp, "main.tex"), f"\\documentclass{{article}}\\usepackage{style}\n")
+            server = types.SimpleNamespace(paper_root=tmp, page_limit=limit)
+            found.append((document.page_limit(server, "main.pdf"), document.uncounted_sections(server, "main.pdf")))
+    if found != [(9, []), (8, ["limitations"]), (7, []), (14, []), (None, []), (9, ["limitations"])]:
+        fail(f"page limits and sections left out by venue style: {found}")
+    ok("the venue style sets the page limit (ICLR, ACL, AAAI, ECCV), and ACL's leaves out its Limitations")
 
 
 def connection_cap_checks():

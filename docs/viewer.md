@@ -185,9 +185,10 @@ In a shared preview, every coauthor can download all four, viewers too.
 
 - **Page badge:** main-text pages against the venue limit, with and without
   notes. The main text ends at the references or at an earlier unnumbered
-  statement (AI use, ethics, reproducibility, impact, acknowledgments). The
-  limit comes from the venue style (ICLR, NeurIPS and COLM: 9 pages; ICML, CVPR
-  and ICCV: 8) or `--page-limit`.
+  statement (AI use, ethics, reproducibility, impact, acknowledgments; with
+  ACL's style, also Limitations). The limit comes from the venue style (ICLR,
+  NeurIPS and COLM: 9 pages; ICML, CVPR, ICCV, WACV and ACL: 8; AAAI: 7; ECCV:
+  14) or `--page-limit`.
 - **Space hints (✂):** marks short last lines of paragraphs and large blank
   gaps in the main text, with arrows to step through them.
 - **Two columns:** LaTeX reports the page layout on each build. With two

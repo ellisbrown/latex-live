@@ -62,7 +62,8 @@ tagged `v<VERSION>`; track `main` to follow development. It is used on Linux;
 macOS with MacTeX should work but has not been tried. Known limits:
 
 - Notes are the paper's note macros that go through `\todotxt`.
-- Page limits are built in for ICLR, NeurIPS, COLM, ICML, CVPR and ICCV;
+- Page limits are built in for ICLR, NeurIPS, COLM, ICML, CVPR, ICCV, WACV,
+  ACL, AAAI and ECCV;
   pass `--page-limit` for other venues.
 - The token is required even on a laptop, where only localhost reaches the port.
 
