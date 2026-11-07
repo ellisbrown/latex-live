@@ -25,7 +25,7 @@ def unit_checks():
     """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
     for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
-                  code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, word_column_checks, venue_checks, diff_retry_checks,
+                  code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, completion_checks, word_column_checks, venue_checks, diff_retry_checks,
                   graphics_synctex_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks):
         check()
 
@@ -787,6 +787,24 @@ def venue_checks():
     if found != [(9, []), (8, ["limitations"]), (7, []), (14, []), (None, []), (9, ["limitations"])]:
         fail(f"page limits and sections left out by venue style: {found}")
     ok("the venue style sets the page limit (ICLR, ACL, AAAI, ECCV), and ACL's leaves out its Limitations")
+
+
+def completion_checks():
+    """What the source pane completes (editor.label_lines, bib_completions): labels outside comments with their lines,
+    and a .bib file's keys with their titles, braced or quoted, without @string and the like; 15,000 entries in well
+    under a second."""
+    from latexlive import editor
+    labels = editor.label_lines("a\n% \\label{gone}\n\\label{one} % \\label{two}\nb\n\\label{three}\n")
+    keys = editor.bib_completions('@string{x="y"}\n@misc{a, title = "Quoted {T}itle", year=1}\n@book{ b ,\n author={Z}}\n'
+                                  '@article(c, title={A {Nested} Title},\n)\n')
+    if labels != [("one", 3), ("three", 5)] or keys != [{"key": "a", "title": "Quoted Title"}, {"key": "b", "title": ""},
+                                                       {"key": "c", "title": "A Nested Title"}]:
+        fail(f"the source pane's completions: labels {labels}, keys {keys}")
+    big = "".join(f"@article{{key{i},\n  title={{Title {i}}},\n  year={{2020}}\n}}\n" for i in range(15000))
+    began = time.monotonic()
+    if len(editor.bib_completions(big)) != 15000 or time.monotonic() - began > 1:
+        fail(f"a .bib file of 15,000 entries took {time.monotonic() - began:.1f} s to read for completion")
+    ok("the source pane completes labels outside comments and a .bib file's keys with their titles, quickly")
 
 
 def connection_cap_checks():
