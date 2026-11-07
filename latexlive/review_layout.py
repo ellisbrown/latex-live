@@ -60,7 +60,7 @@ def place_notes(want, heights, lo, hi, gap):
     return [s + o for s, o in zip(shifts, offsets)]
 
 
-def review_layout(placed, probe, geo, pages):
+def review_layout(placed, probe, geo, pages, macros=None):
     """Where everything goes on the review copy's pages: {pages, paper, width, height, left, W (the
     paper's page width), notes} (points from the top left), each note with its text, its number n,
     side, size (0 or 1: the smaller type),
@@ -68,8 +68,11 @@ def review_layout(placed, probe, geo, pages):
     (page, column, top to bottom), and in each gutter they keep that order, each as near its spot as
     the others allow. When they don't fit, they are set smaller; when they still don't, the first
     ones that fit stay, and the rest continue on pages after the paper (continuation_pages), with a
-    line in the gutter saying where."""
+    line in the gutter saying where. Each note's text is as plain text (review_text, with the paper's own macros:
+    macros), for the copy with the notes as comments and for a note the probe couldn't typeset."""
     W, H, snippet = geo["W"], geo["H"], geo["snippet"]
+    for n in placed:
+        n["text"] = review_text(n, macros or {})
     for n in placed:
         n["side"] = "left" if geo["two"] and n["x"] < W / 2 else "right"
     placed.sort(key=lambda n: (n["page"], n["side"] == "right", n["y"], n["x"], n["id"]))
@@ -84,7 +87,7 @@ def review_layout(placed, probe, geo, pages):
                 n["sizes"].append({"page": page, "w": round(w * scale, 2), "text": round(text * scale, 2),
                                    "ht": round(ht * scale, 2), "h": round((ht + dp) * scale, 2)})
         else:  # (the probe didn't typeset it: its text, roughly sized)
-            lines = math.ceil((len(review_text(n)) + len(n["author"]) + 2) / (snippet / 3.7))
+            lines = math.ceil((len(n["text"]) + len(n["author"]) + 2) / (snippet / 3.7))
             n["sizes"] = [{"page": None, "w": snippet, "text": snippet, "ht": 6.0, "h": 8.6 * lines + 2} for _ in range(2)]
     lo, hi = REVIEW_MARGIN, H - REVIEW_MARGIN
     for _, group in itertools.groupby(placed, key=lambda n: (n["page"], n["side"])):
@@ -107,7 +110,7 @@ def review_layout(placed, probe, geo, pages):
         for n, *_ in page:
             n["continued"] = pages + 1 + i
     return {"pages": pages + len(extra), "paper": pages, "width": geo["width"], "height": H, "left": geo["left"], "W": W,
-            "notes": [{**{k: v for k, v in n.items() if k not in ("call", "body", "typeset")}, "text": review_text(n)} for n in placed]}
+            "notes": [{k: v for k, v in n.items() if k not in ("call", "body", "typeset")} for n in placed]}
 
 
 def continuation_pages(notes, geo):
@@ -136,17 +139,15 @@ def continuation_pages(notes, geo):
     return pages + ([page] if page else [])
 
 
-def review_text(n):
-    """A note as plain text, for when the probe couldn't typeset it."""
+def review_text(n, macros):
+    """A note as plain text (macros: the paper's own, project_macros, to expand)."""
     body = n["body"].encode("latin-1").decode("utf-8", errors="replace")
-    return " ".join(tex_to_text(note_source(body), {}).split())
+    return " ".join(tex_to_text(note_source(body), macros).split())
 
 
-def review_tex(plan, geo, colors, notes):
-    """The LaTeX source of the review copy (plan: review_layout; notes: the same notes, with their
-    text, for any the probe couldn't typeset)."""
+def review_tex(plan, geo, colors):
+    """The LaTeX source of the review copy (plan: review_layout)."""
     W, H, left = geo["W"], geo["H"], geo["left"]
-    text = {n["id"]: n for n in notes}
     out = [REVIEW_HEAD]
     for macro in sorted({n["macro"] for n in plan["notes"]}):
         r, g, b = colors.get(macro, (0.35, 0.35, 0.35))
@@ -165,7 +166,7 @@ def review_tex(plan, geo, colors, notes):
             body = f"\\includegraphics[page={s['page']},width={f(w)}bp]{{probe.pdf}}"
         else:
             body = (f"\\parbox[t]{{{f(w)}bp}}{{\\raggedright\\sffamily\\fontsize{{7}}{{8.6}}\\selectfont\\textcolor{{{color}}}"
-                    f"{{\\textbf{{{escape_note(n['author'])}:}}}} {escape_note(review_text(text[n['id']]))}}}")
+                    f"{{\\textbf{{{escape_note(n['author'])}:}}}} {escape_note(n['text'])}}}")
         return (f"\\node[anchor=north west,inner sep=0pt,outer sep=0pt] at ({f(x)},{f(H - top)}) {{{body}}};\n"
                 f"\\node[latexlive tag,fill={color}] at ({f(tag[0])},{f(tag[1])}) {{{n['n']}}};\n"), tag
 
