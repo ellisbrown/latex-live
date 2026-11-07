@@ -351,7 +351,8 @@ def waiting_download_checks():
 
 
 def layout_checks():
-    """The review copy's gutters (review_layout.place_notes, review_layout.review_layout), on made-up notes."""
+    """The review copy's gutters (review_layout.place_notes, review_layout.review_layout), on made-up notes, and the notes'
+    text, with the paper's own macros spelled out, in the copy with the notes as comments (comments_tex)."""
     import random
     from latexlive import review_layout
     rng = random.Random(7)
@@ -369,9 +370,14 @@ def layout_checks():
     notes = [{"id": i, "page": 1 + i // 40, "x": 100 + 300 * (i % 2), "y": 60 + (i * 17) % 700, "author": "EB", "body": "x",
               "macro": "eb", "file": "a.tex", "line": i, "how": "exact"} for i in range(80)]
     sizes = {i: {0: [100 + 2 * i, 150, 6, 40], 1: [101 + 2 * i, 150, 5, 30]} for i in range(80)}
-    plan = review_layout.review_layout(notes, {"pdf": True, "snippets": sizes}, geo, 2)
+    notes[0]["body"] = "compare with \\method"  # (a macro of the paper's, which the comments' text spells out)
+    plan = review_layout.review_layout(notes, {"pdf": True, "snippets": sizes}, geo, 2, {"method": "BaselineNet"})
     if sorted(n["id"] for n in plan["notes"]) != list(range(80)) or [n["n"] for n in plan["notes"]] != list(range(1, 81)):
         fail("review_layout lost or renumbered notes")
+    first = next(n for n in plan["notes"] if n["id"] == 0)
+    if first["text"] != "compare with BaselineNet" or review_layout.pdf_text(first["text"]).replace("\n", "") not in \
+            review_layout.comments_tex(plan, {}, "20261107000000").replace("\n", ""):
+        fail(f"a note's text for the comments, with the paper's own macro: {first['text']!r}")
     gutters = {}
     for n in plan["notes"]:
         gutters.setdefault((n["page"], n["side"]), []).append(n)

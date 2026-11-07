@@ -16,7 +16,7 @@ from . import config
 from .document import layout
 from .export import exact_export, links_in, waiting_for_build
 from .files import fls_file, job_file, mtime, pdf_path, project_tex_files, read_output, too_big
-from .latex import blank_comments, brace_group, false_blocks, read_tex
+from .latex import blank_comments, brace_group, false_blocks, project_macros, read_tex
 from .notes import NOTE_DEF_RE, escape_note, note_kinds, note_use_re
 from .review_anchors import BP, note_source, review_anchors, squeeze, synctex_pages
 from .review_layout import comments_tex, review_geometry, review_layout, review_tex
@@ -176,7 +176,7 @@ def build_review(server, pdf, source):
             if not placed:
                 raise RuntimeError("none of the notes is typeset (are they all in parts the document leaves out?)")
             pages = len(synctex_pages(os.path.join(out, "export.synctex.gz")))
-            plan = review_layout(placed, probe, geo, pages)
+            plan = review_layout(placed, probe, geo, pages, project_macros(root, fls_file(root, pdf)))
             step("typesetting the review copy")
             with open(os.path.join(out, f"{doc}-review.json"), "w") as f:
                 json.dump(plan, f, indent=1)
@@ -202,7 +202,7 @@ def build_review(server, pdf, source):
                     first = next((l for l in log.splitlines() if l.startswith("! ")), "")
                     raise RuntimeError(f"{what} didn't build ({first or f'see {os.path.relpath(copy, root)}/{job}.log'})")
             colors = probe.get("colors", {})
-            typeset(f"{doc}-review", review_tex(plan, geo, colors, notes), plan["pages"], "the review copy")
+            typeset(f"{doc}-review", review_tex(plan, geo, colors), plan["pages"], "the review copy")
             typeset(f"{doc}-annotated", comments_tex(plan, colors, time.strftime("%Y%m%d%H%M%S")), plan["paper"],
                     "the copy with the notes as comments")
             os.replace(os.path.join(copy, f"{doc}-annotated.pdf"), os.path.join(root, config.BUILD, f"{doc}-annotated.pdf"))
