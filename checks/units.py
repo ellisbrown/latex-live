@@ -25,7 +25,7 @@ def unit_checks():
     """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
     for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
-                  code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks,
+                  code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, word_column_checks,
                   baseline_failure_checks, connection_cap_checks):
         check()
 
@@ -565,6 +565,32 @@ def forward_cache_checks():
         fail(f"forward search's misses are kept for the build, or not shared for a moment: {first[0]}, {again[0]}, {later[0]},"
              f" {found[0]}, {cached[0]} after {len(calls)} lookups")
     ok("forward search looks a line up again a few seconds after it found nothing, and keeps what it finds for the build")
+
+
+# Lines of a source file, and double-clicked words in them as the viewer sends them, with the column each lands on
+# (None: not there, or its places can't be told apart).
+WORD_LINES = ["Quokka caf\\'e alpha beta alpha gamma \\cite[p.~2]{alpha} delta % alpha in a comment",
+              "na\\\"{\\i}ve {\\em hy\\-phen} x\U0001d465 omega omega omega"]
+WORD_CASES = [((1, {"word": "Café"}), 7), ((1, {"word": "alpha", "before": "beta", "after": "gamma"}), 25),
+              ((1, {"word": "alpha", "after": "beta"}), 14), ((1, {"word": "alpha", "occurrence": "1", "count": "2"}), 25),
+              ((1, {"word": "alpha", "occurrence": "1", "count": "3"}), None), ((1, {"word": "delta"}), 56),
+              ((2, {"word": "NAÏVE"}), 0), ((2, {"word": "hyphen"}), 16), ((2, {"word": "omega", "before": "omega",
+              "after": "omega"}), 36), ((1, {"word": "zebra"}), None), ((3, {"word": "alpha"}), None)]
+
+
+def word_column_checks():
+    """Inverse search finds the double-clicked word in its source line (navigation.word_column): by its neighbours, by
+    its place among the line's same words when the PDF's line holds as many, through accents and markup, and not in a
+    citation's key or a comment; a column in UTF-16 units (after a character outside the BMP)."""
+    from latexlive import navigation
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
+        put(os.path.join(tmp, "main.tex"), "\n".join(WORD_LINES) + "\n")
+        got = [navigation.word_column(os.path.join(tmp, "main.tex"), line, navigation.clicked_word({k: [v] for k, v in q.items()}))
+               for (line, q), _ in WORD_CASES]
+    wrong = [(case, column) for (case, want), column in zip(WORD_CASES, got) if column != want]
+    if wrong:
+        fail(f"inverse search puts the double-clicked word at the wrong column: {wrong}")
+    ok("inverse search finds the double-clicked word in its line, by its neighbours or its place, through accents and markup")
 
 
 def connection_cap_checks():

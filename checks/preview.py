@@ -13,7 +13,10 @@ import signal
 import subprocess
 import sys
 import threading
+import urllib.parse
 import zlib
+
+from latexlive.navigation import source_words  # (check.py puts the checkout on the path)
 
 from .access import BRIDGE, EXTRA, access_checks
 from .base import ENV, HERE, PORT, TOKEN, _quiet, fail, hub, in_thread, ok, wait_for
@@ -21,7 +24,7 @@ from .clean_standby import clean_standby_run
 from .early import early_run
 from .helpers import (
     CAPS, JS_TYPE_RE, editor_calls, editor_stub, get, hub_get, post, post_length, read_bytes, read_hub, request, start, stop,
-    texlive_image, text_point)
+    read_text, texlive_image, text_point)
 from .papers import composed, make_paper
 from .shared import shared_checks
 from .shared_setup import shared_setup
@@ -140,7 +143,7 @@ def live_checks(tmp):
         if not any(i["pid"] == procs[0].pid and hub["base"] == f"/p/{i['id']}/" for i in listed["instances"]):
             fail(f"/instances does not list the instance with its paper id: {listed}")
         ok("/instances lists the instance")
-        owner_checks(token, own, editor_log)
+        owner_checks(token, own, editor_log, paper)
         access_checks(token, own, state, procs[0].log)
 
         def baselines():
@@ -376,7 +379,7 @@ def review_checks(build, token):
        " package that the paper's TeX wrote")
 
 
-def owner_checks(token, own, editor_log):
+def owner_checks(token, own, editor_log, paper):
     """The owner's own preview (not shared): GET me, the editor's modules, SyncTeX as JSON, the editor
     stand-in through POST /open and plain /synctex (GET /open is 405, as in shared mode), and the POST
     body limits of the hub and of the preview's own port (own; a source file's save may be bigger than
@@ -401,22 +404,33 @@ def owner_checks(token, own, editor_log):
        " viewer's style as CSS, the viewer's own revalidated on each load; /favicon.ico is answered")
 
     page, x, y = text_point(lambda path: hub_get(path, token), "main.tex", 9)
+    spot = f"file=main.pdf&page={page}&x={x:.2f}&y={y:.2f}"
+    line = hub_get(f"/synctex?{spot}&json=1", token)["line"]
+    key, column = source_words(read_text(os.path.join(paper, "main.tex")).split("\n")[line - 1])[0]  # (a word of the line)
+    word = f"word={urllib.parse.quote(key.upper())}&occurrence=0&count=1"
+    if (found := hub_get(f"/synctex?{spot}&{word}&json=1", token)).get("column") != column:
+        fail(f"synctex with json=1 and the double-clicked word {key!r} (at {column} in main.tex:{line}): {found}")
     if editor_calls(editor_log):
         fail(f"synctex with json=1 opened the editor: {editor_calls(editor_log)}")
     status, _, data = request(f"{hub['base']}main/open?file=main.tex&line=9", cookie=token)
     if status != 405:
         fail(f"GET /open (not shared): {status} {data[:200]!r}, not 405")
     for path, method, body in ((f"{hub['base']}main/open", "POST", {"file": "main.tex", "line": 10}),
-                               (f"{hub['base']}main/synctex?file=main.pdf&page={page}&x={x:.2f}&y={y:.2f}", "GET", None)):
+                               (f"{hub['base']}main/open", "POST", {"file": "main.tex", "line": 11, "column": 4}),
+                               (f"{hub['base']}main/synctex?{spot}", "GET", None),
+                               (f"{hub['base']}main/synctex?{spot}&{word}", "GET", None)):
         status, _, data = request(path, method=method, body=body, cookie=token)
         if status != 200:
             fail(f"{method} {path} (not shared): {status} {data[:200]!r}")
-    calls = wait_for("the editor stand-in, twice", lambda: len(editor_calls(editor_log)) >= 2 and editor_calls(editor_log),
+    calls = wait_for("the editor stand-in, four times", lambda: len(editor_calls(editor_log)) >= 4 and editor_calls(editor_log),
                      timeout=10, step=0.2)
-    if (len(calls) != 2 or not all(c.startswith("-g ") and re.search(r"/main\.tex:\d+$", c) for c in calls)
-            or not any(c.endswith("main.tex:10") for c in calls)):
-        fail(f"the editor stand-in got {calls}, not -g .../main.tex:10 and the double-clicked line")
-    ok("SyncTeX answers JSON without opening the editor; POST /open and plain /synctex open it, GET /open is 405")
+    if (len(calls) != 4 or not all(c.startswith("-g ") and re.search(r"/main\.tex:\d+(:\d+)?$", c) for c in calls)
+            or sorted(c.rpartition("/")[2] for c in calls) != sorted(["main.tex:10", "main.tex:11:5", f"main.tex:{line}",
+                                                                      f"main.tex:{line}:{column + 1}"])):
+        fail(f"the editor stand-in got {calls}, not -g .../main.tex:10, main.tex:11:5, and the double-clicked line"
+             f" ({line}) without and with the double-clicked word's column ({column + 1})")
+    ok("SyncTeX answers JSON without opening the editor, with the column of a double-clicked word; POST /open and plain"
+       " /synctex open it, at that column with one, and GET /open is 405")
 
     status, _, data = request(f"{hub['base']}main/file", method="POST", cookie=token,
                               body={"path": "body.tex", "base": "0" * 20, "text": "x" * (1 << 20)})

@@ -45,9 +45,9 @@ let offline = null, offlineSince = 0, retryDelay = 2000, noticeTimer = null;
 export let sourceEpoch = 0; // (bumped whenever the open file's version changes: a status answer from before is stale)
 let conflict = null; // a conflict of this session, not resolved yet: {by: who saved the other side, if live.py says}
 
-// Show or hide the source pane; showing it opens path at line, else the file open last time (in
+// Show or hide the source pane; showing it opens path at line (and column, from 0), else the file open last time (in
 // this paper) or the main file (with a hint on how to get to the source of a spot in the PDF).
-export async function showEditor(on, { path = null, line = 0, focus = true } = {}) {
+export async function showEditor(on, { path = null, line = 0, column = 0, focus = true } = {}) {
   if (on && !editorAllowed()) return;
   if (!on) {
     $("fileMenu").hidden = true;
@@ -66,7 +66,7 @@ export async function showEditor(on, { path = null, line = 0, focus = true } = {
     await loadEditor({ save: saveSource, edited: sourceEdited });
     let hint = false;
     if (!path && !ed) [path, hint] = await firstFile();
-    if (path) await openFile(path, line);
+    if (path) await openFile(path, line, column);
     if (hint && cmView) $("editorHint").hidden = false;
     if (!cmView) $("editorHost").replaceChildren(el("div", { className: "msg",
       textContent: path ? `${path} did not open (the status line says why): pick a file above.` : "No source files to edit." }));
@@ -86,9 +86,9 @@ async function firstFile() {
   const paths = srcFiles.files.map((f) => f.path), last = localStorage.getItem(`latex-live:${hubBase}editorFile`);
   return paths.includes(last) ? [last, false] : [srcFiles.main || paths[0] || null, true];
 }
-// Open a file (once the one open now is saved, or is gone from the paper) and go to a line in it.
-export async function openFile(path, line = 0) {
-  if (ed?.path === path) return line && goToLine(line);
+// Open a file (once the one open now is saved, or is gone from the paper) and go to a line (and column) in it.
+export async function openFile(path, line = 0, column = 0) {
+  if (ed?.path === path) return line && goToLine(line, column);
   const seq = ++openSeq;
   if (ed && !(await flushSource())) return setStatus(`${ed.path} is not saved yet, so ${path} did not open`, "error");
   const r = await fetch(`file?${new URLSearchParams({ path })}`, { cache: "no-store" }).catch(() => null);
@@ -116,11 +116,12 @@ export async function openFile(path, line = 0) {
   $("editorHint").hidden = true;
   localStorage.setItem(`latex-live:${hubBase}editorFile`, f.path);
   showSaveState();
-  if (line) goToLine(line);
+  if (line) goToLine(line, column);
   offerKept(f);
 }
-function goToLine(line) {
-  const doc = cmView.state.doc, at = doc.line(Math.min(Math.max(1, +line || 1), doc.lines)).from;
+function goToLine(line, column = 0) {
+  const doc = cmView.state.doc, to = doc.line(Math.min(Math.max(1, +line || 1), doc.lines));
+  const at = to.from + Math.min(Math.max(0, +column || 0), to.length);
   cmView.dispatch({ selection: { anchor: at }, effects: CM.EditorView.scrollIntoView(at, { y: "center" }) });
   cmView.focus();
 }
