@@ -1,6 +1,7 @@
 """Reading the paper's LaTeX: balanced groups, comments, \\iffalse blocks, macro definitions, rough
 plain text, and the root documents and the files they \\input."""
 
+import glob
 import os
 import re
 import subprocess
@@ -78,6 +79,20 @@ TEX_SYMBOLS = {"Delta": "Δ", "alpha": "α", "beta": "β", "gamma": "γ", "times
                "ldots": "…", "dots": "…"}
 MACRO_DEF_RE = re.compile(r"\\(?:(?:re|provide)?newcommand\*?|DeclareRobustCommand\*?)\s*\{?\\([a-zA-Z@]+)\}?\s*(?=\{)|\\def\\([a-zA-Z@]+)(?=\{)")
 INPUT_RE = re.compile(r"\\(?:input|include|subfile)\s*\{([^{}]+)\}")
+
+
+def find_bib_entry(paper_root, key):
+    """(relative .bib path, line) of @type{key, in the paper's .bib files, or None."""
+    pat = re.compile(r"@\w+\s*\{\s*%s\s*," % re.escape(key))
+    for bib in sorted(glob.glob(os.path.join(paper_root, "*.bib")) + glob.glob(os.path.join(paper_root, "*", "*.bib"))):
+        try:
+            with open(bib, errors="replace") as f:
+                for n, line in enumerate(f, 1):
+                    if pat.search(line):
+                        return os.path.relpath(bib, paper_root), n
+        except OSError:
+            pass
+    return None
 
 
 def brace_group(text, i):

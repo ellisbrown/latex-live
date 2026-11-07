@@ -26,7 +26,7 @@ def unit_checks():
     for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
                   code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, word_column_checks,
-                  shown_synctex_checks, baseline_failure_checks, connection_cap_checks):
+                  graphics_synctex_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks):
         check()
 
 
@@ -630,6 +630,75 @@ def shown_synctex_checks():
             latex_report.BUILD = saved
     ok("a publish keeps a copy of its SyncTeX file, which the lookups read after a failed pass; only from a regular file,"
        " never through a link")
+
+
+# A SyncTeX file of one page, as pdfTeX writes it for \includegraphics[width=0.3\linewidth] of a 320x240 bp figure
+# (line 14) and the same with trim and clip of a 220x140 bp one (line 15): each graphic is a box at its scaled size
+# around an \rlap (a box with no width) around one at its original size, and the clipped one draws a form that SyncTeX
+# records without a line.
+GRAPHICS_SYNCTEX = """SyncTeX Version:1
+Input:1:/paper/main.tex
+Output:pdf
+Magnification:1000
+Unit:1
+X Offset:0
+Y Offset:0
+Content:
+!100
+{1
+[1,10:4736286,46220574:26673152,41484288,0
+(1,14:10998001,17010672:6783045,5087313,0
+(1,14:10998001,17010672:0,5087326,0
+(1,14:10998001,17010672:21050163,15787622,0
+)
+)
+)
+(1,15:17999499,17010672:6783045,4316487,0
+(1,15:17999499,17010672:0,4316487,0
+(1,15:17999499,17010672:14471936,9209407,0
+f19:17999499,17010672
+)
+)
+)
+]
+}1
+Input:2:/paper/after.tex
+"""
+GRAPHICS_BBL = "\\begin{thebibliography}{2}\n\n\\bibitem[Doe(2021)]{doe2021}\nJane Doe.\n\\newblock Another.\n\n" \
+               "\\bibitem[{Smith et~al.(2020)Smith, Roe, and\n  Poe}]{smith2020}\nJohn Smith.\n\n\\end{thebibliography}\n"
+GRAPHICS_BIB = "@article{smith2020,\n  title={A},\n}\n\n@inproceedings{ doe2021 ,\n  title={B},\n}\n"
+
+
+def graphics_synctex_checks():
+    """SyncTeX around graphics and the bibliography (synctex.laid_out, line_at, bib_source): forward search measures a
+    scaled graphic's boxes at the size TeX laid them out (synctex view grows them to the original's size); inverse search
+    on a clipped graphic, where synctex edit answers line 0, finds the line of the boxes around the point; and an entry
+    of the bibliography (a line of the .bbl) goes to its .bib entry."""
+    from latexlive import synctex
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
+        synctex_gz = os.path.join(tmp, "main-live.synctex.gz")
+        with gzip.open(synctex_gz, "wt") as f:
+            f.write(GRAPHICS_SYNCTEX)
+        found = {tuple(round(c, 2) for c in at): tuple(round(c, 2) for c in to) for at, to in synctex.laid_out(synctex_gz, 1)}
+        want = {(167.19, 258.59, 320.0, 240.0): (167.19, 258.59, 103.11, 77.34),
+                (273.62, 258.59, 220.0, 140.0): (273.62, 258.59, 103.11, 65.62)}
+        if any(found.get(at) != to for at, to in want.items()):
+            fail(f"forward search's boxes around scaled graphics, as laid out: {found}")
+        llap, column = (59.39, 134.76, 12.61, 3.27), (72.0, 672.75, 228.64, 547.95)  # (lineno's number: moved, not grown)
+        graphic = synctex.laid_box((167.19, 258.59, 320.0, 240.0), synctex.laid_out(synctex_gz, 1))
+        if synctex.laid_box(llap, [(llap, column)]) != llap or tuple(round(c, 2) for c in graphic) != (167.19, 258.59, 103.11, 77.34):
+            fail(f"forward search measures again a box that synctex did not grow, or not one it did: {graphic}")
+        spots = [synctex.line_at(synctex_gz, 1, x, y) for x, y in ((323, 220), (218, 220), (600, 750))]
+        if spots != [("/paper/main.tex", 15), ("/paper/main.tex", 14), ("/paper/main.tex", 10)]:
+            fail(f"inverse search where synctex edit answers line 0 (a clipped graphic; far from any box): {spots}")
+        put(os.path.join(tmp, "build", "main-live.bbl"), GRAPHICS_BBL)
+        put(os.path.join(tmp, "refs.bib"), GRAPHICS_BIB)
+        entries = [synctex.bib_source(tmp, os.path.join(tmp, "build", "main-live.bbl"), n) for n in (1, 4, 5, 10, 11)]
+        bib = os.path.join(tmp, "refs.bib")
+        if entries != [None, (bib, 5), (bib, 5), (bib, 1), (bib, 1)]:
+            fail(f"inverse search on the bibliography's entries (lines of the .bbl): {entries}")
+    ok("SyncTeX measures scaled graphics as laid out, finds a clipped graphic's line, and takes a bibliography entry to"
+       " its .bib entry")
 
 
 def connection_cap_checks():
