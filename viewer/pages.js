@@ -11,9 +11,11 @@ import { goToPage } from "./navigation.js";
 // use, ethics, reproducibility, impact, acknowledgments), which venues such as ICLR and ICML do not
 // count; without references (refs null), to the end of the document.
 const UNCOUNTED = /^(ai use|llm usage|use of large language models|ethics statement|reproducibility statement|impact statement|acknowledge?ments?)\b/i;
-let venueUncounted = null; // (more that the venue's style leaves out, e.g. ACL's Limitations: live.py's status says)
+// More that the venue's style leaves out (live.py's status says), e.g. ACL's Limitations: a heading of just those words,
+// as a line of prose may start with them too.
+let venueUncounted = null;
 export function setUncounted(words) {
-  const source = words?.length ? `^(${words.map((w) => w.replace(/[^\w ]/g, "")).join("|")})\\b` : null;
+  const source = words?.length ? `^(${words.map((w) => w.replace(/[^\w ]/g, "")).join("|")})[.:]?$` : null;
   if (source !== (venueUncounted?.source ?? null)) venueUncounted = source && new RegExp(source, "i");
 }
 const uncounted = (s) => UNCOUNTED.test(s) || !!venueUncounted?.test(s);
