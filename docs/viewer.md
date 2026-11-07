@@ -33,7 +33,7 @@ From left to right:
 | 💬 Comment as… | Who you are, for writing notes. |
 | ✂ | [Space hints](#page-limit-and-space). |
 | Δ | [Change highlights](#changes-and-comparing), with the baseline ("vs …") and arrows to step through the changes. |
-| Download | Its menu (on hover or click) saves the PDF three ways ([Downloads](#downloads-and-the-review-copy)). |
+| Download | Its menu (on hover or click) saves the PDF four ways ([Downloads](#downloads-and-the-review-copy)). |
 | ✎ Source | Opens the [source pane](#the-source-pane). |
 | Name badge | In a shared preview, your name and role. |
 | ⚠ TeX image missing | The TeX Live image is not pulled ([setup](setup.md#2-get-the-code-and-the-tex-image)). |
@@ -159,8 +159,14 @@ The download button's menu saves:
   its source line instead; the status line says how many were. A citation only
   in notes shows its key (with natbib, its authors and year). The pages' links
   don't work in this copy.
+- **PDF with notes as comments** (`<doc>-with-comments.pdf`), built with the
+  copy above: the pages without notes at their own size, with each note as a
+  PDF comment (a sticky note) where it sits, with its author and number. In
+  Acrobat, Preview, Zotero and other PDF readers, the notes are listed with
+  the reader's comments, and readers can reply to them there. The pages'
+  links don't work in this copy either.
 
-In a shared preview, every coauthor can download all three, viewers too.
+In a shared preview, every coauthor can download all four, viewers too.
 
 ## The sidebar
 

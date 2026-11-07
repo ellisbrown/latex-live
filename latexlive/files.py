@@ -89,8 +89,8 @@ def fls_inputs(fls):
 
 def pdf_path(paper_root, name):
     """Published <doc>.pdf in the paper root; derived <doc>-clean.pdf / -diff.pdf / -head.pdf /
-    -head-clean.pdf / -push.pdf / -push-clean.pdf / -export.pdf / -review.pdf in build/."""
-    if re.search(r"-(clean|diff|head|push|export|review)\.pdf$", name):
+    -head-clean.pdf / -push.pdf / -push-clean.pdf / -export.pdf / -review.pdf / -annotated.pdf in build/."""
+    if re.search(r"-(clean|diff|head|push|export|review|annotated)\.pdf$", name):
         return os.path.join(paper_root, config.BUILD, name)
     return os.path.join(paper_root, config.PUBLISH, name)
 

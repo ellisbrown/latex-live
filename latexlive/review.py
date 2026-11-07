@@ -1,6 +1,8 @@
 """The review copy (/review): the exact build without notes, its pages unchanged on wider pages,
 with each note typeset in a gutter beside its column (left of the page for a left column), numbered at
-its spot in the text and wired to it. For coauthors who don't run latex-live."""
+its spot in the text and wired to it. For coauthors who don't run latex-live. Beside it, the same pages
+at their own size with each note as a PDF comment at its spot (annotated), to read and reply to in a PDF
+reader."""
 
 import json
 import os
@@ -17,7 +19,7 @@ from .files import fls_file, job_file, mtime, pdf_path, project_tex_files, read_
 from .latex import blank_comments, brace_group, false_blocks, read_tex
 from .notes import NOTE_DEF_RE, escape_note, note_kinds, note_use_re
 from .review_anchors import BP, note_source, review_anchors, squeeze, synctex_pages
-from .review_layout import review_geometry, review_layout, review_tex
+from .review_layout import comments_tex, review_geometry, review_layout, review_tex
 from .tools import failure, image_pulled, run_tool, tex_argv
 
 
@@ -139,7 +141,8 @@ def build_review(server, pdf, source):
     the probe (one pdflatex pass), the layout of the gutters, and a document that places the
     export's pages and the typeset notes with TikZ (one more pass, in .copy/ there: a folder that
     holds only that document and the two PDFs it places). The layout also goes to <doc>-review.json
-    there. Published whole or not at all."""
+    there. Then build/<doc>-annotated.pdf, a document there that places the export's pages at their
+    own size with the notes as PDF comments (comments_tex: one more pass). Published whole or not at all."""
     root, doc = server.paper_root, pdf[:-4]
     out = os.path.join(root, config.BUILD, "review", doc)
     job = f"{doc}-export"  # (the probe repeats the export's last pass, \jobname included)
@@ -185,17 +188,24 @@ def build_review(server, pdf, source):
             for name in ("export.pdf", "probe.pdf"):
                 if os.path.exists(os.path.join(out, name)):
                     os.replace(os.path.join(out, name), os.path.join(copy, name))
-            with open(os.path.join(copy, f"{doc}-review.tex"), "w", encoding="utf-8") as f:
-                f.write(review_tex(plan, geo, probe.get("colors", {}), notes))
-            code, _ = run_tool(tex_argv(server, "pdflatex", "-interaction=batchmode", "-halt-on-error", f"{doc}-review.tex"), copy,
-                               kind="review")
-            if code is None:
-                raise subprocess.TimeoutExpired("pdflatex", 600)
-            log = read_output(root, os.path.join(copy, f"{doc}-review.log")) or ""
-            written = re.search(r"Output written on .*?\((\d+) pages?", log.replace("\n", ""))
-            if code != 0 or not written or int(written.group(1)) != plan["pages"]:
-                first = next((l for l in log.splitlines() if l.startswith("! ")), "")
-                raise RuntimeError(f"the review copy didn't build ({first or f'see {os.path.relpath(copy, root)}/{doc}-review.log'})")
+
+            def typeset(job, source, pages, what):
+                with open(os.path.join(copy, f"{job}.tex"), "w", encoding="utf-8") as f:
+                    f.write(source)
+                code, _ = run_tool(tex_argv(server, "pdflatex", "-interaction=batchmode", "-halt-on-error", f"{job}.tex"), copy,
+                                   kind="review")
+                if code is None:
+                    raise subprocess.TimeoutExpired("pdflatex", 600)
+                log = read_output(root, os.path.join(copy, f"{job}.log")) or ""
+                written = re.search(r"Output written on .*?\((\d+) pages?", log.replace("\n", ""))
+                if code != 0 or not written or int(written.group(1)) != pages:
+                    first = next((l for l in log.splitlines() if l.startswith("! ")), "")
+                    raise RuntimeError(f"{what} didn't build ({first or f'see {os.path.relpath(copy, root)}/{job}.log'})")
+            colors = probe.get("colors", {})
+            typeset(f"{doc}-review", review_tex(plan, geo, colors, notes), plan["pages"], "the review copy")
+            typeset(f"{doc}-annotated", comments_tex(plan, colors, time.strftime("%Y%m%d%H%M%S")), plan["paper"],
+                    "the copy with the notes as comments")
+            os.replace(os.path.join(copy, f"{doc}-annotated.pdf"), os.path.join(root, config.BUILD, f"{doc}-annotated.pdf"))
             os.replace(os.path.join(copy, f"{doc}-review.pdf"), os.path.join(root, config.BUILD, f"{doc}-review.pdf"))
             state = {"state": "done", "version": str(mtime(os.path.join(root, config.BUILD, f"{doc}-review.pdf"))),
                      "notes": len(plan["notes"]), "approximate": sum(n["how"] != "exact" for n in plan["notes"]),

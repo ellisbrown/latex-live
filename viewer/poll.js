@@ -184,7 +184,7 @@ export async function poll() {
     }
     $("notesView").hidden = isDiff || !info.clean?.version;
     // (only a paper with notes has a version without them, or notes for the margin; and only a role that may download them sees them)
-    $("downloadClean").hidden = $("downloadReview").hidden = isDiff || !info.clean?.version || !me.can.download;
+    for (const id of ["downloadClean", "downloadReview", "downloadAnnotated"]) $(id).hidden = isDiff || !info.clean?.version || !me.can.download;
     $("downloadPdf").textContent = isDiff ? "This comparison" : $("notesView").hidden ? "PDF" : "PDF with notes";
     const clean = !isDiff && view === "clean" && info.clean?.version ? info.clean : null;
     const want = clean ? `clean:${clean.version}` : info.version;

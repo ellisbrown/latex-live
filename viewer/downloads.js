@@ -7,7 +7,8 @@ import { showMore } from "./toolbar.js";
 
 // Downloads: the PDF as built (notes included); without notes, from an exact build that the server
 // makes on request (live.py start_export; once per build of the document); or that build with the
-// notes in its margins (live.py start_review), for co-authors who don't run latex-live. In shared mode
+// notes in its margins (live.py start_review), for co-authors who don't run latex-live, or with the notes
+// as PDF comments, which the same request builds beside it (for a PDF reader's comments). In shared mode
 // the last two are for whoever's role may (me.can.download): it is the shared document, as every
 // coauthor reads it. They are asked for with a POST, whose Origin the server checks there (it builds).
 function saveFile(url, name) {
@@ -81,6 +82,10 @@ async function downloadBuilt(endpoint, built, saveAs, what, done) {
 }
 $("downloadClean").onclick = () => downloadBuilt("export", `${docName()}-export.pdf`, `${docName()}.pdf`, "without notes",
                                                  () => "without notes");
+const reviewed = (where) => (e) => [`${e.notes} note${e.notes === 1 ? "" : "s"} ${where}`,
+  e.approximate && `${e.approximate} placed by source line`, where === "in the margin" && e.continued && `${e.continued} continued after the paper`]
+  .filter(Boolean).join(", ");
 $("downloadReview").onclick = () => downloadBuilt("review", `${docName()}-review.pdf`, `${docName()}-with-margin-notes.pdf`,
-  "with notes in the margin", (e) => [`${e.notes} note${e.notes === 1 ? "" : "s"} in the margin`,
-    e.approximate && `${e.approximate} placed by source line`, e.continued && `${e.continued} continued after the paper`].filter(Boolean).join(", "));
+  "with notes in the margin", reviewed("in the margin"));
+$("downloadAnnotated").onclick = () => downloadBuilt("review", `${docName()}-annotated.pdf`, `${docName()}-with-comments.pdf`,
+  "with notes as comments", reviewed("as comments"));
