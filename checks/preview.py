@@ -425,6 +425,9 @@ def owner_checks(token, own, editor_log, paper):
     ok("GET me reports the owner with every capability; the viewer's and the editor's modules are served as JavaScript, the"
        " viewer's style as CSS, the viewer's own revalidated on each load; /favicon.ico is answered")
 
+    completions = hub_get("/completions", token)
+    if {"label": "sec:method", "file": "main.tex", "line": 13} not in completions.get("labels", []):
+        fail(f"/completions does not offer main.tex's label sec:method for \\ref: {completions}")
     page, x, y = text_point(lambda path: hub_get(path, token), "main.tex", 9)
     spot = f"file=main.pdf&page={page}&x={x:.2f}&y={y:.2f}"
     line = hub_get(f"/synctex?{spot}&json=1", token)["line"]

@@ -14,7 +14,7 @@ from .build import on_main_thread, rebuild_doc, request_switch
 from .checks import cached_checks
 from .commits import commit_request
 from .document import floats, graphics, toc_outline
-from .editor import file_request, files_listing, save_request, source_status
+from .editor import completions, file_request, files_listing, save_request, source_status
 from .export import start_export
 from .files import pdf_path
 from .git import commits
@@ -160,6 +160,8 @@ class Handler(BaseHandler):
                 self.send_text(*synctex_edit(self.server.paper_root, query))
         elif path == "/files":
             self.send_json(200, files_listing(self.server))
+        elif path == "/completions":
+            self.send_json(200, completions(self.server))
         elif path == "/file":
             self.send_json(*file_request(self.server, query))
         elif path in ACTIONS:  # (only as POST, which checks the Origin; a viewer from before says this)
