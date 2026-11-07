@@ -28,6 +28,7 @@ from .tools import failure, pdf_pages_text, pdf_tool, run_tool, tex_argv
 
 ARCHIVE_EXTS = (".tar.gz", ".tgz", ".zip")
 COMMENT_RE = re.compile(r"(?<!\\)(?:\\\\)*%(.*)")  # (also right after a \\ line break)
+PARAM_RE = re.compile(r"(?<!\\)(?:\\\\)*#")  # (a macro parameter, as in a definition's body: not \#)
 PERSONAL_PATH_RE = re.compile(r"(?<![\w.~])/(?:home|Users|checkpoint)/[^\s{}]*|(?<![\w~])~/[^\s{}]*"
                               r"|(?<![\w\\])[A-Za-z]:[\\/](?:[\w .-]+[\\/])+[^\s{}]*|\b(?i:file):/[^\s{}]*")
 
@@ -208,7 +209,7 @@ def arxiv_source(paper_root, pdf_name):
                      if re.search(r"\w", m.group(1))]  # (not rules like % ====)
         for m in note_use_re(kinds).finditer(blank):
             body = brace_group(blank, m.end())[0]
-            if "#" not in body and body.strip():  # (not a definition's body, nor a note the package emptied: strip_source)
+            if not PARAM_RE.search(body) and body.strip():  # (not a definition's body, nor a note the package emptied: strip_source)
                 found["note"].append(item(f"note \\{m.group(1)}{{{excerpt(body)}}}", name, m.start()))
         hidden = [(s, e, "\\iffalse block") for s, e in false_blocks(blank)]
         hidden += [(m.start(), m.end(), "comment environment")
@@ -281,29 +282,32 @@ OWN_COMMENT_ENV_RE = re.compile(r"\\(?:re)?newenvironment\s*\{comment\}|\\(?:New
 PACKAGE_LIMIT = 200e6  # (bytes of files read into the package; arXiv takes 50 MB)
 
 
-def comment_start(line):
-    """Where a line's % comment starts: the first % neither escaped (\\%; \\\\% is a line break, then
-    a comment) nor in a verbatim argument (\\verb|...|, \\url{...}, \\href's first, \\path{...}), or None."""
-    i = 0
+def scan_line(line):
+    """Where a line's % comment starts, or None: the first % neither escaped (\\%; \\\\% is a line break,
+    then a comment) nor in a verbatim argument; and the spans of those arguments before it (\\verb|...|,
+    \\url{...}, \\href's first, \\path{...})."""
+    i, spans = 0, []
     while i < len(line):
         if line[i] == "%":
-            return i
+            return i, spans
         if line[i] != "\\":
             i += 1
             continue
         m = CONTROL_RE.match(line, i)
         if not m:  # (a backslash at the end of the line)
-            return None
+            break
         i = m.end()
         if m.group(1) == "verb":
             i += line.startswith("*", i)
             close = line.find(line[i], i + 1) if i < len(line) else -1
             i = len(line) if close < 0 else close + 1
+            spans.append((m.start(), i))
         elif m.group(1) in VERBATIM_ARGS:
             j = len(line) - len(line[i:].lstrip(" \t"))
             if line.startswith("{", j):
                 i = brace_group(line, j)[1]
-    return None
+                spans.append((m.start(), i))
+    return None, spans
 
 
 def strip_source(text, kinds=(), comment_env=True):
@@ -333,7 +337,7 @@ def strip_source(text, kinds=(), comment_env=True):
             in_comment = not re.search(r"\\end\s*\{comment\}", body)
             kinds_of.append("drop")
             continue
-        cut = comment_start(body)
+        cut, spans = scan_line(body)
         code = body if cut is None else body[:cut]
         opens = min(((code.find(f"\\begin{{{env}}}"), env) for env in VERBATIM_ENVS if f"\\begin{{{env}}}" in code), default=None)
         if opens:  # (the rest of the line is the environment's body)
@@ -345,7 +349,7 @@ def strip_source(text, kinds=(), comment_env=True):
             found["hidden"] += 1
             kinds_of.append("drop")
         else:
-            kinds_of.append((code, None if cut is None else body[cut + 1:]))
+            kinds_of.append((code, None if cut is None else body[cut + 1:], spans))
     # \iffalse blocks, in the code without its comments: each that starts and ends a line goes whole.
     starts, code_text = [], ""
     for kind in kinds_of:
@@ -364,15 +368,17 @@ def strip_source(text, kinds=(), comment_env=True):
             verbatim_spans.append((at, at + len(line)))
         elif kind == "drop":
             line = ""
-        elif kind[1] is not None and kind[1].strip():  # (not a bare %)
-            found["comments"] += 1
-            line = kind[0] + "%" + line[len(line.rstrip("\r\n")):] if kind[0].strip() else ""
+        else:
+            if kind[1] is not None and kind[1].strip():  # (not a bare %)
+                found["comments"] += 1
+                line = kind[0] + "%" + line[len(line.rstrip("\r\n")):] if kind[0].strip() else ""
+            verbatim_spans += [(at + s, at + e) for s, e in kind[2]]  # (\verb|\eb{...}| shows a note's macro: it stays)
         out.append(line)
         at += len(line)
     text = "".join(out)
     for m in reversed(list(note_use_re(kinds).finditer(text)) if kinds else []):
         body, end = brace_group(text, m.end())
-        if body.strip() and "#" not in body and not any(s <= m.start() < e for s, e in verbatim_spans):
+        if body.strip() and not PARAM_RE.search(body) and not any(s <= m.start() < e for s, e in verbatim_spans):
             text = text[:m.end()] + "{}" + text[end:]
             found["notes"] += 1
     return text, found
