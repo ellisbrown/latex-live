@@ -10,7 +10,9 @@ import { showMore } from "./toolbar.js";
 // notes in its margins (live.py start_review), for co-authors who don't run latex-live, or with the notes
 // as PDF comments, which the same request builds beside it (for a PDF reader's comments). In shared mode
 // the last two are for whoever's role may (me.can.download): it is the shared document, as every
-// coauthor reads it. They are asked for with a POST, whose Origin the server checks there (it builds).
+// coauthor reads it. And the arXiv package (live.py start_arxiv: the sources the export read, without
+// their comments and notes, checked by building it alone), the owner's (me.can.arxiv). They are asked
+// for with a POST, whose Origin the server checks there (it builds).
 function saveFile(url, name) {
   const a = el("a", { href: url, download: name });
   document.body.append(a);
@@ -50,14 +52,14 @@ $("downloadPdf").onclick = () => {
 // The server builds them from the PDF as last built (and waits for a build in progress first): ask until it is
 // done, showing its progress (poll leaves the status line to it meanwhile: liveStatus), then save. Right after
 // this tab writes a note, wait for the build that the write starts, which the server can't know of yet.
-async function downloadBuilt(endpoint, built, saveAs, what, done) {
+async function downloadBuilt(endpoint, built, saveAs, what, done) { // (built: a PDF in build/, or the URL of another download)
   showMore(false);
   showDownloads(false);
   if (building.has(endpoint)) return;
   building.add(endpoint);
   try {
     while (behind()) {
-      setStatus(`waiting for the build in progress, then the PDF ${what}…`, "busy");
+      setStatus(`waiting for the build in progress, then ${what}…`, "busy");
       await new Promise((r) => setTimeout(r, 250));
     }
     for (;;) {
@@ -67,11 +69,12 @@ async function downloadBuilt(endpoint, built, saveAs, what, done) {
       if (signInPage(r, e)) return setStatus(SIGNED_OUT, "error"); // (a proxy's sign-in page, not the server's answer)
       if (!r.ok && !e.state) return setStatus(`download failed: ${e.error}`, "error"); // (refused: e.g. the access ended)
       if (e.state === "done") {
-        saveFile(`pdf/${encodeURIComponent(built)}?v=${e.version}`, saveAs);
-        return setStatus(`saved ${saveAs} (${done(e)}${buildFailed ? "; of the last build that worked" : ""})`, "fresh");
+        saveFile(`${built.endsWith(".pdf") ? `pdf/${encodeURIComponent(built)}` : built}?v=${e.version}`, saveAs);
+        return setStatus(`saved ${saveAs} (${done(e)}${buildFailed ? "; of the last build that worked" : ""})`,
+                         e.same === false ? "error" : "fresh"); // (an arXiv package that builds differently: said in red)
       }
-      if (e.state === "failed") return setStatus(`couldn't build the PDF ${what}: ${e.msg}`, "error");
-      setStatus(`building the PDF ${what}${e.step ? `: ${e.step}` : ""}…`, "busy");
+      if (e.state === "failed") return setStatus(`couldn't build ${what}: ${e.msg}`, "error");
+      setStatus(`building ${what}${e.step ? `: ${e.step}` : ""}…`, "busy");
       await sleep(1000);
     }
   } catch (err) {
@@ -80,12 +83,19 @@ async function downloadBuilt(endpoint, built, saveAs, what, done) {
     building.delete(endpoint);
   }
 }
-$("downloadClean").onclick = () => downloadBuilt("export", `${docName()}-export.pdf`, `${docName()}.pdf`, "without notes",
+$("downloadClean").onclick = () => downloadBuilt("export", `${docName()}-export.pdf`, `${docName()}.pdf`, "the PDF without notes",
                                                  () => "without notes");
 const reviewed = (where) => (e) => [`${e.notes} note${e.notes === 1 ? "" : "s"} ${where}`,
   e.approximate && `${e.approximate} placed by source line`, where === "in the margin" && e.continued && `${e.continued} continued after the paper`]
   .filter(Boolean).join(", ");
 $("downloadReview").onclick = () => downloadBuilt("review", `${docName()}-review.pdf`, `${docName()}-with-margin-notes.pdf`,
-  "with notes in the margin", reviewed("in the margin"));
+  "the PDF with notes in the margin", reviewed("in the margin"));
 $("downloadAnnotated").onclick = () => downloadBuilt("review", `${docName()}-annotated.pdf`, `${docName()}-with-comments.pdf`,
-  "with notes as comments", reviewed("as comments"));
+  "the PDF with notes as comments", reviewed("as comments"));
+const plural = (n, what) => `${n} ${what}${n === 1 ? "" : "s"}`;
+const packaged = (e) => [`${plural(e.files, "file")}, ${(e.size / 1e6).toFixed(1)} MB`,
+  (e.comments || e.hidden || e.notes) && `${[e.comments && plural(e.comments, "comment"), e.hidden && plural(e.hidden, "hidden block"),
+    e.notes && plural(e.notes, "note")].filter(Boolean).join(", ")} taken out`,
+  e.same ? "its own build matches the PDF without notes" : `its own build differs from the PDF without notes: ${e.differs}`]
+  .filter(Boolean).join("; ");
+$("downloadArxiv").onclick = () => downloadBuilt("arxiv", "arxiv.tar.gz", `${docName()}-arxiv.tar.gz`, "the arXiv package", packaged);

@@ -1,9 +1,10 @@
 """The instance checks (live_checks): a live.py instance on the scratch paper, behind the hub, with the threads that
 run beside it (the warm standbys, the early notes-free pass, shared mode); the hub, the endpoints, SyncTeX, the
-baselines, a rebuild, the downloads (review_checks), the owner's own preview (owner_checks), switching documents
+baselines, a rebuild, the downloads (review_checks, arxiv_checks), the owner's own preview (owner_checks), switching documents
 (switch_checks), a second document, a second instance, --replace, and instances and hubs that no longer answer."""
 
 import http.client
+import io
 import json
 import os
 import re
@@ -12,6 +13,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 import threading
 import urllib.parse
 import zlib
@@ -193,6 +195,7 @@ def live_checks(tmp):
             fail("the download without notes has its line numbers in other places than the notes-free view")
         ok("the download without notes is an exact build (line numbers too), made once per build; a GET of it is 405")
         review_checks(build, token)
+        arxiv_checks(build, token)
         switch_checks(token)
 
         procs.append(start(paper, "appendix"))  # (a second document of the same paper, in its own process)
@@ -341,6 +344,36 @@ def pdf_comments(pdf):
     text = lambda hexes: bytes.fromhex(re.sub(rb"\s", b"", hexes).decode()).decode("utf-16")
     return [(text(m.group(1)), text(m.group(2))) for chunk in chunks
             for m in re.finditer(rb"/Subtype\s*/Text\b.*?/T\s*<([0-9A-Fa-f\s]*)>\s*/Contents\s*<([0-9A-Fa-f\s]*)>", chunk, re.S)]
+
+
+def arxiv_checks(build, token):
+    """The arXiv package of the scratch paper: the files its build reads, without their comments and notes, with
+    the notes switched off; its own build matches the export; made once per build; the arXiv check reads it."""
+    made = wait_for("the arXiv package", lambda: (lambda e: e if e.get("state") in ("done", "failed") else None)(
+        post("/arxiv", token)), timeout=240)
+    if made["state"] != "done":
+        fail(f"the arXiv package failed: {made.get('msg')}")
+    with tarfile.open(fileobj=io.BytesIO(get(f"/arxiv.tar.gz?v={made['version']}", token))) as t:
+        files = {m.name: t.extractfile(m).read().decode() for m in t if m.isfile()}
+    hidden = ("A note long enough", "a note in a footnote", "a resolved note", "In the review copy's probe pass")
+    if sorted(files) != ["body.tex", "main.tex", "people.tex"] or any(h in text for h in hidden for text in files.values()) \
+            or "\\eb{}" not in files["main.tex"] or "\\renewcommand\\todotxt[1]{}" not in files["main.tex"].split("\\documentclass")[0]:
+        fail(f"the arXiv package holds {sorted(files)}, with its notes or comments, or without the notes switched off:\n"
+             f"{files.get('main.tex', '')[:600]}")
+    if not made["same"] or not made["comments"] or not made["notes"]:
+        fail(f"the arXiv package's own build differs from the export, or it took nothing out: {made}")
+    if post("/arxiv", token).get("version") != made["version"]:
+        fail("asking again remade the arXiv package, though the document had not changed")
+    status, _, data = request(f"{hub['base']}main/arxiv", cookie=token)
+    if status != 405:
+        fail(f"GET /arxiv through the hub: {status} {data[:200]!r}, not 405")
+    arxiv_check = lambda: next((c for c in get("/check/main.pdf", token) if c["title"] == "arXiv source"), {})
+    source = wait_for("the arXiv check of the package (the checks are kept for 10 s)",
+                      lambda: (lambda c: c if c.get("detail", "").startswith("main-arxiv.tar.gz") else None)(arxiv_check()), timeout=20)
+    if not source["detail"].startswith("main-arxiv.tar.gz, 3 files") or any("note" in i["text"] for i in source["items"]):
+        fail(f"the arXiv check doesn't read the package the viewer made, or finds notes in it: {source}")
+    ok(f"the arXiv package: the 3 files the build reads, {made['comments']} comments and {made['notes']} notes taken out, the notes"
+       " switched off; its own build matches the export; made once per build; the arXiv check reads it")
 
 
 def review_checks(build, token):

@@ -58,7 +58,7 @@ paper's files and the build's, running TeX tools, git, reading LaTeX), synctex a
 document as built), notes, sources, note_writer, commits and editor (reading and writing the
 sources), navigation, instances, build, baselines, status and timing (LATEX_LIVE_TIMING=1: each build's phases), shared_watch and shared_build (shared
 mode's builder), export, review_anchors, review_layout and review (the downloads), lints, arxiv and
-checks (the pre-submission checks), and web, hub, handler and main (serving it all).
+checks (the pre-submission checks, and the arXiv package), and web, hub, handler and main (serving it all).
 """
 
 DESCRIPTION = __doc__.splitlines()[0]  # (live.py --help)

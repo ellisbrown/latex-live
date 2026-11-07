@@ -310,14 +310,15 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.write_body(body)
 
-    def send_pdf(self, pdf):
-        """A PDF, streamed from its file (open_output: in shared mode never through a link), in parts of 256 KB."""
+    def send_pdf(self, pdf, content_type="application/pdf"):
+        """A PDF (or another download: the arXiv package), streamed from its file (open_output: in shared mode
+        never through a link), in parts of 256 KB."""
         f = open_output(pdf)
         if f is None:
             return self.send_error(404)
         with f:
             self.send_response(200)
-            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(os.fstat(f.fileno()).st_size))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()

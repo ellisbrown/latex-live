@@ -33,7 +33,7 @@ From left to right:
 | 💬 Comment as… | Who you are, for writing notes. |
 | ✂ | [Space hints](#page-limit-and-space). |
 | Δ | [Change highlights](#changes-and-comparing), with the baseline ("vs …") and arrows to step through the changes. |
-| Download | Its menu (on hover or click) saves the PDF four ways ([Downloads](#downloads-and-the-review-copy)). |
+| Download | Its menu (on hover or click) saves the PDF four ways, and the arXiv package ([Downloads](#downloads-and-the-review-copy)). |
 | ✎ Source | Opens the [source pane](#the-source-pane). |
 | Name badge | In a shared preview, your name and role. |
 | ⚠ TeX image missing | The TeX Live image is not pulled ([setup](setup.md#2-get-the-code-and-the-tex-image)). |
@@ -171,8 +171,20 @@ The download button's menu saves:
   Acrobat, Preview, Zotero and other PDF readers, the notes are listed with
   the reader's comments, and readers can reply to them there. The pages'
   links don't work in this copy either.
+- **arXiv package (.tar.gz)** (`<doc>-arxiv.tar.gz`), the sources to upload to
+  arXiv, which publishes them: the files the build without notes reads (no
+  unused files, no build leftovers), its `.bbl` (arXiv doesn't run BibTeX),
+  and `.tex` files without their `%` comments, their notes' text, and
+  `\iffalse` blocks and `comment` environments that take whole lines. What TeX
+  reads verbatim stays, and the notes stay switched off. The package is then
+  built on its own, as arXiv would, and its PDF compared with the PDF without
+  notes: the status line says whether it matches, or where it differs (in red),
+  and a package that doesn't build is not saved. The arXiv source check then
+  reads the package, for what is left (private terms, say). Made once per
+  build of the document.
 
-In a shared preview, every coauthor can download all four, viewers too.
+In a shared preview, every coauthor can download the four PDFs, viewers too;
+the arXiv package, which holds every source file, is the owner's.
 
 ## The sidebar
 
@@ -210,9 +222,10 @@ The Checks tab of the sidebar lists, each as ok, info, warning or failure:
   **placeholder text**.
 - **Fonts** (unembedded and Type 3), **raster image resolution**, and **file
   size** (warning past 40 MB, failure past 50 MB).
-- **arXiv source:** arXiv publishes the source, so this reads the paper root's
-  arXiv package (the newest `.tar.gz`, `.tgz` or `.zip` file, or folder with a
-  root `.tex`, with `arxiv` in its name) and lists what it would expose: `%`
+- **arXiv source:** arXiv publishes the source, so this reads the newest
+  arXiv package (in the paper root, a `.tar.gz`, `.tgz` or `.zip` file, or
+  folder with a root `.tex`, with `arxiv` in its name; or the one the download
+  menu made) and lists what it would expose: `%`
   comments in `.tex` files, notes (hidden ones too), `\iffalse` blocks and
   `comment` environments, private terms (`LATEX_LIVE_PRIVATE_TERMS`), personal
   paths (also in figure PDFs), files the build doesn't read, files over 10 MB,

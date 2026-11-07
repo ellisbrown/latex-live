@@ -8,8 +8,9 @@ from .auth import ROLES
 def least_role(method, path):
     """The least role that may make a request in shared mode, or None for what no one may there (switch:
     a shared preview serves one document); whatever is not listed is the owner's (open, instances,
-    papers, commit). Downloading the paper without its notes (export) or with its notes in the margin
-    (review) is reading it: each builds at most once per build of the document (start_export,
+    papers, commit, and the arXiv package, which holds every source file the build reads: arxiv).
+    Downloading the paper without its notes (export) or with its notes in the margin (review) is
+    reading it: each builds at most once per build of the document (start_export,
     start_review), and the baselines that change highlights compare with (editors) once per commit
     (base_status); each starts only with a POST, whose Origin says it comes from the viewer's own page
     (a GET of the downloads is answered 405, so that an old viewer says why). Anyone signed in may sign

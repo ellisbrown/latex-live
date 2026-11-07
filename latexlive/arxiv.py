@@ -1,18 +1,29 @@
 """What an arXiv upload would publish, since arXiv publishes the source: comments, notes, hidden
-blocks, private terms, personal paths, and files the build doesn't need."""
+blocks, private terms, personal paths, and files the build doesn't need (arxiv_source); and the
+package that the viewer makes (POST /arxiv: make_package), without the comments, notes and hidden
+blocks, and checked by building it alone."""
 
+import bisect
 import collections
 import hashlib
+import io
 import os
 import re
+import shutil
+import sys
 import tarfile
 import tempfile
+import threading
+import time
 import zipfile
 
-from .files import fls_file, project_inputs, project_tex_files
-from .latex import DOCCLASS_RE, brace_group, false_blocks, read_tex, root_docs, source_tree
+from . import config
+from .export import exact_export, waiting_for_build
+from .files import fls_file, mtime, open_output, pdf_path, project_inputs, project_tex_files, read_output
+from .latex import DOCCLASS_RE, RERUN_RE, brace_group, false_blocks, read_tex, root_docs, source_tree
 from .notes import note_kinds, note_use_re
-from .tools import pdf_tool
+from .standby import DATE_RES
+from .tools import failure, pdf_pages_text, pdf_tool, run_tool, tex_argv
 
 
 ARCHIVE_EXTS = (".tar.gz", ".tgz", ".zip")
@@ -25,12 +36,14 @@ LEFTOVER_RE = re.compile(r"\.(?:aux|log|out|toc|lof|lot|fls|fdb_latexmk|synctex(
                          r"|(?:^|/)(?:\.DS_Store|\._[^/]*|__MACOSX/.*|\.git/.*)$")
 
 
-def arxiv_package(paper_root):
+def arxiv_package(paper_root, doc=None):
     """The paper root's newest arXiv package, a .tar.gz, .tgz or .zip file or a directory with
-    "arxiv" in its name (a directory with a root document, so not, e.g., sections-arxiv/):
-    (mtime, is archive, path), or None. A directory's mtime is its newest file's; on a tie the
-    archive wins (it is what gets uploaded)."""
-    found = []
+    "arxiv" in its name (a directory with a root document, so not, e.g., sections-arxiv/), or the
+    one the viewer made for doc (build/<doc>-arxiv.tar.gz: make_package): (mtime, is archive, path),
+    or None. A directory's mtime is its newest file's; on a tie the archive wins (it is what gets
+    uploaded)."""
+    made = os.path.join(paper_root, config.BUILD, f"{doc}-arxiv.tar.gz")
+    found = [(os.path.getmtime(made), True, made)] if doc and os.path.isfile(made) else []
     for name in os.listdir(paper_root):
         path = os.path.join(paper_root, name)
         if "arxiv" not in name.lower():
@@ -94,8 +107,8 @@ def excerpt(text, n=60):
 def arxiv_source(paper_root, pdf_name):
     """What an arXiv upload would publish, since arXiv publishes the source: (level, detail, items).
 
-    Reads the paper root's arXiv package (arxiv_package), else the project files the build reads
-    (what a naive upload of the sources would expose). Flags % comments, note macros (published
+    Reads the newest arXiv package (arxiv_package: the paper root's, or the one the viewer made), else
+    the project files the build reads (what a naive upload of the sources would expose). Flags % comments, note macros (published
     even when hidden), \\iffalse blocks and comment environments, LATEX_LIVE_PRIVATE_TERMS (a regular
     expression for codenames and other internal names), personal paths, files the build doesn't
     read, large files, leftover build files, and a missing .bbl. An item in a package file gives
@@ -104,7 +117,7 @@ def arxiv_source(paper_root, pdf_name):
     """
     doc = pdf_name[:-4]
     fls = fls_file(paper_root, pdf_name)
-    package = arxiv_package(paper_root)
+    package = arxiv_package(paper_root, doc)
     if package:
         label = os.path.basename(package[2]) + ("/" if not package[1] else "")
         try:
@@ -195,7 +208,7 @@ def arxiv_source(paper_root, pdf_name):
                      if re.search(r"\w", m.group(1))]  # (not rules like % ====)
         for m in note_use_re(kinds).finditer(blank):
             body = brace_group(blank, m.end())[0]
-            if "#" not in body:  # (not a definition's body)
+            if "#" not in body and body.strip():  # (not a definition's body, nor a note the package emptied: strip_source)
                 found["note"].append(item(f"note \\{m.group(1)}{{{excerpt(body)}}}", name, m.start()))
         hidden = [(s, e, "\\iffalse block") for s, e in false_blocks(blank)]
         hidden += [(m.start(), m.end(), "comment environment")
@@ -253,3 +266,278 @@ def arxiv_source(paper_root, pdf_name):
     if not package and level != "ok":  # (no upload yet: a preview)
         level = "warn" if level == "fail" else "info"
     return level, f"{where}: {summary or 'no comments, notes, hidden blocks, private terms or personal paths'}", items
+
+
+# The arXiv package (POST /arxiv): the files the exact export read, without the sources' comments and
+# notes, built on its own the way arXiv builds it, and compared with the export.
+
+TEX_SOURCE_EXTS = (".tex", ".tikz")  # (hand-written TeX: not a class, a style file, a .bbl or a PostScript figure, whose % lines mean something)
+VERBATIM_ENVS = ("verbatim", "verbatim*", "Verbatim", "Verbatim*", "BVerbatim", "LVerbatim", "lstlisting", "minted",
+                 "alltt", "filecontents", "filecontents*")
+VERBATIM_ARGS = ("url", "href", "path")  # (commands whose first argument TeX reads verbatim: a % there is text)
+CONTROL_RE = re.compile(r"\\([A-Za-z]+|.)", re.S)
+OWN_COMMENT_ENV_RE = re.compile(r"\\(?:re)?newenvironment\s*\{comment\}|\\(?:New|Renew|Declare)DocumentEnvironment\s*\{comment\}"
+                                r"|\\includecomment\s*\{comment\}")
+PACKAGE_LIMIT = 200e6  # (bytes of files read into the package; arXiv takes 50 MB)
+
+
+def comment_start(line):
+    """Where a line's % comment starts: the first % neither escaped (\\%; \\\\% is a line break, then
+    a comment) nor in a verbatim argument (\\verb|...|, \\url{...}, \\href's first, \\path{...}), or None."""
+    i = 0
+    while i < len(line):
+        if line[i] == "%":
+            return i
+        if line[i] != "\\":
+            i += 1
+            continue
+        m = CONTROL_RE.match(line, i)
+        if not m:  # (a backslash at the end of the line)
+            return None
+        i = m.end()
+        if m.group(1) == "verb":
+            i += line.startswith("*", i)
+            close = line.find(line[i], i + 1) if i < len(line) else -1
+            i = len(line) if close < 0 else close + 1
+        elif m.group(1) in VERBATIM_ARGS:
+            j = len(line) - len(line[i:].lstrip(" \t"))
+            if line.startswith("{", j):
+                i = brace_group(line, j)[1]
+    return None
+
+
+def strip_source(text, kinds=(), comment_env=True):
+    """A .tex file's text as the arXiv package holds it, and what came out: (text, {comments, hidden,
+    notes}). Each change leaves what TeX typesets as it was:
+
+    - A line that is only a comment goes whole (its % swallowed the line's end, so the lines on either
+      side join as before); a comment after code keeps its %, which still swallows the line's end, and
+      loses its text. A bare % stays.
+    - An \\iffalse ... \\fi block, and a comment environment (unless the sources define their own or
+      include it: comment_env False), go whole when they take whole lines.
+    - The notes (uses of the note macros in kinds, hidden in the package: NOTES_OFF) keep their
+      macro and lose their text: \\eb{} (a note is no longer in the PDF, but its text would be in the source).
+
+    What TeX reads verbatim (the environments of VERBATIM_ENVS, \\verb, \\url's argument) stays as it is.
+    The package's own build, compared with the export, checks the whole (build_arxiv)."""
+    lines = text.splitlines(keepends=True)
+    kinds_of = []  # per line: "keep", "drop", or (code, comment text or None)
+    verbatim, in_comment, found = None, False, collections.Counter()
+    for line in lines:
+        body = line.rstrip("\r\n")
+        if verbatim:
+            verbatim = None if f"\\end{{{verbatim}}}" in body else verbatim
+            kinds_of.append("keep")
+            continue
+        if in_comment:
+            in_comment = not re.search(r"\\end\s*\{comment\}", body)
+            kinds_of.append("drop")
+            continue
+        cut = comment_start(body)
+        code = body if cut is None else body[:cut]
+        opens = min(((code.find(f"\\begin{{{env}}}"), env) for env in VERBATIM_ENVS if f"\\begin{{{env}}}" in code), default=None)
+        if opens:  # (the rest of the line is the environment's body)
+            rest = body[opens[0]:]
+            verbatim = None if f"\\end{{{opens[1]}}}" in rest[len(opens[1]) + 8:] else opens[1]
+            kinds_of.append("keep")
+        elif comment_env and re.match(r"\s*\\begin\s*\{comment\}", code):
+            in_comment = not re.search(r"\\end\s*\{comment\}", code)
+            found["hidden"] += 1
+            kinds_of.append("drop")
+        else:
+            kinds_of.append((code, None if cut is None else body[cut + 1:]))
+    # \iffalse blocks, in the code without its comments: each that starts and ends a line goes whole.
+    starts, code_text = [], ""
+    for kind in kinds_of:
+        starts.append(len(code_text))
+        code_text += (kind[0] if isinstance(kind, tuple) else "") + "\n"
+    starts.append(len(code_text))
+    for start, end in false_blocks(code_text):
+        first, last = bisect.bisect_right(starts, start) - 1, bisect.bisect_right(starts, end - 1) - 1
+        if (code_text[end - 3:end] == "\\fi" and not code_text[starts[first]:start].strip()
+                and not code_text[end:starts[last + 1]].strip()):
+            kinds_of[first:last + 1] = ["drop"] * (last + 1 - first)
+            found["hidden"] += 1
+    out, verbatim_spans, at = [], [], 0
+    for line, kind in zip(lines, kinds_of):
+        if kind == "keep":
+            verbatim_spans.append((at, at + len(line)))
+        elif kind == "drop":
+            line = ""
+        elif kind[1] is not None and kind[1].strip():  # (not a bare %)
+            found["comments"] += 1
+            line = kind[0] + "%" + line[len(line.rstrip("\r\n")):] if kind[0].strip() else ""
+        out.append(line)
+        at += len(line)
+    text = "".join(out)
+    for m in reversed(list(note_use_re(kinds).finditer(text)) if kinds else []):
+        body, end = brace_group(text, m.end())
+        if body.strip() and "#" not in body and not any(s <= m.start() < e for s, e in verbatim_spans):
+            text = text[:m.end()] + "{}" + text[end:]
+            found["notes"] += 1
+    return text, found
+
+
+def start_arxiv(server):
+    """POST /arxiv: the arXiv package of the current build (build_arxiv), for downloading as
+    build/<doc>-arxiv.tar.gz (GET /arxiv.tar.gz). Built once per build of the document; until then,
+    its state. The owner's in shared mode (least_role): it holds every source file the build reads."""
+    pdf = server.default_pdf
+    if not os.path.isfile(pdf_path(server.paper_root, pdf)):
+        return 409, {"state": "failed", "msg": f"{pdf} has not built yet"}
+    with server.download_lock:  # (from however many viewers at once: one build)
+        a = server.arxiv
+        if waiting := waiting_for_build(server, pdf, a):
+            return 200, waiting
+        source = str(mtime(pdf_path(server.paper_root, pdf)))
+        if a.get("pdf") == pdf and (a.get("state") == "running" or a.get("source") == source):  # (a failure too, until the next build)
+            return 200, a
+        server.arxiv = {"pdf": pdf, "source": source, "state": "running", "step": "the exact build without notes",
+                        "time": time.strftime("%H:%M:%S"), "msg": ""}
+        threading.Thread(target=build_arxiv, args=(server, pdf, source), daemon=True).start()
+        return 200, server.arxiv
+
+
+def build_arxiv(server, pdf, source):
+    """The /arxiv thread: the package (make_package), its state for the viewer."""
+    def step(text):
+        with server.download_lock:  # (not over a newer package's state: start_arxiv)
+            if server.arxiv.get("pdf") == pdf and server.arxiv.get("source") == source:
+                server.arxiv = {**server.arxiv, "step": text}
+
+    try:
+        state = {"state": "done", **make_package(server, pdf, step)}
+    except Exception as e:  # (shown in the viewer)
+        state = {"state": "failed", "msg": failure(server, e)}
+    with server.download_lock:
+        if server.arxiv.get("pdf") == pdf and server.arxiv.get("source") == source:
+            server.arxiv = {**server.arxiv, **state}
+
+
+def copy_output(src, dst):
+    """Copy a file of the build's (open_output: in shared mode never through a link); whether there was one."""
+    f = open_output(src)
+    if f is None:
+        return False
+    with f, open(dst, "wb") as g:
+        shutil.copyfileobj(f, g)
+    return True
+
+
+def make_package(server, pdf, step):
+    """build/<doc>-arxiv.tar.gz: what an arXiv submission of the document needs, made from the exact
+    export (exact_export), in build/arxiv/<doc>/. Its files are those the export's last pass read in the
+    paper (its recorder file; the live build's before an export had one), with the .tex files' comments,
+    hidden blocks and notes taken out (strip_source), the notes switched off where the main file starts
+    (NOTES_OFF, as the export does), and the export's .bbl (arXiv doesn't run BibTeX) and .ind as
+    <doc>.bbl and <doc>.ind. Then it builds alone in build/arxiv/<doc>/test/, as arXiv would (pdflatex
+    until the references settle, no BibTeX, nothing from the paper's folder: in the TeX Live image, and
+    in shared mode confined), and its PDF is compared with the export's, dates and IDs aside
+    (standby.DATE_RES). A package that doesn't build is not published; one that builds differently
+    is, and says where it differs. What the viewer says: {files, size, comments, hidden, notes, same,
+    differs, version}."""
+    root, doc = server.paper_root, pdf[:-4]
+    out = os.path.join(root, config.BUILD, "arxiv", doc)
+    job = f"{doc}-export"
+    sys.path.insert(0, config.HERE)
+    import latex_report
+
+    def keep(export):  # the export's PDF, file list, and the generated files the package holds
+        shutil.rmtree(out, ignore_errors=True)
+        os.makedirs(os.path.join(out, "export"))
+        copy_output(os.path.join(root, config.BUILD, f"{job}.pdf"), os.path.join(out, "export.pdf"))
+        for ext in (".fls", ".bbl", ".ind"):
+            copy_output(os.path.join(export, job + ext), os.path.join(out, "export", job + ext))
+
+    with server.arxiv_lock:  # (one at a time: they share build/arxiv/<doc>/)
+        exact_export(server, pdf, keep)
+        step("the package")
+        fls = os.path.join(out, "export", f"{job}.fls")
+        names = project_inputs(root, fls if os.path.isfile(fls) else fls_file(root, pdf))
+        files, total = {}, 0
+        for name in names:
+            f = open_output(os.path.join(root, name))
+            if f is None:
+                continue
+            with f:
+                files[name] = f.read(int(PACKAGE_LIMIT) + 1 - total)
+            total += len(files[name])
+            if total > PACKAGE_LIMIT:
+                raise RuntimeError(f"the build reads more than {PACKAGE_LIMIT / 1e6:.0f} MB of files (arXiv takes 50 MB)")
+        tex = {name: data.decode("utf-8", "surrogateescape") for name, data in files.items() if name.endswith(TEX_SOURCE_EXTS)}
+        kinds = note_kinds(tex.values())
+        comment_env = not any(OWN_COMMENT_ENV_RE.search(COMMENT_RE.sub("", t)) for t in tex.values())
+        found = collections.Counter()
+        for name, text in tex.items():
+            text, counts = strip_source(text, kinds, comment_env)
+            found.update(counts)
+            if name == f"{doc}.tex" and (m := DOCCLASS_RE.search(text)) and (kinds or "showtodos" in text):
+                at = m.end() - len("\\documentclass")  # (on the same line: \pdfoutput=1 stays where arXiv looks for it)
+                text = text[:at] + latex_report.NOTES_OFF + text[at:]
+            files[name] = text.encode("utf-8", "surrogateescape")
+        for ext in (".bbl", ".ind"):
+            path = os.path.join(out, "export", job + ext)
+            if os.path.isfile(path):
+                files[doc + ext] = file_bytes(path)
+        if f"{doc}.tex" not in files:
+            raise RuntimeError(f"the export's file list doesn't name {doc}.tex")
+        test = os.path.join(out, "test")
+        for name, data in files.items():
+            os.makedirs(os.path.dirname(os.path.join(test, name)), exist_ok=True)
+            with open(os.path.join(test, name), "wb") as f:
+                f.write(data)
+        package = os.path.join(out, f"{doc}-arxiv.tar.gz")
+        with tarfile.open(package, "w:gz") as t:
+            for name in sorted(files):
+                info = tarfile.TarInfo(name)
+                info.size, info.mode = len(files[name]), 0o644
+                info.mtime = int(os.path.getmtime(os.path.join(root, name)) if name in names else time.time())
+                t.addfile(info, io.BytesIO(files[name]))
+
+        step("the package's own build")
+        env = {k: v for k, v in os.environ.items() if k not in ("TEXINPUTS", "BIBINPUTS", "BSTINPUTS")}  # (the package alone)
+        argv = tex_argv(server, "pdflatex", "-interaction=batchmode", "-halt-on-error", "-file-line-error", doc)
+        for passes in range(1, 7):
+            code, _ = run_tool(argv, test, kind="arxiv", env=env)
+            log = read_output(root, os.path.join(test, f"{doc}.log")) or ""
+            if code is None:
+                raise RuntimeError(f"a pass of the package's own build took over 10 minutes; see {config.BUILD}/arxiv/{doc}/test/{doc}.log")
+            if code != 0:
+                first = next((l for l in log.splitlines() if l.startswith("! ") or re.match(r"^\S+:\d+: ", l)), "")
+                raise RuntimeError(f"the package doesn't build on its own: {first or 'pdflatex failed'}"
+                                   f" (see {config.BUILD}/arxiv/{doc}/test/{doc}.log)")
+            if passes >= 2 and not RERUN_RE.search(log):  # (a cold start: at least two passes, as for the citations)
+                break
+
+        step("comparing it with the PDF without notes")
+        differs = pdf_difference(os.path.join(test, f"{doc}.pdf"), os.path.join(out, "export.pdf"))
+        published = os.path.join(root, config.BUILD, f"{doc}-arxiv.tar.gz")
+        os.replace(package, published)
+        return {"files": len(files), "size": os.path.getsize(published), "comments": found["comments"], "hidden": found["hidden"],
+                "notes": found["notes"], "same": differs is None, "differs": differs or "", "version": str(mtime(published))}
+
+
+def masked_pdf(path):
+    """A PDF's bytes (open_output) with its dates and IDs blanked (standby.DATE_RES), or None."""
+    f = open_output(path)
+    if f is None:
+        return None
+    with f:
+        data = f.read()
+    for date in DATE_RES:
+        data = date.sub(lambda m: m.group(1) + b"0" * len(m.group(2)), data)
+    return data
+
+
+def pdf_difference(a, b):
+    """Where PDF a differs from PDF b, dates and IDs aside, in words; None where it doesn't."""
+    data = masked_pdf(a)
+    if data is None:
+        return "it wrote no PDF"
+    if data == masked_pdf(b):
+        return None
+    pages_a, pages_b = pdf_pages_text(a), pdf_pages_text(b)
+    if len(pages_a) != len(pages_b):
+        return f"{len(pages_a) - 1} pages rather than {len(pages_b) - 1}"  # (pdftotext ends each page with \f)
+    page = next((n for n, (x, y) in enumerate(zip(pages_a, pages_b), 1) if x.split() != y.split()), None)
+    return f"page {page}'s text differs" if page else "the same text, laid out or drawn differently"

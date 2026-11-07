@@ -20,7 +20,8 @@ nothing beyond Python's standard library.
 - Change highlights against the last push, commit or build, and latexdiff against any commit.
 - A page-limit badge, space hints, and pre-submission checks: anonymity,
   references, fonts, figure placement, what the arXiv source would expose, and more.
-- Downloads: as built, without notes (an exact build), or with the notes in the margin.
+- Downloads: as built, without notes (an exact build), or with the notes in the margin;
+  and an arXiv package without comments or notes, checked by building it alone.
 - Shared mode: coauthors without a LaTeX setup open one link and read,
   comment or edit, each in their role, with every TeX run confined to a container.
 
