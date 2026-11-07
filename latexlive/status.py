@@ -7,7 +7,7 @@ import time
 from . import config
 from .baselines import base_status
 from .build import build_running, build_status
-from .document import layout, page_limit
+from .document import layout, page_limit, uncounted_sections
 from .files import file_hash, job_file, mtime, pdf_path, read_json
 from .synctex import PENDING, refs_start
 from .tools import image_problem
@@ -54,6 +54,7 @@ def status(server, pdf_name, push=False):
         "build": build_status(server, pdf_name),
         "forward": forward_asked(read_json(job_file(root, pdf_name, ".forward.json"))),
         "pageLimit": limit,
+        "uncounted": uncounted_sections(server, pdf_name),
         "layout": layout(root, pdf_name),
         "doc": server.default_pdf,
     }

@@ -268,8 +268,8 @@ live.py [doc | PATH] [--port N] [--page-limit N] [--build-dir DIR] [--no-build] 
   runs in that file's paper and builds the file if it is a root one.
 - **`--page-limit N`:** the main-text page limit for the page badge. Without
   it, the limit comes from the venue style: ICLR, NeurIPS and COLM 9 pages;
-  ICML, CVPR and ICCV 8. Pass it for other venues and for a camera-ready extra
-  page.
+  ICML, CVPR, ICCV, WACV and ACL (long papers) 8; AAAI 7; ECCV 14. Pass it for
+  other venues and for a camera-ready extra page.
 - **`--replace`:** one instance runs per document. Another one for the same
   document prints the running viewer's URL and exits; `--replace` stops the
   running one and takes over. An instance that no longer answers is replaced

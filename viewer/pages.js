@@ -11,13 +11,19 @@ import { goToPage } from "./navigation.js";
 // use, ethics, reproducibility, impact, acknowledgments), which venues such as ICLR and ICML do not
 // count; without references (refs null), to the end of the document.
 const UNCOUNTED = /^(ai use|llm usage|use of large language models|ethics statement|reproducibility statement|impact statement|acknowledge?ments?)\b/i;
+let venueUncounted = null; // (more that the venue's style leaves out, e.g. ACL's Limitations: live.py's status says)
+export function setUncounted(words) {
+  const source = words?.length ? `^(${words.map((w) => w.replace(/[^\w ]/g, "")).join("|")})\\b` : null;
+  if (source !== (venueUncounted?.source ?? null)) venueUncounted = source && new RegExp(source, "i");
+}
+const uncounted = (s) => UNCOUNTED.test(s) || !!venueUncounted?.test(s);
 export async function checkPages(d, refs, limit) {
   const labels = await d.getPageLabels();
   const first = Math.max(0, labels?.indexOf("1") ?? 0) + 1;
   let end = refs ? { page: refs.page, top: refs.y, x: refs.x } : { page: d.numPages + 1, top: area.top }; // (then: to the last line)
   for (let p = Math.max(first, end.page - 2); refs && p <= refs.page; p++) {
     const { lines } = await textLines(d, p);
-    const heading = lines.find((l) => l.str.length < 60 && UNCOUNTED.test(l.str) && (p < refs.page || l.top < refs.y));
+    const heading = lines.find((l) => l.str.length < 60 && uncounted(l.str) && (p < refs.page || l.top < refs.y));
     if (heading) { end = { page: p, top: heading.top - 10, x: heading.left }; break; }
   }
   let page = end.page, fill, endTop, endCol;
