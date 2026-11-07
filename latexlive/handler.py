@@ -239,7 +239,7 @@ class Handler(BaseHandler):
             rev = json_query(req, "rev").get("rev", [""])[0]
             self.send_json(*start_diff(self.server, rev, any_rev=self.principal["role"] == "owner"))
         elif path == "/open" and isinstance(req, dict):
-            self.send_text(*open_source(self.server.paper_root, json_query(req, "file", "line")))
+            self.send_text(*open_source(self.server.paper_root, json_query(req, "file", "line", "column")))
         elif path == "/export":
             self.send_json(*start_export(self.server))
         elif path == "/review":

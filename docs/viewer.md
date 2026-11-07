@@ -66,7 +66,8 @@ notes runs again after it, and the view updates a little later.
 
 - **PDF to source:** double-click the PDF. The source line opens in VS Code
   (`code -g`, or `LATEX_LIVE_EDITOR`), or in the source pane while it is open
-  or when VS Code can't be reached.
+  or when VS Code can't be reached, with the cursor on the word you
+  double-clicked when that word is in the line (else at the line's start).
 - **Source to PDF:** the forward-search key in VS Code (setup step 5), `python3
   forward.py FILE LINE`, or Show in PDF in the source pane scrolls the viewer
   to the line and highlights it.

@@ -302,7 +302,7 @@ are in [shared-mode.md](shared-mode.md#settings).
   delete the marker. The browser editor doesn't guard it: whoever may edit can
   change it there like any other text.
 - `LATEX_LIVE_EDITOR`: the editor command that double-click opens the source
-  in while the browser editor is closed (`<editor> -g FILE:LINE`), e.g.
+  in while the browser editor is closed (`<editor> -g FILE:LINE[:COLUMN]`), e.g.
   `cursor`. Without it, latex-live uses `code`, and only from a VS Code
   terminal; elsewhere, double-click opens the browser editor instead. On a
   Mac, Cursor's local terminals don't set the variable VS Code terminals set,
