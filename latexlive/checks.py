@@ -1,7 +1,6 @@
 """GET /check/: the pre-submission checks (anonymity, notes, references, fonts, images, size, the
 arXiv source, the bibliography, generated figures, placement, consistency, overfull lines)."""
 
-import glob
 import os
 import re
 import subprocess
@@ -13,25 +12,11 @@ from . import config
 from .arxiv import ago, arxiv_source
 from .build import build_status
 from .files import clean_file, fls_file, job_file, mtime, pdf_path, project_tex_files, read_capped, shown_synctex
-from .latex import read_tex
+from .latex import find_bib_entry, read_tex
 from .lints import bib_consistency, float_placement, lint, stale_outputs
 from .notes import notes
 from .synctex import bib_span
 from .tools import pdf_pages_text, pdf_tool
-
-
-def find_bib_entry(paper_root, key):
-    """(relative .bib path, line) of @type{key, in the paper's .bib files, or None."""
-    pat = re.compile(r"@\w+\s*\{\s*%s\s*," % re.escape(key))
-    for bib in sorted(glob.glob(os.path.join(paper_root, "*.bib")) + glob.glob(os.path.join(paper_root, "*", "*.bib"))):
-        try:
-            with open(bib, errors="replace") as f:
-                for n, line in enumerate(f, 1):
-                    if pat.search(line):
-                        return os.path.relpath(bib, paper_root), n
-        except OSError:
-            pass
-    return None
 
 
 def root_flag(text, name):

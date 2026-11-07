@@ -14,7 +14,7 @@ from .files import shown_synctexes
 from .notes import margin_notes, notes, shown_notes
 from .roles import at_least
 from .sources import editable_files
-from .synctex import forward_target, inverse_search, synctex_input, to_int
+from .synctex import bib_source, forward_target, inverse_search, synctex_input, to_int
 from .tools import synctex_unavailable
 
 
@@ -275,6 +275,9 @@ def synctex_spot(server, query):
     src, line = found
     root = os.path.realpath(server.paper_root)
     path = os.path.realpath(os.path.join(root, src))
+    if path.endswith(".bbl") and (entry := bib_source(server.paper_root, path, line)):  # (an entry of the bibliography)
+        src, line = entry
+        path = os.path.realpath(src)
     if path.startswith(os.path.realpath(os.path.join(root, config.BUILD)) + os.sep):
         return 200, {"file": None, "reason": f"generated text ({os.path.basename(src)}); no source line"}
     if not path.startswith(root + os.sep):
@@ -305,7 +308,7 @@ def synctex_edit(paper_root, query):
         page, x, y = int(query["page"][0]), float(query["x"][0]), float(query["y"][0])
     except (KeyError, ValueError):
         return 400, "expected file, page, x, y"
-    found = inverse_search(paper_root, name, page, x, y, query.get("clean") == ["1"])
+    found = inverse_search(paper_root, name, page, x, y, query.get("clean") == ["1"], bib=True)
     if isinstance(found[0], int):
         return found
     src, line = found
