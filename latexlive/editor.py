@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 
 from .commits import commit_others, paused, remember_write, updating
-from .latex import parse_bib
+from .latex import brace_group
 from .sources import (
     EDITABLE_SIZE, NOTE_LOCK, SourceChanged, cached_version, editable_files, editable_real, file_version, read_editable,
     write_source, wrote)
@@ -33,26 +33,63 @@ def files_listing(server):
 
 
 LABEL_RE = re.compile(r"\\label\s*\{([^{}\n]{1,200})\}")
+BIB_ENTRY_RE = re.compile(r"@(\w+)\s*[{(]\s*([^,\s{}()]+)\s*,")
+BIB_TITLE_RE = re.compile(r"\btitle\s*=\s*([{\"])", re.I)
+COMPLETIONS_LIMIT = 5000
 
 
-def completions(server):
+def completions(server, cache={}):
     """GET /completions: what the browser editor offers in \\ref and \\cite, from the files it opens (so nothing an
     editor couldn't read there): {"labels": [{"label", "file", "line"}] from the \\label commands outside comments,
-    "keys": [{"key", "title"}] from the .bib files' entries}, at most 5000 of each."""
+    "keys": [{"key", "title"}] from the .bib files' entries}, at most COMPLETIONS_LIMIT of each. Each file is read
+    again only once it has changed."""
     labels, keys = [], []
     for rel, real in editable_files(server).items():
+        if not rel.endswith((".tex", ".bib")) or len(labels) >= COMPLETIONS_LIMIT and len(keys) >= COMPLETIONS_LIMIT:
+            continue
         try:
-            text = read_editable(real).decode("utf-8", errors="replace")
+            st = os.stat(real)
+            if cache.get(real, (None,))[0] != (st.st_mtime_ns, st.st_size):
+                text = read_editable(real).decode("utf-8", errors="replace")
+                cache[real] = (st.st_mtime_ns, st.st_size, bib_completions(text) if rel.endswith(".bib") else label_lines(text))
         except (OSError, SourceChanged):
             continue
+        found = cache[real][2]
         if rel.endswith(".bib"):
-            keys += [{"key": e["key"], "title": " ".join(e["fields"].get("title", "").replace("{", "").replace("}", "").split())[:120]}
-                     for e in parse_bib(real, text)]
-        elif rel.endswith(".tex"):
-            uncommented = re.sub(r"(?<!\\)%.*", "", text)
-            labels += [{"label": m.group(1), "file": rel, "line": uncommented.count("\n", 0, m.start()) + 1}
-                       for m in LABEL_RE.finditer(uncommented)]
-    return {"labels": labels[:5000], "keys": keys[:5000]}
+            keys += found[:COMPLETIONS_LIMIT - len(keys)]
+        else:
+            labels += [{"label": label, "file": rel, "line": line} for label, line in found[:COMPLETIONS_LIMIT - len(labels)]]
+    if len(cache) > 256:
+        cache.clear()
+    return {"labels": labels, "keys": keys}
+
+
+def label_lines(text):
+    """[(label, line)] of the \\label commands outside comments in a .tex file's text."""
+    found, line, at = [], 1, 0
+    text = re.sub(r"(?<!\\)%.*", "", text)
+    for m in LABEL_RE.finditer(text):
+        line, at = line + text.count("\n", at, m.start()), m.start()
+        found.append((m.group(1), line))
+    return found
+
+
+def bib_completions(text):
+    """[{"key", "title"}] of a .bib file's entries, in one pass (a forgiving reading: the title as written, its braces
+    dropped, at most 120 characters)."""
+    entries = [m for m in BIB_ENTRY_RE.finditer(text) if m.group(1).lower() not in ("comment", "string", "preamble")]
+    found = []
+    for m, after in zip(entries, [*entries[1:], None]):
+        title = BIB_TITLE_RE.search(text, m.end(), after.start() if after else len(text))
+        if title and title.group(1) == "{":
+            value = brace_group(text[title.start(1):title.start(1) + 2000], 0)[0]
+        elif title:
+            end = text.find('"', title.end(), title.end() + 2000)
+            value = text[title.end():end] if end >= 0 else ""
+        else:
+            value = ""
+        found.append({"key": m.group(2), "title": " ".join(value.replace("{", "").replace("}", "").split())[:120]})
+    return found
 
 
 def editor_text(raw):

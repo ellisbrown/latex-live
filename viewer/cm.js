@@ -93,7 +93,8 @@ async function completeRefs(context) {
   if (cite) {
     options = data.keys.map((k) => ({ label: k.key, detail: k.title }));
   } else {
-    const here = [...context.state.doc.toString().matchAll(/\\label\s*\{([^{}\n]+)\}/g)].map((m) => m[1]);
+    const text = context.state.doc.toString().replace(/(?<!\\)%.*$/gm, ""); // (outside comments, as live.py's)
+    const here = [...text.matchAll(/\\label\s*\{([^{}\n]+)\}/g)].map((m) => m[1]);
     options = [...new Set([...here, ...data.labels.map((l) => l.label)])].map((label) => ({ label }));
   }
   return { from: context.pos - typed.length, options, validFor: /^[^,{}\s]*$/ };
