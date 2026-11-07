@@ -2,6 +2,7 @@
 paper's own (in_paper), and reading what TeX wrote within bounds (open_output, read_capped, read_output),
 since the paper's TeX decides how big those files are."""
 
+import glob
 import hashlib
 import json
 import os
@@ -29,6 +30,26 @@ def fls_file(paper_root, pdf_name):
 def clean_file(paper_root, pdf_name, ext):
     """build/clean/<doc>-clean<ext>: the notes-free pass (latex_report.py; its PDF moves to build/)."""
     return os.path.join(paper_root, config.BUILD, "clean", f"{pdf_name[:-4]}-clean{ext}")
+
+
+def shown_synctex(paper_root, pdf_name, clean=False):
+    """The SyncTeX file of the PDF on show, the published <doc>.pdf (or with clean, the notes-free one): the newer of
+    the build's own and the copy kept in build/shown/ when the PDF was published (latex_report.keep_synctex). A pass
+    that fails removes the build's own, while the PDF on show stays the last good pass's. For synctex, the .pdf beside
+    it (which need not exist)."""
+    own = (clean_file if clean else job_file)(paper_root, pdf_name, ".synctex.gz")
+    kept = os.path.join(paper_root, config.BUILD, "shown", os.path.basename(own))
+    return kept if mtime(kept) > mtime(own) else own
+
+
+def shown_synctexes(paper_root, clean=False):
+    """shown_synctex of every document built here (or of their notes-free builds), newest first, with its mtime."""
+    pattern = "*-clean.synctex.gz" if clean else "*-live.synctex.gz"
+    build = glob.escape(os.path.join(paper_root, config.BUILD))
+    names = {os.path.basename(p) for folder in ("clean" if clean else "", "shown")
+             for p in glob.glob(os.path.join(build, folder, pattern))}
+    found = [shown_synctex(paper_root, name.rsplit("-", 1)[0] + ".pdf", clean) for name in names]
+    return sorted(((path, mtime(path)) for path in found), key=lambda p: p[1], reverse=True)
 
 
 def open_output(path):

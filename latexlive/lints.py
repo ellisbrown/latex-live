@@ -9,7 +9,7 @@ import subprocess
 
 from . import config
 from .document import GRAPHIC_EXTS, floats, include_sites, layout
-from .files import clean_file, fls_file, in_paper, job_file, project_tex_files, read_capped
+from .files import fls_file, in_paper, job_file, project_tex_files, read_capped, shown_synctex
 from .latex import brace_group, project_macros, read_tex, tex_to_text
 from .notes import blank_notes, note_kinds
 from .synctex import synctex_points
@@ -320,9 +320,8 @@ def float_placement(paper_root, pdf_name, clean=False):
     there: one referenced only from the main text is a pointer to the appendix, wherever it is.
     """
     found = floats(paper_root, pdf_name, clean)
-    f = clean_file if clean else job_file
     fls = fls_file(paper_root, pdf_name)
-    points = synctex_points(f(paper_root, pdf_name, ".synctex.gz"))
+    points = synctex_points(shown_synctex(paper_root, pdf_name, clean))
     area = layout(paper_root, pdf_name) or {"H": 792, "left": 72, "width": 468, "top": 72, "bottom": 720}
     texts = {path: read_tex(path) for path in project_tex_files(paper_root, fls)}
     kinds = note_kinds(texts.values())

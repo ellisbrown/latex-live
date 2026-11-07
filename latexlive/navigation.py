@@ -1,7 +1,6 @@
 """Between the PDF and the sources, for the viewer: forward search for its lists (/forward),
 inverse search (/synctex), and opening a source line in the owner's editor (/open)."""
 
-import glob
 import os
 import re
 import shutil
@@ -11,7 +10,7 @@ import time
 import unicodedata
 
 from . import config
-from .files import mtime
+from .files import shown_synctexes
 from .notes import margin_notes, notes, shown_notes
 from .roles import at_least
 from .sources import editable_files
@@ -72,8 +71,7 @@ def forward_request(server, query, user=None):
         if not any(n.get("line") == line and os.path.realpath(os.path.join(paper_root, n.get("file") or "")) == src for n in shown):
             return 404, {"error": "that line is not in the PDF"}  # (as for any line not in it: no hint either way)
     clean = query.get("clean") == ["1"]
-    pattern = os.path.join("clean", "*-clean.synctex.gz") if clean else "*-live.synctex.gz"
-    builds = tuple(sorted((path, mtime(path)) for path in glob.glob(os.path.join(glob.escape(os.path.join(paper_root, config.BUILD)), pattern))))
+    builds = tuple(sorted(shown_synctexes(paper_root, clean)))
     found = shared_result(server, ("forward", src, line, clean, builds), lambda: forward_target(paper_root, src, line, clean),
                           miss_ttl=5)
     if found:

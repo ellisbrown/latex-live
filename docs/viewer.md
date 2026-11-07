@@ -52,8 +52,9 @@ latexmk rebuilds the paper whenever one of its files changes. The viewer
 reloads in place: while a rebuild with the same pages is drawn, each page
 keeps showing its previous version, so nothing blanks. The PDF is replaced
 only after a successful run, so a failed build keeps the previous PDF with a
-red banner; click an error to open its line. The same errors go to VS Code's Problems panel as `file:line`
-diagnostics, through the task's problem matcher.
+red banner, and SyncTeX keeps working on it; click an error to open its line.
+The same errors go to VS Code's Problems panel as `file:line` diagnostics,
+through the task's problem matcher.
 
 Beside the live build, a second build without the notes runs in the
 background. It gives the notes-free view, and the page count without notes.

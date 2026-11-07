@@ -8,7 +8,7 @@ import subprocess
 
 from . import config
 from .files import (
-    child_aux, clean_file, file_hash, fls_file, job_file, mtime, project_inputs, project_tex_files, read_capped)
+    child_aux, clean_file, file_hash, fls_file, job_file, mtime, project_inputs, project_tex_files, read_capped, shown_synctex)
 from .git import git_read_env, pushed_commit
 from .latex import brace_group, project_macros, read_tex, tex_to_text
 from .synctex import synctex_boxes
@@ -162,8 +162,7 @@ def floats(paper_root, pdf_name, clean=False):
     their lines made). Numbers come from their \\label, else the order of their captions; captions
     and anchors from the list of figures and tables the build wrote to its .aux.
     """
-    f = clean_file if clean else job_file
-    synctex_gz = f(paper_root, pdf_name, ".synctex.gz")
+    f, synctex_gz = clean_file if clean else job_file, shown_synctex(paper_root, pdf_name, clean)
     if not os.path.exists(synctex_gz):
         return []
     boxes = synctex_boxes(synctex_gz)

@@ -9,7 +9,7 @@ import unicodedata
 
 from . import config
 from .document import layout
-from .files import clean_file, fls_file, mtime, pdf_path, project_tex_files
+from .files import fls_file, mtime, pdf_path, project_tex_files, shown_synctex
 from .latex import brace_group, project_macros, read_tex, tex_to_text
 from .synctex import synctex_points
 from .tools import pdf_pages_text
@@ -105,7 +105,7 @@ def margin_notes(paper_root, pdf_name):
     ("line", "before", "after"). before/after are the few typeset words around the note, which
     the viewer finds in the page text to put the note's caret between two words.
     """
-    synctex_gz = clean_file(paper_root, pdf_name, ".synctex.gz")
+    synctex_gz = shown_synctex(paper_root, pdf_name, clean=True)
     fls = fls_file(paper_root, pdf_name)
     if not os.path.exists(synctex_gz):
         return []

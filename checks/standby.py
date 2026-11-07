@@ -152,21 +152,25 @@ def standby_run(tmp):
         until_standby("macros", body, tries=2)
         ok("a change to a file the preamble reads runs normally (and verifies a new standby), and the next edits use it")
 
-        ran, status = save("body.tex", body.replace("Platypus two", "Platypus two \\undefinedcontrolsequence"))
-        errors = status.get("errors") or [{}]
-        if ran != {"standby": 1} or status.get("ok") or (errors[0].get("file"), errors[0].get("line")) != ("body.tex", 4):
-            fail(f"an error in the body, from the warm standby: passes {ran}, status {status}")
-        ran, status = save("body.tex", body, ready=False)
-        if not status.get("ok"):
-            fail(f"the build once the error was fixed: {status}")
-        ok("an error in the body, from the warm standby, is reported at body.tex:4, as from a normal pass")
-
         def lookup(path):  # (this preview's own port)
             conn = http.client.HTTPConnection("127.0.0.1", own, timeout=30)
             conn.request("GET", path, headers={"Cookie": f"latex_live={token}"})
             data = conn.getresponse().read()
             conn.close()
             return json.loads(data)
+
+        ran, status = save("body.tex", body.replace("Platypus two", "Platypus two \\undefinedcontrolsequence"))
+        errors = status.get("errors") or [{}]
+        if ran != {"standby": 1} or status.get("ok") or (errors[0].get("file"), errors[0].get("line")) != ("body.tex", 4):
+            fail(f"an error in the body, from the warm standby: passes {ran}, status {status}")
+        if os.path.exists(os.path.join(build, "main-live.synctex.gz")):  # (as a failed pass without a standby leaves it)
+            os.remove(os.path.join(build, "main-live.synctex.gz"))
+        text_point(lookup, "body.tex", 4)  # (the PDF on show is the last good pass's: so is the SyncTeX map read)
+        ran, status = save("body.tex", body, ready=False)
+        if not status.get("ok"):
+            fail(f"the build once the error was fixed: {status}")
+        ok("an error in the body, from the warm standby, is reported at body.tex:4, as from a normal pass; forward and"
+           " inverse search still work on the PDF on show meanwhile")
 
         until_standby("synctex", body)
         text_point(lookup, "body.tex", 4)
