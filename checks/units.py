@@ -25,7 +25,7 @@ def unit_checks():
     """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
     for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
-                  code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, word_column_checks,
+                  code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, word_column_checks, diff_retry_checks,
                   graphics_synctex_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks):
         check()
 
@@ -705,6 +705,66 @@ def graphics_synctex_checks():
             fail(f"inverse search on the bibliography's entries (lines of the .bbl): {entries}")
     ok("SyncTeX measures scaled graphics as laid out, finds a clipped graphic's line, and takes a bibliography entry to"
        " its .bib entry")
+
+
+def diff_retry_checks():
+    """The latexdiff against a commit (baselines.build_diff, with stand-ins for latexdiff and pdflatex): when the
+    marked document makes no PDF or has errors, it is built once more with plainer marks, and the PDF with fewer errors
+    is published (saying so when it has the plainer marks); a pass that timed out is not tried again; and files that
+    \\input each other in a loop, on either side, stop it before latexdiff runs (input_loop, which follows \\input,
+    \\include and \\import as latexdiff does, and skips comments)."""
+    from latexlive import baselines
+    saved = baselines.run_tool, baselines.image_pulled, baselines.container_argv
+    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
+    try:
+        root = os.path.join(tmp, "paper")
+        put(os.path.join(root, "main.tex"), "\\documentclass{article}\\begin{document}\\input{a}\\end{document}\n")
+        put(os.path.join(root, "a.tex"), "% \\input{main}\nText.\n")
+        for args in (["init", "-q"], ["add", "-A"], ["-c", "user.name=check", "-c", "user.email=check@example.com", "commit", "-qm", "x"]):
+            subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+        calls, outcome, TIMEOUT = [], {}, 99  # (outcome: a pass's errors with each marks, -1 for no PDF, or TIMEOUT)
+
+        def run_tool(argv, cwd, **kwargs):  # (latexdiff writes a document; pdflatex makes a PDF of it, or not)
+            if argv[0] == "latexdiff":
+                calls.append("latexdiff plainer" if "--math-markup=off" in argv else "latexdiff full")
+                return 0, "\\documentclass{article}\\begin{document}x\\end{document}\n"
+            marks = next(c for c in reversed(calls) if c.startswith("latexdiff")).split()[1]
+            what = outcome[marks]
+            calls.append("pdflatex")
+            put(os.path.join(root, "build", "diff", "main-diff.log"), "! Undefined control sequence.\n" * max(0, int(what)))
+            if what >= 0:
+                put(os.path.join(root, "build", "diff", "main-diff.pdf"), f"%PDF-1.5 {marks}\n")
+            return (None if what == TIMEOUT else 0), ""
+        baselines.run_tool, baselines.image_pulled, baselines.container_argv = run_tool, lambda: True, lambda root: []
+        results = []
+        for full, plainer in ((0, 0), (-1, 0), (2, 0), (1, 2), (-1, -1), (TIMEOUT, 0)):
+            outcome.update(full=full, plainer=plainer)
+            calls.clear()
+            server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", tex_exec="", diff={"rev": "HEAD"})
+            baselines.build_diff(server, sha)
+            published = os.path.join(root, "build", "main-diff.pdf")
+            results.append((server.diff.get("state"), server.diff.get("plainer"), sum(c.startswith("latexdiff") for c in calls),
+                            server.diff.get("state") == "done" and read_bytes(published).split()[-1].decode()))
+        put(os.path.join(root, "a.tex"), "\\input{sub/b}\n")
+        put(os.path.join(root, "sub", "b.tex"), "\\import{sub/}{c}\n")  # (\\input names resolve from the root's folder)
+        put(os.path.join(root, "sub", "c.tex"), "\\include{../a}\n")  # (and an \\import's from its folder)
+        loop = baselines.input_loop(root, "main.tex")
+        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", tex_exec="", diff={"rev": "HEAD"})
+        calls.clear()
+        baselines.build_diff(server, sha)
+    finally:
+        baselines.run_tool, baselines.image_pulled, baselines.container_argv = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+    want = [("done", False, 1, "full"), ("done", True, 2, "plainer"), ("done", True, 2, "plainer"), ("done", False, 2, "full"),
+            ("failed", None, 2, False), ("failed", None, 1, False)]
+    if results != want:
+        fail(f"the diff's second try with plainer marks: (state, plainer, latexdiff runs, the PDF published) {results}")
+    if loop != ["a.tex", "sub/b.tex", "sub/c.tex", "a.tex"] or server.diff.get("state") != "failed" or calls or \
+            "a.tex → sub/b.tex → sub/c.tex → a.tex" not in server.diff.get("msg", ""):
+        fail(f"files that \\input each other in a loop: {loop}; the diff {server.diff} after {calls}")
+    ok("a diff whose marked document doesn't build is built again with plainer marks (not after a timeout), and"
+       " files that \\input each other in a loop stop it before latexdiff runs")
 
 
 def connection_cap_checks():

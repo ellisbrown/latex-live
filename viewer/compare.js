@@ -46,7 +46,8 @@ export function showDiffInfo(d) {
   const again = el("button", { textContent: "Rebuild", title: "Diff the same commit against the current files" });
   again.onclick = () => startDiff(d.rev);
   const paper = el("a", { textContent: "↩ paper", href: `viewer.html?${new URLSearchParams({ file: docFile })}` });
-  info.replaceChildren(`changes since ${d.rev} `, again, " ", paper);
-  info.title = `latexdiff of commit ${d.sha} against the working tree`;
+  info.replaceChildren(`changes since ${d.rev}${d.plainer ? " (plainer marks)" : ""} `, again, " ", paper);
+  info.title = `latexdiff of commit ${d.sha} against the working tree`
+    + (d.plainer ? "; with full marks the document didn't build, so changes in math, figures and citations aren't marked" : "");
   info.hidden = false;
 }
