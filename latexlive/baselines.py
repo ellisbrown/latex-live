@@ -123,17 +123,17 @@ def build_diff(server, sha):
             os.remove(full)
         try:
             errors = attempt(DIFF_MARKS)
-        except RuntimeError as e:
-            errors, failed = None, e
+        except RuntimeError:
+            errors = None
         plainer = False
         if errors != 0:  # (no PDF, or one with errors: plainer marks, and the PDF with fewer errors)
             if errors is not None:
                 os.replace(pdf, full)
             try:
                 fewer = attempt(PLAINER_MARKS) < (float("inf") if errors is None else errors)
-            except RuntimeError:
+            except (RuntimeError, TimeoutError):  # (with a PDF from the full marks, that one)
                 if errors is None:
-                    raise failed from None
+                    raise
                 fewer = False
             if fewer:
                 plainer = True
@@ -161,12 +161,12 @@ def input_loop(folder, doc):
         path = os.path.normpath(os.path.join(base, written if re.search(r"\.\w{3,4}$", written) else written + ".tex"))
         return path if path.startswith(os.path.join(folder, "")) and os.path.isfile(path) else None
 
-    done = set()  # (files read to the end without a loop: no loop is reachable from them)
+    done = set()  # (files read to the end without a loop, each with the folder its names resolve in: no loop from them)
 
     def walk(path, base, chain):
-        if path in chain:
-            return [os.path.relpath(p, folder) for p in chain[chain.index(path):]] + [os.path.relpath(path, folder)]
-        if path in done:
+        if (path, base) in chain:  # (a file again, resolving names in the same folder: latexdiff goes round forever)
+            return [os.path.relpath(p, folder) for p, _ in chain[chain.index((path, base)):] + [(path, base)]]
+        if (path, base) in done:
             return None
         text = re.sub(r"(?<!\\)%.*", "", read_capped(path) or "")
         for m in INCLUDE_RE.finditer(text):
@@ -176,9 +176,9 @@ def input_loop(folder, doc):
             else:  # (\import{folder}{file} and the like: from that folder)
                 inner = os.path.normpath(os.path.join(base, m.group(2).strip()))
                 found = name(inner, m.group(3))
-            if found and (loop := walk(found, inner, chain + [path])):
+            if found and (loop := walk(found, inner, chain + [(path, base)])):
                 return loop
-        done.add(path)
+        done.add((path, base))
         return None
     root = os.path.join(folder, doc)
     return walk(root, folder, []) if os.path.isfile(root) else None

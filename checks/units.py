@@ -738,7 +738,7 @@ def diff_retry_checks():
             return (None if what == TIMEOUT else 0), ""
         baselines.run_tool, baselines.image_pulled, baselines.container_argv = run_tool, lambda: True, lambda root: []
         results = []
-        for full, plainer in ((0, 0), (-1, 0), (2, 0), (1, 2), (-1, -1), (TIMEOUT, 0)):
+        for full, plainer in ((0, 0), (-1, 0), (2, 0), (1, 2), (-1, -1), (TIMEOUT, 0), (2, TIMEOUT)):
             outcome.update(full=full, plainer=plainer)
             calls.clear()
             server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", tex_exec="", diff={"rev": "HEAD"})
@@ -746,10 +746,15 @@ def diff_retry_checks():
             published = os.path.join(root, "build", "main-diff.pdf")
             results.append((server.diff.get("state"), server.diff.get("plainer"), sum(c.startswith("latexdiff") for c in calls),
                             server.diff.get("state") == "done" and read_bytes(published).split()[-1].decode()))
-        put(os.path.join(root, "a.tex"), "\\input{sub/b}\n")
-        put(os.path.join(root, "sub", "b.tex"), "\\import{sub/}{c}\n")  # (\\input names resolve from the root's folder)
-        put(os.path.join(root, "sub", "c.tex"), "\\include{../a}\n")  # (and an \\import's from its folder)
+        put(os.path.join(root, "a.tex"), "\\import{sub/}{c}\n")  # (names in what an \\import reads resolve from its folder)
+        put(os.path.join(root, "sub", "c.tex"), "\\input{d}\n")
+        put(os.path.join(root, "sub", "d.tex"), "\\include{c}\n")
         loop = baselines.input_loop(root, "main.tex")
+        put(os.path.join(tmp, "subfile", "main.tex"), "\\input{sub/a}\n")  # (a file again, but resolving in another folder)
+        put(os.path.join(tmp, "subfile", "sub", "a.tex"), "\\input{x}\n")
+        put(os.path.join(tmp, "subfile", "x.tex"), "\\subfile{sub/a}\n")
+        put(os.path.join(tmp, "subfile", "sub", "x.tex"), "Text.\n")
+        no_loop = baselines.input_loop(os.path.join(tmp, "subfile"), "main.tex")
         server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", tex_exec="", diff={"rev": "HEAD"})
         calls.clear()
         baselines.build_diff(server, sha)
@@ -757,12 +762,13 @@ def diff_retry_checks():
         baselines.run_tool, baselines.image_pulled, baselines.container_argv = saved
         shutil.rmtree(tmp, ignore_errors=True)
     want = [("done", False, 1, "full"), ("done", True, 2, "plainer"), ("done", True, 2, "plainer"), ("done", False, 2, "full"),
-            ("failed", None, 2, False), ("failed", None, 1, False)]
+            ("failed", None, 2, False), ("failed", None, 1, False), ("done", False, 2, "full")]
     if results != want:
         fail(f"the diff's second try with plainer marks: (state, plainer, latexdiff runs, the PDF published) {results}")
-    if loop != ["a.tex", "sub/b.tex", "sub/c.tex", "a.tex"] or server.diff.get("state") != "failed" or calls or \
-            "a.tex → sub/b.tex → sub/c.tex → a.tex" not in server.diff.get("msg", ""):
-        fail(f"files that \\input each other in a loop: {loop}; the diff {server.diff} after {calls}")
+    if loop != ["sub/c.tex", "sub/d.tex", "sub/c.tex"] or no_loop or server.diff.get("state") != "failed" or calls or \
+            "sub/c.tex → sub/d.tex → sub/c.tex" not in server.diff.get("msg", ""):
+        fail(f"files that \\input each other in a loop: {loop} (and a file read again from another folder: {no_loop}); the"
+             f" diff {server.diff} after {calls}")
     ok("a diff whose marked document doesn't build is built again with plainer marks (not after a timeout), and"
        " files that \\input each other in a loop stop it before latexdiff runs")
 
