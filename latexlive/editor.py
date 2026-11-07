@@ -1,16 +1,18 @@
 """The browser editor's file API: GET /files lists the sources it opens, GET /file reads one, and
 POST /file saves one, merged (git merge-file) with what was saved meanwhile since the version the edits
-started from.
+started from; GET /completions lists what it completes in \\ref and \\cite.
 
 A file's version is a hash of its bytes; the editor works with \\n line ends, and a file that uses \\r\\n
 gets them back on save. Reads and saves go through read_editable and write_source under NOTE_LOCK, as notes
 do, so the two never overwrite each other, and neither follows a link swapped in since the file was checked."""
 
 import os
+import re
 import subprocess
 import tempfile
 
 from .commits import commit_others, paused, remember_write, updating
+from .latex import parse_bib
 from .sources import (
     EDITABLE_SIZE, NOTE_LOCK, SourceChanged, cached_version, editable_files, editable_real, file_version, read_editable,
     write_source, wrote)
@@ -28,6 +30,29 @@ def files_listing(server):
         except OSError:
             pass
     return {"files": files, "main": f"{server.default_pdf[:-4]}.tex"}
+
+
+LABEL_RE = re.compile(r"\\label\s*\{([^{}\n]{1,200})\}")
+
+
+def completions(server):
+    """GET /completions: what the browser editor offers in \\ref and \\cite, from the files it opens (so nothing an
+    editor couldn't read there): {"labels": [{"label", "file", "line"}] from the \\label commands outside comments,
+    "keys": [{"key", "title"}] from the .bib files' entries}, at most 5000 of each."""
+    labels, keys = [], []
+    for rel, real in editable_files(server).items():
+        try:
+            text = read_editable(real).decode("utf-8", errors="replace")
+        except (OSError, SourceChanged):
+            continue
+        if rel.endswith(".bib"):
+            keys += [{"key": e["key"], "title": " ".join(e["fields"].get("title", "").replace("{", "").replace("}", "").split())[:120]}
+                     for e in parse_bib(real, text)]
+        elif rel.endswith(".tex"):
+            uncommented = re.sub(r"(?<!\\)%.*", "", text)
+            labels += [{"label": m.group(1), "file": rel, "line": uncommented.count("\n", 0, m.start()) + 1}
+                       for m in LABEL_RE.finditer(uncommented)]
+    return {"labels": labels[:5000], "keys": keys[:5000]}
 
 
 def editor_text(raw):

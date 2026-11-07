@@ -10,7 +10,7 @@ import subprocess
 from . import config
 from .document import GRAPHIC_EXTS, floats, include_sites, layout
 from .files import fls_file, in_paper, job_file, project_tex_files, read_capped, shown_synctex
-from .latex import brace_group, project_macros, read_tex, tex_to_text
+from .latex import parse_bib, project_macros, read_tex, tex_to_text
 from .notes import blank_notes, note_kinds
 from .synctex import synctex_points
 from .tools import pdf_pages_text
@@ -93,36 +93,6 @@ def stale_outputs(paper_root, pdf_name):
             stale.append({"output": out, "source": newest, "lag": times[newest] - times[out],
                           "dirty": newest in dirty, "site": sites[out]})
     return stale
-
-
-def parse_bib(path):
-    """Entries of a .bib file: [{key, type, line, fields: {name: value}}] (a forgiving parser)."""
-    try:
-        with open(path, errors="replace") as f:
-            text = f.read()
-    except OSError:
-        return []
-    entries = []
-    for m in re.finditer(r"@(\w+)\s*\{\s*([^,\s]+)\s*,", text):
-        if m.group(1).lower() in ("comment", "string", "preamble"):
-            continue
-        body, _ = brace_group(text, text.index("{", m.start()))
-        fields, i = {}, body.index(",") + 1 if "," in body else len(body)
-        for fm in re.finditer(r"(\w+)\s*=\s*", body[i:]):
-            j = i + fm.end()
-            if j >= len(body):
-                break
-            if body[j] == "{":
-                value, _ = brace_group(body, j)
-            elif body[j] == '"':
-                k = body.find('"', j + 1)
-                value = body[j + 1:k]
-            else:
-                value = re.match(r"[^,\s}]*", body[j:]).group(0)
-            fields.setdefault(fm.group(1).lower(), value)
-        entries.append({"key": m.group(2), "type": m.group(1).lower(), "line": text.count("\n", 0, m.start()) + 1,
-                        "fields": fields})
-    return entries
 
 
 VENUES = {

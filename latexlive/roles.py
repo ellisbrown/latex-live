@@ -22,7 +22,7 @@ def least_role(method, path):
     if method == "GET":
         return {"/": "viewer", "/me": "viewer", "/docs": "viewer", "/forward": "viewer", "/synctex": "viewer",
                 "/viewer.html": "viewer", "/favicon.ico": "viewer", "/export": "viewer", "/review": "viewer", "/commits": "editor",
-                "/files": "editor", "/file": "editor"}.get(path, "owner")
+                "/files": "editor", "/file": "editor", "/completions": "editor"}.get(path, "owner")
     if path == "/switch":
         return None
     return {"/note": "commenter", "/rebuild": "editor", "/diff": "editor", "/file": "editor", "/export": "viewer",

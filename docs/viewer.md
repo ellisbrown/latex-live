@@ -117,6 +117,9 @@ Notes are the paper's note macros: one-argument commands that go through
   folder, with a filter.
 - Edits save by themselves a moment after you stop typing (Cmd/Ctrl+S saves at
   once), and the PDF rebuilds.
+- In the braces of `\ref` (`\eqref`, `\cref`, `\autoref`…), it offers the
+  paper's labels; in those of `\cite` (`\citet`, `\citep`…), the keys of its
+  `.bib` files, with their titles.
 - If the file changed meanwhile (saved in another editor or tab, or a note from
   the viewer), your edits are merged with that change. Where both changed the
   same lines, the pane shows both versions between `<<<<<<<` and `>>>>>>>`

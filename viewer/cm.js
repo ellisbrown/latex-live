@@ -1,4 +1,5 @@
-// CodeMirror, for the source pane: loaded on first use, with the pane's theme, highlighting and keys.
+// CodeMirror, for the source pane: loaded on first use, with the pane's theme, highlighting, keys, and completion of
+// labels in \ref and keys in \cite.
 
 export let CM = null, cmLoading = null, cmExtensions = null; // CodeMirror, once loaded (loadEditor)
 
@@ -29,6 +30,8 @@ export function loadEditor({ save, edited }) {
       ".cm-searchMatch": { backgroundColor: "#e0a04033", outline: "1px solid #e0a04099" },
       ".cm-searchMatch.cm-searchMatch-selected": { backgroundColor: "#e0a04080" },
       ".cm-tooltip": { color: "#ddd", backgroundColor: "#2a2d2f", border: "1px solid #444" },
+      ".cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]": { color: "#fff", backgroundColor: "#2f5f8f" },
+      ".cm-completionDetail": { color: "#9aa3a7", marginLeft: "1em" },
       ".cm-remote": { backgroundColor: "#2f6fb033" }, // (lines someone else just changed: flashLines)
     }, { dark: true });
     const colors = language.HighlightStyle.define([ // (the token kinds of CodeMirror's stex mode)
@@ -53,15 +56,45 @@ export function loadEditor({ save, edited }) {
       state.EditorState.lineSeparator.of("\n"), // (only \n ends a line, as on the server: a lone \r stays a character)
       view.lineNumbers(), view.highlightActiveLineGutter(), view.highlightSpecialChars(), view.drawSelection(),
       view.highlightActiveLine(), commands.history(), language.bracketMatching(), autocomplete.closeBrackets(),
+      autocomplete.autocompletion({ override: [completeRefs], icons: false }),
       search.search({ top: true }), language.StreamLanguage.define(stex), language.syntaxHighlighting(colors),
       EditorView.lineWrapping, EditorView.contentAttributes.of({ spellcheck: "true" }), theme, flashed,
       view.keymap.of([{ key: "Mod-s", run: () => { save(); return true; }, preventDefault: true },
-                      ...autocomplete.closeBracketsKeymap, ...commands.defaultKeymap, ...search.searchKeymap,
-                      ...commands.historyKeymap, commands.indentWithTab]),
+                      ...autocomplete.closeBracketsKeymap, ...autocomplete.completionKeymap, ...commands.defaultKeymap,
+                      ...search.searchKeymap, ...commands.historyKeymap, commands.indentWithTab]),
       EditorView.updateListener.of(edited),
     ];
     CM = { EditorState: state.EditorState, ChangeSet: state.ChangeSet, Transaction: state.Transaction, EditorView,
            Decoration: view.Decoration, flashLines, remoteLine: view.Decoration.line({ class: "cm-remote" }) };
   })().catch((err) => { cmLoading = null; throw err; });
   return cmLoading;
+}
+
+// Completion in the argument of \ref (and \eqref, \cref, \autoref…), from the labels of the paper's files and of the
+// text in the pane, and of \cite (\citet, \citep…), from the keys of its .bib files (live.py /completions, asked again
+// when what it said is more than 5 s old), each entry of a list of several completed on its own.
+const REF_ARG = /\\(?!href)[a-zA-Z]*ref\*?\{([^{}]*)$/, CITE_ARG = /\\[a-zA-Z]*cite[a-zA-Z]*\*?(?:\[[^\]]*\]){0,2}\{([^{}]*)$/;
+let known = null; // ({at, promise}: the last answer of /completions)
+function completionData() {
+  if (!known || performance.now() - known.at > 5000) {
+    known = { at: performance.now(), promise: fetch("completions", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { labels: [], keys: [] })).catch(() => ({ labels: [], keys: [] })) };
+  }
+  return known.promise;
+}
+async function completeRefs(context) {
+  const line = context.state.doc.lineAt(context.pos);
+  const before = line.text.slice(0, context.pos - line.from);
+  const ref = before.match(REF_ARG), cite = !ref && before.match(CITE_ARG);
+  if (!ref && !cite) return null;
+  const typed = (ref || cite)[1].split(",").pop().trimStart();
+  const data = await completionData();
+  let options;
+  if (cite) {
+    options = data.keys.map((k) => ({ label: k.key, detail: k.title }));
+  } else {
+    const here = [...context.state.doc.toString().matchAll(/\\label\s*\{([^{}\n]+)\}/g)].map((m) => m[1]);
+    options = [...new Set([...here, ...data.labels.map((l) => l.label)])].map((label) => ({ label }));
+  }
+  return { from: context.pos - typed.length, options, validFor: /^[^,{}\s]*$/ };
 }

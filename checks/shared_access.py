@@ -206,7 +206,7 @@ def role_checks(sh):
     owner_only = (("GET", "/instances", None), ("GET", "/papers", None), ("POST", "/switch", {"doc": "main"}),
                   ("POST", "/open", {"file": "main.tex", "line": 9}), ("POST", "/commit", {}))
     editor_up = (("GET", "/files", None), ("GET", "/file?path=body.tex", None), ("POST", "/file", probe), ("POST", "/rebuild", {}),
-                 ("GET", "/commits", None), ("POST", "/diff", {"rev": "HEAD"}))
+                 ("GET", "/commits", None), ("POST", "/diff", {"rev": "HEAD"}), ("GET", "/completions", None))
     for uid in ("vw", "cm", "ed"):
         for method, path, body in owner_only + (() if uid == "ed" else editor_up):
             expect(via_proxy(uid, path, method, body), 403, f"{method} {path} for {sh['users'][uid]['role']} {uid}")
@@ -214,7 +214,7 @@ def role_checks(sh):
                         (via_proxy("owner1", "/switch", "POST", {"doc": "appendix"}), "for the owner, through the proxy")):
         expect(result, 403, f"POST switch {who} (a shared preview serves one document)")
     for method, path, body, status in (("GET", "/files", None, 200), ("GET", "/file?path=body.tex", None, 200),
-                                       ("GET", "/commits", None, 200), ("POST", "/file", probe, 409)):
+                                       ("GET", "/commits", None, 200), ("POST", "/file", probe, 409), ("GET", "/completions", None, 200)):
         expect(via_proxy("ed", path, method, body), status, f"{method} {path} for the editor")
     listing = expect_dict(with_token(owner, "/instances"), 200, "GET instances for the owner")
     if listing.get("self") != sh["proc"].pid:
