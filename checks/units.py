@@ -17,7 +17,7 @@ import time
 import types
 
 from .base import HERE, fail, ok, wait_for
-from .helpers import put, put_bytes, tex_stand_in
+from .helpers import put, put_bytes, read_bytes, tex_stand_in
 from .shared_units import baseline_failure_checks, confinement_checks, shared_build_checks
 
 
@@ -26,7 +26,7 @@ def unit_checks():
     for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
                   code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, word_column_checks,
-                  baseline_failure_checks, connection_cap_checks):
+                  shown_synctex_checks, baseline_failure_checks, connection_cap_checks):
         check()
 
 
@@ -591,6 +591,45 @@ def word_column_checks():
     if wrong:
         fail(f"inverse search puts the double-clicked word at the wrong column: {wrong}")
     ok("inverse search finds the double-clicked word in its line, by its neighbours or its place, through accents and markup")
+
+
+def shown_synctex_checks():
+    """Each publish keeps a copy of the pass's SyncTeX file in build/shown/ (latex_report.keep_synctex), which the
+    lookups read once a failed pass has removed the build's own (files.shown_synctex); the copy is made only from a
+    regular file (a FIFO doesn't hold it up) and never through a link planted in build/shown/."""
+    sys.path.insert(0, HERE)
+    import latex_report
+    from latexlive import files
+    saved = latex_report.BUILD
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
+        build = latex_report.BUILD = os.path.join(tmp, "build")
+        try:
+            own, kept, outside = (os.path.join(build, "main-live.synctex.gz"), os.path.join(build, "shown", "main-live.synctex.gz"),
+                                  os.path.join(tmp, "outside"))
+            put_bytes(own, b"first pass")
+            latex_report.keep_synctex(own)
+            if read_bytes(kept) != b"first pass":
+                fail(f"keep_synctex did not copy the SyncTeX file to build/shown/: {os.listdir(build)}")
+            os.remove(own)  # (as a failed pass does)
+            if files.shown_synctex(tmp, "main.pdf") != kept:
+                fail(f"after a failed pass, the lookups read {files.shown_synctex(tmp, 'main.pdf')}, not the copy kept")
+            put_bytes(outside, b"not the server's to write")
+            os.symlink(outside, os.path.join(build, "shown", ".main-live.synctex.gz.tmp"))
+            put_bytes(own, b"second pass")
+            latex_report.keep_synctex(own)
+            if read_bytes(outside) != b"not the server's to write" or read_bytes(kept) != b"second pass":
+                fail("keep_synctex wrote through a link in build/shown/, or kept no copy beside it")
+            os.mkfifo(os.path.join(build, "fifo-live.synctex.gz"))
+            copier = threading.Thread(target=latex_report.keep_synctex, args=(os.path.join(build, "fifo-live.synctex.gz"),),
+                                      daemon=True)
+            copier.start()
+            copier.join(5)
+            if copier.is_alive() or os.path.exists(os.path.join(build, "shown", "fifo-live.synctex.gz")):
+                fail("keep_synctex waits on a FIFO, or copies from it")
+        finally:
+            latex_report.BUILD = saved
+    ok("a publish keeps a copy of its SyncTeX file, which the lookups read after a failed pass; only from a regular file,"
+       " never through a link")
 
 
 def connection_cap_checks():

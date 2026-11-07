@@ -34,6 +34,7 @@ import re
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -165,24 +166,36 @@ def keep_inputs(root):
 def keep_synctex(path):
     """Keep a copy of the SyncTeX file of a PDF about to be published (path) in build/shown/, in one step: live.py's
     lookups read the newer of it and the build's own (files.shown_synctex). A pass that fails removes its PDF and
-    SyncTeX file, while the PDF on show stays the last good pass's, which this copy maps. Never through a symbolic link
-    (in shared mode, build/ is written in the containers)."""
-    shown = os.path.join(BUILD, "shown")
-    dest = os.path.join(shown, os.path.basename(path))
+    SyncTeX file, while the PDF on show stays the last good pass's, which this copy maps. Only from a regular file, and
+    never through a link, in build/shown/ or to it (in shared mode, build/ is written in the containers)."""
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | nofollow)
     except OSError:
         return
     with open(fd, "rb") as src:
+        shown = os.path.join(BUILD, "shown")
         try:
-            if os.path.islink(shown):
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
                 return
             os.makedirs(shown, exist_ok=True)
-            with open(dest + ".tmp", "wb") as f:
+            folder = os.open(shown, os.O_RDONLY | os.O_DIRECTORY | nofollow)
+        except OSError:
+            return
+        name = os.path.basename(path)
+        tmp = f".{name}.tmp"
+        try:
+            try:
+                os.unlink(tmp, dir_fd=folder)  # (one left by a copy cut short; a link is removed, not followed)
+            except FileNotFoundError:
+                pass
+            with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow, 0o644, dir_fd=folder), "wb") as f:
                 shutil.copyfileobj(src, f)
-            os.replace(dest + ".tmp", dest)
+            os.replace(tmp, name, src_dir_fd=folder, dst_dir_fd=folder)
         except OSError:
             pass
+        finally:
+            os.close(folder)
 
 
 def write_json(path, value):
