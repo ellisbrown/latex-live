@@ -86,8 +86,9 @@ def exact_export(server, pdf, keep=None):
 
     Built in build/export/<doc>/ once per build of the document (the published PDF's mtime), one
     export at a time; with SyncTeX, and with the files its last pass read kept in inputs/, so that
-    build_review can repeat that pass. keep(out), if given, runs before another export can replace
-    this one (to copy what it needs). Raises RuntimeError when it fails, and at once when it failed
+    build_review can repeat that pass, and listed in its recorder file (.fls: the arXiv package's
+    files). keep(out), if given, runs before another export can replace this one (to copy what it
+    needs). Raises RuntimeError when it fails, and at once when it failed
     for this build already (it would again: for the review copy after /export, say)."""
     root, doc = server.paper_root, pdf[:-4]
     out = os.path.join(root, config.BUILD, "export", doc)  # (per document: another instance may export another)
@@ -120,7 +121,7 @@ def exact_export(server, pdf, keep=None):
                     if os.path.exists(job_file(root, pdf, ext)):
                         shutil.copyfile(job_file(root, pdf, ext), os.path.join(out, job + ext))
                 tex = ["pdflatex", "-interaction=batchmode", "-halt-on-error", "-file-line-error", "-synctex=1",
-                       f"-output-directory={out}", f"-jobname={job}", f"{latex_report.NOTES_OFF}\\input{{{doc}}}"]
+                       "-recorder", f"-output-directory={out}", f"-jobname={job}", f"{latex_report.NOTES_OFF}\\input{{{doc}}}"]
                 for passes in range(1, 7):
                     keep_inputs(out)
                     if not run(tex, root):

@@ -204,7 +204,8 @@ def role_checks(sh):
 
     probe = {"path": "refs.bib", "base": "0" * 20, "text": "@misc{one}\n"}  # (a save on a version never seen: 409, writes nothing)
     owner_only = (("GET", "/instances", None), ("GET", "/papers", None), ("POST", "/switch", {"doc": "main"}),
-                  ("POST", "/open", {"file": "main.tex", "line": 9}), ("POST", "/commit", {}))
+                  ("POST", "/open", {"file": "main.tex", "line": 9}), ("POST", "/commit", {}), ("POST", "/arxiv", {}),
+                  ("GET", "/arxiv.tar.gz", None))
     editor_up = (("GET", "/files", None), ("GET", "/file?path=body.tex", None), ("POST", "/file", probe), ("POST", "/rebuild", {}),
                  ("GET", "/commits", None), ("POST", "/diff", {"rev": "HEAD"}), ("GET", "/completions", None))
     for uid in ("vw", "cm", "ed"):

@@ -26,7 +26,7 @@ def unit_checks():
     for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
                   code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, completion_checks, word_column_checks, venue_checks, diff_retry_checks,
-                  graphics_synctex_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks):
+                  arxiv_strip_checks, graphics_synctex_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks):
         check()
 
 
@@ -787,6 +787,45 @@ def venue_checks():
     if found != [(9, []), (8, ["limitations"]), (7, []), (14, []), (None, []), (9, ["limitations"])]:
         fail(f"page limits and sections left out by venue style: {found}")
     ok("the venue style sets the page limit (ICLR, ACL, AAAI, ECCV), and ACL's leaves out its Limitations")
+
+
+def arxiv_strip_checks():
+    """What the arXiv package takes out of a .tex file (arxiv.strip_source): comments (a trailing one keeps its %),
+    \\iffalse blocks and comment environments that take whole lines, and the notes' text; not what TeX reads verbatim,
+    an escaped %, a % in \\url's argument, inline blocks, or a comment environment the sources define. And how it
+    compares PDFs (arxiv.pdf_difference: dates and IDs aside), and that the arXiv check reads the package made."""
+    from latexlive import arxiv
+    source = ("\\documentclass{article}\r\n% a whole-line comment\r\n\\usepackage{url}% loads url\r\n"
+              "50\\% and a break\\\\% then a comment\n\\url{http://x.org/a%20b} and \\verb|50%| stay % but this goes\n"
+              "\\foo{%\n  bar}\n%\n\\begin{verbatim}\n% kept \\eb{kept}\n\\end{verbatim}\n\\iffalse\nhidden \\iftrue\\fi\n  \\fi\n"
+              "inline \\iffalse x\\fi{} stays\n\\begin{comment}\ngone\n\\end{comment}\n"
+              "A note \\eb{secret\nover two lines} and \\eb{} and \\eb{#1}.\n\\iffalse\nunclosed\n")
+    want = ("\\documentclass{article}\r\n\\usepackage{url}%\r\n50\\% and a break\\\\%\n"
+            "\\url{http://x.org/a%20b} and \\verb|50%| stay %\n\\foo{%\n  bar}\n%\n\\begin{verbatim}\n% kept \\eb{kept}\n"
+            "\\end{verbatim}\ninline \\iffalse x\\fi{} stays\nA note \\eb{} and \\eb{} and \\eb{#1}.\n\\iffalse\nunclosed\n")
+    text, found = arxiv.strip_source(source, {"eb": "EB"})
+    if text != want or found != {"comments": 4, "hidden": 2, "notes": 1}:
+        fail(f"the arXiv package's sources: {text!r}, {dict(found)}")
+    own = arxiv.strip_source("a\n\\begin{comment}\nshown\n\\end{comment}\n", comment_env=False)[0]
+    closed = arxiv.strip_source("a\n\\begin{comment}\ngone\n\\end{comment}\nb\n")[0]
+    if own != "a\n\\begin{comment}\nshown\n\\end{comment}\n" or closed != "a\nb\n":
+        fail(f"comment environments in the arXiv package: the sources' own {own!r}, the comment package's {closed!r}")
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
+        pdf = b"%%PDF-1.5\n1 0 obj << /CreationDate (D:%s) >> endobj\ntrailer << /ID [<%s> <%s>] >>\n"
+        put_bytes(os.path.join(tmp, "a.pdf"), pdf % (b"20261107120000Z", b"ab" * 16, b"cd" * 16))
+        put_bytes(os.path.join(tmp, "b.pdf"), pdf % (b"20250101000000Z", b"12" * 16, b"34" * 16))
+        put_bytes(os.path.join(tmp, "c.pdf"), pdf.replace(b"1 0 obj", b"2 0 obj") % (b"20250101000000Z", b"12" * 16, b"34" * 16))
+        put(os.path.join(tmp, "main.tex"), "\\documentclass{article}\n")
+        os.makedirs(os.path.join(tmp, "build"))
+        old = arxiv.arxiv_package(tmp, "main")
+        put_bytes(os.path.join(tmp, "build", "main-arxiv.tar.gz"), b"")
+        made = arxiv.arxiv_package(tmp, "main")
+        same, other = (arxiv.pdf_difference(os.path.join(tmp, "a.pdf"), os.path.join(tmp, n)) for n in ("b.pdf", "c.pdf"))
+    if same is not None or not other or old is not None or not made or not made[2].endswith("build/main-arxiv.tar.gz"):
+        fail(f"comparing the arXiv package's PDF: dates and IDs apart {same!r}, otherwise {other!r};"
+             f" the package the viewer made: {old}, {made}")
+    ok("the arXiv package's sources lose their comments (a trailing one keeps its %), whole-line hidden blocks and their notes'"
+       " text, not what TeX reads verbatim; its PDF is compared dates and IDs aside; the arXiv check reads the package made")
 
 
 def completion_checks():

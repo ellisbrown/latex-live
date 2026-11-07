@@ -1,6 +1,6 @@
-"""The downloads in shared mode: the paper without its notes (export_checks) and with them in the margin
-(review_shared_checks), started only by a POST from the viewer's own page, one build for several asking at once,
-confined."""
+"""The downloads in shared mode: the paper without its notes and the owner's arXiv package (export_checks), and with
+its notes in the margin (review_shared_checks), started only by a POST from the viewer's own page, one build for
+several asking at once, confined."""
 
 import os
 import threading
@@ -50,6 +50,22 @@ def export_checks(sh):
         fail("asking again rebuilt the shared copy's download without notes, though the document had not changed")
     ok("a viewer may download the shared paper without its notes: one build for several asking at once, once per build of"
        " the document, in the hardened image")
+
+    def packaged():
+        a = expect_dict(via_proxy("owner1", "/arxiv", "POST", {}), 200, "POST arxiv for the owner")
+        if a.get("state") == "failed":
+            fail(f"the shared copy's arXiv package failed: {a.get('msg')}")
+        return a if a.get("state") == "done" else None
+
+    made = wait_for("the shared copy's arXiv package", packaged, timeout=240)
+    tarball = via_proxy("owner1", "/arxiv.tar.gz")
+    if tarball[0] != 200 or header(tarball, "Content-Type") != "application/gzip" or not tarball[2].startswith(b"\x1f\x8b"):
+        fail(f"/arxiv.tar.gz for the owner: {tarball[0]} {header(tarball, 'Content-Type')}")
+    with open(os.path.join(root, "build", "arxiv", "main", "test", "main.log"), errors="replace") as f:
+        texlog = f.read()
+    if "latex-live-check: TeX refused an absolute path" not in texlog or not made["same"]:
+        fail(f"the shared copy's arXiv package was not built alone in the hardened image, or differs from the export: {made}")
+    ok("the owner makes the shared paper's arXiv package, built alone in the hardened image, as the export")
 
 
 def review_shared_checks(sh):

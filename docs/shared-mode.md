@@ -35,8 +35,8 @@ before it may:
   pre-submission checks and the build's error messages, and compares with
   earlier commits of the copy's branch (the diff, and the change highlights
   against the last commit or push);
-- **owner:** everything a preview of your own allows, except switching to
-  another document: a shared instance serves one.
+- **owner:** everything a preview of your own allows (the arXiv package
+  too), except switching to another document: a shared instance serves one.
 
 Viewers and commenters see the current PDF and what it shows, nothing more:
 

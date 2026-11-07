@@ -8,6 +8,7 @@ import re
 import urllib.parse
 
 from . import config
+from .arxiv import start_arxiv
 from .auth import owner_name
 from .baselines import baseline_request, start_diff
 from .build import on_main_thread, rebuild_doc, request_switch
@@ -37,7 +38,7 @@ def me(server, user):
     note macro, without which a coauthor can't comment; openHost, in shared mode: whether the owner's
     editor opens here (a service has none); download: whether they may download the builds made on
     request, the paper without its notes (export) and with its notes in the margin (review), which
-    take the same role; signOut: whether the browser signed in with a token (POST logout forgets it),
+    take the same role; arxiv: whether they may make and download the arXiv package (the owner's); signOut: whether the browser signed in with a token (POST logout forgets it),
     not through the proxy."""
     defined = bool(user["macro"]) and user["macro"] in paper_note_kinds(server.paper_root, server.default_pdf)
     can = lambda path: allowed(user, "POST", path)
@@ -46,12 +47,12 @@ def me(server, user):
             "can": {"comment": can("/note") and (user["role"] == "owner" or defined), "edit": can("/file"),
                     "rebuild": can("/rebuild"), "compare": can("/diff"), "switch": can("/switch"),
                     "openHost": can("/open") and (not config.SHARED or editor_cli() is not None),
-                    "download": can("/export") and can("/review"), "checks": allowed(user, "GET", "/check/"),
+                    "download": can("/export") and can("/review"), "arxiv": can("/arxiv"), "checks": allowed(user, "GET", "/check/"),
                     "signOut": user["via"] != "proxy"}}
 
 
 STATIC = {"/viewer.html"}  # plus the files in the folders of STATIC_DIRS (static_file)
-ACTIONS = ("/open", "/diff", "/switch", "/export", "/review")  # (POST only: a GET of one is answered 405)
+ACTIONS = ("/open", "/diff", "/switch", "/export", "/review", "/arxiv")  # (POST only: a GET of one is answered 405)
 
 
 def static_file(path):
@@ -162,6 +163,9 @@ class Handler(BaseHandler):
             self.send_json(200, files_listing(self.server))
         elif path == "/completions":
             self.send_json(200, completions(self.server))
+        elif path == "/arxiv.tar.gz":  # (the package that POST /arxiv made)
+            self.send_pdf(os.path.join(self.server.paper_root, config.BUILD, f"{self.server.default_pdf[:-4]}-arxiv.tar.gz"),
+                          "application/gzip")
         elif path == "/file":
             self.send_json(*file_request(self.server, query))
         elif path in ACTIONS:  # (only as POST, which checks the Origin; a viewer from before says this)
@@ -187,7 +191,7 @@ class Handler(BaseHandler):
 
     def do_POST(self):
         """Actions (POST /note, /file, /rebuild, /switch, /diff, /open, /commit, /logout), and the builds made on
-        request (POST /export, /review, and in shared mode /baseline). Only with the session cookie, which
+        request (POST /export, /review, /arxiv, and in shared mode /baseline). Only with the session cookie, which
         SameSite=Strict keeps off other sites' requests, a JSON body, which other sites can't send without asking
         first, and from the viewer's own page (origin_allowed), as the role allows; both are checked before the body
         is read (a refusal reads a small body still, so that the answer isn't lost to a reset; a large one, not)."""
@@ -246,5 +250,7 @@ class Handler(BaseHandler):
             self.send_json(*start_export(self.server))
         elif path == "/review":
             self.send_json(*start_review(self.server))
+        elif path == "/arxiv":
+            self.send_json(*start_arxiv(self.server))
         else:
             self.send_error(404)
