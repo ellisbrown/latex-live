@@ -4,7 +4,7 @@
 import { $, file, isDiff, setStatus } from "./page.js";
 import { postJSON, readBody } from "./net.js";
 import { canOpenFile, editable, editorAllowed, me, opensInBrowser, opensSources } from "./role.js";
-import { container, eventBus, pagesReady, shownVariant, viewer } from "./pdfview.js";
+import { container, eventBus, pageFrame, pagesReady, shownVariant, viewer } from "./pdfview.js";
 import { flash, reveal } from "./navigation.js";
 import { cmView, ed, showEditor } from "./editor.js";
 
@@ -20,9 +20,10 @@ container.addEventListener("dblclick", async (e) => {
   const [x, y] = pageView.viewport.convertToPdfPoint(
     e.clientX - rect.left - pageDiv.clientLeft, e.clientY - rect.top - pageDiv.clientTop);
   window.getSelection().removeAllRanges(); // undo the word selection from the double-click
-  flash(pageView.id, [x - 6, y - 6, x + 6, y + 6], "dot");
+  const [sx, sy] = pageFrame(pageView.pdfPage).fromUser(x, y);
+  flash(pageView.id, [sx - 6, sy - 6, sx + 6, sy + 6], "dot");
   if (isDiff) return setStatus("inverse search is off in the diff view", "error");
-  const top = pageView.pdfPage.view[3] - y; // synctex measures y down from the page top
+  const top = pageView.pdfPage.view[3] - y; // synctex measures y down from the page top (as stored, before its /Rotate)
   const q = new URLSearchParams({ file, page: pageView.id, x: x.toFixed(1), y: top.toFixed(1), ...cleanParam(),
                                   ...clickedWord(pageDiv, e.clientX, e.clientY) });
   try {
@@ -97,8 +98,8 @@ function clickedWord(pageDiv, x, y) {
 }
 
 // SyncTeX forward search (forward.py, or a note or check in the sidebar): scroll to the source
-// line's boxes ({page, x, y, w, h}, points from the page's top-left) and highlight them; one that
-// arrives while the document is loading, once its pages are ready.
+// line's boxes ({page, x, y, w, h}, points from the page's top-left as stored: pageFrame) and highlight
+// them; one that arrives while the document is loading, once its pages are ready.
 let pendingForward = null;
 eventBus.on("pagesinit", () => {
   if (pendingForward) showForward(pendingForward); // arrived while this document was loading
@@ -107,9 +108,9 @@ eventBus.on("pagesinit", () => {
 export function showForward(t) {
   if (!pagesReady) return (pendingForward = t);
   const pageView = viewer.getPageView(t.page - 1);
-  if (!pageView) return;
-  const H = pageView.pdfPage.view[3];
-  reveal(t.page, [t.x - 2, H - t.y - t.h - 2, t.x + t.w + 2, H - t.y + 2]);
+  if (!pageView?.pdfPage) return;
+  const [x0, y0, x1, y1] = pageFrame(pageView.pdfPage).rect([t.x, t.y, t.x + t.w, t.y + t.h]);
+  reveal(t.page, [x0 - 2, y0 - 2, x1 + 2, y1 + 2]);
   setStatus(`← page ${t.page}`, "fresh");
 }
 // Show a source line in the PDF; sources with no PDF location (e.g. a .bib entry) open in the editor.

@@ -60,21 +60,24 @@ def place_notes(want, heights, lo, hi, gap):
     return [s + o for s, o in zip(shifts, offsets)]
 
 
-def review_layout(placed, probe, geo, pages, macros=None):
+def review_layout(placed, probe, geo, pages, macros=None, page_sizes=None):
     """Where everything goes on the review copy's pages: {pages, paper, width, height, left, W (the
-    paper's page width), notes} (points from the top left), each note with its text, its number n,
-    side, size (0 or 1: the smaller type),
+    paper's page width), sizes, notes} (points from the top left), each note with its text, its
+    number n, side, size (0 or 1: the smaller type),
     top (in its gutter), or continued (the page it continues on). Notes are numbered in reading order
     (page, column, top to bottom), and in each gutter they keep that order, each as near its spot as
     the others allow. When they don't fit, they are set smaller; when they still don't, the first
     ones that fit stay, and the rest continue on pages after the paper (continuation_pages), with a
     line in the gutter saying where. Each note's text is as plain text (review_text, with the paper's own macros:
-    macros), for the copy with the notes as comments and for a note the probe couldn't typeset."""
+    macros), for the copy with the notes as comments and for a note the probe couldn't typeset. page_sizes: {page:
+    (width, height)} of the pages shown at another size than the paper's (turned ones), whose notes are where they are
+    shown; sizes in the plan."""
     W, H, snippet = geo["W"], geo["H"], geo["snippet"]
+    page_sizes = page_sizes or {}
     for n in placed:
         n["text"] = review_text(n, macros or {})
     for n in placed:
-        n["side"] = "left" if geo["two"] and n["x"] < W / 2 else "right"
+        n["side"] = "left" if geo["two"] and n["x"] < page_sizes.get(n["page"], (W, H))[0] / 2 else "right"
     placed.sort(key=lambda n: (n["page"], n["side"] == "right", n["y"], n["x"], n["id"]))
     snippets = probe.get("snippets", {}) if probe.get("pdf") else {}
     for number, n in enumerate(placed, 1):
@@ -89,9 +92,9 @@ def review_layout(placed, probe, geo, pages, macros=None):
         else:  # (the probe didn't typeset it: its text, roughly sized)
             lines = math.ceil((len(n["text"]) + len(n["author"]) + 2) / (snippet / 3.7))
             n["sizes"] = [{"page": None, "w": snippet, "text": snippet, "ht": 6.0, "h": 8.6 * lines + 2} for _ in range(2)]
-    lo, hi = REVIEW_MARGIN, H - REVIEW_MARGIN
-    for _, group in itertools.groupby(placed, key=lambda n: (n["page"], n["side"])):
+    for (page, _), group in itertools.groupby(placed, key=lambda n: (n["page"], n["side"])):
         group = list(group)
+        lo, hi = REVIEW_MARGIN, page_sizes.get(page, (W, H))[1] - REVIEW_MARGIN
         for size in (0, 1):
             heights = [n["sizes"][size]["h"] for n in group]
             if sum(heights) + REVIEW_GAP * (len(group) - 1) <= hi - lo:
@@ -110,6 +113,7 @@ def review_layout(placed, probe, geo, pages, macros=None):
         for n, *_ in page:
             n["continued"] = pages + 1 + i
     return {"pages": pages + len(extra), "paper": pages, "width": geo["width"], "height": H, "left": geo["left"], "W": W,
+            "sizes": {page: list(size) for page, size in page_sizes.items()},
             "notes": [{k: v for k, v in n.items() if k not in ("call", "body", "typeset")} for n in placed]}
 
 
@@ -156,9 +160,9 @@ def review_tex(plan, geo, colors):
     def f(v):
         return f"{v:.2f}".rstrip("0").rstrip(".")
 
-    def note(n, x, top, size, scale=1.0, tag_right=False):
-        """The note with its top left at (x, top), and its number left of its first line (or right of
-        its widest line, in a left gutter). Returns the TikZ code, and the number's center."""
+    def note(n, x, top, size, scale=1.0, tag_right=False, H=H):
+        """The note with its top left at (x, top) on a page H high, and its number left of its first line (or right
+        of its widest line, in a left gutter). Returns the TikZ code, and the number's center."""
         s, color = n["sizes"][size], f"latexlive{n['macro']}"
         w, ht = s["w"] * scale, s["ht"] * scale
         tag = (x + s["text"] * scale + REVIEW_TAG / 2 if tag_right else x - REVIEW_TAG / 2, H - top - ht + 2.4)
@@ -176,6 +180,8 @@ def review_tex(plan, geo, colors):
     for p in range(1, plan["paper"] + 1):
         wires, marks, boxes = [], [], []
         here = by_page.get(p, [])
+        pw, ph = plan.get("sizes", {}).get(p, (W, H))  # (a turned page: as it is shown)
+        width = pw + plan["width"] - W
         spread, run = {}, []  # (notes at one spot: their numbers side by side)
         for n in sorted(here, key=lambda n: (n["y"], n["x"], n["n"])) + [None]:
             if run and (n is None or abs(n["y"] - run[0]["y"]) > 1.5 or abs(n["x"] - run[0]["x"]) > 3):
@@ -185,15 +191,15 @@ def review_tex(plan, geo, colors):
             run.append(n)
         for n in here:
             color, right = f"latexlive{n['macro']}", n["side"] == "right"
-            ax, base = left + n["x"], H - n["y"]
+            ax, base = left + n["x"], ph - n["y"]
             marks.append(f"\\draw[{color},line width=.7bp] ({f(ax)},{f(base - 2.2)}) -- ({f(ax)},{f(base + 6.4)});\n"
                          f"\\node[latexlive mark,fill={color}] at ({f(ax + spread[n['n']])},{f(base + 9.2)}) {{{n['n']}}};\n")
             if n["top"] is None:
                 continue
-            edge = left + W if right else left
+            edge = left + pw if right else left
             s = n["sizes"][n["size"]]
             x = edge + REVIEW_INNER + REVIEW_TAG if right else edge - REVIEW_INNER - REVIEW_TAG - s["text"]
-            code, (tx, ty) = note(n, x, n["top"], n["size"], tag_right=not right)
+            code, (tx, ty) = note(n, x, n["top"], n["size"], tag_right=not right, H=ph)
             boxes.append(code)
             end = tx - 3.6 if right else tx + 3.6
             bend = max(ax, edge - 10) if right else min(ax, edge + 10)  # (the bend starts in the page's own margin)
@@ -205,13 +211,13 @@ def review_tex(plan, geo, colors):
             rest = [n for n in here if n["side"] == side and n["top"] is None]
             if rest:
                 where = f"{rest[0]['n']}" + (f"--{rest[-1]['n']}" if len(rest) > 1 else "")
-                x = left + W + REVIEW_INNER if side == "right" else REVIEW_OUTER
+                x = left + pw + REVIEW_INNER if side == "right" else REVIEW_OUTER
                 boxes.append(f"\\node[anchor=south west,inner sep=0pt,font=\\sffamily\\itshape\\fontsize{{6.5}}{{8}}\\selectfont,"
                              f"text=black!65] at ({f(x)},{f(REVIEW_MARGIN)}) {{Notes {where} continue on page {rest[0]['continued']}.}};\n")
         # (gutters light gray, so the page's edges show; the page white under the paper's, which may have no background)
-        paper = (f"\\fill[black!7] (0,0) rectangle ({f(plan['width'])},{f(H)});\n"
-                 f"\\fill[white] ({f(left)},0) rectangle ({f(left + W)},{f(H)});\n")
-        out.append(f"\\latexlivepage{{{f(plan['width'])}}}{{{f(H)}}}{{{f(left)}}}{{\\includegraphics[page={p}]{{export.pdf}}}}"
+        paper = (f"\\fill[black!7] (0,0) rectangle ({f(width)},{f(ph)});\n"
+                 f"\\fill[white] ({f(left)},0) rectangle ({f(left + pw)},{f(ph)});\n")
+        out.append(f"\\latexlivepage{{{f(width)}}}{{{f(ph)}}}{{{f(left)}}}{{\\includegraphics[page={p}]{{export.pdf}}}}"
                    f"{{%\n{paper}{''.join(wires + marks + boxes)}}}\n")
     for i, page in enumerate(continuation_pages(plan["notes"], geo)):
         draw = [f"\\node[anchor=north west,inner sep=0pt,font=\\sffamily\\bfseries\\fontsize{{9}}{{11}}\\selectfont] at (36,{f(H - 24)})"
@@ -250,8 +256,9 @@ def pdf_text(text):
 
 def comments_tex(plan, colors, when):
     """The LaTeX source of the copy with the notes as comments (plan: review_layout; colors: {macro: (r, g, b)}; when:
-    the PDF date of the comments, D:YYYYMMDDHHmmSS): each page of the paper as it is, and on it each of its notes as a
-    sticky note just above its spot, with the note's text, its author's name, its number and color."""
+    the PDF date of the comments, D:YYYYMMDDHHmmSS): each page of the paper as it is (a turned one as it is shown), and
+    on it each of its notes as a sticky note just above its spot, with the note's text, its author's name, its number
+    and color."""
     def f(v):
         return f"{v:.2f}".rstrip("0").rstrip(".")
     by_page = {}
@@ -260,14 +267,15 @@ def comments_tex(plan, colors, when):
     out = [COMMENTS_HEAD]
     for p in range(1, plan["paper"] + 1):
         notes = []
+        W, H = plan.get("sizes", {}).get(p, (plan["W"], plan["height"]))
         for n in sorted(by_page.get(p, []), key=lambda n: n["n"]):
             r, g, b = colors.get(n["macro"], (1, 0.82, 0.2))
             number = f"Note {n['n']}"
-            x = min(max(n["x"] - 1, 0), plan["W"] - 12)
-            y = min(max(plan["height"] - n["y"] + 7, 0), plan["height"] - 12)
+            x = min(max(n["x"] - 1, 0), W - 12)
+            y = min(max(H - n["y"] + 7, 0), H - 12)
             notes.append(f"\\latexlivecomment{{{f(x)}}}{{{f(y)}}}{{/Subtype/Text/Name/Comment/F 28/C[{r} {g} {b}]/M(D:{when})"
                          f"/NM(latex-live-note-{n['n']})/Subj{pdf_text(number)}/T{pdf_text(n['author'])}\n"
                          f"/Contents{pdf_text(n['text'])}}}%\n")
-        out.append(f"\\latexlivepage{{{f(plan['W'])}}}{{{f(plan['height'])}}}{{{p}}}{{%\n{''.join(notes)}}}\n")
+        out.append(f"\\latexlivepage{{{f(W)}}}{{{f(H)}}}{{{p}}}{{%\n{''.join(notes)}}}\n")
     out.append("\\end{document}\n")
     return "".join(out)

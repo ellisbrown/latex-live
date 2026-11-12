@@ -1,8 +1,8 @@
 // The sidebar's outline.
 
 import { $, cleanFile, el, file } from "./page.js";
-import { doc, linkService, shownVariant } from "./pdfview.js";
-import { area, areaFraction, norm, textLines } from "./pagetext.js";
+import { doc, linkService, pageFrame, shownVariant } from "./pdfview.js";
+import { areaFraction, norm, shownArea, textLines } from "./pagetext.js";
 import { displayedResult } from "./pages.js";
 
 // Outline, rebuilt on each reload: the PDF's bookmarks (hyperref), or else the contents entries
@@ -50,7 +50,7 @@ export async function fillSectionPages() {
     if (item.minor) { pos.push(null); continue; } // (run-in paragraph titles: too generic to find reliably)
     const p = await headingPos(d, item, from).catch(() => null);
     if (p?.found) from = p.index;
-    pos.push(p?.found ? p.index + areaFraction(p.top, p.x) : null);
+    pos.push(p?.found ? p.index + areaFraction(p.top, p.x, shownArea(p.frame)) : null);
   }
   if (d !== doc || rows !== outlineRows) return;
   const mainEnd = r.page - 1 + r.fill;
@@ -105,18 +105,19 @@ function nest(entries) {
 // A .toc entry without an anchor: go to its page label, then to the line that holds its title.
 async function goToHeading(entry) {
   const p = await headingPos(doc, entry);
-  if (p) linkService.goToDestination([p.index, { name: "XYZ" }, null, p.H - p.top + 4, null]);
+  if (p) linkService.goToDestination([p.index, { name: "XYZ" }, ...p.frame.toUser(0, p.top - 4), null]);
 }
-// Where a heading is: {index (page), top (points from the page top), H, found}: on its labeled
-// page, or nearby (not before `from`, the previous heading's page) should the label be stale.
+// Where a heading is: {index (page), top (points from the top of the page as shown), x, frame (pageFrame), found}: on
+// its labeled page, or nearby (not before `from`, the previous heading's page) should the label be stale.
 async function headingPos(d, entry, from = null) {
   if (entry.dest) {
     const dest = typeof entry.dest === "string" ? await d.getDestination(entry.dest) : entry.dest;
     if (!Array.isArray(dest)) return null;
     const index = typeof dest[0] === "object" && dest[0] ? await d.getPageIndex(dest[0]) : dest[0];
-    const H = (await d.getPage(index + 1)).view[3];
-    const xyz = dest[1]?.name === "XYZ";
-    return { index, H, top: xyz && dest[3] != null ? H - dest[3] : area.top, x: xyz ? dest[2] : null, found: true };
+    const page = await d.getPage(index + 1), frame = pageFrame(page);
+    const xyz = dest[1]?.name === "XYZ" && dest[3] != null;
+    const [x, top] = xyz ? frame.fromUser(dest[2] ?? page.view[0], dest[3]) : [null, shownArea(frame).top];
+    return { index, frame, top, x: xyz && dest[2] != null ? x : null, found: true };
   }
   const labels = await d.getPageLabels();
   const index = labels?.includes(entry.page) ? labels.indexOf(entry.page) : +entry.page - 1;
@@ -126,10 +127,10 @@ async function headingPos(d, entry, from = null) {
   const key = norm(text).slice(-20); // the end of the title: its start may be a symbol or macro
   const pages = [index, index - 1, index + 1, index - 2];
   for (const i of pages.filter((i) => i >= (from ?? 0) && i < d.numPages)) {
-    const { H, lines } = await textLines(d, i + 1);
+    const { lines } = await textLines(d, i + 1);
     const line = (key && lines.find((l) => norm(l.str).includes(key))) ||
                  (number && lines.find((l) => l.str.startsWith(`${number} `)));
-    if (line) return { index: i, H, top: line.top - 10, x: line.left, found: true };
+    if (line) return { index: i, frame: pageFrame(await d.getPage(i + 1)), top: line.top - 10, x: line.left, found: true };
   }
-  return { index, H: (await d.getPage(index + 1)).view[3], top: 0, found: false };
+  return { index, frame: pageFrame(await d.getPage(index + 1)), top: 0, found: false };
 }

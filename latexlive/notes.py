@@ -11,7 +11,7 @@ from . import config
 from .document import layout
 from .files import fls_file, mtime, pdf_path, project_tex_files, shown_synctex
 from .latex import brace_group, project_macros, read_tex, tex_to_text
-from .synctex import synctex_points
+from .synctex import page_turns, shown_point, synctex_points
 from .tools import pdf_pages_text
 
 
@@ -109,7 +109,7 @@ def margin_notes(paper_root, pdf_name):
     fls = fls_file(paper_root, pdf_name)
     if not os.path.exists(synctex_gz):
         return []
-    points = synctex_points(synctex_gz)
+    points, turns = synctex_points(synctex_gz), page_turns(synctex_gz)
     texts = {path: read_tex(path) for path in project_tex_files(paper_root, fls)}
     kinds = note_kinds(texts.values())
     if not kinds:
@@ -122,11 +122,15 @@ def margin_notes(paper_root, pdf_name):
     def at(path, line):
         """The line's points in the text area, without columns: the page frame, header, and
         line numbers are shipped out while some line is current; the left-margin glue repeats on
-        each line of a paragraph."""
+        each line of a paragraph (at one place across, as the lines run: a turned page's rotated
+        block runs down the page as stored)."""
         found = [p for p in points.get((path, line), [])
                  if p[1] >= area["left"] - 0.5 and area["top"] - 0.5 <= p[2] <= area["bottom"] + 0.5]
-        column = collections.Counter((p[0], p[1]) for p in found)
-        return [p for p in found if column[p[0], p[1]] < 5] or None
+        def across(p):
+            turn = turns.get(p[0])
+            return p[0], shown_point(turn, p[1], p[2])[0] if turn and turn["blocks"] else p[1]
+        column = collections.Counter(across(p) for p in found)
+        return [p for p in found if column[across(p)] < 5] or None
 
     def prose(tex, keep):
         """Typeset words of tex without notes, cut at its last (keep="end") or first opaque part."""

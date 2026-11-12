@@ -2,7 +2,7 @@
 
 import { $, cleanFile, el, file, hubBase, isDiff } from "./page.js";
 import { canOpenFile, opensAt, setWho, who } from "./role.js";
-import { doc, eventBus, shownVariant, viewer } from "./pdfview.js";
+import { doc, eventBus, pageFrame, shownVariant, viewer } from "./pdfview.js";
 import { GUTTER, setGutter } from "./layout.js";
 import { columnAt, columnMid, norm, textLines } from "./pagetext.js";
 import { openSource, showSource } from "./links.js";
@@ -60,9 +60,9 @@ function renderNotes() {
 // words around it; those words, found in the page text, put the caret between two words. Hover a
 // bubble or caret to follow the wire; click to open the source.
 export let marginOn = localStorage.getItem("latex-live:margin") !== "0";
-let marginAnchors = new Map(); // page -> [{note, x, top}] (points from the page's top-left, baseline)
+let marginAnchors = new Map(); // page -> [{note, x, top, left}] (points from the top-left of the page as shown, baseline)
 export function resetMargin() { marginAnchors = new Map(); } // (a new document: loadMargin anchors its notes)
-const leftOfPage = (a) => columnMid() !== null && columnAt(a.x) === 1; // a note in the left column
+const leftOfPage = (a) => a.left; // a note in the left column
 
 // The gutters the notes need: right, and left too for notes in a left column.
 function fitGutters() {
@@ -89,9 +89,10 @@ export async function loadMargin(d) {
   const anchors = new Map();
   for (const n of notes) {
     const a = await anchorNote(d, n);
+    const { area: shown } = await textLines(d, a.page);
     if (d !== doc) return; // a newer build arrived meanwhile
     if (!anchors.has(a.page)) anchors.set(a.page, []);
-    anchors.get(a.page).push({ note: n, ...a });
+    anchors.get(a.page).push({ note: n, ...a, left: columnMid(shown) !== null && columnAt(a.x, shown) === 1 });
   }
   marginAnchors = anchors;
   fitGutters();
@@ -100,9 +101,12 @@ export async function loadMargin(d) {
 
 // Where a note's caret goes: right after its preceding words (or before its following ones) in
 // the page text near where SyncTeX put its line, else on the whole page; failing both, at the end
-// (or start) of that line.
-async function anchorNote(d, n) {
-  const pages = [...new Set(n.points.map((p) => p[0]))];
+// (or start) of that line. (On the page as shown: its points, from the server, are turned with a turned page.)
+async function anchorNote(d, note) {
+  const frames = new Map();
+  for (const p of new Set(note.points.map((p) => p[0]))) frames.set(p, pageFrame(await d.getPage(p)));
+  const n = { ...note, points: note.points.map(([p, x, y]) => [p, ...frames.get(p).point(x, y)]) };
+  const pages = [...frames.keys()];
   if (n.side !== "after") pages.reverse(); // a note after its line's text: the last page it reaches
   const before = norm(n.before.normalize("NFKC")), after = norm(n.after.normalize("NFKC"));
   const trailing = n.before.trimEnd().match(/[^\p{L}\p{N}\s]*$/u)[0].length; // the caret goes after "word)." too
@@ -114,8 +118,8 @@ async function anchorNote(d, n) {
       const spill = [Math.min(...pages) - 1, Math.max(...pages) + 1].filter((p) => p >= 1 && p <= d.numPages);
       for (const page of band ? pages : len === 30 ? [...pages, ...spill] : []) {
         const ys = n.points.filter((p) => p[0] === page).map((p) => p[2]);
-        const col = columnAt((n.points.find((p) => p[0] === page) || n.points[0])[1]);
-        const { lines: all } = await textLines(d, page);
+        const { lines: all, area: shown } = await textLines(d, page);
+        const col = columnAt((n.points.find((p) => p[0] === page) || n.points[0])[1], shown);
         const lines = all.filter((l) => !l.col || l.col === col || !band); // (with two columns: the note's own)
         const near = band ? lines.filter((l) => l.top > Math.min(...ys) - 14 && l.top < Math.max(...ys) + 14) : lines;
         let text = "";
@@ -152,8 +156,8 @@ async function anchorNote(d, n) {
     }
   }
   const p = n.side === "after" || n.side === "near" ? n.points[0] : n.points.at(-1);
-  const { lines } = await textLines(d, p[0]);
-  const line = lines.find((l) => Math.abs(l.top - p[2]) < 2 && (!l.col || l.col === columnAt(p[1])));
+  const { lines, area: shown } = await textLines(d, p[0]);
+  const line = lines.find((l) => Math.abs(l.top - p[2]) < 2 && (!l.col || l.col === columnAt(p[1], shown)));
   const x = !line ? p[1] : n.side === "after" || n.side === "near" ? line.left - 1.5 : n.side === "before" ? line.right + 1 : p[1];
   return { page: p[0], x, top: p[2] };
 }
@@ -166,8 +170,7 @@ function drawMargin(pageNumber) {
   const list = (marginOn && shownVariant === "clean" && marginAnchors.get(pageNumber) || [])
     .filter((a) => !hiddenAuthors.has(a.note.author));
   if (!list.length) return;
-  const [vx, vy, vw] = pageView.pdfPage.view;
-  const cw = pageView.div.clientWidth, ch = pageView.div.clientHeight, s = cw / (vw - vx);
+  const cw = pageView.div.clientWidth, ch = pageView.div.clientHeight, s = cw / pageFrame(pageView.pdfPage).W;
   const layer = el("div", { className: "ll-margin" });
   const svg = document.createElementNS(SVG, "svg"); // (wires to a left gutter overflow it)
   svg.setAttribute("width", cw + GUTTER);
@@ -184,7 +187,7 @@ function drawMargin(pageNumber) {
     const tools = noteTools(n);
     if (tools) bubble.prepend(tools);
     const caret = el("div", { className: "caret", title: `${n.author}: ${n.text}` });
-    const x = (a.x - vx) * s, y = (a.top - vy) * s;
+    const x = a.x * s, y = a.top * s;
     Object.assign(caret.style, { left: `${x}px`, top: `${y - 8.5 * s}px`, height: `${11 * s}px`, background: color });
     const path = document.createElementNS(SVG, "path");
     path.setAttribute("stroke", color);

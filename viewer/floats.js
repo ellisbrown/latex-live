@@ -2,8 +2,7 @@
 
 import { $, cleanFile, el, file } from "./page.js";
 import { canOpenFile, opensAt } from "./role.js";
-import { doc, docSeq, pdfjsLib, shownVariant, viewer } from "./pdfview.js";
-import { area } from "./pagetext.js";
+import { doc, docSeq, pageFrame, pdfjsLib, shownVariant, viewer } from "./pdfview.js";
 import { reveal } from "./navigation.js";
 import { openSource } from "./links.js";
 
@@ -42,7 +41,11 @@ export async function renderFloats() {
     const where = opensAt(el("span", { className: "where", textContent: `${f.file.replace(/^.*\//, "")}:${f.line}` }), `${f.file}:${f.line}`);
     where.onclick = (e) => { e.stopPropagation(); openSource(f.file, f.line); };
     const crop = el("div", { className: "crop" });
-    const [x0, y0, x1, y1] = f.box;
+    const shownBox = () => { // (on the page as shown: a turned page's turned)
+      const page = viewer.getPageView(f.page - 1)?.pdfPage;
+      return page ? pageFrame(page).rect(f.box) : f.box;
+    };
+    const [x0, y0, x1, y1] = shownBox();
     crop.style.aspectRatio = `${x1 - x0 + 8} / ${y1 - y0 + 8}`;
     const card = el("div", { className: "float", title: `${name}: show in the PDF` },
                     el("div", { className: "head" }, el("b", { textContent: name }), ...(canOpenFile(f.file) ? [where] : []),
@@ -50,8 +53,8 @@ export async function renderFloats() {
                     crop, el("div", { className: "cap", textContent: f.caption }));
     card.dataset.i = i;
     card.onclick = () => {
-      const H = viewer.getPageView(f.page - 1)?.pdfPage?.view[3] ?? area.H;
-      reveal(f.page, [x0 - 2, H - y1 - 2, x1 + 2, H - y0 + 2]);
+      const [left, top, right, bottom] = shownBox();
+      reveal(f.page, [left - 2, top - 2, right + 2, bottom + 2]);
     };
     cards.push(card);
     floatObserver.observe(card);
@@ -61,8 +64,9 @@ export async function renderFloats() {
 }
 async function drawFloat(d, card, f) {
   const page = await d.getPage(f.page);
-  const [x0, y0, x1, y1] = f.box, pad = 4;
+  const [x0, y0, x1, y1] = pageFrame(page).rect(f.box), pad = 4; // (the page renders as shown)
   const crop = card.querySelector(".crop");
+  crop.style.aspectRatio = `${x1 - x0 + 2 * pad} / ${y1 - y0 + 2 * pad}`;
   const scale = crop.clientWidth * (window.devicePixelRatio || 1) / (x1 - x0 + 2 * pad);
   const viewport = page.getViewport({ scale, offsetX: -(x0 - pad) * scale, offsetY: -(y0 - pad) * scale });
   const canvas = el("canvas", { width: Math.ceil((x1 - x0 + 2 * pad) * scale), height: Math.ceil((y1 - y0 + 2 * pad) * scale) });

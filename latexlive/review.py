@@ -20,6 +20,7 @@ from .latex import blank_comments, brace_group, false_blocks, project_macros, re
 from .notes import NOTE_DEF_RE, escape_note, note_kinds, note_use_re
 from .review_anchors import BP, note_source, review_anchors, squeeze, synctex_pages
 from .review_layout import comments_tex, review_geometry, review_layout, review_tex
+from .synctex import page_rotations, shown_point, shown_size
 from .tools import failure, image_pulled, run_tool, tex_argv
 
 
@@ -176,7 +177,12 @@ def build_review(server, pdf, source):
             if not placed:
                 raise RuntimeError("none of the notes is typeset (are they all in parts the document leaves out?)")
             pages = len(synctex_pages(os.path.join(out, "export.synctex.gz")))
-            plan = review_layout(placed, probe, geo, pages, project_macros(root, fls_file(root, pdf)))
+            # (a turned page, such as a landscape one, is placed as it is shown, as \includegraphics shows it)
+            turns = page_rotations(os.path.join(out, "export.pdf"))
+            for n in placed:
+                n["x"], n["y"] = (round(c, 2) for c in shown_point(turns.get(n["page"]), n["x"], n["y"]))
+            plan = review_layout(placed, probe, geo, pages, project_macros(root, fls_file(root, pdf)),
+                                 {page: shown_size(turn) for page, turn in turns.items()})
             step("typesetting the review copy")
             with open(os.path.join(out, f"{doc}-review.json"), "w") as f:
                 json.dump(plan, f, indent=1)

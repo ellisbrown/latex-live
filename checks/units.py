@@ -26,7 +26,7 @@ def unit_checks():
     for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
                   code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, completion_checks, word_column_checks, venue_checks, diff_retry_checks,
-                  arxiv_strip_checks, graphics_synctex_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks):
+                  arxiv_strip_checks, graphics_synctex_checks, turned_page_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks):
         check()
 
 
@@ -705,6 +705,74 @@ def graphics_synctex_checks():
             fail(f"inverse search on the bibliography's entries (lines of the .bbl): {entries}")
     ok("SyncTeX measures scaled graphics as laid out, finds a clipped graphic's line, and takes a bibliography entry to"
        " its .bib entry")
+
+
+def turned_synctex():
+    """A SyncTeX file of four pages (612 x 792 points), as pdflscape's pages record their bodies: a portrait page; a page
+    whose body graphicx rotates by 90 degrees around (477.48, 672.75), from a box with no width there (/Rotate 90); one
+    whose body it rotates by -90 degrees around (134, 124.8) (/Rotate 270); and a page with /Rotate 90 and nothing
+    rotated on it."""
+    sp = lambda *bp: ",".join(str(round(v * 65781.76)) for v in bp)
+    block = lambda h, v: [f"(1,5:{sp(h, v)}:0,{sp(343.7)},0", f"[1,5:{sp(h, v)}:{sp(548, 343.7)},0",
+                          f"(1,6:{sp(h, v - 200)}:{sp(548, 7)},{sp(2)}", f"x1,6:{sp(h + 30, v - 200)}",
+                          f"(1,7:{sp(h, v - 100)}:{sp(600, 7)},{sp(2)}", f"x1,7:{sp(h + 590, v - 100)}", ")", ")", "]", ")"]
+    body = lambda h, v: [f"(1,3:{sp(134, 672.75)}:{sp(343.7, 548)},0", *block(h, v), ")", f"x1,8:{sp(306, 720)}"]
+    lines = ["SyncTeX Version:1", "Input:1:/paper/main.tex", "Output:pdf", "Magnification:1000", "Unit:1",
+             "X Offset:0", "Y Offset:0", "Content:",
+             "{1", f"[1,2:{sp(134, 672.75)}:{sp(343.7, 548)},0", f"x1,2:{sp(150, 200)}", "]", "}1",
+             "{2", *body(477.48, 672.75), "}2", "{3", *body(134, 124.8), "}3",
+             "{4", f"[1,9:{sp(134, 672.75)}:{sp(343.7, 548)},0", f"x1,9:{sp(150, 200)}", "]", "}4", "Postamble:"]
+    return "\n".join(lines) + "\n"
+
+
+def turned_page_checks():
+    """Turned pages (synctex.page_turns, with a stand-in for pdfinfo): a block rotated by 90 degrees (pdflscape's, on a
+    page with /Rotate 90) or by -90 (/Rotate 270) is found, and nothing on a portrait page or on a page with /Rotate but
+    nothing rotated; SyncTeX's records in a block go where they are drawn, an overfull line's too, and back (inverse
+    search), while the records outside it stay; the boxes and points of each line follow; without poppler, nothing
+    changes; and where those pages are shown turned."""
+    from latexlive import synctex
+    saved = synctex.pdf_tool
+    info = "".join(f"Page    {n} size: 612 x 792 pts (letter)\nPage    {n} rot:  {r}\n" for n, r in ((1, 0), (2, 90), (3, 270), (4, 90)))
+    try:
+        with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
+            synctex_gz = os.path.join(tmp, "main-live.synctex.gz")
+            with gzip.open(synctex_gz, "wt") as f:
+                f.write(turned_synctex())
+            put_bytes(os.path.join(tmp, "main-live.pdf"), b"%PDF-1.5\n")  # (what pdfinfo reads: the stand-in)
+            synctex.pdf_tool = lambda argv, timeout=60: info if argv[0] == "pdfinfo" and argv[-1].endswith("main-live.pdf") else ""
+            turns = synctex.page_turns(synctex_gz)
+            angles = {page: [b[2] for b in t["blocks"]] for page, t in turns.items()}
+            if angles != {2: [90], 3: [270], 4: []}:
+                fail(f"the rotated blocks of turned pages: {angles} (want 90 on page 2, 270 on page 3, none on page 4)")
+            close = lambda a, b: len(a) == len(b) and all(abs(x - y) < 0.06 for p, q in zip(a, b) for x, y in zip(p, q))
+            spots = [synctex.on_page(turns.get(page), x, y) for page, x, y in (
+                (1, 150, 200), (2, 507.48, 472.75), (2, 1067.48, 572.75), (2, 306, 720), (3, 164, -75.2), (4, 150, 200))]
+            if not close(spots, [(150, 200), (277.48, 642.75), (377.48, 82.75), (306, 720), (334, 154.8), (150, 200)]):
+                fail(f"SyncTeX's records where they are drawn on turned pages: {spots}")
+            back = [synctex.as_recorded(turns.get(page), *xy) for page, xy in ((2, (277.48, 642.75)), (3, (334, 154.8)), (2, (306, 720)))]
+            if not close(back, [(507.48, 472.75), (164, -75.2), (306, 720)]):
+                fail(f"inverse search's points on turned pages, where SyncTeX records them: {back}")
+            boxes, points = synctex.synctex_boxes(synctex_gz), synctex.synctex_points(synctex_gz)
+            line = boxes.get(("/paper/main.tex", 6), [])
+            if not close(line, [(2, 270.48, 124.75, 279.48, 672.75), (3, 332.0, 124.8, 341.0, 672.8)]) or not close(
+                    points.get(("/paper/main.tex", 6), []), [(2, 277.48, 642.75), (3, 334.0, 154.8)]) or not close(
+                    points.get(("/paper/main.tex", 8), []), [(2, 306.0, 720.0), (3, 306.0, 720.0)]):
+                fail(f"a turned page's boxes and points where they are drawn: {line}, {points.get(('/paper/main.tex', 6))},"
+                     f" {points.get(('/paper/main.tex', 8))}")
+            shown = [synctex.shown_point(turns[page], 277.48, 642.75) + synctex.shown_size(turns[page]) for page in (2, 3)]
+            if not close(shown, [(149.25, 277.48, 792, 612), (642.75, 334.52, 792, 612)]):
+                fail(f"where a turned page's points are shown, and its size: {shown}")
+            synctex.pdf_tool = lambda argv, timeout=60: ""
+            for path in (synctex_gz, os.path.join(tmp, "main-live.pdf")):  # (a new build: looked up again)
+                os.utime(path, ns=(1, 1))
+            if synctex.page_turns(synctex_gz) or not close(synctex.synctex_points(synctex_gz).get(("/paper/main.tex", 6), []),
+                                                           [(2, 507.48, 472.75), (3, 164.0, -75.2)]):
+                fail("without poppler, SyncTeX's records should stay as recorded")
+    finally:
+        synctex.pdf_tool = saved
+    ok("turned pages: pdflscape's rotated body (90 or -90 degrees) is found, its records go where they are drawn and"
+       " back, the rest stays, nothing changes without poppler, and the pages are shown turned")
 
 
 def diff_retry_checks():

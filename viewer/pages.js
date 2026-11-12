@@ -1,7 +1,7 @@
 // The main text's length against the page limit (the toolbar's badge), and the sidebar's page thumbnails.
 
 import { $, cleanFile, el, file } from "./page.js";
-import { assets, doc, eventBus, pdfjsLib, shownVariant, viewer } from "./pdfview.js";
+import { assets, doc, eventBus, pageFrame, pdfjsLib, shownVariant, viewer } from "./pdfview.js";
 import { sideOpen } from "./layout.js";
 import { area, areaFraction, columnAt, textLines } from "./pagetext.js";
 import { goToPage } from "./navigation.js";
@@ -120,7 +120,7 @@ export async function renderThumbs() {
 async function drawThumb(d, thumb) {
   const page = await d.getPage(+thumb.dataset.page);
   const width = thumb.clientWidth * (window.devicePixelRatio || 1);
-  const viewport = page.getViewport({ scale: width / page.view[2] });
+  const viewport = page.getViewport({ scale: width / pageFrame(page).W }); // (as shown: a turned page is wider)
   const canvas = el("canvas", { width: viewport.width, height: viewport.height });
   await page.render({ canvasContext: canvas.getContext("2d"), viewport, annotationMode: pdfjsLib.AnnotationMode.DISABLE }).promise;
   thumb.querySelector(".img").prepend(canvas);

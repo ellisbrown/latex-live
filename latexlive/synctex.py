@@ -12,7 +12,7 @@ import zlib
 from . import config
 from .files import clean_file, job_file, mtime, open_output, read_capped, shown_synctex, shown_synctexes
 from .latex import find_bib_entry
-from .tools import container_argv, run_tool, synctex_unavailable
+from .tools import container_argv, pdf_tool, run_tool, synctex_unavailable
 
 
 def run_synctex(paper_root, *args):
@@ -128,10 +128,14 @@ def bib_span(paper_root, files, cache={}, wait=True):
             if cache.get(synctex_gz, (None,))[0] != mtime:  # (another request may have looked it up meanwhile)
                 def where(records):
                     rec = next((r for r in records if "Page" in r), None)
+                    if not rec:
+                        return None
                     try:
-                        return rec and {"page": int(rec["Page"]), "x": float(rec["h"]), "y": float(rec["v"]) - float(rec["H"])}
+                        page = int(rec["Page"])
+                        x, y = on_page(page_turns(synctex_gz).get(page), float(rec["h"]), float(rec["v"]) - float(rec["H"]))
                     except (KeyError, ValueError):  # (a record that isn't what SyncTeX writes)
                         return None
+                    return {"page": page, "x": x, "y": y}
 
                 def look_up(lines):
                     return [where(r) for r in run_synctexes(paper_root, [("view", "-i", f"{n}:0:{bbl}", "-o", pdf) for n in lines])]
@@ -159,8 +163,9 @@ SYNCTEX_BOX_RE = re.compile(r"([\[(h])(\d+),(\d+):(-?\d+),(-?\d+):(-?\d+),(-?\d+
 
 def synctex_boxes(synctex_gz, cache={}):
     """{(file, line): [(page, left, top, right, bottom)]}: the boxes each source line made (points
-    from the page's top-left), from a build's SyncTeX file."""
-    key = (synctex_gz, mtime(synctex_gz))
+    from the page's top-left, where they are drawn: on_page), from a build's SyncTeX file."""
+    turns = page_turns(synctex_gz)
+    key = (synctex_gz, mtime(synctex_gz), str(turns))
     if key not in cache:
         inputs, boxes, page = {}, {}, 0
         pt = 72 / 72.27 / 65536  # scaled points to PDF points
@@ -172,8 +177,8 @@ def synctex_boxes(synctex_gz, cache={}):
                 page = to_int(record[1:], page)
             elif m := SYNCTEX_BOX_RE.match(record):
                 x, y, w, h, d = (int(v) * pt for v in m.groups()[3:])
-                boxes.setdefault((inputs.get(m.group(2)), int(m.group(3))), []).append(
-                    (page, round(x, 1), round(y - h, 1), round(x + w, 1), round(y + d, 1)))
+                rect = rect_on_page(turns.get(page), (x, y - h, x + w, y + d))
+                boxes.setdefault((inputs.get(m.group(2)), int(m.group(3))), []).append((page, *(round(c, 1) for c in rect)))
         cache.clear()
         cache[key] = boxes
     return cache[key]
@@ -211,6 +216,161 @@ def box_extent(box):
     """(left, top, right, bottom) of a box [h, v, width, height, depth] (a negative width runs left of h)."""
     h, v, w, ht, dp = box
     return (h + w, v - ht, h, v + dp) if w < 0 else (h, v - ht, h + w, v + dp)
+
+
+# Turned pages. A page with a /Rotate, such as pdflscape's landscape pages, is typeset upright, drawn rotated (graphicx's
+# \rotatebox), and turned back by the viewer. SyncTeX records what the rotated box holds as laid out before the rotation,
+# around the spot it is drawn from, so its records run off the page. Positions here, as everywhere in latex-live, are on
+# the page as the PDF stores it, before its /Rotate (PDF points from its top-left: SyncTeX's frame, \pdfsavepos's and
+# PDF.js's user space), and the viewer turns them as it shows the page; page_turns says how to move SyncTeX's records
+# there (on_page, rect_on_page) and back (as_recorded), and shown_point where they are on the page as it is shown.
+
+
+def mapped_pdf(synctex_gz):
+    """The PDF that a build's SyncTeX file maps: the one beside it, else the one published from it (build/shown/ keeps
+    only SyncTeX files; the notes-free pass's PDF moves to build/, and the live build's is published as <doc>.pdf), else
+    None. In shared mode, never through a link (the paper's TeX writes the build folder)."""
+    folder, name = os.path.split(synctex_gz[:-len(".synctex.gz")] + ".pdf")
+    build = os.path.dirname(folder) if os.path.basename(folder) in ("shown", "clean") else folder
+    published = name.endswith("-live.pdf") and os.path.join(build if config.PUBLISH else os.path.dirname(build), name[:-9] + ".pdf")
+    return next((p for p in (os.path.join(folder, name), os.path.join(build, name), published)
+                 if p and os.path.isfile(p) and not (config.SHARED and os.path.islink(p))), None)
+
+
+PAGE_INFO_RE = re.compile(r"^Page\s+(\d+) (size|rot):\s+(-?[\d.]+)(?: x ([\d.]+))?", re.M)
+
+
+def page_rotations(pdf, cache={}):
+    """{page: {"rotate", "W", "H"}} for the pages of a PDF that have a /Rotate (90, 180 or 270): it, and the page's size as
+    stored (points), from pdfinfo; {} without poppler. Cached per PDF and mtime."""
+    key = (pdf, mtime(pdf))
+    if key not in cache:
+        info = {}
+        for m in PAGE_INFO_RE.finditer(pdf_tool(["pdfinfo", "-f", "1", "-l", "1000000", pdf])):
+            page = info.setdefault(int(m[1]), {"rotate": 0, "W": 0.0, "H": 0.0})
+            if m[2] == "rot":
+                page["rotate"] = int(float(m[3])) % 360
+            elif m[4]:
+                page["W"], page["H"] = float(m[3]), float(m[4])
+        if len(cache) >= 16:
+            cache.clear()
+        cache[key] = {page: p for page, p in info.items() if p["rotate"] in (90, 180, 270) and p["W"] and p["H"]}
+    return cache[key]
+
+
+def turned(x, y, h, v, angle):
+    """(x, y) rotated by angle (90, 180 or 270 degrees, counterclockwise on the page as graphicx rotates) around (h, v),
+    in points from the page's top-left (y down)."""
+    dx, dy = x - h, y - v
+    dx, dy = {90: (dy, -dx), 180: (-dx, -dy), 270: (-dy, dx)}.get(angle, (dx, dy))
+    return h + dx, v + dy
+
+
+def turned_rect(rect, h, v, angle):
+    """A rectangle (left, top, right, bottom) rotated as turned rotates its corners."""
+    (a, b), (c, d) = turned(rect[0], rect[1], h, v, angle), turned(rect[2], rect[3], h, v, angle)
+    return min(a, c), min(b, d), max(a, c), max(b, d)
+
+
+def page_turns(synctex_gz, cache={}):
+    """{page: {"rotate", "W", "H", "blocks"}} for the pages of the PDF that a build's SyncTeX file maps (mapped_pdf) that
+    have a /Rotate (page_rotations). blocks: [(h, v, angle, extent)], the boxes drawn rotated on the page (in PDF points
+    from its top-left): the spot each is drawn from, its rotation (turned), and its extent as SyncTeX records it. graphicx
+    draws a rotated box from a box with no width at that spot, as it does a scaled one, so a box counts as rotated where
+    it is directly in such a box at its spot, runs off the page as recorded, and fits on it rotated by the page's /Rotate
+    (or the other way); the outermost such box. A page with /Rotate and no such box (\\pdfpageattr{/Rotate 90} alone) has
+    no blocks. {} without poppler or without turned pages. Cached per SyncTeX file and build."""
+    pdf = mapped_pdf(synctex_gz)
+    rotations = page_rotations(pdf) if pdf else {}
+    if not rotations:
+        return {}
+    key = (mtime(synctex_gz), pdf, mtime(pdf))
+    if cache.get(synctex_gz, (None,))[0] != key:
+        turns = {page: {**info, "blocks": []} for page, info in rotations.items()}
+        page, stack, inside = 0, [], None  # (inside: the depth of the rotated block the records are in)
+        for record in synctex_records(synctex_gz):
+            c = record[:1]
+            if c == "{":
+                page, stack, inside = to_int(record[1:], page), [], None
+            elif page not in turns:
+                continue
+            elif c in ")]":
+                stack = stack[:-1]
+                inside = inside if inside is not None and len(stack) >= inside else None
+            elif c in "([" and (m := SYNCTEX_NODE_RE.match(record)):
+                box = [int(v or 0) for v in m.groups()[3:]]
+                parent = stack[-1] if stack else None
+                stack.append((c, box))
+                if inside is None and parent and parent[0] == "(" and parent[1][2] == 0 and parent[1][:2] == box[:2]:
+                    if block := rotated_block(turns[page], box):
+                        turns[page]["blocks"].append(block)
+                        inside = len(stack)
+        if len(cache) >= 8:
+            cache.clear()
+        cache[synctex_gz] = key, turns
+    return cache[synctex_gz][1]
+
+
+def rotated_block(turn, box):
+    """(h, v, angle, extent) of a box [h, v, width, height, depth] (scaled points) that runs off a turned page (turn:
+    page_turns') as recorded and fits on it rotated around its spot, else None."""
+    h, v, extent = box[0] * PT, box[1] * PT, tuple(c * PT for c in box_extent(box))
+    fits = lambda r: r[0] >= -1 and r[1] >= -1 and r[2] <= turn["W"] + 1 and r[3] <= turn["H"] + 1
+    if fits(extent):
+        return None
+    return next(((h, v, angle, extent) for angle in dict.fromkeys((turn["rotate"], (360 - turn["rotate"]) % 360))
+                 if fits(turned_rect(extent, h, v, angle))), None)
+
+
+def block_at(turn, x, y, drawn=False):
+    """The rotated block of a turned page (turn: page_turns', or None) that holds a point as SyncTeX records it (with
+    drawn, as it is drawn), else None. A side of a block that runs off the page holds what lies beyond it (an overfull
+    line)."""
+    for h, v, angle, extent in turn["blocks"] if turn else ():
+        if drawn:
+            left, top, right, bottom = turned_rect(extent, h, v, angle)
+            if left - 0.5 <= x <= right + 0.5 and top - 0.5 <= y <= bottom + 0.5:
+                return h, v, angle
+            continue
+        left, top, right, bottom = extent
+        if ((left < -1 or x >= left - 0.5) and (right > turn["W"] + 1 or x <= right + 0.5)
+                and (top < -1 or y >= top - 0.5) and (bottom > turn["H"] + 1 or y <= bottom + 0.5)):
+            return h, v, angle
+    return None
+
+
+def on_page(turn, x, y):
+    """Where a point that SyncTeX records (PDF points from the page's top-left) is drawn on a turned page (turn:
+    page_turns', or None): rotated, in a rotated block."""
+    block = block_at(turn, x, y)
+    return turned(x, y, *block) if block else (x, y)
+
+
+def rect_on_page(turn, rect):
+    """on_page for a rectangle (left, top, right, bottom): rotated with the block that holds its center."""
+    block = block_at(turn, (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2)
+    return turned_rect(rect, *block) if block else tuple(rect)
+
+
+def as_recorded(turn, x, y):
+    """A point on a turned page (turn: page_turns', or None) where SyncTeX records it: rotated back, in the area a rotated
+    block is drawn on."""
+    block = block_at(turn, x, y, drawn=True)
+    return turned(x, y, block[0], block[1], 360 - block[2]) if block else (x, y)
+
+
+def shown_point(turn, x, y):
+    """A point on a page as stored (points from its top-left) on the page as shown, turned by its /Rotate (clockwise);
+    turn: page_turns' or page_rotations', or None for a page shown as stored."""
+    if not turn:
+        return x, y
+    W, H = turn["W"], turn["H"]
+    return {90: (H - y, x), 180: (W - x, H - y), 270: (y, W - x)}.get(turn["rotate"], (x, y))
+
+
+def shown_size(turn):
+    """(width, height) of a turned page (page_turns' or page_rotations') as it is shown."""
+    return (turn["H"], turn["W"]) if turn["rotate"] % 180 else (turn["W"], turn["H"])
 
 
 def line_at(synctex_gz, page, x, y):
@@ -362,10 +522,12 @@ def forward_target(paper_root, src, line, clean=False):
         except (KeyError, ValueError):  # (a record that isn't what SyncTeX writes)
             continue
         reported = [box for box in reported if box[2] or box[3]] or reported
-        boxes = [(h, v - ht, abs(w), ht) for h, v, w, ht in (laid_box(box, corrections) for box in reported)]
+        # Each where it is drawn (on a turned page, a rotated block's records rotated: page_turns).
+        turn = page_turns(synctex_gz).get(int(page))
+        boxes = [rect_on_page(turn, (h, v - ht, h + abs(w), v))
+                 for h, v, w, ht in (laid_box(box, corrections) for box in reported)]
         x, y = min(b[0] for b in boxes), min(b[1] for b in boxes)
-        return pdf, {"page": int(page), "x": x, "y": y,
-                     "w": max(b[0] + b[2] for b in boxes) - x, "h": max(b[1] + b[3] for b in boxes) - y}
+        return pdf, {"page": int(page), "x": x, "y": y, "w": max(b[2] for b in boxes) - x, "h": max(b[3] for b in boxes) - y}
     return None
 
 
@@ -374,8 +536,10 @@ SYNCTEX_POINT_RE = re.compile(r"([gkx$])(\d+),(\d+):(-?\d+),(-?\d+)")  # glue, k
 
 def synctex_points(synctex_gz, cache={}):
     """{(file, line): [(page, x, y)]}: where each source line's words, spaces, and math
-    landed (points from the page's top-left, y at the baseline), from a build's SyncTeX file."""
-    key = (synctex_gz, mtime(synctex_gz))
+    landed (points from the page's top-left, y at the baseline, where they are drawn: on_page), from a
+    build's SyncTeX file."""
+    turns = page_turns(synctex_gz)
+    key = (synctex_gz, mtime(synctex_gz), str(turns))
     if key not in cache:
         inputs, points, page = {}, {}, 0
         for record in synctex_records(synctex_gz):
@@ -385,9 +549,8 @@ def synctex_points(synctex_gz, cache={}):
             elif record.startswith("{"):
                 page = to_int(record[1:], page)
             elif m := SYNCTEX_POINT_RE.match(record):
-                pt = 72 / 72.27 / 65536  # scaled points to PDF points
-                points.setdefault((inputs.get(m.group(2)), int(m.group(3))), []).append(
-                    (page, round(int(m.group(4)) * pt, 1), round(int(m.group(5)) * pt, 1)))
+                x, y = on_page(turns.get(page), int(m.group(4)) * PT, int(m.group(5)) * PT)
+                points.setdefault((inputs.get(m.group(2)), int(m.group(3))), []).append((page, round(x, 1), round(y, 1)))
         cache.clear()
         cache[key] = points
     return cache[key]
@@ -395,14 +558,15 @@ def synctex_points(synctex_gz, cache={}):
 
 def synctex_input(paper_root, name, page, x, y, clean):
     """PDF position -> (the input file as SyncTeX recorded it, line), or (status, message) when there
-    is none. name: the published PDF; x, y in PDF points from the page's top-left; clean for a
-    position in the notes-free PDF."""
+    is none. name: the published PDF; x, y in PDF points from the page's top-left (on the page as
+    stored: page_turns); clean for a position in the notes-free PDF."""
     if not name.endswith(".pdf") or os.path.basename(name) != name:
         return 400, "bad file"
     synctex_gz = shown_synctex(paper_root, name, clean)  # (the notes-free PDF itself moves to build/)
     pdf = synctex_gz[:-len(".synctex.gz")] + ".pdf"
     if not os.path.isfile(synctex_gz):
         return 404, f"no {os.path.relpath((clean_file if clean else job_file)(paper_root, name, '.pdf'), paper_root)} yet"
+    x, y = as_recorded(page_turns(synctex_gz).get(page), x, y)  # (where SyncTeX has it, on a turned page)
     result = next((r for r in run_synctex(paper_root, "edit", "-o", f"{page}:{x:.2f}:{y:.2f}:{pdf}") if "Input" in r), {})
     if "Input" not in result:
         missing = synctex_unavailable()
