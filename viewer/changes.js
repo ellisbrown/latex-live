@@ -3,8 +3,8 @@
 
 import { $, docFile, file, isDiff } from "./page.js";
 import { diffWords } from "./diff.js";
-import { assets, docSeq, pdfjsLib, shownVariant } from "./pdfview.js";
-import { area, pageText } from "./pagetext.js";
+import { assets, docSeq, pageFrame, pdfjsLib, shownVariant } from "./pdfview.js";
+import { pageText } from "./pagetext.js";
 import { reveal } from "./navigation.js";
 import { drawAllMarks, marks } from "./marks.js";
 
@@ -13,15 +13,15 @@ import { drawAllMarks, marks } from "./marks.js";
 async function docWords(d) {
   const words = [];
   for (let n = 1; n <= d.numPages; n++) {
-    const { H, items } = await pageText(d, n);
+    const { items, area: shown } = await pageText(d, n);
     for (const it of items) {
-      if (it.top > area.bottom + 10 && /^[\divxlc]+$/i.test(it.str.trim())) continue; // page numbers shift on reflow
+      if (it.top > shown.bottom + 10 && /^[\divxlc]+$/i.test(it.str.trim())) continue; // page numbers shift on reflow
       const len = it.str.length || 1;
       let off = 0;
       for (const part of it.str.split(/(\s+)/)) {
         if (part.trim()) {
-          const x0 = it.x + it.w * off / len, x1 = it.x + it.w * (off + part.length) / len, y = H - it.top;
-          words.push({ s: part, page: n, rect: [x0, y - it.h * 0.25, x1, y + it.h * 0.85] });
+          const x0 = it.x + it.w * off / len, x1 = it.x + it.w * (off + part.length) / len;
+          words.push({ s: part, page: n, rect: [x0, it.top - it.h * 0.85, x1, it.top + it.h * 0.25] });
         }
         off += part.length;
       }
@@ -44,7 +44,7 @@ function showChanges(oldWords, newWords, figures, against) {
     add(f.page, { rect: f.rect, cls: "chg fig", label });
     changeList.push({ page: f.page, rect: f.rect });
   }
-  changeList.sort((a, b) => a.page - b.page || b.rect[3] - a.rect[3]);
+  changeList.sort((a, b) => a.page - b.page || a.rect[1] - b.rect[1]);
   const figs = figures.length ? `${figures.length} figure${figures.length === 1 ? "" : "s"}` : "";
   // In a git checkout the group stays, to switch baselines (and to say there are no changes).
   $("changes").hidden = !changeList.length && !headInfo;
@@ -198,8 +198,8 @@ async function changedFigures(d, variant) {
     const r = await fetch(`forward?${new URLSearchParams({ file: g.src, line: g.line, ...(variant === "clean" ? { clean: 1 } : {}) })}`);
     if (!r.ok) continue;
     const t = await r.json();
-    const [, , W, H] = (await d.getPage(t.page)).view;
-    found.set(g, { page: t.page, file: g.file, rect: [Math.max(0, t.x), H - t.y - t.h, Math.min(W, t.x + t.w), H - t.y] });
+    const frame = pageFrame(await d.getPage(t.page)), [x0, y0, x1, y1] = frame.rect([t.x, t.y, t.x + t.w, t.y + t.h]);
+    found.set(g, { page: t.page, file: g.file, rect: [Math.max(0, x0), y0, Math.min(frame.W, x1), y1] });
   }
   const placed = (gs) => gs.map((g) => found.get(g)).filter(Boolean);
   return { build: placed(build), head: placed(head), push: placed(push) };

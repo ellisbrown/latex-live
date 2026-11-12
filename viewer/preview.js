@@ -1,8 +1,8 @@
 // Hover previews of the PDF's internal links.
 
 import { $, el } from "./page.js";
-import { container, doc, linkService, pdfjsLib } from "./pdfview.js";
-import { area, columnAt, columnBoxes, columnMid, textLines } from "./pagetext.js";
+import { container, doc, linkService, pageFrame, pdfjsLib } from "./pdfview.js";
+import { columnAt, columnBoxes, columnMid, shownArea, textLines } from "./pagetext.js";
 
 // Hover previews: hovering an internal link (\ref, \cref, a citation) shows the part of the page
 // it points to: a figure or table down to the end of its caption, a bibliography entry, the
@@ -43,12 +43,18 @@ async function showPreview(a) {
   const index = typeof dest[0] === "object" && dest[0] ? await doc.getPageIndex(dest[0]) : dest[0];
   if (!(index >= 0)) return;
   const page = await doc.getPage(index + 1);
-  const [, , W, H] = page.view;
+  const frame = pageFrame(page), { W, H } = frame; // (the page as shown, as it renders)
   const kind = dest[1]?.name;
   const destY = kind === "XYZ" ? dest[3] : kind === "FitH" || kind === "FitBH" ? dest[2] : null;
-  const top = destY == null ? area.top : H - destY;
-  const [t0, t1, x0, x1] = await previewRegion(name?.split(".")[0] || "", index + 1, top, kind === "XYZ" ? dest[2] : null, W, H);
-  const span = columnMid() === null ? x1 - x0 : Math.max(x1 - x0, area.width + 16); // (a column at the scale of a full-width preview)
+  const destX = kind === "XYZ" ? dest[2] : null;
+  const shown = shownArea(frame);
+  let top = shown.top, x = null;
+  if (destY != null && (destX != null || !frame.turned)) { // (a turned page's height is across: it takes both)
+    const [X, Y] = frame.fromUser(destX ?? page.view[0], destY);
+    [top, x] = [Y, destX == null ? null : X];
+  }
+  const [t0, t1, x0, x1] = await previewRegion(name?.split(".")[0] || "", index + 1, top, x, W, H);
+  const span = columnMid(shown) === null ? x1 - x0 : Math.max(x1 - x0, shown.width + 16); // (a column at the scale of a full-width preview)
   const scale = Math.min(620 / span, (window.innerWidth - 40) / (x1 - x0), (window.innerHeight * 0.6) / (t1 - t0));
   const dpr = window.devicePixelRatio || 1;
   const viewport = page.getViewport({ scale: scale * dpr, offsetX: -x0 * scale * dpr, offsetY: -t0 * scale * dpr });
@@ -68,11 +74,12 @@ async function showPreview(a) {
 // alone; a full-width one (a figure* or table*, or a line across both columns) the whole width.
 const CAPTION = /^(Figure|Fig\.|Table)\s*[A-Z]?\d+\s*[:.]/;
 async function previewRegion(kind, pageNumber, top, x, W, H) {
-  const all = (await textLines(doc, pageNumber)).lines.slice().sort((a, b) => a.top - b.top);
+  const { lines: found, area: shown } = await textLines(doc, pageNumber);
+  const all = found.slice().sort((a, b) => a.top - b.top);
   const body = all.filter((l) => l.str.length > 20);
   let left = Math.max(0, Math.min(...body.map((l) => l.left), W * 0.2) - 8);
   let right = Math.min(W, Math.max(...body.map((l) => l.right), W * 0.8) + 8);
-  let col = columnMid() === null || x == null ? null : columnAt(x); // null: the whole page, as with one column
+  let col = columnMid(shown) === null || x == null ? null : columnAt(x, shown); // null: the whole page, as with one column
   const across = (l) => l && (l.col === 0 || all.some((m) => m.col === 0 && Math.abs(m.top - l.top) < 2));
   const at = all.find((l) => l.top > top - 2); // the target's line
   if (col && at && at.top - top < 20 && at.col === 0) col = 0;
@@ -81,7 +88,7 @@ async function previewRegion(kind, pageNumber, top, x, W, H) {
     // first below, in that column or across both) runs across both columns.
     if (across(all.find((l) => l.top > top - 2 && (l.col === col || l.col === 0) && CAPTION.test(l.str)))) col = 0;
   }
-  if (col) [left, right] = [columnBoxes()[col - 1][0] - 8, columnBoxes()[col - 1][1] + 8];
+  if (col) [left, right] = [columnBoxes(shown)[col - 1][0] - 8, columnBoxes(shown)[col - 1][1] + 8];
   // (A full-width caption's short last line sits in the left column.)
   const lines = col === null ? all : col ? all.filter((l) => l.col === col) : all.filter((l) => l.col !== 2);
   const below = lines.filter((l) => l.top > top - 2);

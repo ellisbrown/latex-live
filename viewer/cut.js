@@ -19,7 +19,8 @@ export function cutSpots(d, r) {
 async function findCutSpots(d, r) {
   const spots = [];
   for (let p = r.first; p <= r.page; p++) {
-    const { H, lines: all } = await textLines(d, p);
+    const { lines: all, turned } = await textLines(d, p);
+    if (turned) continue; // (a landscape page holds a table or a figure, not the text columns)
     let ctx = null, canvas = null; // the rendered page, for the empty-band scan (once per page)
     for (const col of columnMid() === null ? [1] : [1, 2]) { // each text column on its own
       if (p === r.page && col > (r.endCol || 1)) break;
@@ -46,7 +47,7 @@ async function findCutSpots(d, r) {
         if (next && next.top - l.top < area.leading + 2 && Math.abs(next.left - colLeft) < 1.5) continue;
         const h = Math.max(...l.parts.map((q) => q.h));
         spots.push({ page: p, col, top: l.top, lines: 1, label: "1 line", text: `“${l.str}” alone on a paragraph's last line`,
-                     rect: [l.left - 1, H - l.top - h * 0.3, colRight, H - l.top + h * 0.9] });
+                     rect: [l.left - 1, l.top - h * 0.9, colRight, l.top + h * 0.3] });
       }
       // Empty bands: rows of the text column with nothing drawn in them, well beyond a paragraph break.
       if (!ctx) {
@@ -79,7 +80,7 @@ async function findCutSpots(d, r) {
           const top = y0 + run, bottom = y0 + y, atEnd = y === y1 - y0 && p < r.page;
           spots.push({ page: p, col, top, lines: n, label: `≈${n} line${n === 1 ? "" : "s"}`,
                        text: `${Math.round(gap)} pt of empty space ${atEnd ? "at the bottom of the column" : "in the text column"}`,
-                       rect: [colLeft, H - bottom, colRight, H - top] });
+                       rect: [colLeft, top, colRight, bottom] });
         }
         run = null;
       }

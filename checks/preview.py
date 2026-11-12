@@ -27,6 +27,7 @@ from .early import early_run
 from .helpers import (
     CAPS, JS_TYPE_RE, editor_calls, editor_stub, get, hub_get, post, post_length, read_bytes, read_hub, request, start, stop,
     read_text, texlive_image, text_point)
+from .landscape import landscape_run
 from .papers import composed, make_paper
 from .shared import shared_checks
 from .shared_setup import shared_setup
@@ -55,6 +56,7 @@ def live_checks(tmp):
     standby = in_thread("warm standby checks", standby_run, tmp)  # (beside the rest, with an instance of its own)
     early = in_thread("early notes-free pass checks", early_run, tmp)  # (likewise)
     clean_standby = in_thread("notes-free standby checks", clean_standby_run, tmp)  # (likewise)
+    landscape = in_thread("turned page checks", landscape_run, tmp)  # (likewise)
     try:
         sh = shared_setup(tmp, sharing)  # (it builds while the hub's checks run; None without podman or the image)
         build = os.path.join(paper, "build")
@@ -294,7 +296,7 @@ def live_checks(tmp):
             shared.join()
             if shared.failed:
                 sys.exit(1)
-        for thread in (standby, early, clean_standby):
+        for thread in (standby, early, clean_standby, landscape):
             thread.join()
             if thread.failed:
                 sys.exit(1)

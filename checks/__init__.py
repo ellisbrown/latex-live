@@ -15,7 +15,8 @@ does).
    for bibtex; a failed diff or baseline names no folder of the server's there. LATEX_LIVE_TIMING=1's lines
    leave out the events of a notes-free pass that a newer run superseded. The editor and the notes never read or
    write a source through a folder or file swapped for a link after the check. Forward search looks a line up
-   again a few seconds after it found nothing, and keeps what it finds for the build.
+   again a few seconds after it found nothing, and keeps what it finds for the build. On turned pages (/Rotate 90 or
+   270), SyncTeX's records of a rotated body go where it is drawn and back, and nothing changes without poppler.
    Every server keeps to 64 connections at once.
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a git
    repository with a pushed commit and a local one) gets a live.py instance, with the hub on port
@@ -75,6 +76,12 @@ does).
    adds line numbers runs normally, and then both runs of a notes-free pass (lineno) come from standbys and match a
    normal pass; an early pass stopped while it runs from a standby (its run failed) leaves no keeper, container or
    folder of that standby and build/clean/ as it was; LATEX_LIVE_STANDBY=0 builds the notes-free PDF without one.
+   And in a fourth, turned pages (landscape_run), on a paper with a pdflscape landscape page (a paragraph with a note,
+   and a table) and an instance of its own: forward search finds the table's row and the paragraph's line where
+   pdftotext shows them (turned back), inverse search finds them from there, the note's margin note is at its line on
+   its page, and the table's box in the Figures tab holds it; the review copy places the landscape page as shown, at its
+   own size with the gutter beside it and its note at its spot, and the copy with the notes as comments at its shown
+   size with the comment at its spot; the portrait pages are as before.
 3. A shared-mode instance (LATEX_LIVE_USERS) on the hub's port + 11 serves a clone of the paper on branch
    "shared" to users of every role, behind a stand-in for an authenticating proxy (an identity
    header), with personal-link tokens, auto-commit, protected text and the editor stand-in. Shared
@@ -142,9 +149,9 @@ Exits non-zero on the first failure.
 Its modules, from the bottom up (each imports only from those below it): base (where the checks run, and how they
 report: ok, fail, wait_for, in_thread), helpers (files, git, instances and requests to them, stand-ins, the TeX Live
 image), papers (the scratch paper), access (who reaches the owner's preview: hosts, origins, sessions), static (the
-checkout as it is), shared_units and units (the server's parts without an instance), standby, early and
-clean_standby (the threads beside the instance checks: the warm standby, the early notes-free pass and its warm
-standby), shared_helpers, shared_setup, shared_access, shared_sessions, shared_sandbox, shared_downloads,
+checkout as it is), shared_units and units (the server's parts without an instance), standby, early, clean_standby
+and landscape (the threads beside the instance checks: the warm standby, the early notes-free pass and its warm
+standby, turned pages), shared_helpers, shared_setup, shared_access, shared_sessions, shared_sandbox, shared_downloads,
 shared_notes, shared_editor, shared_rebuild, shared_commits and shared (shared mode, the other thread), preview (the
 instance checks, which start the threads), and main.
 """

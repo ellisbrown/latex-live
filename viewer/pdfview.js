@@ -91,6 +91,28 @@ export const assets = {
   standardFontDataUrl: new URL("pdfjs/standard_fonts/", location.href).href,
   get isEvalSupported() { return !me.shared; }, // (in shared mode, no code compiled from a PDF that coauthors' TeX made)
 };
+// Where things are on a page. The server and PDF.js measure a page as the PDF stores it, before its /Rotate: the
+// server in points from its top-left (SyncTeX's frame), PDF.js in its user space (y up). A page with a /Rotate, such
+// as a pdflscape landscape page, is shown turned, and the viewer reads its text and draws over it on the page as shown,
+// in points from the top-left corner it has on screen. pageFrame(page) converts (page: a PDF.js page): point and rect
+// from the server's frame, fromUser and toUser from and to PDF.js's. On a page without a /Rotate, the frame shown is
+// the server's.
+export function pageFrame(page) {
+  const [vx, vy, vw, vh] = page.view, w = vw - vx, h = vh - vy, turn = ((page.rotate % 360) + 360) % 360;
+  const show = (a, b) => (turn === 90 ? [h - b, a] : turn === 180 ? [w - a, h - b] : turn === 270 ? [b, w - a] : [a, b]);
+  const unshow = (X, Y) => (turn === 90 ? [Y, h - X] : turn === 180 ? [w - X, h - Y] : turn === 270 ? [w - Y, X] : [X, Y]);
+  const point = (x, top) => show(x - vx, top);
+  return {
+    turned: turn !== 0, W: turn % 180 ? h : w, H: turn % 180 ? w : h, point,
+    rect([x0, y0, x1, y1]) {
+      const [a, b] = point(x0, y0), [c, d] = point(x1, y1);
+      return [Math.min(a, c), Math.min(b, d), Math.max(a, c), Math.max(b, d)];
+    },
+    fromUser: (x, y) => show(x - vx, vh - y),
+    toUser: (X, Y) => { const [a, b] = unshow(X, Y); return [a + vx, vh - b]; },
+  };
+}
+
 export let doc = null; // the document on screen
 export let docSeq = 0;
 // The next document on screen (variant: "notes" or "clean"), each with a number of its own (docSeq).

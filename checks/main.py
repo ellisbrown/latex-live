@@ -8,6 +8,7 @@ from .base import ENV
 from .clean_standby import clean_standby_run
 from .early import early_run
 from .helpers import editor_stub
+from .landscape import landscape_run
 from .preview import live_checks
 from .standby import standby_run
 from .static import static_checks
@@ -31,10 +32,10 @@ def alone(run):
 
 
 # The parts, by module: a full run is static, units and preview (whose instance checks start the threads beside them:
-# shared mode, the warm standby, the early notes-free pass and its warm standby). Those threads but shared mode, which
-# reaches the owner's preview, also run alone.
+# shared mode, the warm standby, the early notes-free pass and its warm standby, turned pages). Those threads but shared
+# mode, which reaches the owner's preview, also run alone.
 PARTS = {"static": static_checks, "units": unit_checks, "preview": scratch(live_checks), "standby": alone(standby_run),
-         "early": alone(early_run), "clean_standby": alone(clean_standby_run)}
+         "early": alone(early_run), "clean_standby": alone(clean_standby_run), "landscape": alone(landscape_run)}
 FULL = ("static", "units", "preview")
 
 

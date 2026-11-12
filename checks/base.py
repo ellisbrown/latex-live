@@ -67,6 +67,7 @@ DECOY_PORT = PORT + 12  # a stand-in for a program that a lock file written in b
 STANDBY_PORT = PORT + 13  # the hub of the warm standby's checks (standby_run), with state of its own; its preview's follow
 EARLY_PORT = PORT + 16  # the hub of the early notes-free pass's checks (early_run), with state of its own; its preview's follow
 CLEAN_PORT = PORT + 19  # the hub of the notes-free pass's warm standby's checks (clean_standby_run), likewise
+LANDSCAPE_PORT = PORT + 22  # the hub of the turned pages' checks (landscape_run), likewise
 
 LOGS = []  # the instances' output, shown on failure
 # The shared-mode checks run in a thread of their own, beside the others (live_checks): output is printed whole,

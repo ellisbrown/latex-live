@@ -9,7 +9,7 @@ from . import config
 from .document import FLOAT_ENV_RE
 from .files import open_output, too_big
 from .latex import INPUT_RE, brace_group, read_tex, tex_to_text
-from .synctex import to_int
+from .synctex import on_page, page_turns, to_int
 
 
 BP = 72 / 72.27  # TeX points to PDF points
@@ -106,24 +106,29 @@ def review_anchors(paper_root, out, notes, probe, area):
     """The notes that are typeset, each with its spot in the export: [{**note, page, x, y, how}],
     x, y in points from the page's top left (y at the baseline). how is "exact" (the probe's
     record, on a line typeset as in the export) or "line" (approximate: the export's SyncTeX, by
-    source line, or else the probe's record on a line it typeset a little differently)."""
+    source line, or else the probe's record on a line it typeset a little differently). On a turned
+    page, where it is drawn (on_page: the probe's \\pdfsavepos, like SyncTeX, ignores a rotation)."""
     export = synctex_pages(os.path.join(out, "export.synctex.gz"))
+    turns = page_turns(os.path.join(out, "export.synctex.gz"))
+    drawn = lambda page, x, y: on_page(turns.get(page), x, y)
     trusted = same_line(export, synctex_pages(probe["synctex"])) if probe and os.path.isfile(probe["synctex"]) else None
     records = [("pos", *r) for r in probe.get("pos", [])] + [("seen", r[0], r[1], None, None, None, r[2]) for r in probe.get("seen", [])]
     matched = match_records(notes, records)
     lines = {}
     for page, recs in export.items():
         for r in recs:
-            if r[0] in "hvxkg$" and r[1] and area["top"] - 15 <= r[4] <= area["bottom"] + 15 and 0 <= r[3] <= area["W"]:
+            x, y = drawn(page, r[3], r[4])
+            if r[0] in "hvxkg$" and r[1] and area["top"] - 15 <= y <= area["bottom"] + 15 and 0 <= x <= area["W"]:
                 lines.setdefault((os.path.relpath(r[1], paper_root), r[2]), []).append((page, *r))
     placed = []
     for n in notes:
         recs = matched.get(n["id"], [])
         exact = [r for r in recs if r[0] == "pos" and trusted and trusted(r[3], r[4], r[5])]
         if exact:
-            inside = [r for r in exact if area["top"] - 15 <= r[5] <= area["bottom"] + 15]
+            inside = [r for r in exact if area["top"] - 15 <= drawn(*r[3:6])[1] <= area["bottom"] + 15]
             r = (inside or exact)[0]
-            placed.append({**n, "page": r[3], "x": round(r[4], 2), "y": round(r[5], 2), "how": "exact"})
+            x, y = drawn(*r[3:6])
+            placed.append({**n, "page": r[3], "x": round(x, 2), "y": round(y, 2), "how": "exact"})
             continue
         if not recs and ("pages" in probe or not any((n["file"], ln) in lines for ln in range(n["line"] - 3, n["last"] + 4))):
             continue  # (not typeset: the probe went through and never met it; or, without a probe, nothing near it shows)
@@ -134,7 +139,8 @@ def review_anchors(paper_root, out, notes, probe, area):
         if not spot and probed:  # (read elsewhere, as in a macro defined in another file: the probe's spot, near enough)
             spot = probed[0][3:6]
         if spot:
-            placed.append({**n, "page": spot[0], "x": round(spot[1], 2), "y": round(spot[2], 2), "how": "line"})
+            x, y = drawn(*spot)
+            placed.append({**n, "page": spot[0], "x": round(x, 2), "y": round(y, 2), "how": "line"})
     return placed
 
 

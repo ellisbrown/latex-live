@@ -73,6 +73,12 @@ notes runs again after it, and the view updates a little later.
 - **Source to PDF:** the forward-search key in VS Code (setup step 5), `python3
   forward.py FILE LINE`, or Show in PDF in the source pane scrolls the viewer
   to the line and highlights it.
+- **Landscape pages** (`pdflscape`'s `landscape` environment) show upright, and
+  both directions work on them, as do the margin notes, the change highlights
+  and the figures and tables there. This needs poppler (`pdfinfo`), which says
+  which pages are turned. A table that `rotating`'s `sidewaystable` turns on a
+  portrait page is not a turned page: SyncTeX places it as if it were upright,
+  so both directions miss it.
 
 ## Notes
 
@@ -163,14 +169,15 @@ The download button's menu saves:
   leaves out (in a conditional that is off, say) are left out. A note that
   can't be pinned to its exact spot (one between paragraphs, say) is placed by
   its source line instead; the status line says how many were. A citation only
-  in notes shows its key (with natbib, its authors and year). The pages' links
-  don't work in this copy.
+  in notes shows its key (with natbib, its authors and year). A landscape page
+  shows upright, with the margin beside it. The pages' links don't work in this
+  copy.
 - **PDF with notes as comments** (`<doc>-with-comments.pdf`), built with the
-  copy above: the pages without notes at their own size, with each note as a
-  PDF comment (a sticky note) where it sits, with its author and number. In
-  Acrobat, Preview, Zotero and other PDF readers, the notes are listed with
-  the reader's comments, and readers can reply to them there. The pages'
-  links don't work in this copy either.
+  copy above: the pages without notes at their own size (a landscape page
+  upright), with each note as a PDF comment (a sticky note) where it sits,
+  with its author and number. In Acrobat, Preview, Zotero and other PDF
+  readers, the notes are listed with the reader's comments, and readers can
+  reply to them there. The pages' links don't work in this copy either.
 - **arXiv package (.tar.gz)** (`<doc>-arxiv.tar.gz`), the sources to upload to
   arXiv, which publishes them: the files the build without notes reads (no
   unused files, no build leftovers), its `.bbl` (arXiv doesn't run BibTeX),

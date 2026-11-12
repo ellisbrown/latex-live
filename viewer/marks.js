@@ -2,10 +2,10 @@
 // marks.
 
 import { el } from "./page.js";
-import { doc, eventBus, viewer } from "./pdfview.js";
+import { doc, eventBus, pageFrame, viewer } from "./pdfview.js";
 
-// Persistent marks over pages: {page: [{rect (PDF coordinates), cls, title}]}. PDF.js empties a
-// page's div when it re-renders it (zoom, reload), so they are redrawn on every "pagerendered".
+// Persistent marks over pages: {page: [{rect ([left, top, right, bottom] on the page as shown: pageFrame), cls, title}]}.
+// PDF.js empties a page's div when it re-renders it (zoom, reload), so they are redrawn on every "pagerendered".
 export const marks = { changes: new Map(), unresolved: new Map(), cut: new Map() };
 export let cutOn = !!localStorage.getItem("latex-live:cut"); // (the cut marks show: ✂ in the toolbar)
 export function setCutOn(on) { cutOn = on; }
@@ -16,14 +16,13 @@ function drawMarks(pageNumber) {
   const list = [...(marks.changes.get(pageNumber) || []), ...(marks.unresolved.get(pageNumber) || []),
                 ...(cutOn ? marks.cut.get(pageNumber) || [] : [])];
   if (!list.length) return;
-  const [vx, vy, vw, vh] = pageView.pdfPage.view;
-  const W = vw - vx, H = vh - vy;
+  const { W, H } = pageFrame(pageView.pdfPage);
   const layer = el("div", { className: "ll-marks" });
   for (const m of list) {
     const [x0, y0, x1, y1] = m.rect;
     const div = el("div", { className: m.cls });
     if (m.label) div.dataset.label = m.label;
-    Object.assign(div.style, { left: `${(x0 - vx) / W * 100}%`, top: `${(vh - y1) / H * 100}%`,
+    Object.assign(div.style, { left: `${x0 / W * 100}%`, top: `${y0 / H * 100}%`,
                                width: `${(x1 - x0) / W * 100}%`, height: `${(y1 - y0) / H * 100}%` });
     layer.append(div);
   }
