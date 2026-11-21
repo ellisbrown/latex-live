@@ -7,6 +7,9 @@ import { GUTTER, setGutter } from "./layout.js";
 import { columnAt, columnMid, norm, textLines } from "./pagetext.js";
 import { openSource, showSource } from "./links.js";
 import { noteTools } from "./comments.js";
+import { cmView, ed, onFileOpen } from "./editor.js";
+import { setNoteHighlights } from "./cm.js";
+import { agentReady, onAgentReady, proposeNoteFix } from "./agent.js";
 
 // Notes (\todo and per-author note macros) from live.py, in reading order. Click one to see
 // it in the PDF; click its file:line to open it in the editor.
@@ -15,10 +18,25 @@ const AUTHOR_COLORS = { TODO: "#ef5350", EB: "#26a69a", CH: "#4fc3f7", SX: "#bca
 const authorColor = (a) => AUTHOR_COLORS[a] || `hsl(${[...a].reduce((h, c) => h * 31 + c.charCodeAt(0), 7) % 360} 60% 70%)`;
 const hiddenAuthors = new Set(JSON.parse(localStorage.getItem(`latex-live:${hubBase}hiddenAuthors`) || "[]"));
 let noteList = [];
+export function syncEditorNotes() {
+  const countEl = $("editorNotesCount");
+  if (countEl) {
+    const mine = ed ? noteList.filter((n) => n.file === ed.path) : [];
+    countEl.hidden = !mine.length;
+    countEl.textContent = mine.length ? `${mine.length} note${mine.length === 1 ? "" : "s"}` : "";
+  }
+  if (cmView && ed) {
+    setNoteHighlights(cmView, noteList.filter((n) => n.file === ed.path), authorColor);
+  }
+}
+onFileOpen(() => syncEditorNotes());
+onAgentReady(() => { if (noteList.length) renderNotes(); });
+
 export async function loadNotes() {
   noteList = await (await fetch(`notes/${encodeURIComponent(file)}`)).json();
   document.querySelector("#tabs [data-tab=notes] .n").textContent = noteList.length || "";
   renderNotes();
+  syncEditorNotes();
 }
 function renderNotes() {
   const panel = $("notes");
@@ -46,7 +64,17 @@ function renderNotes() {
     const row = el("div", { className: "note", title: "Show in the PDF" }, who, ...(canOpenFile(n.file) ? [where] : []),
                    el("div", { className: "text", textContent: n.text || "(empty)" }));
     const tools = noteTools(n);
-    if (tools) who.after(tools);
+    if (agentReady()) {
+      const box = tools || el("span", { className: "tools" });
+      box.prepend(el("button", {
+        textContent: "✨",
+        title: "Ask local agent to propose an inline fix for this note",
+        onclick: (e) => { e.stopPropagation(); proposeNoteFix(n); },
+      }));
+      who.after(box);
+    } else if (tools) {
+      who.after(tools);
+    }
     row.onclick = () => showSource(n.file, n.line);
     return row;
   });

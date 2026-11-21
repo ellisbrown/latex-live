@@ -8,7 +8,14 @@ export const hubBase = location.pathname.match(/^\/p\/[^/]+\//)?.[0] || "";
 // Someone new to latex-live in this browser: nothing remembered yet (read before anything is written).
 export const firstVisit = !Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).some((k) => k?.startsWith("latex-live:"));
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-export const el = (tag, props = {}, ...children) => { const e = Object.assign(document.createElement(tag), props); e.append(...children); return e; };
+export const el = (tag, props = {}, ...children) => {
+  const e = document.createElement(tag);
+  const { dataset, ...rest } = props || {};
+  Object.assign(e, rest);
+  if (dataset) Object.assign(e.dataset, dataset);
+  e.append(...children);
+  return e;
+};
 
 // What the status line says when the server can't be asked: it refused (403: the access ended), a
 // page came back instead of an answer (a proxy's sign-in page), or nothing came back (offline, or the

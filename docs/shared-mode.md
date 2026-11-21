@@ -31,11 +31,12 @@ before it may:
 - **commenter:** also writes notes, as their own note macro and in plain text;
   edits and deletes only their own notes, and replies to and resolves anyone's;
 - **editor:** also edits the sources in the browser (notes too, as LaTeX),
+  creates or uploads allowed source/figure files, searches across sources,
   rebuilds (the coauthors together at most every 20 seconds), sees the
-  pre-submission checks and the build's error messages, and compares with
-  earlier commits of the copy's branch (the diff, and the change highlights
-  against the last commit or push);
-- **owner:** everything a preview of your own allows (the arXiv package
+  pre-submission checks, build logs, bibliography library/Crossref checks,
+  git history diffs, and compares with earlier commits of the copy's branch;
+- **owner:** everything a preview of your own allows (renaming/deleting files,
+  restoring files from git history, local BYO-agent polish, and the arXiv package
   too), except switching to another document: a shared instance serves one.
 
 Viewers and commenters see the current PDF and what it shows, nothing more:

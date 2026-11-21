@@ -1,29 +1,15 @@
 <!doctype html>
-<!-- latex-live PDF viewer: reloads the PDF in place whenever live.py reports a new version;
-     double-click jumps to the source line (SyncTeX: in VS Code, or in the editor beside the PDF
-     when that is open), and forward.py jumps here from a source line. Editors (and the owner) can
-     open the LaTeX beside the PDF (✎ Source, CodeMirror from codemirror/): it saves by itself,
-     and live.py merges edits made at the same time. In shared mode (LATEX_LIVE_USERS) everyone
-     sees what their role allows (live.py /me), and a welcome guide explains the basics.
-     Also: build-status banner, page-limit check (with and without the inline
-     notes), search, back/forward, hover previews of references, highlights of what changed in
-     the last build (text and regenerated figures), a "where to cut" overlay, a switch to the
-     notes-free build (with the notes as bubbles in a margin, wired to where they sit), and a
-     sidebar with the numbered outline (pages per section), page thumbnails, the notes, a
-     pre-submission check, and the figures and tables. Select text and press 💬 (or C) to write a note
-     of the author picked in the toolbar into the source; notes can be resolved (commented out with a
-     reason), others' notes replied to, your own edited, and the ones written here deleted again.
-     With file=<doc>-diff.pdf it shows a latexdiff built by live.py. Its style is in viewer/viewer.css,
-     and its script in viewer/: main.js, and the modules it imports, one for each part of the viewer. -->
-<html>
+<!-- latex-live workspace: live LaTeX preview and browser editor (PDF.js + CodeMirror 6), with
+     Light/Dark & tint themes, 3-pane [Sidebar | Editor | PDF] layout, project file tree, multi-file
+     tabs, inline diagnostics and build logs, LaTeX folding and rich completions/hover cards,
+     margin notes, pre-submission checks, interactive git history diffs, Papers/BibTeX library with
+     Crossref audit, live collaborator presence, Cmd+K command palette, and owner BYO-agent polish. -->
+<html lang="en" data-theme="light" data-tint="graphite">
 <head>
 <meta charset="utf-8">
 <title>latex-live</title>
-<!-- (a tab icon of its own, so the browser doesn't ask the server for /favicon.ico) -->
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='3' y='1' width='10' height='14' rx='1' fill='%23fcfcf7' stroke='%23323639'/%3E%3Cpath d='M5 5h6M5 8h6M5 11h4' stroke='%232f6fb0'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2.5' y='1.5' width='11' height='13' rx='2' fill='%23ffffff' stroke='%2318181b' stroke-width='1.3'/%3E%3Cpath d='M5 5.2h6M5 8h6M5 10.8h4' stroke='%232563eb' stroke-width='1.3' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="pdfjs/web/pdf_viewer.css">
-<!-- The editor's modules (codemirror/, vendored as published): each bare name they import, mapped to
-     its file. Relative to this page, so they also load under the hub's /p/<paper>/<doc>/. -->
 <script type="importmap">
 {
   "imports": {
@@ -47,128 +33,262 @@
 <link rel="stylesheet" href="viewer/viewer.css">
 </head>
 <body>
-<div id="bar">
-  <button id="toggleSide" title="Sidebar: outline, pages, notes, checks, figures" aria-label="Sidebar">&#9776;</button>
-  <select id="docPick" data-priority="4" title="Main document: build another root .tex file" hidden></select>
-  <span id="historyNav" class="grp" data-priority="3" data-label="History">
-    <button id="back" title="Back (Alt+&larr; or Cmd+[)" disabled>&larr;</button>
-    <button id="forward" title="Forward (Alt+&rarr; or Cmd+])" disabled>&rarr;</button>
+<header id="bar">
+  <button id="toggleSide" class="icon-btn" title="Sidebar: files, outline, pages, notes, checks, figures, history, refs" aria-label="Sidebar"></button>
+  <select id="docPick" data-priority="7" title="Main document: build another root .tex file" hidden></select>
+  <span id="historyNav" class="grp seg-grp" data-priority="2" data-label="History">
+    <button id="back" class="icon-btn" title="Back (Alt+&larr; or Cmd+[)" aria-label="Back" disabled></button>
+    <button id="forward" class="icon-btn" title="Forward (Alt+&rarr; or Cmd+])" aria-label="Forward" disabled></button>
   </span>
-  <span id="pageNav" class="grp" data-priority="10" data-label="Page">
-    <button id="prev" title="Previous page">&lsaquo;</button>
-    <input id="page" value="1"> / <span id="count">&ndash;</span>
-    <button id="next" title="Next page">&rsaquo;</button>
-  </span>
-  <span id="zoomGroup" class="grp" data-priority="7" data-label="Zoom">
-    <button id="zoomOut" title="Zoom out (Ctrl -)">&minus;</button>
-    <select id="zoomPick" title="Zoom (Ctrl 0: fit width)">
-      <option value="page-width">Fit width</option>
-      <option value="page-fit">Fit page</option>
-      <option value="0.5">50%</option>
-      <option value="0.75">75%</option>
-      <option value="1">100%</option>
-      <option value="1.25">125%</option>
-      <option value="1.5">150%</option>
-      <option value="2">200%</option>
-      <option value="3">300%</option>
-      <option value="custom" hidden></option>
-    </select>
-    <button id="zoomIn" title="Zoom in (Ctrl +)">+</button>
-  </span>
-  <span id="findGroup" class="grp" data-priority="8">
-    <input id="find" placeholder="Search (Cmd+F)" title="Enter: next match, Shift+Enter: previous, Esc: clear">
-    <span id="findCount"></span>
-  </span>
-  <button id="notesView" data-priority="5" hidden>Notes</button>
-  <button id="marginBtn" data-priority="2" data-label="Margin bubbles" aria-label="Margin bubbles" hidden>&#128172;</button>
-  <select id="whoPick" data-priority="1" title="Who you are, for comments: select text in the PDF, then 💬 (or C) adds your note to the source" hidden></select>
-  <span id="cutGroup" class="grp" data-priority="6">
-    <button id="cut" data-label="Space hints" title="Where to cut: short last lines of paragraphs and large empty gaps in the main text" aria-label="Space hints">&#9986;</button>
-    <span id="cutNav" class="navgroup" hidden title="Space to reclaim in the main text of the PDF as shown">
+  <div id="layoutSwitch" class="segmented" data-priority="9.5" role="group" aria-label="Workspace layout" hidden>
+    <button id="layoutSource" data-mode="source" title="Source only">Source</button>
+    <button id="layoutSplit" data-mode="split" title="Source and PDF side by side (E)">Split</button>
+    <button id="layoutPdf" data-mode="pdf" title="PDF only (E)">PDF</button>
+  </div>
+  <button id="editBtn" data-priority="9" data-label="Source" title="Toggle the LaTeX source beside the PDF (E)" hidden><span class="ic-slot"></span><span class="txt">Source</span></button>
+  <button id="cmdTrigger" data-priority="8.5" data-label="Search" title="Jump to files, sections, commands, or search across project (Cmd/Ctrl+K)">
+    <span class="ic-slot"></span>
+    <span class="cmd-placeholder">Search or jump&hellip;</span>
+    <kbd>⌘K</kbd>
+  </button>
+  <span id="spacer"></span>
+  <span id="cutGroup" class="grp" data-priority="4">
+    <button id="cut" class="icon-btn" data-label="Space hints" title="Where to cut: short last lines and large empty gaps in the main text" aria-label="Space hints"></button>
+    <span id="cutNav" class="navgroup" hidden title="Space to reclaim in the main text">
       <span id="cutCount"></span>
       <button id="prevCut" title="Previous spot">&lsaquo;</button>
       <button id="nextCut" title="Next spot">&rsaquo;</button>
     </span>
   </span>
-  <span id="changesGroup" class="grp" data-priority="9">
-    <button id="changesBtn" data-label="Change highlights" title="Highlight changes against the last commit, the last push, or the previous build (d; off by default)" aria-label="Change highlights">&Delta;</button>
+  <span id="changesGroup" class="grp" data-priority="6">
+    <button id="changesBtn" class="icon-btn" data-label="Change highlights" title="Highlight changes against the last commit, push, or previous build (D)" aria-label="Change highlights"></button>
     <span id="diffInfo" hidden></span>
-    <span id="changes" class="navgroup" hidden title="What changed, against the last commit, the last push, or the previous build: text in green (red bars mark deletions), changed figures outlined">
+    <span id="changes" class="navgroup" hidden title="Changes against the baseline">
       <span id="changeCount"></span>
       <button id="changeBase"></button>
       <button id="prevChange" title="Previous change (,)">&lsaquo;</button>
       <button id="nextChange" title="Next change (.)">&rsaquo;</button>
-      <button id="clearChanges" title="Clear the highlights">&#10005;</button>
+      <button id="clearChanges" title="Clear highlights">&#10005;</button>
     </span>
   </span>
-  <button id="downloadBtn" data-priority="4.5" data-label="Download" aria-haspopup="menu" aria-expanded="false" title="Download the PDF"><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" style="vertical-align: -1px"><path d="M6 1v6.5M3.2 4.8 6 7.6l2.8-2.8M1.5 9.5v1h9v-1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-  <button id="editBtn" data-priority="9.5" data-label="Source" title="The LaTeX source beside the PDF: edits save by themselves, and the PDF rebuilds (E)" hidden>&#9998;<span class="txt"> Source</span></button>
-  <span id="spacer"></span>
+  <button id="downloadBtn" class="pill-btn" data-priority="5" data-label="Download" aria-haspopup="menu" aria-expanded="false" title="Download PDFs or arXiv package"><span class="ic-slot"></span><span class="txt">Export</span></button>
+  <div id="presence" class="presence" hidden aria-label="Active collaborators"></div>
   <span id="me" hidden></span>
   <span id="texImage" hidden>&#9888; TeX image missing</span>
-  <span id="updated" hidden title="latex-live changed on disk (e.g. after a git pull); this preview still runs the version it started with. Restart the preview task (and then reload) to use the new one.">&#10227; restart to update</span>
-  <button id="more" title="More: dark mode, compare with an earlier version, and what doesn't fit in the toolbar" aria-label="More">&#8943;</button>
-  <button id="rebuild" title="Rebuild the PDF from scratch (e.g. after another build replaced it)" aria-label="Rebuild the PDF" hidden>&#8635;</button>
-  <span id="pages"></span>
-  <span id="status">loading&hellip;</span>
+  <span id="updated" hidden title="latex-live changed on disk; restart the preview task and reload">&#10227; restart to update</span>
+  <span id="pages" title="Main-text pages vs venue limit"></span>
+  <span id="status" title="Build status">loading&hellip;</span>
+  <button id="themeToggle" class="icon-btn" title="Switch light / dark theme" aria-label="Toggle theme"></button>
+  <button id="more" class="icon-btn" title="Appearance, compare, shortcuts, and more" aria-label="More"></button>
+</header>
+
+<div id="workspace">
+  <aside id="side" hidden>
+    <div id="sideGrip" title="Drag to resize sidebar"></div>
+    <div id="tabs" role="tablist">
+      <button data-tab="files" title="Project files and figures" hidden></button>
+      <button data-tab="outline" title="Section outline"></button>
+      <button data-tab="thumbs" title="Page thumbnails"></button>
+      <button data-tab="notes" title="Inline notes"></button>
+      <button data-tab="checks" title="Pre-submission checks"></button>
+      <button data-tab="figures" title="Figures and tables"></button>
+      <button data-tab="history" title="Git history and diffs" hidden></button>
+      <button data-tab="papers" title="Bibliography and references" hidden></button>
+    </div>
+    <div id="files" class="panel" hidden></div>
+    <nav id="outline" class="panel" hidden></nav>
+    <div id="thumbs" class="panel" hidden></div>
+    <div id="notes" class="panel" hidden></div>
+    <div id="checks" class="panel" hidden></div>
+    <div id="figures" class="panel" hidden></div>
+    <div id="history" class="panel" hidden></div>
+    <div id="papers" class="panel" hidden></div>
+  </aside>
+
+  <section id="editorPane" tabindex="-1" hidden>
+    <div id="editorGrip" title="Drag to resize editor"></div>
+    <div id="editorHead">
+      <div id="editorTabs" role="tablist" aria-label="Open files"></div>
+      <button id="filePick" class="file-pick-btn" title="Switch source file">&hellip;</button>
+      <div id="editorActions">
+        <button id="fmtBold" class="ed-act" title="Bold (\textbf{}, Cmd/Ctrl+B)"><b>B</b></button>
+        <button id="fmtItalic" class="ed-act" title="Italic (\textit{}, Cmd/Ctrl+I)"><i>I</i></button>
+        <button id="foldBtn" class="ed-act icon-btn" title="Toggle fold all sections/environments"></button>
+        <button id="polishBtn" class="ed-act pill-accent" title="AI Polish / Proofread selection (local agent)" hidden><span class="ic-slot"></span><span>Polish</span></button>
+        <button id="editorBuildPill" class="build-pill" title="Click to open build logs &amp; warnings" hidden></button>
+        <button id="showInPdf" class="ed-act" title="Jump to cursor line in PDF (SyncTeX)"></button>
+        <button id="editorClose" class="ed-act icon-btn" title="Close source pane (E)" aria-label="Close source pane"></button>
+      </div>
+    </div>
+    <div id="polishMenu" class="popover-menu" hidden>
+      <button data-mode="polish">Polish selection (concision &amp; flow)</button>
+      <button data-mode="proofread">Proofread selection (grammar &amp; typos)</button>
+      <button data-mode="custom">Custom instruction&hellip;</button>
+      <div id="polishAgentMeta" class="menu-meta"></div>
+    </div>
+    <div id="fileMenu" hidden>
+      <input id="fileFilter" placeholder="Filter files&hellip;" title="Enter: open, &uarr;/&darr;: choose, Esc: close">
+      <div id="fileList"></div>
+    </div>
+    <div id="editorHint" hidden><button class="close" title="Close" aria-label="Close">&#10005;</button>Double-click the PDF to jump to its source line, or press <kbd>⌘K</kbd> to jump anywhere.</div>
+    <div id="notice" role="alert" hidden>
+      <button class="close" title="Close (Esc)" aria-label="Close">&#10005;</button>
+      <div class="what"></div>
+      <div class="row"></div>
+      <div class="copy" hidden><textarea readonly aria-label="Your text, to copy" title="Your text, to copy: a click selects all of it"></textarea></div>
+    </div>
+    <div id="editorBody">
+      <div id="editorHost"><div class="msg">Loading the editor&hellip;</div></div>
+      <div id="outlineRail" aria-label="Section outline rail" hidden></div>
+    </div>
+    <div id="logsDrawer" hidden>
+      <div id="logsHead">
+        <div class="logs-tabs">
+          <button data-filter="all" class="on">All</button>
+          <button data-filter="error">Errors <span class="n" id="logsErrCount"></span></button>
+          <button data-filter="warning">Warnings <span class="n" id="logsWarnCount"></span></button>
+          <button data-filter="raw">Raw Log</button>
+        </div>
+        <button id="logsClose" class="icon-btn" title="Close logs (Cmd/Ctrl+Shift+L)" aria-label="Close logs"></button>
+      </div>
+      <div id="logsBody"></div>
+    </div>
+    <div id="editorFoot">
+      <span id="cursorPos">Ln 1, Col 1</span>
+      <span class="foot-dot">&middot;</span>
+      <span id="saveState" aria-live="polite"></span>
+      <span class="foot-spacer"></span>
+      <button id="editorDiagBtn" class="foot-btn" title="Toggle build logs and warnings (Cmd/Ctrl+Shift+L)" hidden></button>
+      <span id="editorNotesCount" class="foot-meta" hidden></span>
+      <span id="wordCount" class="foot-meta"></span>
+    </div>
+  </section>
+
+  <section id="pdfPane">
+    <div id="pdfHead">
+      <span id="pageNav" class="grp" data-label="Page">
+        <button id="prev" class="icon-btn" title="Previous page" aria-label="Previous page">&lsaquo;</button>
+        <span class="page-box"><input id="page" value="1" aria-label="Current page"><span class="slash">/</span><span id="count">&ndash;</span></span>
+        <button id="next" class="icon-btn" title="Next page" aria-label="Next page">&rsaquo;</button>
+      </span>
+      <span id="findGroup" class="grp">
+        <span class="find-wrap">
+          <span class="ic-slot" id="findIc"></span>
+          <input id="find" placeholder="Find in PDF" title="Cmd/Ctrl+F, Enter: next, Shift+Enter: previous, Esc: clear">
+          <span id="findCount"></span>
+        </span>
+      </span>
+      <span id="zoomGroup" class="grp" data-label="Zoom">
+        <button id="zoomOut" class="icon-btn" title="Zoom out (Ctrl -)" aria-label="Zoom out">&minus;</button>
+        <select id="zoomPick" title="Zoom (Ctrl 0: fit width)">
+          <option value="page-width">Fit width</option>
+          <option value="page-fit">Fit page</option>
+          <option value="0.5">50%</option>
+          <option value="0.75">75%</option>
+          <option value="1">100%</option>
+          <option value="1.25">125%</option>
+          <option value="1.5">150%</option>
+          <option value="2">200%</option>
+          <option value="3">300%</option>
+          <option value="custom" hidden></option>
+        </select>
+        <button id="zoomIn" class="icon-btn" title="Zoom in (Ctrl +)" aria-label="Zoom in">+</button>
+      </span>
+      <span class="pdf-spacer"></span>
+      <button id="notesView" class="pill-btn" hidden>Notes</button>
+      <button id="marginBtn" class="icon-btn" data-label="Margin bubbles" aria-label="Margin bubbles" hidden></button>
+      <select id="whoPick" title="Who you are, for comments: select text in the PDF, then press C" hidden></select>
+      <button id="rebuild" class="icon-btn" title="Rebuild the PDF from scratch" aria-label="Rebuild the PDF" hidden></button>
+      <button id="popoutBtn" class="icon-btn" title="Open PDF in a synchronized window for a second screen" aria-label="Pop out PDF"></button>
+    </div>
+    <div id="viewerContainer"><div id="viewer" class="pdfViewer"></div></div>
+  </section>
 </div>
-<div id="moreMenu" hidden>
+
+<div id="moreMenu" class="popover-menu" hidden>
   <div id="moreFixed">
-    <button id="dark" title="Dark mode (inverts the PDF)">&#9680; Dark mode</button>
-    <button id="compare" data-priority="11" title="The paper with the changes since an earlier commit marked (in a new tab)">Compare with an earlier version&hellip;</button>
+    <div class="menu-section-label">Appearance</div>
+    <div id="tintRow" class="tint-row" role="group" aria-label="Surface tint"></div>
+    <button id="dark" title="Switch between light and dark workspace theme">Dark mode</button>
+    <button id="pdfInvertBtn" title="Invert PDF page colors for dark reading">Invert PDF colors</button>
+    <div class="menu-sep"></div>
+    <button id="compare" title="Compare the paper with an earlier git commit (latexdiff in a new tab)">Compare with an earlier version&hellip;</button>
     <button id="keysBtn" title="Keyboard shortcuts (?)">Keyboard shortcuts</button>
-    <button id="welcomeBtn" title="What this is, and how to comment, edit, and find your way">Welcome guide</button>
-    <button id="signOut" title="Forget this browser's sign-in: every preview at this address then needs its link (with ?t=) again" hidden>Sign out</button>
+    <button id="welcomeBtn" title="Welcome guide">Welcome guide</button>
+    <button id="signOut" title="Forget this browser's sign-in" hidden>Sign out</button>
     <a id="versionInfo" href="https://github.com/ellisbrown/latex-live" target="_blank" rel="noopener" title="latex-live on GitHub"></a>
   </div>
   <div id="moreItems"></div>
 </div>
-<div id="downloadMenu" role="menu" hidden>
+
+<div id="downloadMenu" class="popover-menu" role="menu" hidden>
   <button id="downloadPdf" role="menuitem" title="Save this PDF, notes included">PDF with notes</button>
-  <button id="downloadClean" role="menuitem" hidden title="Save the paper without its notes, as you would submit it (an exact build: about as long as a full build)">PDF without notes (as submitted)</button>
-  <button id="downloadReview" role="menuitem" hidden title="Save a copy for co-authors: the pages as submitted, with each note beside its column, numbered where it sits in the text (the exact build, then a pass to place the notes)">PDF with notes in the margin</button>
-  <button id="downloadAnnotated" role="menuitem" hidden title="Save the pages as submitted with each note as a PDF comment where it sits, to read and reply to in Acrobat, Preview or Zotero (built with the copy with notes in the margin)">PDF with notes as comments</button>
-  <button id="downloadArxiv" role="menuitem" hidden title="Save the sources for an arXiv submission: the files the exact build without notes reads, with their comments, notes and hidden blocks taken out and its .bbl, checked by building them alone and comparing the PDF">arXiv package (.tar.gz)</button>
+  <button id="downloadClean" role="menuitem" hidden title="Save the paper without its notes, as submitted">PDF without notes (as submitted)</button>
+  <button id="downloadReview" role="menuitem" hidden title="Pages as submitted, with each note typeset in a margin beside its column">PDF with notes in the margin</button>
+  <button id="downloadAnnotated" role="menuitem" hidden title="Pages as submitted, with each note as a PDF sticky-note comment">PDF with notes as comments</button>
+  <button id="downloadArxiv" role="menuitem" hidden title="Clean arXiv submission package (.tar.gz), checked by building it alone">arXiv package (.tar.gz)</button>
 </div>
-<div id="keys" hidden>
+
+<div id="paletteBackdrop" hidden>
+  <div id="palette" role="dialog" aria-modal="true" aria-label="Command palette and search">
+    <div id="paletteHead">
+      <span class="ic-slot" id="paletteIc"></span>
+      <input id="paletteInput" placeholder="Jump to file, section, citation, or type > for commands&hellip;" autocomplete="off" spellcheck="false">
+      <div class="palette-modes">
+        <button data-pmode="jump" class="on" title="Jump to files, sections, and commands">Jump</button>
+        <button data-pmode="search" title="Search text across all project files (Cmd/Ctrl+Shift+F)">In files</button>
+      </div>
+    </div>
+    <div id="paletteResults"></div>
+    <div id="paletteFoot">
+      <span><kbd>&uarr;&darr;</kbd> navigate</span>
+      <span><kbd>Enter</kbd> open</span>
+      <span><kbd>Esc</kbd> close</span>
+      <span class="foot-spacer"></span>
+      <span><kbd>⌘⇧F</kbd> search all files</span>
+    </div>
+  </div>
+</div>
+
+<div id="keys" class="modal-card" hidden>
   <div class="head">Keyboard shortcuts <button class="close" title="Close (Esc)" aria-label="Close">&#10005;</button><button class="welcome">Welcome guide</button></div>
   <table>
-    <tr><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>F</kbd></td><td>search; <kbd>Enter</kbd> / <kbd>Shift</kbd> <kbd>Enter</kbd> next / previous match, <kbd>Esc</kbd> clear</td></tr>
-    <tr><td><kbd>Ctrl</kbd> <kbd>+</kbd> / <kbd>Ctrl</kbd> <kbd>&minus;</kbd></td><td>zoom in / out</td></tr>
-    <tr><td><kbd>Ctrl</kbd> <kbd>0</kbd></td><td>fit width</td></tr>
+    <tr><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>K</kbd></td><td>command palette, jump to file, section, or citation</td></tr>
+    <tr><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>F</kbd></td><td>search across all source files</td></tr>
+    <tr><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>F</kbd></td><td>find in PDF (or in source when editor is focused)</td></tr>
+    <tr><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>L</kbd></td><td>toggle build logs and warnings drawer</td></tr>
+    <tr><td><kbd>Ctrl</kbd> <kbd>+</kbd> / <kbd>Ctrl</kbd> <kbd>&minus;</kbd></td><td>zoom in / out; <kbd>Ctrl</kbd> <kbd>0</kbd> fit width</td></tr>
     <tr><td><kbd>Alt</kbd> <kbd>&larr;</kbd> / <kbd>Alt</kbd> <kbd>&rarr;</kbd></td><td>back / forward after a link (also <kbd>Cmd</kbd> <kbd>[</kbd> / <kbd>Cmd</kbd> <kbd>]</kbd>)</td></tr>
-    <tr><td><kbd>d</kbd></td><td>change highlights on / off</td></tr>
-    <tr><td><kbd>,</kbd> / <kbd>.</kbd></td><td>previous / next change</td></tr>
-    <tr id="keysComment"><td><kbd>c</kbd></td><td>comment on the selected text</td></tr>
-    <tr id="keysEdit" hidden><td><kbd>e</kbd></td><td>the LaTeX source beside the PDF (<kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>S</kbd> there saves at once)</td></tr>
+    <tr><td><kbd>d</kbd></td><td>change highlights on / off (<kbd>,</kbd> / <kbd>.</kbd> step changes)</td></tr>
+    <tr id="keysComment"><td><kbd>c</kbd></td><td>comment on the selected text in the PDF</td></tr>
+    <tr id="keysEdit" hidden><td><kbd>e</kbd></td><td>toggle source pane (<kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>S</kbd> save, <kbd>B</kbd>/<kbd>I</kbd> bold/italic, <kbd>/</kbd> comment)</td></tr>
     <tr id="keysDblclickRow"><td>double-click</td><td id="keysDblclick">open the source line</td></tr>
     <tr><td><kbd>?</kbd></td><td>this list</td></tr>
   </table>
 </div>
-<div id="welcome" role="dialog" aria-modal="true" aria-labelledby="welcomeTitle" hidden>
+
+<div id="welcome" class="modal-card" role="dialog" aria-modal="true" aria-labelledby="welcomeTitle" hidden>
   <div class="head"><span id="welcomeTitle">Welcome</span> <button class="close" title="Close (Esc)" aria-label="Close">&#10005;</button></div>
-  <p>This is a live PDF of the paper: it rebuilds by itself a few seconds after anyone changes its LaTeX source.</p>
+  <p>This is a live PDF workspace for the paper: it rebuilds by itself a few seconds after anyone changes its LaTeX source.</p>
   <section data-part="comment">
     <h4>Comment</h4>
-    <p class="how"><span data-part="pick">Pick who you are in the toolbar (&#128172; Comment as&hellip;), then select text in the PDF and press
-      <kbd>C</kbd> or click the &#128172; button that appears beside it.</span><span data-part="locked">Select text in the PDF, then press
-      <kbd>C</kbd> or click the &#128172; button that appears beside it.</span> Your note goes into the source and, once the PDF rebuilds,
+    <p class="how"><span data-part="pick">Pick who you are in the PDF bar, then select text in the PDF and press
+      <kbd>C</kbd> or click the button that appears beside it.</span><span data-part="locked">Select text in the PDF, then press
+      <kbd>C</kbd> or click the button that appears beside it.</span> Your note goes into the source and, once the PDF rebuilds,
       shows in the margin with your initials<span class="initials"></span>. Hover over a note to reply &#8617;, resolve &#10003;,
       or edit your own &#9998;.</p>
     <p class="missing" hidden></p>
   </section>
   <section data-part="edit">
     <h4>Edit</h4>
-    <p>&#9998; Source (or <kbd>E</kbd>) opens the LaTeX beside the PDF, and double-clicking the PDF jumps to its source line.
-      Changes save by themselves and the PDF rebuilds; errors appear in red and link to their line.</p>
+    <p>Switch to <b>Split</b> or <b>Source</b> (or press <kbd>E</kbd>) to edit the LaTeX beside the PDF; double-clicking the PDF jumps
+      straight to its source line. Changes save automatically and the PDF rebuilds; errors and warnings appear inline and in the Logs drawer.</p>
   </section>
   <section>
     <h4>Find your way</h4>
-    <p>&#9776; opens the sidebar: the outline, the pages, the notes, checks, and the figures and tables. Search with
-      <kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>F</kbd>. <i>Notes: off</i> shows the paper as it would be submitted, with the notes as
-      bubbles in the margin; <i>Notes: on</i> puts them back in the text. <kbd>?</kbd> lists the keyboard shortcuts.
-      The download button (in the toolbar, or <i>Download</i> under &#8943;) saves the paper with any notes
-      in it<span data-part="download">, or without them, as it would be submitted</span>.</p>
+    <p>Open the sidebar for Files, Outline, Pages, Notes, Checks, Figures, History, and References, or press <kbd>⌘K</kbd> to jump anywhere.
+      <i>Notes: off</i> shows the submission PDF with notes in the margin; <i>Notes: on</i> puts them back in the text.
+      <b>Export</b> saves the paper with or without notes<span data-part="download">, with margin notes, or as PDF comments</span>.</p>
     <p class="review" data-part="download">To read the notes away from here, <i>PDF with notes in the margin</i> saves the pages
       as submitted with each note beside its spot.</p>
   </section>
@@ -179,6 +299,13 @@
   <p class="again">Open this guide again from &#8943; &rsaquo; Welcome guide.</p>
   <div class="row"><label><input type="checkbox" checked> Don't show this again</label><button class="ok">Got it</button></div>
 </div>
+
+<div id="assetModal" class="modal-card" hidden>
+  <div class="head"><span id="assetTitle">Preview</span> <button class="close" title="Close (Esc)" aria-label="Close">&#10005;</button></div>
+  <div id="assetBody"></div>
+  <div class="row"><button id="assetInsert" class="primary">Insert \includegraphics</button></div>
+</div>
+
 <div id="banner" hidden></div>
 <div id="comparePanel" hidden></div>
 <button id="commentBtn" hidden></button>
@@ -190,45 +317,8 @@
     <span class="latex" title="This note has LaTeX in it, so it is edited as LaTeX" hidden>LaTeX</span>
     <button class="cancel">Cancel</button><button class="primary">Save</button></div>
 </div>
-<aside id="side" hidden>
-  <div id="tabs">
-    <button data-tab="outline">Outline</button>
-    <button data-tab="thumbs">Pages</button>
-    <button data-tab="notes">Notes <span class="n"></span></button>
-    <button data-tab="checks">Checks <span class="n"></span></button>
-    <button data-tab="figures" title="Figures and tables">Figures</button>
-  </div>
-  <nav id="outline" class="panel" hidden></nav>
-  <div id="thumbs" class="panel" hidden></div>
-  <div id="notes" class="panel" hidden></div>
-  <div id="checks" class="panel" hidden></div>
-  <div id="figures" class="panel" hidden></div>
-</aside>
-<div id="viewerContainer"><div id="viewer" class="pdfViewer"></div></div>
-<div id="editorPane" tabindex="-1" hidden>
-  <div id="editorGrip" title="Drag to resize"></div>
-  <div id="editorHead">
-    <button id="filePick" title="Open another source file">&hellip;</button>
-    <span id="saveState" aria-live="polite"></span>
-    <button id="showInPdf" title="Show where the cursor's line is in the PDF">Show in PDF</button>
-    <button id="editorClose" title="Close the source pane (E)" aria-label="Close the source pane">&#10005;</button>
-  </div>
-  <div id="fileMenu" hidden>
-    <input id="fileFilter" placeholder="Filter files" title="Enter: open, &uarr;/&darr;: choose, Esc: close">
-    <div id="fileList"></div>
-  </div>
-  <div id="editorHint" hidden><button class="close" title="Close" aria-label="Close">&#10005;</button>Double-click the PDF to jump to its source.</div>
-  <div id="notice" role="alert" hidden>
-    <button class="close" title="Close (Esc)" aria-label="Close">&#10005;</button>
-    <div class="what"></div>
-    <div class="row"></div>
-    <div class="copy" hidden><textarea readonly aria-label="Your text, to copy" title="Your text, to copy: a click selects all of it"></textarea></div>
-  </div>
-  <div id="editorHost"><div class="msg">Loading the editor&hellip;</div></div>
-</div>
 <div id="preview" hidden></div>
 
-<!-- (onerror: a preview started before its script moved to viewer/ can't send it; the status line says so) -->
 <script type="module" src="viewer/main.js" onerror="document.getElementById('status').textContent = 'server is older than this viewer: restart the LaTeX build task'"></script>
 </body>
 </html>

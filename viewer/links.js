@@ -5,6 +5,7 @@ import { $, file, isDiff, setStatus } from "./page.js";
 import { postJSON, readBody } from "./net.js";
 import { canOpenFile, editable, editorAllowed, me, opensInBrowser, opensSources } from "./role.js";
 import { container, eventBus, pageFrame, pagesReady, shownVariant, viewer } from "./pdfview.js";
+import { broadcastSync, isPopout, syncChannel } from "./layout.js";
 import { flash, reveal } from "./navigation.js";
 import { cmView, ed, showEditor } from "./editor.js";
 
@@ -116,6 +117,7 @@ export function showForward(t) {
 // Show a source line in the PDF; sources with no PDF location (e.g. a .bib entry) open in the editor.
 const cleanParam = () => (shownVariant === "clean" ? { clean: 1 } : {}); // SyncTeX of the notes-free build
 export async function showSource(file, line, openIfMissing = false) {
+  broadcastSync({ kind: "showSource", file, line });
   const r = await fetch(`forward?${new URLSearchParams({ file, line, ...cleanParam() })}`);
   const body = await r.json().catch(() => ({ error: `${file}:${line} is not in the PDF (${r.status})` }));
   if (r.ok) return showForward(body);
@@ -127,6 +129,10 @@ export async function showSource(file, line, openIfMissing = false) {
 // may edit, or the owner of a shared preview without VS Code: always), else in the host's editor
 // (the owner's VS Code, live.py /open), or the pane when that does not open.
 export async function openSource(file, line, column = 0) {
+  if (isPopout) {
+    broadcastSync({ kind: "openSource", file, line, column });
+    return setStatus(`→ ${file}:${line} (sent to editor window)`, "fresh");
+  }
   if (opensInBrowser() && editable(file)) return showEditor(true, { path: file, line, column });
   if (!me.can.openHost) return setStatus(`${file} can't be opened here`, "error");
   try {
@@ -145,3 +151,19 @@ export async function openSource(file, line, column = 0) {
 $("showInPdf").onclick = () => {
   if (ed && cmView) showSource(ed.path, cmView.state.doc.lineAt(cmView.state.selection.main.head).number);
 };
+
+// Synchronize forward/inverse jumps between a popped-out PDF window and the main editor window.
+if (syncChannel) {
+  syncChannel.onmessage = (e) => {
+    const msg = e.data;
+    if (!msg || typeof msg !== "object") return;
+    if (msg.kind === "showSource" && isPopout) {
+      fetch(`forward?${new URLSearchParams({ file: msg.file, line: msg.line, ...cleanParam() })}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((body) => { if (body) showForward(body); })
+        .catch(() => {});
+    } else if (msg.kind === "openSource" && !isPopout && editorAllowed() && editable(msg.file)) {
+      showEditor(true, { path: msg.file, line: msg.line, column: msg.column || 0 });
+    }
+  };
+}

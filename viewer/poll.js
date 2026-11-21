@@ -12,7 +12,13 @@ import { setGutter } from "./layout.js";
 import { area, setArea } from "./pagetext.js";
 import { hidePreview } from "./preview.js";
 import { marks, showUnresolved } from "./marks.js";
-import { ed, sourceEpoch, sourceStatus } from "./editor.js";
+import { ed, cmView, cursorLine, sourceEpoch, sourceStatus } from "./editor.js";
+import { EDITOR_ID } from "./drafts.js";
+import { setRemotePeers } from "./cm.js";
+import { peerColor, renderPresence } from "./toolbar.js";
+import { setFilePeers } from "./files.js";
+import { loadLogs, updateBuildPill } from "./logs.js";
+import { loadPapers } from "./papers.js";
 import { showForward } from "./links.js";
 import { showAccessEnded, showBuild } from "./banner.js";
 import { checkPages, cleanShown, measureVariant, measuring, notesShown, renderPages, setResult, setUncounted } from "./pages.js";
@@ -110,6 +116,7 @@ async function load(name, version, variant, info, timed = () => {}) {
   renderOutline().catch(() => {});
   if (!isDiff) loadNotes().catch(() => {});
   if (!isDiff) loadAuthors().catch(() => {});
+  if (!isDiff) loadPapers().catch(() => {});
   if (!isDiff && variant === "clean") loadMargin(next).catch((e) => { console.warn(e); setGutter(false); });
   const built = variant === "clean" ? info.clean : info;
   measureWhenRefs = !isDiff && built.refsPending ? { d: next, variant, version } : null;
@@ -143,7 +150,12 @@ export async function poll() {
     const query = new URLSearchParams();
     const against = changesOn ? baseKind() : null; // (the server builds the push baseline only when asked)
     if (against === "push") query.set("base", against);
-    if (ed && editorShown()) query.set("open", ed.path); // (and the open source file's version on disk)
+    query.set("tab", EDITOR_ID);
+    if (ed && editorShown()) {
+      query.set("open", ed.path);
+      const ln = cursorLine();
+      if (ln) query.set("line", String(ln));
+    }
     const r = await fetch(`status/${encodeURIComponent(file)}${query.toString() ? `?${query}` : ""}`,
                           { cache: "no-store", signal: AbortSignal.timeout(10000) })
       .catch((e) => { throw ["TimeoutError", "AbortError"].includes(e.name) ? e : new Error(UNREACHABLE); });
@@ -163,7 +175,19 @@ export async function poll() {
     if (pollFailed) setStatus(""); // (it answers again)
     pollFailed = false;
     sourceStatus(info.source, epoch);
+    if (Array.isArray(info.presence)) {
+      renderPresence(info.presence);
+      setFilePeers(info.presence);
+      if (cmView && ed && editorShown()) {
+        const sameFile = info.presence.filter((p) => !p.self && p.file === ed.path && p.line);
+        setRemotePeers(cmView, sameFile, peerColor);
+      }
+    }
     if (!isDiff) seeBuild(!!info.building, info.build?.ok === false);
+    if (!isDiff) updateBuildPill({ building: !!info.building, build: info.build });
+    if (!isDiff && !info.building && info.build?.time) {
+      loadLogs(false, `${info.version || ""}|${info.build.time}|${info.build.ok}`);
+    }
     if (!isDiff && info.doc && info.doc !== docFile) return openDoc(info.doc); // the server builds another document now
     if (info.layout) setArea(info.layout);
     setUncounted(info.uncounted);

@@ -117,22 +117,20 @@ Notes are the paper's note macros: one-argument commands that go through
 
 ## The source pane
 
-✎ Source (or `e`) opens the LaTeX beside the PDF; drag its edge to resize it.
+Switch the layout control to **Split** or **Source** (or press `e`) to open the LaTeX beside the PDF; drag its right edge to resize the split between the editor and the PDF.
 
-- The file menu lists the paper's `.tex`, `.bib`, `.sty` and `.cls` files by
-  folder, with a filter.
-- Edits save by themselves a moment after you stop typing (Cmd/Ctrl+S saves at
-  once), and the PDF rebuilds.
-- In the braces of `\ref` (`\eqref`, `\cref`, `\autoref`…), it offers the
-  paper's labels; in those of `\cite` (`\citet`, `\citep`…), the keys of its
-  `.bib` files, with their titles.
-- If the file changed meanwhile (saved in another editor or tab, or a note from
-  the viewer), your edits are merged with that change. Where both changed the
-  same lines, the pane shows both versions between `<<<<<<<` and `>>>>>>>`
-  lines and saves again once you have settled them; or you keep your version or
-  the other one whole.
-- A file that changes on disk reloads in place. Edits that could not be saved
-  yet stay in the browser and are offered back when you open the file again.
+- **Multi-file tabs and file tree:** open multiple files as tabs across the editor header, switch quickly via `▾` or `Cmd/Ctrl+K`, or browse the sidebar's **Files** tab (which also supports creating new `.tex`/`.bib` files, uploading figures, previewing images, inserting `\includegraphics{}`, and renaming/deleting files as owner).
+- **Rich editing aids:** LaTeX section and `\begin{...}...\end{...}` folding, a right-edge section outline rail, live word count and cursor line/column in the footer, `Cmd/Ctrl+B` / `Cmd/Ctrl+I` / `Cmd/Ctrl+/` formatting shortcuts, and highlighted inline note spans.
+- **Completions and hover cards:** completes `\ref` labels (with surrounding context), `\cite` keys (with titles and years), `\includegraphics` project figures, `\begin{...}` environments (auto-closing `\end{...}`), and common commands. Hovering over `\cite`, `\ref`, `\includegraphics`, or a diagnostic line shows an inline reference/preview card.
+- **Inline diagnostics and build logs:** click the build badge (`✓ 0.8 s` / `N errors`) or press `Cmd/Ctrl+Shift+L` to open the **Logs & Warnings** drawer (`All`, `Errors`, `Warnings`, `Raw Log`), with wavy underlines and gutter markers inside CodeMirror.
+- **Local AI polish (owner only):** when `claude`, `codex`, `pi`, or `LATEX_LIVE_AGENT_CMD` is available, click **Polish** (or `✨` on a margin note) to see an inline word-level diff card with **Accept** (`Cmd/Ctrl+Enter`), **Reject**, and **Try again…**. Protected text (`LATEX_LIVE_PROTECTED`) is refused automatically.
+- **Autosave and 3-way merge:** edits save by themselves a moment after you stop typing (`Cmd/Ctrl+S` saves at once), merge with disk changes via `git merge-file`, reload in place when changed externally, and keep unsaved drafts in the browser across reloads.
+
+## Appearance, layout, and command palette
+
+- **Themes and tints:** toggle **Light** / **Dark** from the top bar or `⋯`, choose a surface tint (**Graphite**, **Paper**, **Sage**, **Mist**), and toggle **Invert PDF colors** independently so you can read white paper pages inside a dark workspace.
+- **Pop-out PDF:** click the pop-out icon in the PDF bar to open a synchronized PDF window (`?mode=pdf`) for a second monitor; SyncTeX forward and inverse jumps sync over `BroadcastChannel`.
+- **Command palette and cross-file search:** press `Cmd/Ctrl+K` (or click **Search or jump…**) to jump to files, sections, citations, or commands; press `Cmd/Ctrl+Shift+F` to search text across every source file in the paper.
 
 ## Changes and comparing
 
@@ -195,13 +193,14 @@ the arXiv package, which holds every source file, is the owner's.
 
 ## The sidebar
 
-- **Outline:** numbered as in the paper (appendix letters too), with pages per
-  section.
+- **Files:** project source and figure tree (with create, upload, image preview, `\includegraphics` insertion, and owner rename/delete).
+- **Outline:** numbered as in the paper (appendix letters too), with pages per section.
 - **Pages:** thumbnails, with pages over the limit shaded.
-- **Notes:** grouped by author.
+- **Notes:** grouped by author, with reply, resolve, edit, and (for owners with a local agent) inline fix proposals.
 - **Checks:** the [pre-submission checks](#pre-submission-checks).
-- **Figures:** every figure and table, cropped from its page, with its caption;
-  click one to go to it.
+- **Figs:** every figure and table, cropped from its page, with its caption; click one to go to it.
+- **History:** interactive git commit timeline with expandable inline unified diffs, one-click file restore (owner), and latexdiff PDF comparison.
+- **Refs:** bibliography library with live citation counts (`3×`, `0×`), one-click `\cite{}` insertion, add-by-arXiv-ID/DOI/BibTeX lookup, and Crossref reference verification.
 
 ## Page limit and space
 
@@ -261,6 +260,9 @@ The Checks tab of the sidebar lists, each as ok, info, warning or failure:
 
 | Key | Does |
 | --- | --- |
+| `Cmd/Ctrl K` | Command palette: jump to files, sections, citations, or commands |
+| `Cmd/Ctrl Shift F` | Search across all source files |
+| `Cmd/Ctrl Shift L` | Toggle Build Logs & Warnings drawer |
 | Cmd/Ctrl F | Search; Enter / Shift Enter for the next / previous match, Esc to clear |
 | Ctrl + / Ctrl − | Zoom in / out |
 | Ctrl 0 | Fit width |

@@ -16,14 +16,28 @@ nothing beyond Python's standard library.
   in VS Code highlights the current line in the PDF.
 - Notes: a notes-free view with each note in a margin bubble, and notes
   written, replied to, resolved and edited from the viewer.
-- An editor in the browser, beside the PDF, that merges with changes saved elsewhere.
+- Light and dark workspace themes with surface tints (Graphite, Paper, Sage, Mist),
+  independent PDF color inversion, and a 3-pane `[Sidebar | Editor | PDF]` layout
+  (`Source | Split | PDF`) plus a synchronized pop-out PDF window for a second screen.
+- Browser editor with multi-file tabs, project file tree (create, upload, rename, delete),
+  LaTeX section and environment folding, section outline rail, inline build diagnostics and
+  Logs/Warnings drawer, completions for `\ref`, `\cite`, `\includegraphics`, `\begin`, and
+  commands, hover cards for citations/references/figures, and 3-way merge on save.
+- Command palette (`Cmd/Ctrl+K`) and cross-file project search (`Cmd/Ctrl+Shift+F`).
+- Interactive git History timeline with inline diffs and one-click file restore, alongside
+  change highlights and latexdiff comparisons.
+- Papers / References library with live citation counts, add-by-arXiv-ID/DOI/BibTeX, and
+  Crossref reference verification.
+- Owner-only local agent polish (`claude`, `codex`, `pi`, or `LATEX_LIVE_AGENT_CMD`): inline
+  Accept/Reject diff cards for selected text or margin notes.
 - Change highlights against the last push, commit or build, and latexdiff against any commit.
 - A page-limit badge, space hints, and pre-submission checks: anonymity,
   references, fonts, figure placement, what the arXiv source would expose, and more.
 - Downloads: as built, without notes (an exact build), or with the notes in the margin;
   and an arXiv package without comments or notes, checked by building it alone.
 - Shared mode: coauthors without a LaTeX setup open one link and read,
-  comment or edit, each in their role, with every TeX run confined to a container.
+  comment or edit, each in their role, with live presence indicators and every TeX run
+  confined to a container.
 
 ## Quick start
 

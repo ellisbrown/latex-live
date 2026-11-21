@@ -26,6 +26,7 @@ $("compare").onclick = async () => {
     ...(dirty ? [row("HEAD", "", "uncommitted edits only", "the last commit vs. the working tree")] : []),
     ...commits.map((c) => row(c.rev, c.date, `${c.subject} — ${c.author}`, `${c.rev} ${c.date} ${c.author}: ${c.subject}`)));
 };
+export async function startCompare(rev) { return startDiff(rev); }
 async function startDiff(rev) {
   $("comparePanel").hidden = true;
   await flushSource(); // (the diff is of the files on disk)

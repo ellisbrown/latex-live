@@ -12,6 +12,8 @@ import { showDownloads } from "./downloads.js";
 import { keepFocusIn, showWelcome } from "./welcome.js";
 import { closeNotePop, startComment } from "./comments.js";
 import { goToChange, toggleChanges } from "./changes.js";
+import { toggleLogs } from "./logs.js";
+import { closePalette, openPalette, paletteOpen } from "./palette.js";
 
 window.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;
@@ -19,6 +21,23 @@ window.addEventListener("keydown", (e) => {
     if (e.key === "Escape") showWelcome(false);
     else if (e.key === "Tab" && !e.defaultPrevented) keepFocusIn($("welcome"), e); // (not a Tab the source pane took, to indent)
     return;
+  }
+  if (paletteOpen()) {
+    if (e.key === "Escape") { e.preventDefault(); closePalette(); }
+    return;
+  }
+  if (mod && !e.shiftKey && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    return openPalette("jump");
+  }
+  if (mod && e.shiftKey && e.key.toLowerCase() === "f") {
+    e.preventDefault();
+    return openPalette(editorAllowed() ? "search" : "jump");
+  }
+  if (mod && e.shiftKey && e.key.toLowerCase() === "l" && me.can.logs) {
+    e.preventDefault();
+    if (!editorShown() && editorAllowed()) showEditor(true);
+    return toggleLogs();
   }
   if (e.target.closest?.("#editorPane")) { // (keys typed in the source pane are the editor's: c, d, Cmd+F, ...)
     if (mod && e.key === "s" && !e.defaultPrevented) { e.preventDefault(); saveSource(); } // (e.g. after a click in its header)
@@ -30,10 +49,13 @@ window.addEventListener("keydown", (e) => {
   else if (mod && e.key === "0") { e.preventDefault(); viewer.currentScaleValue = "page-width"; }
   else if (mod && e.key === "f") { e.preventDefault(); revealControl($("find")); $("find").focus(); $("find").select(); }
   else if (mod && e.key === "g") { e.preventDefault(); find(e.shiftKey); }
-  else if (e.target.tagName === "INPUT") return; // keep word-wise cursor keys in the text boxes
+  else if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return; // keep word-wise cursor keys in the text boxes
   else if ((e.altKey && e.key === "ArrowLeft") || (e.metaKey && e.key === "[")) { e.preventDefault(); travel(back, ahead); }
   else if ((e.altKey && e.key === "ArrowRight") || (e.metaKey && e.key === "]")) { e.preventDefault(); travel(ahead, back); }
-  else if (e.key === "Escape") { hidePreview(); $("comparePanel").hidden = true; closeNotePop(); showMore(false); showKeys(false); showDownloads(false); }
+  else if (e.key === "Escape") {
+    hidePreview(); $("comparePanel").hidden = true; $("assetModal").hidden = true; $("polishMenu").hidden = true;
+    closeNotePop(); showMore(false); showKeys(false); showDownloads(false);
+  }
   else if (!mod && !e.altKey && e.key === "?") { e.preventDefault(); showKeys($("keys").hidden); }
   else if (!mod && !e.altKey && e.key === "c") {
     if (!$("commentBtn").hidden) { e.preventDefault(); startComment(); }
