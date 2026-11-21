@@ -6,44 +6,51 @@ A file's version is a hash of its bytes; the editor works with \\n line ends, an
 gets them back on save. Reads and saves go through read_editable and write_source under NOTE_LOCK, as notes
 do, so the two never overwrite each other, and neither follows a link swapped in since the file was checked."""
 
+import base64
+import mimetypes
 import os
 import re
 import subprocess
 import tempfile
 
+from . import config
 from .commits import commit_others, paused, remember_write, updating
+from .git import file_at_commit
 from .latex import brace_group
 from .sources import (
-    EDITABLE_SIZE, NOTE_LOCK, SourceChanged, cached_version, editable_files, editable_real, file_version, read_editable,
-    write_source, wrote)
+    EDITABLE_EXTS, EDITABLE_SIZE, NOTE_LOCK, UPLOAD_EXTS, UPLOAD_SIZE, SourceChanged, asset_real, cached_version,
+    create_source, delete_source, editable_files, editable_real, file_version, open_source, project_assets,
+    read_editable, rename_source, safe_new_path, upload_file, write_source, wrote)
 
 
 MERGE_LABELS = ("saved meanwhile", "base", "your edit")  # (git's conflict markers name the two sides)
 
 
 def files_listing(server):
-    """GET /files: {"files": [{"path", "size"}], "main"}, the files the browser editor opens."""
+    """GET /files: {"files": [{"path", "size"}], "assets": [{"path", "size", "ext"}], "main"}."""
     files = []
     for rel, real in editable_files(server).items():
         try:
             files.append({"path": rel, "size": os.stat(real).st_size})
         except OSError:
             pass
-    return {"files": files, "main": f"{server.default_pdf[:-4]}.tex"}
+    return {"files": files, "assets": project_assets(server), "main": f"{server.default_pdf[:-4]}.tex"}
 
 
 LABEL_RE = re.compile(r"\\label\s*\{([^{}\n]{1,200})\}")
 BIB_ENTRY_RE = re.compile(r"@(\w+)\s*[{(]\s*([^,\s{}()]+)\s*,")
 BIB_TITLE_RE = re.compile(r"\btitle\s*=\s*([{\"])", re.I)
 COMPLETIONS_LIMIT = 5000
+SEARCH_LIMIT = 200
+ASSET_CTYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+                ".webp": "image/webp", ".svg": "image/svg+xml", ".pdf": "application/pdf"}
 
 
 def completions(server, cache={}):
-    """GET /completions: what the browser editor offers in \\ref and \\cite, from the files it opens (so nothing an
-    editor couldn't read there): {"labels": [{"label", "file", "line"}] from the \\label commands outside comments,
-    "keys": [{"key", "title"}] from the .bib files' entries}, at most COMPLETIONS_LIMIT of each. Each file is read
-    again only once it has changed."""
-    labels, keys = [], []
+    """GET /completions: what the browser editor offers in \\ref, \\cite, and \\includegraphics, from the
+    files it opens: {"labels": [{"label", "file", "line"}], "labelContext": {label: snippet},
+    "keys": [{"key", "title"}], "figures": [...]}, at most COMPLETIONS_LIMIT of each."""
+    labels, keys, label_ctx = [], [], {}
     for rel, real in editable_files(server).items():
         if not rel.endswith((".tex", ".bib")) or len(labels) >= COMPLETIONS_LIMIT and len(keys) >= COMPLETIONS_LIMIT:
             continue
@@ -51,17 +58,39 @@ def completions(server, cache={}):
             st = os.stat(real)
             if cache.get(real, (None,))[0] != (st.st_mtime_ns, st.st_size):
                 text = read_editable(real).decode("utf-8", errors="replace")
-                cache[real] = (st.st_mtime_ns, st.st_size, bib_completions(text) if rel.endswith(".bib") else label_lines(text))
+                if rel.endswith(".bib"):
+                    cache[real] = (st.st_mtime_ns, st.st_size, bib_completions(text), {})
+                else:
+                    found_labels = label_lines(text)
+                    cache[real] = (st.st_mtime_ns, st.st_size, found_labels, _label_contexts(text, found_labels))
         except (OSError, SourceChanged):
             continue
-        found = cache[real][2]
+        found, ctx_map = cache[real][2], cache[real][3]
         if rel.endswith(".bib"):
             keys += found[:COMPLETIONS_LIMIT - len(keys)]
         else:
-            labels += [{"label": label, "file": rel, "line": line} for label, line in found[:COMPLETIONS_LIMIT - len(labels)]]
+            for label, line in found[:COMPLETIONS_LIMIT - len(labels)]:
+                labels.append({"label": label, "file": rel, "line": line})
+                if label in ctx_map and label not in label_ctx:
+                    label_ctx[label] = ctx_map[label]
     if len(cache) > 256:
         cache.clear()
-    return {"labels": labels, "keys": keys}
+    figures = [a["path"] for a in project_assets(server)]
+    return {"labels": labels, "labelContext": label_ctx, "keys": keys, "figures": figures}
+
+
+def _label_contexts(text, found_labels):
+    """Map each label name to a short surrounding line snippet for hover tooltips."""
+    lines = text.splitlines()
+    ctx = {}
+    for label, line in found_labels:
+        if label in ctx or not (1 <= line <= len(lines)):
+            continue
+        cur = lines[line - 1].strip()
+        if cur == f"\\label{{{label}}}" and line >= 2 and lines[line - 2].strip():
+            cur = lines[line - 2].strip()
+        ctx[label] = " ".join(cur.split())[:140]
+    return ctx
 
 
 def label_lines(text):
@@ -268,3 +297,229 @@ def merge_texts(current, base, new):
     if not 0 <= r.returncode <= 127:  # (git's count of conflicts stops at 127; it fails with 255)
         raise RuntimeError(r.stderr.decode(errors="replace").strip() or f"git merge-file failed ({r.returncode})")
     return r.returncode, r.stdout.decode("utf-8")
+
+
+def search_request(server, query):
+    """GET /search?q=<q>&case=<0|1>&regex=<0|1>: cross-file search across the paper's editable sources.
+    In shared mode searches are literal-only to prevent regex backtracking DoS."""
+    q = (query.get("q", [""])[0] or "").strip()
+    if not q or len(q) > 200:
+        return 200, {"query": q, "matches": [], "truncated": False}
+    case = query.get("case", ["0"])[0] == "1"
+    use_regex = (not config.SHARED) and query.get("regex", ["0"])[0] == "1"
+    flags = 0 if case else re.I
+    try:
+        pattern = re.compile(q if use_regex else re.escape(q), flags)
+    except re.error as e:
+        return 400, {"error": f"bad search pattern: {e}"}
+    matches, truncated = [], False
+    for rel, real in editable_files(server).items():
+        if truncated:
+            break
+        try:
+            text = read_editable(real).decode("utf-8", errors="replace")
+        except (OSError, SourceChanged):
+            continue
+        for lno, line in enumerate(text.splitlines(), 1):
+            m = pattern.search(line)
+            if m:
+                matches.append({"file": rel, "line": lno, "col": m.start(), "len": max(1, m.end() - m.start()),
+                                "text": line[:200]})
+                if len(matches) >= SEARCH_LIMIT:
+                    truncated = True
+                    break
+    return 200, {"query": q, "matches": matches, "truncated": truncated}
+
+
+def asset_response(server, query):
+    """GET /asset?path=<rel>: serve a verified image/figure asset inside the paper root (O_NOFOLLOW)."""
+    rel = os.path.normpath(query.get("path", [""])[0] or ".")
+    real = asset_real(server.paper_root, rel)
+    if not real:
+        return 404, None, b""
+    ext = os.path.splitext(real)[1].lower()
+    ctype = ASSET_CTYPES.get(ext) or mimetypes.guess_type(real)[0] or "application/octet-stream"
+    try:
+        with open_source(real, limit=UPLOAD_SIZE) as f:
+            data = f.read(UPLOAD_SIZE + 1)
+    except (OSError, SourceChanged):
+        return 404, None, b""
+    if len(data) > UPLOAD_SIZE:
+        return 413, None, b""
+    return 200, ctype, data
+
+
+def create_file_request(server, req, user):
+    """POST /file/create {path, text?}: create a new source file safely inside the paper root."""
+    rel = req.get("path") if isinstance(req, dict) else None
+    text = req.get("text", "") if isinstance(req, dict) else ""
+    if not isinstance(rel, str) or not isinstance(text, str) or len(text.encode("utf-8")) > EDITABLE_SIZE:
+        return 400, {"error": "expected a relative path and optional UTF-8 text"}
+    with NOTE_LOCK:
+        if paused(server):
+            return updating()
+        try:
+            norm = create_source(server.paper_root, rel.strip(), text)
+        except FileExistsError:
+            return 409, {"error": f"{rel} already exists"}
+        except (ValueError, SourceChanged) as e:
+            return 400, {"error": str(e)}
+        except OSError as e:
+            return 500, {"error": f"could not create {rel}: {e.strerror or e}"}
+        server.created_files.add(norm)
+        server.editable = None
+        remember_write(server, user, norm, "edit")
+        wrote(server, user, norm)
+    return 200, {"ok": True, "path": norm}
+
+
+def upload_file_request(server, req, user):
+    """POST /file/upload {path, data (base64), overwrite?}: upload a figure or source file safely."""
+    if not isinstance(req, dict):
+        return 400, {"error": "expected JSON object"}
+    rel = req.get("path")
+    b64_data = req.get("data")
+    overwrite = bool(req.get("overwrite"))
+    if not isinstance(rel, str) or not isinstance(b64_data, str):
+        return 400, {"error": "expected path and base64 data"}
+    try:
+        raw = base64.b64decode(b64_data, validate=True)
+    except (ValueError, TypeError):
+        return 400, {"error": "data must be valid base64"}
+    if len(raw) > UPLOAD_SIZE:
+        return 413, {"error": "file is larger than 10 MB"}
+    with NOTE_LOCK:
+        if paused(server):
+            return updating()
+        norm_check, target_path = safe_new_path(server.paper_root, rel.strip(), UPLOAD_EXTS)
+        if not norm_check:
+            return 400, {"error": "path or file type is not allowed inside the paper"}
+        # Never allow uploading/overwriting root-level .pdf outputs (main.pdf, appendix.pdf, reviews.pdf).
+        if os.path.splitext(norm_check)[1].lower() == ".pdf" and os.path.dirname(norm_check) == "":
+            return 400, {"error": "PDF figures must be uploaded inside a subfolder (e.g. figures/)"}
+        if overwrite and target_path and os.path.exists(target_path):
+            ext = os.path.splitext(norm_check)[1].lower()
+            if config.SHARED and ext in EDITABLE_EXTS and norm_check not in editable_files(server):
+                return 403, {"error": f"{norm_check} is not part of the shared document"}
+            if not commit_others(server, user, norm_check):
+                return updating()
+        try:
+            norm = upload_file(server.paper_root, rel.strip(), raw, overwrite=overwrite)
+        except FileExistsError:
+            return 409, {"error": f"{rel} already exists"}
+        except (ValueError, SourceChanged) as e:
+            return 400, {"error": str(e)}
+        except OSError as e:
+            return 500, {"error": f"could not save {rel}: {e.strerror or e}"}
+        if editable_real(server.paper_root, norm):
+            server.created_files.add(norm)
+        server.editable = None
+        remember_write(server, user, norm, "edit")
+        wrote(server, user, norm)
+    return 200, {"ok": True, "path": norm, "size": len(raw)}
+
+
+def _is_main_tex(server, rel):
+    if not isinstance(rel, str) or not rel or "\0" in rel:
+        return False
+    main_tex = f"{server.default_pdf[:-4]}.tex"
+    root = os.path.realpath(server.paper_root)
+    norm = os.path.normpath(rel.strip())
+    return norm == main_tex or os.path.realpath(os.path.join(root, norm)) == os.path.realpath(os.path.join(root, main_tex))
+
+
+def rename_file_request(server, req, user):
+    """POST /file/rename {from, to}: rename a source or asset file safely (never the active main .tex)."""
+    if not isinstance(req, dict):
+        return 400, {"error": "expected JSON object"}
+    old_rel, new_rel = req.get("from"), req.get("to")
+    if not isinstance(old_rel, str) or not isinstance(new_rel, str):
+        return 400, {"error": "expected from and to paths"}
+    if _is_main_tex(server, old_rel):
+        return 400, {"error": f"cannot rename the main document {server.default_pdf[:-4]}.tex"}
+    with NOTE_LOCK:
+        if paused(server):
+            return updating()
+        old_norm = os.path.normpath(old_rel.strip())
+        if not commit_others(server, user, old_norm):
+            return updating()
+        try:
+            norm = rename_source(server.paper_root, old_rel.strip(), new_rel.strip())
+        except FileNotFoundError:
+            return 404, {"error": f"{old_rel} not found"}
+        except FileExistsError:
+            return 409, {"error": f"{new_rel} already exists"}
+        except (ValueError, SourceChanged) as e:
+            return 400, {"error": str(e)}
+        except OSError as e:
+            return 500, {"error": f"could not rename {old_rel}: {e.strerror or e}"}
+        server.created_files.discard(old_norm)
+        if editable_real(server.paper_root, norm):
+            server.created_files.add(norm)
+        server.editable = None
+        remember_write(server, user, norm, "edit")
+    return 200, {"ok": True, "path": norm}
+
+
+def delete_file_request(server, req, user):
+    """POST /file/delete {path}: delete a verified source or asset file (never the active main .tex)."""
+    rel = req.get("path") if isinstance(req, dict) else None
+    if not isinstance(rel, str):
+        return 400, {"error": "expected path"}
+    if _is_main_tex(server, rel):
+        return 400, {"error": f"cannot delete the main document {server.default_pdf[:-4]}.tex"}
+    with NOTE_LOCK:
+        if paused(server):
+            return updating()
+        norm_check = os.path.normpath(rel.strip())
+        if not commit_others(server, user, norm_check):
+            return updating()
+        try:
+            norm = delete_source(server.paper_root, rel.strip())
+        except FileNotFoundError:
+            return 404, {"error": f"{rel} not found"}
+        except SourceChanged as e:
+            return 409, {"error": str(e) or "file changed"}
+        except OSError as e:
+            return 500, {"error": f"could not delete {rel}: {e.strerror or e}"}
+        server.created_files.discard(norm)
+        server.editable = None
+        remember_write(server, user, norm, "edit")
+    return 200, {"ok": True, "path": norm}
+
+
+def restore_file_request(server, req, user, any_rev=True):
+    """POST /history/restore {rev, path}: restore an editable file to its text at commit rev."""
+    if not isinstance(req, dict):
+        return 400, {"error": "expected JSON object"}
+    rev, rel = req.get("rev"), req.get("path")
+    if not isinstance(rev, str) or not isinstance(rel, str):
+        return 400, {"error": "expected rev and path"}
+    rel = os.path.normpath(rel.strip())
+    real = editable_real(server.paper_root, rel)
+    if not real:
+        return 404, {"error": f"{rel} is not an editable file in this paper"}
+    restored, err = file_at_commit(server.paper_root, rev.strip(), rel, any_rev=any_rev, limit=EDITABLE_SIZE)
+    if err:
+        return 404, {"error": err}
+    with NOTE_LOCK:
+        if paused(server):
+            return updating()
+        try:
+            raw = read_editable(real).decode("utf-8")
+        except (OSError, SourceChanged, UnicodeDecodeError) as e:
+            return 500, {"error": f"could not read {rel}: {e}"}
+        written = os.path.relpath(real, os.path.realpath(server.paper_root))
+        if restored != raw:
+            if not commit_others(server, user, written):
+                return updating()
+            try:
+                write_source(real, raw, restored)
+            except (OSError, SourceChanged) as e:
+                return 409, {"error": f"could not restore {rel}: {e}"}
+            remember_write(server, user, written, "edit")
+            wrote(server, user, written)
+        ver = file_version(restored.encode("utf-8"))
+        text_lf, _ = editor_text(restored)
+        remember_version(server, rel, ver, text_lf)
+    return 200, {"ok": True, "path": rel, "version": ver}

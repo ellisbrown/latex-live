@@ -841,7 +841,16 @@ def run_report(root, status, files=None):
     if not ok and not summary:  # e.g. a TeX error without file:line, or a bibtex failure
         bang = next((l for l in log.splitlines() if l.startswith("! ")), None)
         summary = [{"file": None, "line": None, "msg": bang[2:] if bang else f"see {BUILD}/{root}.log"}]
-    return ok, {"ok": ok, "time": stamp, "errors": summary, "warnings": len(seen) + len(set(MULTI_RE.findall(flat))),
+    duration_ms = None
+    try:
+        started = os.stat(os.path.join(BUILD, f"{root}.building")).st_mtime
+        delta = round((time.time() - started) * 1000)
+        if 0 <= delta < 600_000:
+            duration_ms = delta
+    except OSError:
+        pass
+    return ok, {"ok": ok, "time": stamp, "durationMs": duration_ms, "errors": summary,
+                "warnings": len(seen) + len(set(MULTI_RE.findall(flat))),
                 "overfull": len(boxes), "undefined": undefined, "tex": tex_format(log)}, log, files
 
 

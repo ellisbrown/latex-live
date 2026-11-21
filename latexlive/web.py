@@ -21,7 +21,7 @@ from .files import open_output
 from .instances import is_live_instance
 
 
-POST_LIMIT, POST_LIMITS = 100_000, {"/file": 8_000_000}  # bytes of a POST body (the browser editor saves whole files)
+POST_LIMIT, POST_LIMITS = 100_000, {"/file": 8_000_000, "/file/create": 4_200_000, "/file/upload": 16_000_000}  # bytes of a POST body
 
 
 def content_length(headers, limit):
@@ -297,7 +297,8 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
         # webview) may frame the owner's own: modern browsers follow frame-ancestors and ignore X-Frame-Options then.
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY" if config.SHARED else "SAMEORIGIN")
-        self.send_header("Content-Security-Policy", "frame-ancestors 'none'" if config.SHARED else FRAME_ANCESTORS)
+        csp = getattr(self, "csp_override", None) or ("frame-ancestors 'none'" if config.SHARED else FRAME_ANCESTORS)
+        self.send_header("Content-Security-Policy", csp)
         self.send_header("Referrer-Policy", "no-referrer")
         super().end_headers()
 

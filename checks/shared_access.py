@@ -205,9 +205,18 @@ def role_checks(sh):
     probe = {"path": "refs.bib", "base": "0" * 20, "text": "@misc{one}\n"}  # (a save on a version never seen: 409, writes nothing)
     owner_only = (("GET", "/instances", None), ("GET", "/papers", None), ("POST", "/switch", {"doc": "main"}),
                   ("POST", "/open", {"file": "main.tex", "line": 9}), ("POST", "/commit", {}), ("POST", "/arxiv", {}),
-                  ("GET", "/arxiv.tar.gz", None))
+                  ("GET", "/arxiv.tar.gz", None), ("POST", "/file/rename", {"from": "body.tex", "to": "x.tex"}),
+                  ("POST", "/file/delete", {"path": "body.tex"}), ("POST", "/history/restore", {"rev": "HEAD", "path": "body.tex"}),
+                  ("GET", "/agent/info", None), ("GET", "/agent/job?id=none", None),
+                  ("POST", "/agent/revise", {"mode": "polish", "text": "hello"}))
     editor_up = (("GET", "/files", None), ("GET", "/file?path=body.tex", None), ("POST", "/file", probe), ("POST", "/rebuild", {}),
-                 ("GET", "/commits", None), ("POST", "/diff", {"rev": "HEAD"}), ("GET", "/completions", None))
+                 ("GET", "/commits", None), ("POST", "/diff", {"rev": "HEAD"}), ("GET", "/completions", None),
+                 ("GET", "/logs/main.pdf", None), ("GET", "/search?q=Paragraph", None),
+                 ("GET", "/asset?path=missing.png", None),
+                 ("GET", "/history", None), ("GET", "/history/diff?rev=HEAD", None),
+                 ("GET", "/papers/index", None), ("GET", "/bib/verify", None),
+                 ("POST", "/file/create", {"path": "bad.py"}), ("POST", "/file/upload", {"path": "bad.py", "data": ""}),
+                 ("POST", "/bib/lookup", {"query": ""}), ("POST", "/bib/add", {"bibtex": ""}))
     for uid in ("vw", "cm", "ed"):
         for method, path, body in owner_only + (() if uid == "ed" else editor_up):
             expect(via_proxy(uid, path, method, body), 403, f"{method} {path} for {sh['users'][uid]['role']} {uid}")
@@ -215,7 +224,10 @@ def role_checks(sh):
                         (via_proxy("owner1", "/switch", "POST", {"doc": "appendix"}), "for the owner, through the proxy")):
         expect(result, 403, f"POST switch {who} (a shared preview serves one document)")
     for method, path, body, status in (("GET", "/files", None, 200), ("GET", "/file?path=body.tex", None, 200),
-                                       ("GET", "/commits", None, 200), ("POST", "/file", probe, 409), ("GET", "/completions", None, 200)):
+                                       ("GET", "/commits", None, 200), ("POST", "/file", probe, 409), ("GET", "/completions", None, 200),
+                                       ("GET", "/logs/main.pdf", None, 200), ("GET", "/search?q=Paragraph", None, 200),
+                                       ("GET", "/history", None, 200), ("GET", "/history/diff?rev=HEAD", None, 200),
+                                       ("GET", "/papers/index", None, 200), ("GET", "/bib/verify", None, 200)):
         expect(via_proxy("ed", path, method, body), status, f"{method} {path} for the editor")
     listing = expect_dict(with_token(owner, "/instances"), 200, "GET instances for the owner")
     if listing.get("self") != sh["proc"].pid:

@@ -8,27 +8,32 @@ import re
 import urllib.parse
 
 from . import config
+from .agent import detect_agents, job_status as agent_job_status, start_revise
 from .arxiv import start_arxiv
 from .auth import owner_name
 from .baselines import baseline_request, start_diff
+from .bib import add_reference_request, lookup_request, papers_index, start_verify, verify_status
 from .build import on_main_thread, rebuild_doc, request_switch
 from .checks import cached_checks
 from .commits import commit_request
 from .document import floats, graphics, toc_outline
-from .editor import completions, file_request, files_listing, save_request, source_status
+from .editor import (
+    asset_response, completions, create_file_request, delete_file_request, file_request, files_listing,
+    rename_file_request, restore_file_request, save_request, search_request, source_status, upload_file_request)
 from .export import start_export
 from .files import pdf_path
-from .git import commits
+from .git import commit_diff, commits, history
 from .hub import papers_page
 from .instances import instances
 from .latex import root_docs
+from .logs import build_logs
 from .navigation import editor_cli, forward_request, open_source, synctex_edit, synctex_lookup
 from .note_writer import note_request
 from .notes import margin_notes, note_authors, notes, paper_note_kinds, shown_notes
 from .review import start_review
 from .roles import READ_PATHS, STATIC_DIRS, allowed, at_least, least_role, shared_pdfs, viewer_status
 from .shared_build import shared_rebuild_request
-from .status import status
+from .status import presence_list, record_presence, status
 from .web import BaseHandler, POST_LIMIT, POST_LIMITS, content_length, json_query
 
 
@@ -45,6 +50,9 @@ def me(server, user):
     return {"id": user["id"], "name": user["name"] or owner_name(server), "macro": user["macro"], "role": user["role"],
             "shared": config.SHARED, "owner": owner_name(server), "macroDefined": defined,
             "can": {"comment": can("/note") and (user["role"] == "owner" or defined), "edit": can("/file"),
+                    "createFile": can("/file/create"), "manageFiles": can("/file/delete"),
+                    "logs": allowed(user, "GET", "/logs/"), "history": allowed(user, "GET", "/history"),
+                    "restore": can("/history/restore"), "bib": can("/bib/add"), "agent": can("/agent/revise"),
                     "rebuild": can("/rebuild"), "compare": can("/diff"), "switch": can("/switch"),
                     "openHost": can("/open") and (not config.SHARED or editor_cli() is not None),
                     "download": can("/export") and can("/review"), "arxiv": can("/arxiv"), "checks": allowed(user, "GET", "/check/"),
@@ -120,10 +128,22 @@ class Handler(BaseHandler):
             pdf = pdf_path(self.server.paper_root, name)
             doc_pdf = re.sub(r"(-head|-push)?-(clean|diff|head|push|export|review|annotated)\.pdf$", ".pdf", name)  # the document a derived PDF belongs to
             below_editor = config.SHARED and not at_least(self.principal, "editor")  # (they see the current PDF and what it shows)
-            if path.startswith("/status/"):  # (?base=push: a viewer shows changes since the last push; ?open=: its editor's file)
+            if path.startswith("/status/"):  # (?base=push: changes since last push; ?open=&line=&tab=: editor/presence)
                 info = status(self.server, name, query.get("base") == ["push"])
+                open_file = query.get("open", [None])[0]
                 if "open" in query and allowed(self.principal, "GET", "/file"):
-                    info["source"] = source_status(self.server, query["open"][0])
+                    info["source"] = source_status(self.server, open_file)
+                tab_id = query.get("tab", [None])[0]
+                if tab_id:
+                    record_presence(self.server, self.principal, tab_id,
+                                    open_file if not below_editor else None,
+                                    query.get("line", [None])[0] if not below_editor else None)
+                info["presence"] = presence_list(
+                    self.server,
+                    self_uid=self.principal["id"] or "owner",
+                    self_tab=tab_id,
+                    include_source=not below_editor,
+                )
                 body = json.dumps(viewer_status(info) if below_editor else info).encode()
             elif path.startswith("/outline/"):
                 body = json.dumps(toc_outline(self.server.paper_root, doc_pdf, name.endswith("-clean.pdf"))).encode()
@@ -134,6 +154,8 @@ class Handler(BaseHandler):
                 body = json.dumps(note_authors(self.server.paper_root, doc_pdf)).encode()
             elif path.startswith("/check/"):
                 body = json.dumps(cached_checks(self.server, doc_pdf)).encode()
+            elif path.startswith("/logs/"):
+                body = json.dumps(build_logs(self.server, doc_pdf)).encode()
             elif path.startswith("/graphics/"):  # (figure files, where in the sources, git's state: not in the PDF)
                 body = json.dumps([] if below_editor else graphics(self.server.paper_root, doc_pdf)).encode()
             elif path.startswith("/margin/"):
@@ -163,6 +185,37 @@ class Handler(BaseHandler):
             self.send_json(200, files_listing(self.server))
         elif path == "/completions":
             self.send_json(200, completions(self.server))
+        elif path == "/search":
+            self.send_json(*search_request(self.server, query))
+        elif path == "/asset":
+            code, ctype, data = asset_response(self.server, query)
+            if code != 200:
+                return self.send_error(code)
+            # Sandbox asset responses so uploaded SVGs can never execute script in the viewer origin.
+            self.csp_override = "default-src 'none'; sandbox; frame-ancestors 'none'"
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.write_body(data)
+        elif path == "/history":
+            self.send_json(200, history(self.server.paper_root, confined=config.SHARED))
+        elif path == "/history/diff":
+            rev = query.get("rev", [""])[0]
+            fpath = query.get("file", [None])[0]
+            self.send_json(*commit_diff(
+                self.server.paper_root, rev, fpath,
+                any_rev=self.principal["role"] == "owner", confined=config.SHARED,
+            ))
+        elif path == "/papers/index":
+            self.send_json(200, papers_index(self.server))
+        elif path == "/bib/verify":
+            self.send_json(200, verify_status(self.server))
+        elif path == "/agent/info":
+            self.send_json(200, detect_agents())
+        elif path == "/agent/job":
+            self.send_json(*agent_job_status(self.server, query.get("id", [""])[0]))
         elif path == "/arxiv.tar.gz":  # (the package that POST /arxiv made)
             self.send_pdf(os.path.join(self.server.paper_root, config.BUILD, f"{self.server.default_pdf[:-4]}-arxiv.tar.gz"),
                           "application/gzip")
@@ -229,6 +282,24 @@ class Handler(BaseHandler):
             self.send_json(*note_request(self.server, req, self.principal))
         elif path == "/file" and isinstance(req, dict):
             self.send_json(*save_request(self.server, req, self.principal))
+        elif path == "/file/create" and isinstance(req, dict):
+            self.send_json(*create_file_request(self.server, req, self.principal))
+        elif path == "/file/upload" and isinstance(req, dict):
+            self.send_json(*upload_file_request(self.server, req, self.principal))
+        elif path == "/file/rename" and isinstance(req, dict):
+            self.send_json(*rename_file_request(self.server, req, self.principal))
+        elif path == "/file/delete" and isinstance(req, dict):
+            self.send_json(*delete_file_request(self.server, req, self.principal))
+        elif path == "/history/restore" and isinstance(req, dict):
+            self.send_json(*restore_file_request(self.server, req, self.principal, any_rev=self.principal["role"] == "owner"))
+        elif path == "/bib/lookup" and isinstance(req, dict):
+            self.send_json(*lookup_request(req))
+        elif path == "/bib/add" and isinstance(req, dict):
+            self.send_json(*add_reference_request(self.server, req, self.principal))
+        elif path == "/bib/verify":
+            self.send_json(*start_verify(self.server))
+        elif path == "/agent/revise" and isinstance(req, dict):
+            self.send_json(*start_revise(self.server, req))
         elif path == "/logout":
             self.logout()
         elif path == "/commit":

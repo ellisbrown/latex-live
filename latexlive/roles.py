@@ -16,18 +16,22 @@ def least_role(method, path):
     (a GET of the downloads is answered 405, so that an old viewer says why). Anyone signed in may sign
     out (logout). The checks quote the sources' comments and the text in their false branches, and the
     baselines show earlier versions of the text, which only editors see (shared_pdfs, viewer_status)."""
-    if method == "GET" and path.startswith("/check/"):  # (the checks quote the sources' comments and hidden text)
+    if method == "GET" and path.startswith(("/check/", "/logs/")):  # (checks and logs quote the sources)
         return "editor"
     if method == "GET" and path.startswith(READ_PATHS + STATIC_DIRS):
         return "viewer"
     if method == "GET":
         return {"/": "viewer", "/me": "viewer", "/docs": "viewer", "/forward": "viewer", "/synctex": "viewer",
                 "/viewer.html": "viewer", "/favicon.ico": "viewer", "/export": "viewer", "/review": "viewer", "/commits": "editor",
-                "/files": "editor", "/file": "editor", "/completions": "editor"}.get(path, "owner")
+                "/files": "editor", "/file": "editor", "/completions": "editor",
+                "/search": "editor", "/asset": "editor", "/history": "editor", "/history/diff": "editor",
+                "/papers/index": "editor", "/bib/verify": "editor"}.get(path, "owner")
     if path == "/switch":
         return None
-    return {"/note": "commenter", "/rebuild": "editor", "/diff": "editor", "/file": "editor", "/export": "viewer",
-            "/review": "viewer", "/baseline": "editor", "/logout": "viewer"}.get(path, "owner")
+    return {"/note": "commenter", "/rebuild": "editor", "/diff": "editor", "/file": "editor",
+            "/file/create": "editor", "/file/upload": "editor",
+            "/bib/lookup": "editor", "/bib/add": "editor", "/bib/verify": "editor",
+            "/export": "viewer", "/review": "viewer", "/baseline": "editor", "/logout": "viewer"}.get(path, "owner")
 
 
 def at_least(user, role):
@@ -65,10 +69,10 @@ def viewer_status(info):
         n = len(b.get("errors") or [])
         return {"ok": b.get("ok"), "time": b.get("time"), "began": b.get("began"),
                 "errors": [{"file": None, "line": None, "msg": f"{n} error{'' if n == 1 else 's'} (editors see them)"}] if n else []}
-    keep = ("version", "building", "forward", "pageLimit", "uncounted", "refs", "refsPending", "layout", "doc", "overwritten", "clean", "texImage", "latexLive", "timing")
+    keep = ("version", "building", "forward", "pageLimit", "uncounted", "refs", "refsPending", "layout", "doc", "overwritten", "clean", "texImage", "latexLive", "timing", "presence")
     return {**{key: info[key] for key in keep if key in info}, "build": build(info.get("build")),
             "cleanBuild": build(info.get("cleanBuild"))}
 
 
-READ_PATHS = ("/pdf/", "/status/", "/outline/", "/notes/", "/check/", "/graphics/", "/margin/", "/floats/", "/authors/")
+READ_PATHS = ("/pdf/", "/status/", "/outline/", "/notes/", "/check/", "/logs/", "/graphics/", "/margin/", "/floats/", "/authors/")
 STATIC_DIRS = ("/pdfjs/", "/codemirror/", "/viewer/")  # (the folders of the viewer's own files: handler.static_file)

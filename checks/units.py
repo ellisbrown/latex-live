@@ -26,7 +26,8 @@ def unit_checks():
     for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
                   code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, completion_checks, word_column_checks, venue_checks, diff_retry_checks,
-                  arxiv_strip_checks, graphics_synctex_checks, turned_page_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks):
+                  arxiv_strip_checks, graphics_synctex_checks, turned_page_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks,
+                  workspace_backend_checks):
         check()
 
 
@@ -961,3 +962,181 @@ def connection_cap_checks():
         fail(f"a server at its connection cap: the next connection {'was dropped' if dropped else 'was served'}, and once"
              f" the others ended, a new one {'was' if answered else 'was not'} served")
     ok("every server takes at most 64 connections at once, dropping new ones past that, and takes them again as others end")
+
+
+def workspace_backend_checks():
+    """File create/upload/rename/delete confinement, structured log parsing, cross-file search,
+    bibliography index & BibTeX parsing, agent JSON extraction & protected guard, and presence."""
+    from latexlive import agent, bib, editor, logs, sources, status as st_mod
+    with tempfile.TemporaryDirectory(prefix="latex-live-ws-") as root:
+        outside = tempfile.mkdtemp(prefix="latex-live-out-")
+        try:
+            os.symlink(outside, os.path.join(root, "escape"))
+            # 1. File create / upload / rename / delete + symlink escape & alias rejection.
+            if sources.create_source(root, "sections/intro.tex", "\\section{Intro}\nHello \\cite{a2024}.\n") != "sections/intro.tex":
+                fail("create_source failed on nested .tex file")
+            for bad in ("../outside.tex", ".hidden.tex", "build/x.tex", "escape/x.tex", "bad.py", "a/b.sh", "orphan.md"):
+                try:
+                    sources.create_source(root, bad, "x")
+                    fail(f"create_source allowed disallowed path {bad!r}")
+                except ValueError:
+                    pass
+            if sources.upload_file(root, "figures/plot.png", b"\x89PNG\r\n\x1a\n") != "figures/plot.png":
+                fail("upload_file failed for PNG figure")
+            if sources.rename_source(root, "sections/intro.tex", "sections/overview.tex") != "sections/overview.tex":
+                fail("rename_source failed")
+            if os.path.exists(os.path.join(root, "sections/intro.tex")) or not os.path.exists(os.path.join(root, "sections/overview.tex")):
+                fail("rename_source left wrong files on disk")
+            sources.delete_source(root, "figures/plot.png")
+            if os.path.exists(os.path.join(root, "figures/plot.png")):
+                fail("delete_source did not remove file")
+
+            # Symlink pointing to main.tex must NEVER be followed by delete_source or rename_source.
+            put(os.path.join(root, "main.tex"), "\\documentclass{article}\n\\begin{document}\n\\input{sections/overview}\n\\end{document}\n")
+            os.symlink(os.path.join(root, "main.tex"), os.path.join(root, "alias.tex"))
+            for op, args in ((sources.delete_source, (root, "alias.tex")), (sources.rename_source, (root, "alias.tex", "moved.tex"))):
+                try:
+                    op(*args)
+                    fail(f"{op.__name__} followed symlink alias.tex")
+                except FileNotFoundError:
+                    pass
+            if not os.path.isfile(os.path.join(root, "main.tex")):
+                fail("symlink delete touched main.tex")
+            os.unlink(os.path.join(root, "alias.tex"))
+
+            # 2. Structured log parsing + build_logs end-to-end.
+            sample_log = (
+                "(./main.tex (./sections/overview.tex\n"
+                "./sections/overview.tex:12: Undefined control sequence.\n"
+                "LaTeX Warning: Reference `fig:missing' on page 2 undefined on input line 18.\n"
+                "Overfull \\hbox (14.2pt too wide) in paragraph at lines 20--25\n"
+                "))\n"
+            )
+            errs, warns = logs.parse_log(sample_log, root, "main.tex")
+            if len(errs) != 1 or errs[0]["file"] != "sections/overview.tex" or errs[0]["line"] != 12:
+                fail(f"parse_log errors: {errs}")
+            if len(warns) != 2 or warns[0]["line"] != 18 or warns[1]["kind"] != "overfull":
+                fail(f"parse_log warnings: {warns}")
+            os.makedirs(os.path.join(root, "build"), exist_ok=True)
+            put(os.path.join(root, "build", "main-live.log"), sample_log)
+
+            # 3. Bibliography parsing, live cite counts, and redirect/URL SSRF guard.
+            put(os.path.join(root, "refs.bib"), '@article{a2024,\n  title={A {Great} Paper},\n  author={Ada Lovelace},\n  journal={NeurIPS},\n  year={2024},\n}\n@misc{unused2025, title={Unused}, year={2025}}\n')
+            srv = types.SimpleNamespace(
+                paper_root=root, default_pdf="main.pdf", editable=None, created_files={"sections/overview.tex"},
+                presence={}, presence_lock=threading.Lock(), git_name="Owner",
+            )
+            bl = logs.build_logs(srv, "main.pdf")
+            if len(bl["errors"]) != 1 or len(bl["warnings"]) != 2 or "Undefined control sequence" not in bl["raw"]:
+                fail(f"logs.build_logs failed: {bl}")
+            idx = bib.papers_index(srv)
+            counts = {e["key"]: e["citeCount"] for e in idx["entries"]}
+            if counts != {"a2024": 1, "unused2025": 0}:
+                fail(f"papers_index cite counts: {counts}")
+            code, preview = bib.lookup_request({"query": "@article{test2026, title={Hello}, year={2026}}"})
+            if code != 200 or preview.get("key") != "test2026":
+                fail(f"bib.lookup_request raw BibTeX failed: {code} {preview}")
+            code, bad_res = bib.lookup_request({"query": "http://169.254.169.254/latest/meta-data"})
+            if code != 400:
+                fail(f"bib.lookup_request accepted arbitrary URL: {code} {bad_res}")
+            redir = bib._SafeRedirectHandler()
+            for bad_url in ("http://127.0.0.1:44100/me", "https://evil.example/x", "http://export.arxiv.org/api/query"):
+                try:
+                    redir.redirect_request(None, None, 302, "", {}, bad_url)
+                    fail(f"_SafeRedirectHandler allowed redirect to {bad_url}")
+                except Exception:
+                    pass
+
+            # Root-level PDFs (main.pdf, appendix.pdf, reviews.pdf) must never be exposed or overwritten as figure assets.
+            put_bytes(os.path.join(root, "reviews.pdf"), b"%PDF-1.4\n")
+            if sources.asset_real(root, "reviews.pdf") is not None:
+                fail("asset_real exposed root-level reviews.pdf")
+            os.makedirs(os.path.join(root, "figures"), exist_ok=True)
+            put_bytes(os.path.join(root, "figures", "fig1.pdf"), b"%PDF-1.4\n")
+            if sources.asset_real(root, "figures/fig1.pdf") is None:
+                fail("asset_real rejected subfolder figure figures/fig1.pdf")
+            code, up_res = editor.upload_file_request(
+                types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", editable=None, created_files=set(),
+                                      autocommit=False, pending={}, pending_lock=threading.Lock(), last_writer={}),
+                {"path": "reviews.pdf", "data": "JVBERi0xLjQK", "overwrite": True},
+                {"id": "ed", "name": "Ed", "role": "editor"},
+            )
+            if code != 400:
+                fail(f"upload_file_request allowed overwriting root-level reviews.pdf: {code} {up_res}")
+
+            # 3b. Git history & diff confinement (hides dotfiles including non-ASCII & mnemonicPrefix diffs).
+            from latexlive import git as git_mod
+            repo = tempfile.mkdtemp(prefix="latex-live-gitconf-")
+            try:
+                sub = os.path.join(repo, "paper")
+                os.makedirs(sub)
+                put(os.path.join(repo, "secret_parent.txt"), "top-secret-parent\n")
+                put(os.path.join(sub, ".env"), "SECRET_KEY=123\n")
+                put(os.path.join(sub, ".env\u00e9"), "SECRET_UNICODE=456\n")
+                os.makedirs(os.path.join(sub, "sections"), exist_ok=True)
+                put(os.path.join(sub, "sections", ".env"), "SUBDIR_SECRET=999\n")
+                put(os.path.join(sub, "main.tex"), "\\documentclass{article}\n")
+                for cmd in (["git", "init", "-q"], ["git", "config", "user.name", "Test"], ["git", "config", "user.email", "t@e.invalid"],
+                            ["git", "config", "diff.mnemonicPrefix", "true"],
+                            ["git", "add", "."], ["git", "commit", "-q", "-m", "init"]):
+                    subprocess.run(cmd, cwd=repo, check=True)
+                put(os.path.join(sub, ".env"), "SECRET_KEY=789\n")
+                put(os.path.join(sub, "sections", ".env"), "SUBDIR_SECRET=1111\n")
+                hist = git_mod.history(sub, confined=True)
+                listed = [f["path"] for c in hist["commits"] for f in c["files"]]
+                if "main.tex" not in listed or any(p in listed for p in (".env", ".env\u00e9", "sections/.env", "../secret_parent.txt", "secret_parent.txt")):
+                    fail(f"confined git.history leaked hidden/parent files: {listed}")
+                code, diff_res = git_mod.commit_diff(sub, "HEAD", confined=True)
+                if code != 200 or "SECRET_KEY" in diff_res["diff"] or "SECRET_UNICODE" in diff_res["diff"] or "SUBDIR_SECRET" in diff_res["diff"] or "top-secret-parent" in diff_res["diff"]:
+                    fail(f"confined git.commit_diff leaked hidden/parent content: {diff_res}")
+                code, sub_diff = git_mod.commit_diff(sub, "HEAD", file_path="sections", confined=True)
+                code2, sub_wt = git_mod.commit_diff(sub, "WORKTREE", file_path="sections", confined=True)
+                if code != 200 or code2 != 200 or "SUBDIR_SECRET" in sub_diff["diff"] or "SUBDIR_SECRET" in sub_wt["diff"]:
+                    fail(f"confined subdir git.commit_diff leaked sections/.env: {sub_diff} {sub_wt}")
+                code, wt_res = git_mod.commit_diff(sub, "WORKTREE", confined=True)
+                if code != 200 or "SECRET_KEY" in wt_res["diff"]:
+                    fail(f"confined WORKTREE diff with mnemonicPrefix leaked .env: {wt_res}")
+                code, bad_diff = git_mod.commit_diff(sub, "HEAD", file_path=".env", confined=True)
+                if code != 400:
+                    fail(f"confined git.commit_diff accepted .env path: {code} {bad_diff}")
+            finally:
+                shutil.rmtree(repo, ignore_errors=True)
+
+            # 4. Cross-file search.
+            code, found = editor.search_request(srv, {"q": ["Hello"]})
+            if code != 200 or not any(m["file"] == "sections/overview.tex" for m in found["matches"]):
+                fail(f"search_request failed: {code} {found}")
+
+            # 5. Agent JSON parser, read-only flags & protected-text refusal.
+            parsed = agent._extract_json('Here you go:\n```json\n{"replacement": "Better prose.", "rationale": "Tighter.", "changes": [{"kind": "concision", "detail": "cut filler"}]}\n```')
+            if not parsed or parsed["replacement"] != "Better prose." or parsed["rationale"] != "Tighter.":
+                fail(f"agent._extract_json failed: {parsed}")
+            if shutil.which("claude") and "--tools" not in (agent._agent_argv("claude") or []):
+                fail("claude agent argv missing --tools '' restriction")
+            if shutil.which("codex") and "read-only" not in (agent._agent_argv("codex") or []):
+                fail("codex agent argv missing read-only sandbox")
+            old_prot = os.environ.get("LATEX_LIVE_PROTECTED")
+            os.environ["LATEX_LIVE_PROTECTED"] = r"\\ch\{human-written\}"
+            try:
+                srv.agent_jobs, srv.agent_lock = {}, threading.Lock()
+                code, res = agent.start_revise(srv, {"mode": "polish", "text": "Keep \\ch{human-written} intact."})
+                if code != 409:
+                    fail(f"agent.start_revise did not refuse protected text: {code} {res}")
+            finally:
+                if old_prot is None:
+                    os.environ.pop("LATEX_LIVE_PROTECTED", None)
+                else:
+                    os.environ["LATEX_LIVE_PROTECTED"] = old_prot
+
+            # 6. Presence tracking and source-redaction for viewers.
+            u_ed = {"id": "ed", "name": "Ed Writer", "role": "editor"}
+            st_mod.record_presence(srv, u_ed, "tab-1", "sections/overview.tex", "5")
+            for_ed = st_mod.presence_list(srv, self_uid="other", self_tab="tab-1", include_source=True)
+            for_vw = st_mod.presence_list(srv, self_uid="vw", self_tab="tab-2", include_source=False)
+            if len(for_ed) != 1 or for_ed[0]["self"] or for_ed[0]["file"] != "sections/overview.tex" or for_ed[0]["line"] != 5 or for_ed[0]["initials"] != "EW":
+                fail(f"presence for editor: {for_ed}")
+            if "file" in for_vw[0] or "line" in for_vw[0]:
+                fail(f"presence leaked source path to viewer: {for_vw}")
+        finally:
+            shutil.rmtree(outside, ignore_errors=True)
+    ok("workspace backend: file ops stay confined (no symlink bypass), build_logs, search, bib SSRF guard, git confinement, agent sandbox/protection, and presence work")

@@ -5,12 +5,70 @@ import os
 import time
 
 from . import config
+from .auth import owner_name
 from .baselines import base_status
 from .build import build_running, build_status
 from .document import layout, page_limit, uncounted_sections
 from .files import file_hash, job_file, mtime, pdf_path, read_json
 from .synctex import PENDING, refs_start
 from .tools import image_problem
+
+
+PRESENCE_TTL = 12  # seconds before a quiet tab drops out of active presence
+
+
+def _initials(name, uid):
+    parts = [p for p in (name or "").split() if p]
+    if len(parts) >= 2:
+        return (parts[0][0] + parts[-1][0]).upper()
+    s = (parts[0] if parts else uid or "?").strip()
+    return s[:2].upper()
+
+
+def record_presence(server, user, tab_id, open_file=None, line=None):
+    """Update the live presence entry for this user/tab on each /status poll."""
+    if not tab_id or len(tab_id) > 64:
+        return
+    now = time.monotonic()
+    uid = user["id"] or "owner"
+    name = user["name"] or owner_name(server)
+    line_num = None
+    if isinstance(line, str) and line.isdigit():
+        line_num = int(line)
+    elif isinstance(line, int) and line > 0:
+        line_num = line
+    safe_file = open_file[:240] if isinstance(open_file, str) and open_file else None
+    with server.presence_lock:
+        # Prune expired entries.
+        stale = [k for k, v in server.presence.items() if now - v["seen"] > PRESENCE_TTL]
+        for k in stale:
+            del server.presence[k]
+        if len(server.presence) < 64 or (uid, tab_id) in server.presence:
+            server.presence[(uid, tab_id)] = {
+                "id": uid, "tab": tab_id, "name": name, "initials": _initials(name, uid),
+                "role": user["role"], "file": safe_file, "line": line_num, "seen": now,
+            }
+
+
+def presence_list(server, self_uid=None, self_tab=None, include_source=True):
+    """Active users viewing/editing this preview, grouped per unique user/tab."""
+    now = time.monotonic()
+    out = []
+    with server.presence_lock:
+        stale = [k for k, v in server.presence.items() if now - v["seen"] > PRESENCE_TTL]
+        for k in stale:
+            del server.presence[k]
+        for entry in server.presence.values():
+            is_self = bool(self_tab and entry["tab"] == self_tab and (self_uid is None or entry["id"] == self_uid))
+            item = {
+                "id": entry["id"], "name": entry["name"], "initials": entry["initials"],
+                "role": entry["role"], "self": is_self,
+            }
+            if include_source:
+                item["file"] = entry["file"]
+                item["line"] = entry["line"]
+            out.append(item)
+    return out
 
 
 def forward_asked(found):
