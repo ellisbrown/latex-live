@@ -3,7 +3,8 @@
      double-click jumps to the source line (SyncTeX: in VS Code, or in the editor beside the PDF
      when that is open), and forward.py jumps here from a source line. Editors (and the owner) can
      open the LaTeX beside the PDF (the Source | Split | PDF switch, CodeMirror from codemirror/): it saves by itself,
-     and live.py merges edits made at the same time. The page is a workspace: a top bar, then the sidebar, the
+     and live.py merges edits made at the same time; a tab per file, folding, completion and cards for references,
+     citations and figures. A palette (Cmd/Ctrl+K) goes to a file, a heading or a command, and searches the sources. The page is a workspace: a top bar, then the sidebar, the
      source pane and the PDF side by side, in a light or dark theme; with mode=pdf, a pop-out window shows the PDF
      alone, for a second screen, and follows the main window's source. In shared mode (LATEX_LIVE_USERS) everyone
      sees what their role allows (live.py /me), and a welcome guide explains the basics.
@@ -64,6 +65,7 @@
     <button id="layoutSplit" data-mode="split" title="The source beside the PDF: edits save by themselves, and the PDF rebuilds (E)">Split</button>
     <button id="layoutPdf" data-mode="pdf" title="The PDF alone (E)">PDF</button>
   </div>
+  <button id="paletteBtn" class="pill-btn" data-priority="8" data-label="Go to" title="Go to a file, a section or a command; search the sources (Cmd/Ctrl+K)"><span class="ic-slot"></span><span class="txt">Go to&hellip;</span><kbd></kbd></button>
   <button id="popoutBtn" class="icon-btn" data-priority="2" data-label="Pop out the PDF" title="Open the PDF in a window of its own, e.g. for a second screen: it follows the source as this one does" aria-label="Pop out the PDF" hidden></button>
   <span id="spacer" class="spacer"></span>
   <span id="cutGroup" class="grp" data-priority="4">
@@ -121,7 +123,9 @@
 <div id="keys" class="modal-card" hidden>
   <div class="head">Keyboard shortcuts <button class="welcome">Welcome guide</button><button class="close" title="Close (Esc)" aria-label="Close">&#10005;</button></div>
   <table>
+    <tr><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>K</kbd></td><td>go to a file, a heading or a command</td></tr>
     <tr><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>F</kbd></td><td>search; <kbd>Enter</kbd> / <kbd>Shift</kbd> <kbd>Enter</kbd> next / previous match, <kbd>Esc</kbd> clear</td></tr>
+    <tr id="keysSearch" hidden><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>F</kbd></td><td>search the text of every source file</td></tr>
     <tr><td><kbd>Ctrl</kbd> <kbd>+</kbd> / <kbd>Ctrl</kbd> <kbd>&minus;</kbd></td><td>zoom in / out</td></tr>
     <tr><td><kbd>Ctrl</kbd> <kbd>0</kbd></td><td>fit width</td></tr>
     <tr><td><kbd>Alt</kbd> <kbd>&larr;</kbd> / <kbd>Alt</kbd> <kbd>&rarr;</kbd></td><td>back / forward after a link (also <kbd>Cmd</kbd> <kbd>[</kbd> / <kbd>Cmd</kbd> <kbd>]</kbd>)</td></tr>
@@ -129,9 +133,29 @@
     <tr><td><kbd>,</kbd> / <kbd>.</kbd></td><td>previous / next change</td></tr>
     <tr id="keysComment"><td><kbd>c</kbd></td><td>comment on the selected text</td></tr>
     <tr id="keysEdit" hidden><td><kbd>e</kbd></td><td>the LaTeX source beside the PDF, or not: Split or PDF (<kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>S</kbd> there saves at once)</td></tr>
+    <tr id="keysFormat" hidden><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>B</kbd> / <kbd>I</kbd> / <kbd>/</kbd></td><td>in the source: bold, italic, comment out (or back in)</td></tr>
     <tr id="keysDblclickRow"><td>double-click</td><td id="keysDblclick">open the source line</td></tr>
     <tr><td><kbd>?</kbd></td><td>this list</td></tr>
   </table>
+</div>
+<!-- The palette (palette.js): go to a file, a heading or a command, or search the sources. -->
+<div id="paletteBackdrop" hidden>
+  <div id="palette" role="dialog" aria-modal="true" aria-label="Go to, or search the sources">
+    <div id="paletteHead">
+      <input id="paletteInput" autocomplete="off" spellcheck="false" aria-label="Go to, or search">
+      <span id="searchOptions" hidden>
+        <button id="searchCase" title="Match case" aria-pressed="false">Aa</button>
+        <button id="searchRegex" title="Regular expression" aria-pressed="false">.*</button>
+      </span>
+      <span class="palette-modes" role="group">
+        <button data-mode="go" title="Files, headings and commands (Cmd/Ctrl+K)">Go to</button>
+        <button data-mode="search" title="Search the text of every source file (Cmd/Ctrl+Shift+F)">Search</button>
+      </span>
+    </div>
+    <div id="paletteResults" role="listbox"></div>
+    <div id="paletteFoot"><span><kbd>&uarr;</kbd><kbd>&darr;</kbd> choose</span><span><kbd>Enter</kbd> open</span><span><kbd>Esc</kbd> close</span>
+      <span class="hint">Type &gt; for commands only</span></div>
+  </div>
 </div>
 <div id="welcome" class="modal-card" role="dialog" aria-modal="true" aria-labelledby="welcomeTitle" hidden>
   <div class="head"><span id="welcomeTitle">Welcome</span> <button class="close" title="Close (Esc)" aria-label="Close">&#10005;</button></div>
@@ -197,7 +221,8 @@
   <div id="sideGrip" class="grip" title="Drag to resize"></div>
   <section id="editorPane" tabindex="-1" hidden>
     <div id="editorHead">
-      <button id="filePick" title="Open another source file">&hellip;</button>
+      <div id="editorTabs" role="tablist" aria-label="Open files"></div>
+      <button id="filePick" class="icon-btn" title="Open a source file" aria-label="Open a source file">&#9662;</button>
       <span class="head-spacer"></span>
       <button id="showInPdf" title="Show where the cursor's line is in the PDF"><span class="ic-slot"></span><span class="txt">Show in PDF</span></button>
       <button id="editorClose" class="icon-btn" title="Close the source pane (E)" aria-label="Close the source pane"></button>
@@ -213,7 +238,10 @@
       <div class="row"></div>
       <div class="copy" hidden><textarea readonly aria-label="Your text, to copy" title="Your text, to copy: a click selects all of it"></textarea></div>
     </div>
-    <div id="editorHost"><div class="msg">Loading the editor&hellip;</div></div>
+    <div id="editorBody">
+      <div id="editorHost"><div class="msg">Loading the editor&hellip;</div></div>
+      <div id="outlineRail" aria-label="The file's headings" hidden></div>
+    </div>
     <div id="editorFoot">
       <span id="cursorPos"></span>
       <span id="saveState" aria-live="polite"></span>

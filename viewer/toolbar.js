@@ -10,7 +10,8 @@ import { onThemeChange, pdfInvert, setPdfInvert, setTheme, setTint, theme, tint,
 // The chrome's icons: [button, icon] (into a button's .ic-slot, before its text, when it has one).
 for (const [id, name, size] of [["toggleSide", "panelLeft", 16], ["back", "back", 14], ["forward", "forward", 14],
   ["popoutBtn", "popout", 14], ["cut", "cut"], ["changesBtn", "diff"], ["downloadBtn", "download", 14], ["rebuild", "rebuild"],
-  ["more", "more"], ["pdfMore", "more"], ["marginBtn", "notes"], ["showInPdf", "sync", 14], ["editorClose", "close", 14]]) {
+  ["more", "more"], ["pdfMore", "more"], ["marginBtn", "notes"], ["showInPdf", "sync", 14], ["editorClose", "close", 14],
+  ["paletteBtn", "search", 14]]) {
   ($(id).querySelector(".ic-slot") || $(id)).replaceChildren(icon(name, size));
 }
 
@@ -63,7 +64,7 @@ export function revealControl(node) { // (before focusing a control that may be 
 export function showKeys(open) {
   if (open) {
     $("keysComment").hidden = !canComment();
-    $("keysEdit").hidden = !editorAllowed() || isPopout;
+    $("keysEdit").hidden = $("keysSearch").hidden = $("keysFormat").hidden = !editorAllowed() || isPopout;
     $("keysDblclickRow").hidden = isDiff || !opensSources();
     $("keysDblclick").textContent = `open the source line in ${openWhere()}`;
   }

@@ -1,5 +1,6 @@
-// The source pane: the open file, saving it (live.py merges others' changes), its conflicts, reloading it when it changes
-// on disk, the notice above the text, and the edits this browser keeps until they are saved.
+// The source pane: the open file and the tabs of the others opened, saving it (live.py merges others' changes), its
+// conflicts, reloading it when it changes on disk, the notice above the text, the edits this browser keeps until they
+// are saved, and the rail of its headings beside the text.
 
 import { $, editorShown, el, hubBase, isPopout, setStatus, SIGNED_OUT } from "./page.js";
 import { fitsKeepalive, postJSON, readBody, signInPage, unreachable } from "./net.js";
@@ -8,7 +9,7 @@ import { dropKept, EDITOR_ID, keptKey, newSaveId, readKept } from "./drafts.js";
 import { editorAllowed, me, openTitles, ownerName } from "./role.js";
 import { wrote } from "./build.js";
 import { layoutMode, setLayoutMode } from "./layout.js";
-import { CM, cmExtensions, loadEditor } from "./cm.js";
+import { CM, cmExtensions, loadEditor, sectionHeadings } from "./cm.js";
 
 // The LaTeX source beside the PDF (Split, or E) or alone (Source), for editors and the owner: live.py /files and
 // /file, in CodeMirror (codemirror/, through the import map), loaded on first use. Edits save by
@@ -61,7 +62,8 @@ export async function showEditor(on, { path = null, line = 0, column = 0, focus 
   }
   if (!on) return;
   try {
-    await loadEditor({ save: saveSource, edited: (update) => { sourceEdited(update); showCursor(update); } });
+    await loadEditor({ save: saveSource, edited: (update) => { sourceEdited(update); showCursor(update); showRail(update); },
+                       open: (file, at) => openFile(file, at) });
     let hint = false;
     if (!path && !ed) [path, hint] = await firstFile();
     if (path) await openFile(path, line, column);
@@ -82,6 +84,7 @@ async function firstFile() {
   if (!r.ok || !Array.isArray(list.files)) throw new Error(list.error || `the list of files did not load (${r.status})`);
   srcFiles = list;
   const paths = srcFiles.files.map((f) => f.path), last = localStorage.getItem(`latex-live:${hubBase}editorFile`);
+  setTabs(openTabs.filter((p) => paths.includes(p))); // (files the paper no longer has)
   return paths.includes(last) ? [last, false] : [srcFiles.main || paths[0] || null, true];
 }
 // Open a file (once the one open now is saved, or is gone from the paper) and go to a line (and column) in it.
@@ -97,6 +100,7 @@ export async function openFile(path, line = 0, column = 0) {
               : r.status === 404 ? "not a source file that can be edited here" : r.status === 415 ? "not UTF-8 text" : f.error;
     const kept = r?.status === 404 && !unreachable(r, f) && readKept(path);
     if (kept) showGone(path, kept.text, kept.key); // (edits kept from earlier, to a file the paper no longer has)
+    if (r?.status === 404 && !unreachable(r, f)) setTabs(openTabs.filter((p) => p !== path));
     return setStatus(`${path}: ${why}`, "error");
   }
   while (busy) await busy.done; // (e.g. a reload of the file open now)
@@ -110,8 +114,9 @@ export async function openFile(path, line = 0, column = 0) {
     $("editorHost").replaceChildren();
     cmView = new CM.EditorView({ state, parent: $("editorHost") });
   }
-  $("filePick").textContent = `${f.path} ▾`;
+  setTabs(openTabs.includes(f.path) ? openTabs : [...openTabs, f.path]);
   showCursor();
+  showRail();
   $("editorHint").hidden = true;
   localStorage.setItem(`latex-live:${hubBase}editorFile`, f.path);
   showSaveState();
@@ -123,6 +128,71 @@ function goToLine(line, column = 0) {
   const at = to.from + Math.min(Math.max(0, +column || 0), to.length);
   cmView.dispatch({ selection: { anchor: at }, effects: CM.EditorView.scrollIntoView(at, { y: "center" }) });
   cmView.focus();
+}
+
+// The tabs above the text: the files opened in this paper (remembered across visits), the open one marked, with a dot
+// while it has edits not saved. A click opens one (once the open one is saved), and its × closes it.
+const TABS_KEY = `latex-live:${hubBase}editorTabs`, MAX_TABS = 12;
+let openTabs = [];
+try { openTabs = JSON.parse(localStorage.getItem(TABS_KEY) || "[]").filter((p) => typeof p === "string").slice(0, MAX_TABS); } catch {}
+function setTabs(paths) {
+  openTabs = paths.slice(-MAX_TABS);
+  localStorage.setItem(TABS_KEY, JSON.stringify(openTabs));
+  showTabs();
+}
+function showTabs() {
+  $("editorTabs").replaceChildren(...openTabs.map((path) => {
+    const name = path.slice(path.lastIndexOf("/") + 1);
+    const close = el("button", { className: "x", textContent: "✕", title: `Close ${name}`, onclick: (e) => { e.stopPropagation(); closeTab(path); } });
+    const tab = el("div", { className: `tab${path === ed?.path ? " on" : ""}`, title: path, dataset: { path },
+                            onclick: () => openFile(path).then(() => cmView?.focus()) },
+                   el("span", { className: "name", textContent: name }), el("span", { className: "dot", title: "Not saved yet" }), close);
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", String(path === ed?.path));
+    close.setAttribute("aria-label", `Close ${name}`);
+    return tab;
+  }));
+  $("editorTabs").querySelector(".tab.on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  showTabState();
+}
+function showTabState() { // (the open file's dot)
+  for (const tab of $("editorTabs").children) tab.classList.toggle("dirty", tab.dataset.path === ed?.path && !!ed?.dirty);
+}
+// Close a file's tab: the open one, once its edits are saved (then the tab before it opens, if any), unless discard (the
+// file is gone from the paper: its edits go too).
+export async function closeTab(path, { discard = false } = {}) {
+  const i = openTabs.indexOf(path);
+  if (ed?.path === path) {
+    if (discard) {
+      Object.assign(ed, { dirty: false, gone: true });
+      endConflict();
+      dropKept(path);
+    } else if (!(await flushSource())) {
+      return setStatus(`${path} is not saved yet, so its tab stays open`, "error");
+    }
+    if (ed?.path !== path) return; // (another file opened meanwhile)
+  }
+  setTabs(openTabs.filter((p) => p !== path));
+  if (ed?.path !== path) return;
+  const next = openTabs[Math.max(0, i - 1)];
+  if (next) await openFile(next);
+  if (ed?.path === path) closeFile(); // (no other tab, or it did not open)
+}
+// The pane with no file open: no editor to type into (its text would go nowhere), just a hint.
+function closeFile() {
+  ++openSeq; // (a file on its way does not open after all)
+  ed = null;
+  sourceEpoch++;
+  cmView?.destroy();
+  cmView = null;
+  hideNotice("restore"); // (a notice with text to copy stays, as on a switch to another file)
+  localStorage.removeItem(`latex-live:${hubBase}editorFile`);
+  $("editorHost").replaceChildren(el("div", { className: "msg", textContent: "No file open: pick one with the button above, or press " +
+                                              `${navigator.platform.startsWith("Mac") ? "Cmd" : "Ctrl"}+K.` }));
+  $("cursorPos").textContent = $("wordCount").textContent = "";
+  showTabs();
+  showRail();
+  showSaveState();
 }
 
 // The status bar under the text: the cursor's line and column, and the words of the text, or of the selection (counted
@@ -139,6 +209,29 @@ function showCursor(update = null) {
     $("wordCount").textContent = sel.empty ? `${total} words` : `${countWords(now.sliceDoc(sel.from, sel.to)).toLocaleString()} / ${total} words`;
   }, update?.docChanged ? 250 : 50);
 }
+// The rail beside the text: a tick for each heading of the file (with two or more), longer for a section than for a
+// subsection, the one the cursor is in marked; a click goes there. Read again a moment after typing stops.
+let railHeadings = [], railTimer = 0;
+function showRail(update = null) {
+  if (update?.docChanged) {
+    clearTimeout(railTimer);
+    railTimer = setTimeout(showRail, 400);
+  }
+  if (update) return void (update.selectionSet && markRail());
+  railHeadings = cmView ? sectionHeadings(cmView.state.doc) : [];
+  const rail = $("outlineRail");
+  rail.hidden = railHeadings.length < 2;
+  rail.replaceChildren(...railHeadings.map((h) => el("div", { className: `tick level${h.level}`, title: `${h.title} (line ${h.line})`,
+                                                             onclick: () => goToLine(h.line) })));
+  markRail();
+}
+function markRail() {
+  if (!cmView || $("outlineRail").hidden) return;
+  const line = cmView.state.doc.lineAt(cmView.state.selection.main.head).number;
+  const at = railHeadings.findLastIndex((h) => h.line <= line);
+  [...$("outlineRail").children].forEach((tick, i) => tick.classList.toggle("on", i === at));
+}
+
 // The words of LaTeX text: between \begin{document} and \end{document} when it has them, without comments, commands,
 // or the arguments that aren't words (references, labels, file names).
 function countWords(text) {
@@ -200,6 +293,7 @@ function showSaveState() {
   label.textContent = text;
   label.className = cls;
   label.title = title;
+  showTabState();
 }
 $("saveState").onclick = () => {
   if (!ed) return;
@@ -372,8 +466,15 @@ export function sourceStatus(source, epoch) {
   if (!ed.dirty) reloadSource();
   else if (!ed.markers && !ed.error && !offline) saveSource();
 }
-async function reloadSource() {
-  const target = ed, from = cmView.state.doc.toString();
+// Reload the open file in place (e.g. once something else wrote it), after the save or reload on its way, unless
+// another file opened meanwhile; with edits not saved yet, save them instead (the server merges them with the file as
+// it is now, and its answer comes into the editor as a reload would).
+export async function reloadSource() {
+  const target = ed;
+  while (busy) await busy.done;
+  if (!ed || ed !== target || ed.gone) return;
+  if (ed.dirty) return saveSource();
+  const from = cmView.state.doc.toString();
   let done;
   busy = { kind: "load", since: CM.ChangeSet.empty(from.length), done: new Promise((resolve) => (done = resolve)) };
   try {

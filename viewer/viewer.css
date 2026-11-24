@@ -399,8 +399,8 @@ body.pdf-invert .thumb canvas {
 .check li { padding: 4px 10px 4px 28px; font-size: 12px; cursor: pointer; word-break: break-word; color: var(--ink-2); }
 .check li:hover { background: var(--bg-hover); color: var(--ink); }
 
-/* The source pane (Split: beside the PDF; Source: alone): a header with the file picker, Show in PDF and ✕ over
-   CodeMirror, and a status bar under it. */
+/* The source pane (Split: beside the PDF; Source: alone): a header with the tabs of the files opened, the file picker,
+   Show in PDF and ✕ over CodeMirror and the rail of the file's headings, and a status bar under it. */
 #editorPane { flex: none; width: var(--editor-w); background: var(--bg-surface); color: var(--ink); }
 #editorPane:focus { outline: none; } /* (focusable only so that keys typed after a click in its header stay out of the viewer's shortcuts) */
 body.layout-source #editorPane { flex: 1 1 auto; width: auto; }
@@ -416,8 +416,47 @@ body.resizing { cursor: col-resize; user-select: none; }
   background: var(--bg-panel); border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden;
 }
 #editorHead button { height: 26px; font-size: 12px; flex-shrink: 0; }
-#filePick { flex-shrink: 1 !important; min-width: 0; max-width: 70%; overflow: hidden; text-overflow: ellipsis; display: block !important; color: var(--ink) !important; font-weight: 500; }
 .head-spacer { margin-left: auto; }
+#editorTabs { display: flex; align-items: center; gap: 2px; min-width: 0; flex: 0 1 auto; overflow-x: auto; scrollbar-width: none; }
+#editorTabs::-webkit-scrollbar { display: none; }
+#editorTabs .tab {
+  display: inline-flex; align-items: center; gap: 3px; flex: none; max-width: 170px; height: 26px; padding: 0 3px 0 9px;
+  border: 1px solid transparent; border-radius: 6px; color: var(--ink-2); font-size: 12px; cursor: pointer;
+}
+#editorTabs .tab:hover { background: var(--bg-hover); color: var(--ink); }
+#editorTabs .tab.on { background: var(--bg-surface); border-color: var(--border); color: var(--ink); font-weight: 500; }
+#editorTabs .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#editorTabs .dot { display: none; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); flex: none; }
+#editorTabs .tab.dirty .dot { display: inline-block; }
+#editorHead #editorTabs .x { width: 18px; height: 18px; padding: 0; font-size: 10px; color: var(--ink-3); opacity: 0; border-radius: 4px; }
+#editorTabs .tab:hover .x, #editorTabs .tab.on .x, #editorTabs .x:focus-visible { opacity: 1; }
+#editorBody { flex: 1; min-height: 0; display: flex; }
+/* (the rail: a tick per heading, longer for a section than for a subsection) */
+#outlineRail {
+  flex: none; width: 22px; padding: 14px 4px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+  border-left: 1px solid var(--hairline); overflow: hidden; user-select: none;
+}
+#outlineRail .tick { flex: none; height: 3px; border-radius: 2px; background: var(--border-strong); cursor: pointer; }
+#outlineRail .level1 { width: 13px; } #outlineRail .level2 { width: 9px; } #outlineRail .level3 { width: 6px; opacity: 0.7; }
+#outlineRail .tick:hover, #outlineRail .tick.on { width: 14px; background: var(--accent); opacity: 1; }
+/* (in the text: the notes, in their authors' colors, and the card for what the pointer rests on) */
+.cm-note-span {
+  border-radius: 3px; border-bottom: 1.5px solid var(--note-col);
+  background: color-mix(in srgb, var(--note-col) 14%, transparent);
+}
+.cm-hover-card { max-width: 380px; padding: 9px 12px; }
+.cm-hover-card .hc-kind { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-3); }
+.cm-hover-card .hc-title { margin-top: 2px; font-weight: 600; }
+.cm-hover-card .hc-meta { margin-top: 3px; font-size: 11.5px; color: var(--ink-2); }
+.cm-hover-card .hc-code {
+  margin-top: 5px; padding: 4px 6px; border-radius: 5px; background: var(--bg-panel);
+  font: 11.5px var(--font-mono); color: var(--ink-2); word-break: break-word;
+}
+.cm-hover-card .hc-link {
+  display: block; margin-top: 6px; padding: 0; border: 0; background: none; color: var(--accent-ink);
+  font: 500 11.5px var(--font-ui); cursor: pointer;
+}
+.cm-hover-card .hc-link:hover { text-decoration: underline; }
 #editorHint {
   flex: none; padding: 5px 12px; font-size: 12px; color: var(--ink-2);
   background: var(--bg-surface-2); border-bottom: 1px solid var(--hairline);
@@ -638,6 +677,44 @@ body.resizing { cursor: col-resize; user-select: none; }
 #keys .head button.welcome:hover { text-decoration: underline; }
 #keys td { padding: 4px 14px 4px 0; vertical-align: top; }
 #keys td:first-child { white-space: nowrap; }
+/* The palette (Cmd/Ctrl+K): go to a file, a heading or a command, or search the sources. */
+#paletteBtn kbd { margin-left: 4px; padding: 0 4px; border-bottom-width: 1px; font-size: 10.5px; color: var(--ink-3); }
+.popover-menu #paletteBtn kbd { display: none; }
+#paletteBackdrop {
+  position: fixed; inset: 0; z-index: 50; display: flex; align-items: flex-start; justify-content: center; padding-top: 11vh;
+  background: rgba(0, 0, 0, 0.3);
+}
+#palette {
+  width: min(620px, calc(100vw - 32px)); max-height: 70vh; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--bg-surface); color: var(--ink); border-radius: 12px; box-shadow: var(--shadow-pop);
+}
+#paletteHead { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+#paletteInput { flex: 1; min-width: 0; border: 0; outline: none; background: transparent; color: var(--ink); font-size: 14px; }
+#paletteHead button {
+  height: 24px; padding: 0 9px; border: 0; border-radius: 5px; background: transparent;
+  color: var(--ink-2); font-size: 11.5px; font-weight: 500; cursor: pointer;
+}
+#searchOptions { display: inline-flex; gap: 2px; }
+#searchOptions[hidden] { display: none; }
+#searchOptions button { font-family: var(--font-mono); }
+#paletteHead button.on { background: var(--accent-soft); color: var(--accent-ink); }
+.palette-modes { display: inline-flex; gap: 2px; padding: 2px; border-radius: 6px; background: var(--bg-surface-2); }
+.palette-modes[hidden] { display: none; }
+.palette-modes button.on { background: var(--bg-surface) !important; color: var(--ink) !important; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
+#paletteResults { flex: 1; overflow: auto; padding: 6px; }
+#paletteResults .empty { padding: 10px; color: var(--ink-3); font-size: 12.5px; }
+.pal-group { padding: 6px 8px 3px; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); }
+.pal-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; }
+.pal-row.sel { background: var(--accent-soft); }
+.pal-row .ic { flex: none; color: var(--ink-3); }
+.pal-main { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pal-sub { max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px var(--font-mono); color: var(--ink-3); }
+.pal-row mark { border-radius: 2px; background: var(--warn-bg); color: inherit; outline: 1px solid var(--warn-border); }
+#paletteFoot {
+  display: flex; align-items: center; gap: 12px; padding: 7px 12px; border-top: 1px solid var(--hairline);
+  background: var(--bg-panel); font-size: 11px; color: var(--ink-3);
+}
+#paletteFoot .hint { margin-left: auto; }
 kbd {
   display: inline-block; min-width: 1.2em; padding: 1px 5px;
   border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 4px;
