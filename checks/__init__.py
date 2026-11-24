@@ -4,8 +4,9 @@ does).
 1. The Python compiles without warnings (and with Python 3.9, if there is one); the viewer's import
    map is valid JSON, comes before its module code, and maps every bare module name that the viewer
    (viewer/) and the vendored editor (codemirror/) import to a file here, and every module that the
-   viewer imports by path is a file here; the viewer's modules parse (with Node, if there is one);
-   instances starting at once agree on one token, never an empty one.
+   viewer imports by path is a file here; every element that the viewer's modules look up by id ($)
+   is in viewer.html; the viewer's modules parse (with Node, if there is one); instances starting at
+   once agree on one token, never an empty one.
    The review copy's layout keeps notes in order, apart, and on their pages, and continues the ones
    that don't fit after the paper; its matching tells apart two authors' notes with the same text.
    In shared mode, the downloads built on request say plainly that the TeX Live image is missing, the

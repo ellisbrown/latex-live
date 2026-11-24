@@ -1,6 +1,6 @@
 """The checks of the checkout as it is, before anything runs: the Python compiles without warnings (and with
 Python 3.9, if there is one), the viewer's import map and modules are valid (and parse, with Node, if there is
-one), and instances starting at once agree on one token."""
+one), every element that they look up by id is in viewer.html, and instances starting at once agree on one token."""
 
 import glob
 import json
@@ -52,7 +52,14 @@ def static_checks():
     if oldest:
         ok("it compiles with Python 3.9 too")
     with open(os.path.join(HERE, "viewer.html")) as f:
-        code = viewer_scripts(f.read())
+        page = f.read()
+    code = viewer_scripts(page)
+    ids = set(re.findall(r'\bid="([^"]+)"', page))
+    missing = sorted({f"{name}: {m.group(1)}" for name, text in code.items() for m in re.finditer(r'\$\("([^"]+)"\)', text)
+                      if m.group(1) not in ids})
+    if missing:
+        fail(f"the viewer's modules look up elements that viewer.html doesn't have: {missing}")
+    ok(f"every element that the viewer's modules look up by id is in viewer.html ({len(ids)} ids)")
     node = shutil.which("node")
     if not node:
         print("skip: no node, so whether the viewer's script parses is not checked", flush=True)
