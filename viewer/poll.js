@@ -165,8 +165,8 @@ export async function poll() {
     pollFailed = false;
     sourceStatus(info.source, epoch);
     if (!isDiff) seeBuild(!!info.building, info.build?.ok === false);
-    if (!isDiff) noteBuild(info);
     if (!isDiff && info.doc && info.doc !== docFile) return openDoc(info.doc); // the server builds another document now
+    if (!isDiff) noteBuild(info);
     if (info.layout) setArea(info.layout);
     setUncounted(info.uncounted);
     showBuild(info.building ? null : info.build, info.building ? null : info.cleanBuild, info.building ? null : info.overwritten);

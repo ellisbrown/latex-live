@@ -1012,9 +1012,16 @@ Overfull \hbox (12.0pt too wide) in paragraph at lines 3--9
 
 ./sec/intro.tex:11: Undefined control sequence.
 l.11 \foo
+./sec/intro.tex:12: Missing ) inserted.
+)
+("./sec/related work.tex"
+LaTeX Warning: Citation `y' on page 1 undefined on input line 4.
 )
 Package hyperref Warning: Token not allowed in a PDF string (Unicode):
 (hyperref)                removing `math shift' on input line 20.
+Package biblatex Warning: Conflicting options (see the manual,
+(biblatex)                section 3.1) on input line 42.
+main.tex:99999999999999999999: a line number far too long
 
 build/main-live.aux:3: in the build folder
 .hidden.tex:2: a dot file
@@ -1037,7 +1044,7 @@ def logs_checks():
     with tempfile.TemporaryDirectory(prefix="latex-live-logs-") as tmp:
         real = os.path.join(tmp, "real")
         root = os.path.join(tmp, "paper")  # (a link to real: the log may name either)
-        for name in ("main.tex", "sec/intro.tex", ".hidden.tex", "build/main-live.aux", "main.tex.bak"):
+        for name in ("main.tex", "sec/intro.tex", "sec/related work.tex", ".hidden.tex", "build/main-live.aux", "main.tex.bak"):
             put(os.path.join(real, name), "x\n")
         put(os.path.join(tmp, "outside.tex"), "x\n")
         os.symlink(real, root)
@@ -1050,11 +1057,13 @@ def logs_checks():
         found = logs.build_logs(server, "main.pdf")
         place = lambda d: (d["severity"], d["kind"], d["file"], d["line"])
         if [place(e) + (e["msg"],) for e in found["errors"]] != [("error", "error", "sec/intro.tex", 11, "Undefined control sequence."),
+                                                                  ("error", "error", "sec/intro.tex", 12, "Missing ) inserted."),
                                                                   ("error", "error", None, None, "a bibtex failure")]:
             fail(f"the log's errors: {found['errors']}")
         want = [("warning", "warning", None, None), ("warning", "warning", "sec/intro.tex", 7),
-                ("warning", "overfull", "sec/intro.tex", 9), ("warning", "warning", "main.tex", 20), ("info", "underfull", "main.tex", 21)]
-        if [place(w) for w in found["warnings"]] != want or "removing `math shift'" not in found["warnings"][3]["msg"]:
+                ("warning", "overfull", "sec/intro.tex", 9), ("warning", "warning", "sec/related work.tex", 4), ("warning", "warning", "main.tex", 20), ("warning", "warning", "main.tex", 42),
+                ("info", "underfull", "main.tex", 21)]
+        if [place(w) for w in found["warnings"]] != want or "removing `math shift'" not in found["warnings"][4]["msg"]:
             fail(f"the log's warnings: {[place(w) + (w['msg'][:40],) for w in found['warnings']]}")
         if root in found["raw"] or real in found["raw"] or "See ./build and ." not in found["raw"] or "(./main.tex" not in found["raw"]:
             fail(f"the raw log shows the paper's folder: {found['raw'][-200:]!r}")
@@ -1078,6 +1087,9 @@ def logs_checks():
                  f" truncated {big['truncated']}, {len(big['raw'])} characters of it sent")
         if [place(e) for e in big["errors"]][:1] != [("error", "error", "main.tex", 5)] or took > 5:
             fail(f"the end of a long log: {big['errors'][:2]} in {took:.1f} s")
+        put(log, "x" * (logs.RAW_TAIL + 10) + "\n" + "y" * (logs.RAW_TAIL + 10))
+        if not logs.build_logs(server, "main.pdf")["raw"].startswith("y"):
+            fail("the end of a log whose last line is longer than what is sent is sent empty")
         sys.path.insert(0, HERE)
         import latex_report
         saved = latex_report.BUILD

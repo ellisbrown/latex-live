@@ -86,7 +86,7 @@ function showLogs() {
     return void (body.scrollTop = body.scrollHeight);
   }
   const items = [...(filter !== "warning" ? logs.errors : []), ...(filter !== "error" ? logs.warnings : [])];
-  if (!items.length) return body.replaceChildren(el("div", { className: "empty", textContent: filter === "error" ? "No errors." : "No errors or warnings." }));
+  if (!items.length) return body.replaceChildren(el("div", { className: "empty", textContent: filter === "error" ? "No errors." : filter === "warning" ? "No warnings." : "No errors or warnings." }));
   body.replaceChildren(...items.map((d) => {
     const opens = d.file && d.line && editable(d.file);
     return el("div", { className: `log-row${opens ? " opens" : ""}`, title: opens ? `Open ${d.file}:${d.line}` : "",
@@ -110,8 +110,9 @@ $("buildState").onclick = () => toggleLogs();
 // Cmd/Ctrl+Shift+L (keys.js), and the palette: the drawer, with the source pane open.
 export function showLogsKey() {
   if (!allowed()) return false;
-  if (!editorShown()) showEditor(true, { focus: false });
-  toggleLogs();
+  if (editorShown()) return void toggleLogs();
+  showEditor(true, { focus: false });
+  toggleLogs(true);
 }
 registerCommands(() => (allowed() ? [{ title: "Build log and warnings", sub: "Build", icon: "log", run: () => {
   if (!editorShown()) showEditor(true, { focus: false });
@@ -162,7 +163,7 @@ addEditorExtension(({ state, view }) => {
   const card = view.hoverTooltip((v, pos) => {
     const line = v.state.doc.lineAt(pos);
     let dot = null;
-    v.state.field(field).dots.between(line.from, line.from, (from, to, value) => { dot = value; });
+    v.state.field(field).dots.between(line.from, line.to, (from, to, value) => { dot ??= value; }); // (after lines were joined: inside it)
     if (!dot) return null;
     return { pos: line.from + Math.max(0, line.text.search(/\S/)), end: line.to, above: true, create: () => {
       const dom = el("div", { className: "cm-hover-card" });
