@@ -17,7 +17,7 @@ import urllib.parse
 from .base import ENV, HERE, LOGS, PORT, START_LOCK, TOKEN, fail, hub
 
 
-CAPS = ("comment", "edit", "rebuild", "compare", "switch", "openHost", "download", "history", "restore")  # what GET me says a user can do
+CAPS = ("comment", "edit", "rebuild", "compare", "switch", "openHost", "download", "history", "restore", "agent")  # what GET me says a user can do
 
 JS_TYPE_RE = re.compile(r"(?:text|application)/(?:x-)?javascript\b")
 
@@ -158,6 +158,11 @@ def editor_stub(tmp, name):
         f.write(f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {shlex.quote(log)}\n")
     os.chmod(stub, 0o755)
     return stub, log
+
+
+def agent_example():
+    """LATEX_LIVE_AGENT_CMD for the example agent plugin, which calls no model (examples/agent-tidy.py)."""
+    return f"{shlex.quote(sys.executable)} {shlex.quote(os.path.join(HERE, 'examples', 'agent-tidy.py'))}"
 
 
 def editor_calls(log):

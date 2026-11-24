@@ -36,7 +36,12 @@ does).
    nor their messages; a merge with what it brought in; its limit counted after), names nothing outside the paper's
    folder in the uncommitted changes, diffs the shown files first, names commits only by their ids, and restores a
    source over the file the editor opens (at the version given) or a removed one anew, committed as its restorer's,
-   never over another file, a coauthor only from commits the branch builds on.
+   never over another file, a coauthor only from commits the branch builds on. The agent hook takes a plugin's answer
+   only as one JSON object with a replacement (or its error), stops a plugin past its timeout or its output limit with
+   everything it started (and what an answered one left running), stalls on no pipe, runs its command without a shell
+   (a malformed one fails cleanly) in an empty folder with a minimal environment, is off without a plugin and in
+   shared mode, refuses protected text both ways, and runs one revision at a time; `python3 -m latexlive.agent --test`
+   passes the example plugin.
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a git
    repository with a pushed commit and a local one) gets a live.py instance, with the hub on port
    44180, or below the ports that outgoing connections take where 44180 is among them (Linux: 28180), or the first
@@ -51,7 +56,9 @@ does).
    - /me reports the owner with every capability; the viewer's and the editor's modules and the
      viewer's style are served (as JavaScript, and CSS), the viewer's revalidated; SyncTeX answers
      as JSON without opening the editor, while POST /open and plain /synctex still open it (a
-     stand-in that logs its arguments), and GET /open is 405; the hub takes a source file's save and the Files tab's upload above the other
+     stand-in that logs its arguments), and GET /open is 405; the agent hook returns the example plugin's revision
+     through the hub (also above the actions' size limit), refuses protected text, answers a GET with 405, and is off
+     (404) in a preview without LATEX_LIVE_AGENT_CMD; the hub takes a source file's save and the Files tab's upload above the other
      actions' size limit, refuses bodies above its limits, and survives a non-ASCII token;
      /favicon.ico is answered, not refused;
    - the HEAD and last-push baselines build (they differ: one commit is unpushed), and the
@@ -119,7 +126,7 @@ does).
    - Host names, the identity header (none, two, empty, unknown, on another Host), tokens and
      cookies, a page that says what to do for a browser without a working link, users added (and a
      broken users file) without a restart, /me (whether the paper defines the user's note macro, and
-     no document switch, for anyone) and every endpoint per role (the checks and the build's log for editors only, the log with the paper's files
+     no document switch or agent hook, for anyone, even with a plugin set) and every endpoint per role (the checks and the build's log for editors only, the log with the paper's files
      relative to it),
      the Origin rules for POSTs (a loopback one only on the instance's own port), POST body limits,
      non-owners pinned to the document, and the viewer's security headers; the Refs panel for editors, without

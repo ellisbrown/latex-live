@@ -189,6 +189,20 @@ except re.error as e:  # (warn, not exit: forward.py imports this module too)
     PROTECTED_RE = None
 
 
+# LATEX_LIVE_AGENT_CMD: a plugin that the source pane asks to revise a selection (agent; docs/agent-plugins.md), a
+# command split as a shell would split it but never run through one; the owner's only, and never in shared mode.
+# LATEX_LIVE_AGENT_ENV: the names of the variables it gets besides a minimal environment (agent.plugin_env), separated
+# by commas or spaces, e.g. an API key's. AGENT_TIMEOUT: its time for one revision, in seconds (below the hub's 120).
+AGENT_CMD = os.environ.get("LATEX_LIVE_AGENT_CMD", "").strip()
+AGENT_ENV = [name for name in re.split(r"[\s,]+", os.environ.get("LATEX_LIVE_AGENT_ENV", "")) if name]
+AGENT_TIMEOUT = 90
+if AGENT_CMD and SHARED:  # (warn, not exit: forward.py imports this module too)
+    print("=== latex-live: ignoring LATEX_LIVE_AGENT_CMD, which shared mode never runs", file=sys.stderr, flush=True)
+if any(name.startswith("LATEX_LIVE_") for name in AGENT_ENV):
+    print("=== latex-live: LATEX_LIVE_AGENT_ENV never passes latex-live's own settings (LATEX_LIVE_*) on",
+          file=sys.stderr, flush=True)
+
+
 # What the server reads of a file that TeX (or BibTeX, Biber) wrote: the paper's TeX decides how big it is,
 # so every read is bounded. READ_LIMIT for one file (an .aux, an .fls), AUX_BUDGET for the .aux files one
 # reads (\@input), JSON_LIMIT for a small JSON file, RECORD_LIMIT for the records parsed from one.

@@ -57,6 +57,8 @@ and troubleshooting.
   notes-free view, the source pane, change highlights and comparing, downloads
   and the review copy, the sidebar, page limits and checks, and keyboard
   shortcuts.
+- [Agent plugins](docs/agent-plugins.md): polishing a selection with a model of
+  your choice, and how to write the plugin (or have your coding agent write it).
 - [Shared mode](docs/shared-mode.md): roles and what each sees, setting it up
   behind a reverse proxy or with personal links, the security model, and
   running it as a service.

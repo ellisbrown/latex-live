@@ -27,7 +27,7 @@ from .base import ENV, HERE, PORT, TOKEN, _quiet, fail, hub, in_thread, ok, wait
 from .clean_standby import clean_standby_run
 from .early import early_run
 from .helpers import (
-    CAPS, JS_TYPE_RE, editor_calls, editor_stub, get, hub_get, post, post_length, put, read_bytes, read_hub, request, start,
+    CAPS, JS_TYPE_RE, agent_example, editor_calls, editor_stub, get, hub_get, post, post_length, put, read_bytes, read_hub, request, start,
     stop, read_text, texlive_image, text_point)
 from .landscape import landscape_run
 from .papers import composed, make_paper
@@ -53,7 +53,8 @@ def live_checks(tmp):
     with os.fdopen(fd, "w") as f:
         f.write(secrets.token_urlsafe(16))
     os.chmod(os.path.join(state, "token"), 0o644)
-    named = {**ENV, "LATEX_LIVE_HOST": BRIDGE, "LATEX_LIVE_ALLOWED_HOSTS": EXTRA}  # (the hub's and its preview's other names)
+    named = {**ENV, "LATEX_LIVE_HOST": BRIDGE, "LATEX_LIVE_ALLOWED_HOSTS": EXTRA,  # (the hub's and its preview's other names)
+             "LATEX_LIVE_AGENT_CMD": agent_example()}  # (its own: the other instances have no agent hook)
     procs, sharing = [start(paper, env=named)], []  # (sharing: the shared-mode instance, shared_setup)
     standby = in_thread("warm standby checks", standby_run, tmp)  # (beside the rest, with an instance of its own)
     early = in_thread("early notes-free pass checks", early_run, tmp)  # (likewise)
@@ -174,6 +175,7 @@ def live_checks(tmp):
             fail(f"/instances does not list the instance with its paper id: {listed}")
         ok("/instances lists the instance")
         owner_checks(token, own, editor_log, paper)
+        agent_hook_checks(token)
         access_checks(token, own, state, procs[0].log)
 
         def baselines():
@@ -238,7 +240,11 @@ def live_checks(tmp):
         page = request("/papers", token)[2].decode()
         if f"{hub['base']}main/viewer.html" not in page or f"{hub['base']}appendix/viewer.html" not in page:
             fail(f"/papers does not link both documents through the hub:\n{page[:600]}")
-        ok("a second document gets its own process, behind the same port")
+        status, _, data = request(f"{hub['base']}appendix/agent/revise", method="POST", cookie=token,
+                                  body={"selection": "x", "paragraph": "x", "note": "", "file": "appendix.tex", "line": 3})
+        if status != 404 or get("/me", token, "appendix").get("can", {}).get("agent") is not False:
+            fail(f"a preview without LATEX_LIVE_AGENT_CMD: POST /agent/revise {status} {data[:200]!r}, not 404 (or me says agent)")
+        ok("a second document gets its own process, behind the same port; without LATEX_LIVE_AGENT_CMD, it has no agent hook")
         failed = wait_for("the appendix's review copy", lambda: _quiet(lambda: (lambda e: e if e.get("state") in ("done", "failed")
                                                                           else None)(post("/review", token, "appendix"))), timeout=120)
         if failed.get("state") != "failed" or "no notes" not in failed.get("msg", "") or \
@@ -587,6 +593,29 @@ def owner_checks(token, own, editor_log, paper):
             fail(f"a non-ASCII token through the hub: {status}, not 403")
     ok("the hub takes a 1 MiB save of a source file, refuses bigger bodies (as the preview does a bad Content-Length),"
        " and refuses a non-ASCII token")
+
+
+def agent_hook_checks(token):
+    """The agent hook with the example plugin (LATEX_LIVE_AGENT_CMD: examples/agent-tidy.py), through the hub: its
+    revision, a request above the actions' size limit (non-ASCII text, as the viewer sends it), protected text refused,
+    GET answered 405."""
+    tidy = {"selection": "We utilize  it.", "paragraph": "First. We utilize  it. Last.", "note": "", "file": "main.tex", "line": 9}
+    try:
+        got = post("/agent/revise", token, body=tidy)
+        big = post("/agent/revise", token, body={**tidy, "selection": "€" * 5_000, "paragraph": "€" * 15_000})  # (120 KB, escaped)
+    except OSError as e:
+        fail(f"POST /agent/revise through the hub, with the example plugin: {e}")
+    if got != {"replacement": "We use it.", "rationale": "Collapsed repeated spaces and replaced utilize with use."} \
+            or big.get("replacement") != "€" * 5_000:
+        fail(f"POST /agent/revise through the hub, with the example plugin: {got}, and for a big request {str(big)[:80]}")
+    status, _, data = request(f"{hub['base']}main/agent/revise", method="POST", cookie=token,
+                              body={**tidy, "paragraph": "First. We utilize  it. Last.\\eb{human-written}"})
+    if status != 409:
+        fail(f"POST /agent/revise of a paragraph marked LATEX_LIVE_PROTECTED: {status} {data[:200]!r}, not 409")
+    if (status := request(f"{hub['base']}main/agent/revise", cookie=token)[0]) != 405:
+        fail(f"GET /agent/revise: {status}, not 405")
+    ok("through the hub, the agent hook returns the example plugin's revision, also of a request above the actions' size"
+       " limit, refuses a paragraph marked LATEX_LIVE_PROTECTED, and answers a GET with 405")
 
 
 def switch_checks(token):

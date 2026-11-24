@@ -301,6 +301,10 @@ are in [shared-mode.md](shared-mode.md#settings).
   paragraph or caption it marks, and the note buttons can't edit, resolve, or
   delete the marker. The browser editor doesn't guard it: whoever may edit can
   change it there like any other text.
+- `LATEX_LIVE_AGENT_CMD`: an [agent plugin](agent-plugins.md) for the source
+  pane's "Polish with the agent", e.g. `/path/to/latex-live/examples/agent-claude.sh`.
+  Off by default, and never in shared mode. `LATEX_LIVE_AGENT_ENV` names the
+  variables it gets besides a minimal environment, separated by commas.
 - `LATEX_LIVE_EDITOR`: the editor command that double-click opens the source
   in while the browser editor is closed (`<editor> -g FILE:LINE[:COLUMN]`), e.g.
   `cursor`. Without it, latex-live uses `code`, and only from a VS Code

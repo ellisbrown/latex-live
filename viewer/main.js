@@ -16,6 +16,7 @@ import "./keys.js";
 import "./refs.js";
 import "./files.js";
 import "./history.js";
+import "./agent.js";
 
 // Controls follow the role (once /me has answered): a collaborator comments only as themselves,
 // and sees no controls for what their role can't do (live.py refuses those anyway).

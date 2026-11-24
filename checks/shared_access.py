@@ -272,6 +272,12 @@ def role_checks(sh):
     for result, who in ((with_token(owner, "/switch", "POST", {"doc": "appendix"}), "with the owner's token"),
                         (via_proxy("owner1", "/switch", "POST", {"doc": "appendix"}), "for the owner, through the proxy")):
         expect(result, 403, f"POST switch {who} (a shared preview serves one document)")
+    revise = {"selection": "two words", "paragraph": "Two words.", "note": "", "file": "body.tex", "line": 1}
+    for method, body in (("POST", revise), ("GET", None)):  # (with LATEX_LIVE_AGENT_CMD set: shared mode never runs it)
+        for result, who in [(via_proxy(uid, "/agent/revise", method, body), uid) for uid in ("vw", "cm", "ed", "owner1")] + \
+                           [(with_token(owner, "/agent/revise", method, body), "the owner's token")]:
+            if expect(result, 403, f"{method} agent/revise for {who} (the agent hook is off in shared mode)").get("error") != "not in shared mode":
+                fail(f"{method} agent/revise for {who} does not say that shared mode has no agent hook: {result[2][:200]!r}")
     for method, path, body, status in (("GET", "/files", None, 200), ("GET", "/file?path=body.tex", None, 200),
                                        ("GET", "/commits", None, 200), ("POST", "/file", probe, 409), ("GET", "/completions", None, 200),
                                        ("GET", "/search?q=quokka", None, 200), ("GET", "/logs/main.pdf", None, 200),
@@ -306,8 +312,8 @@ def role_checks(sh):
         fail(f"the editor stand-in ran: {editor_calls(sh['editor_log'])}")
     ok("roles: viewers read, commenters also comment, editors also edit, search the sources (as written), read the build's"
        " log (with the paper's files relative to it), rebuild and"
-       " compare, only the owner does the rest, but for switching documents, which no one does; the old GET actions are"
-       " gone; no CORS")
+       " compare, only the owner does the rest, but for switching documents and the agent hook (even with a plugin set), which"
+       " no one does; the old GET actions are gone; no CORS")
 
     proxy, owners = [("Host", PROXY_HOST), ("X-Test-User", "ed")], [("Cookie", f"latex_live={owner}")]
     public = [("Host", "paper.invalid:8443"), ("Cookie", f"latex_live={sh['users']['tk']['token']}")]
