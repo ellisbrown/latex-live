@@ -318,14 +318,14 @@ def paper_folder(paper_root, folder, make=False):
 def create_source(paper_root, rel, text):
     """Make rel, a new source file (new_path, EDITABLE_EXTS), holding text, never over a file that is there
     (FileExistsError). Returns rel normalized."""
-    norm = new_path(paper_root, rel, EDITABLE_EXTS)
+    norm, data = new_path(paper_root, rel, EDITABLE_EXTS), text.encode("utf-8")  # (UnicodeEncodeError before a folder is made)
     folder = paper_folder(paper_root, os.path.dirname(norm), make=True)
     name = os.path.basename(norm)
     try:
         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=folder)
         try:
             with os.fdopen(fd, "wb") as f:
-                f.write(text.encode("utf-8"))
+                f.write(data)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(name, dir_fd=folder)
@@ -347,7 +347,7 @@ def add_file(paper_root, rel, data):
         try:
             with os.fdopen(fd, "wb") as f:
                 f.write(data)
-            os.link(tmp, os.path.basename(norm), src_dir_fd=folder, dst_dir_fd=folder)
+            os.link(tmp, os.path.basename(norm), src_dir_fd=folder, dst_dir_fd=folder, follow_symlinks=False)
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(tmp, dir_fd=folder)
@@ -379,9 +379,14 @@ def move_file(paper_root, rel, new_rel):
         dst = paper_folder(paper_root, os.path.dirname(norm), make=True)
         try:
             os.link(os.path.basename(real), os.path.basename(norm), src_dir_fd=src, dst_dir_fd=dst, follow_symlinks=False)
+            try:
+                os.unlink(os.path.basename(real), dir_fd=src)
+            except BaseException:  # (not renamed after all: the new name goes)
+                with contextlib.suppress(OSError):
+                    os.unlink(os.path.basename(norm), dir_fd=dst)
+                raise
         finally:
             os.close(dst)
-        os.unlink(os.path.basename(real), dir_fd=src)
     finally:
         os.close(src)
     return norm
@@ -419,13 +424,16 @@ def changed_path(paper_root, rel):
 
 
 def load_added(server):
-    """The files added through the Files tab (made, uploaded, renamed to), which it lists whether or not the document
-    reads them yet, as the state folder keeps them (server.added_file: remember_added), those still there."""
+    """The files added through the Files tab of the document (made, uploaded, renamed to), which it lists whether or
+    not the document reads them yet, as the state folder keeps them for each document (remember_added), those still
+    there. Again when the preview switches to another document."""
+    server.added_file = os.path.join(config.STATE, "added", f"{server.paper_id}-{server.default_pdf[:-4]}.json")
     data = read_json(server.added_file)
     names = data.get("files") if isinstance(data, dict) and data.get("root") == server.paper_root else None
     root = os.path.realpath(server.paper_root)
-    server.added = {os.path.normpath(rel) for rel in (names if isinstance(names, list) else [])[:ADDED_LIMIT]
-                    if isinstance(rel, str) and rel and not os.path.isabs(rel) and (editable_real(root, rel) or asset_real(root, rel))}
+    found = [os.path.normpath(rel) for rel in (names if isinstance(names, list) else [])
+             if isinstance(rel, str) and rel and not os.path.isabs(rel) and (editable_real(root, rel) or asset_real(root, rel))]
+    server.added = set(found[:ADDED_LIMIT])
 
 
 def remember_added(server, add=(), drop=()):
@@ -443,10 +451,14 @@ def remember_added(server, add=(), drop=()):
         print(f"=== latex-live: could not keep the list of files added through the viewer in {path} ({e})", flush=True)
 
 
-def doc_assets(server):
-    """The figures of the document, which a coauthor's Files tab lists and changes in shared mode: of the paper's
-    figures (project_assets), those its last build read and those added through the Files tab."""
+def doc_figures(server):
+    """The paths of the document's own figures, which a coauthor's Files tab lists and changes in shared mode: those
+    its last build read and those added through the Files tab (not all figures: asset_real says which are)."""
     root = os.path.realpath(server.paper_root)
-    own = {os.path.normpath(rel) for rel in project_inputs(root, fls_file(root, server.default_pdf))}
-    own |= getattr(server, "added", set())
+    return {os.path.normpath(rel) for rel in project_inputs(root, fls_file(root, server.default_pdf))} | getattr(server, "added", set())
+
+
+def doc_assets(server):
+    """The document's figures (doc_figures), of the paper's (project_assets)."""
+    own = doc_figures(server)
     return [a for a in project_assets(server) if a["path"] in own]

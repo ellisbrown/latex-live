@@ -41,8 +41,8 @@ let folded = new Set(), preview = null, drawn = "", peers = {}; // (folders fold
 let action = null; // the form's: {kind: "new" | "upload" | "rename", path?, file?}
 
 // The list, again when the tab shows, after each build and each change made here, and every 10 s while it shows (a
-// coauthor's upload builds nothing).
-async function loadFiles() {
+// coauthor's upload builds nothing); other parts of the viewer that change the paper's files call it too.
+export async function loadFiles() {
   if (!editorAllowed()) return;
   const r = await fetch("files", { cache: "no-store" }).catch(() => null);
   const list = r?.ok ? await r.json().catch(() => null) : null;
@@ -135,36 +135,35 @@ async function includeFigure(path) {
   if (!insertText(`\\includegraphics[width=\\linewidth]{${path}}`)) setStatus("Open a source file first, to type the figure in it", "error");
 }
 
-// A figure's preview, for the tree and the source pane's card: the image, or a PDF's first page (PDF.js, in this
-// browser: nothing is drawn on the server), kept for 30 s. An EPS file has none.
-const thumbs = new Map(); // path -> {at, url (a promise)}
+// A figure's preview, for the tree and the source pane's card: the image itself (live.py's /asset, whose CSP runs
+// nothing should it be opened alone: never a blob: URL of it, which would run an SVG's scripts as this page), or a
+// PDF's first page drawn as a PNG (PDF.js, in this browser: nothing is drawn on the server), kept for 30 s. An EPS file
+// has none.
+const thumbs = new Map(); // (a PDF's path -> {at, url: a promise of its first page's data: URL})
 export function figureThumb(path) {
   const box = el("div", { className: "fig-thumb" });
+  const none = (text = "No preview") => box.replaceChildren(el("span", { textContent: text }));
   if (/\.eps$/i.test(path)) {
-    box.append(el("span", { textContent: "No preview of an EPS file here" }));
-    return box;
-  }
-  let kept = thumbs.get(path);
-  if (!kept || performance.now() - kept.at > 30000) {
-    thumbs.get(path)?.url.then(forget);
-    thumbs.delete(path);
-    kept = { at: performance.now(), url: thumbURL(path) };
-    thumbs.set(path, kept);
-    if (thumbs.size > 24) { // (the oldest goes)
-      const [old, t] = thumbs.entries().next().value;
-      thumbs.delete(old);
-      t.url.then(forget);
+    none("No preview of an EPS file here");
+  } else if (!/\.pdf$/i.test(path)) {
+    box.append(el("img", { src: `asset?${new URLSearchParams({ path, v: assetStamp(path) })}`, alt: path, onerror: () => none() }));
+  } else {
+    let kept = thumbs.get(path);
+    if (!kept || performance.now() - kept.at > 30000) {
+      thumbs.delete(path);
+      kept = { at: performance.now(), url: pdfThumb(path) };
+      thumbs.set(path, kept);
+      if (thumbs.size > 24) thumbs.delete(thumbs.keys().next().value); // (the oldest goes)
     }
+    kept.url.then((url) => (url ? box.replaceChildren(el("img", { src: url, alt: path })) : none()));
   }
-  kept.url.then((url) => box.replaceChildren(url ? el("img", { src: url, alt: path }) : el("span", { textContent: "No preview" })));
   return box;
 }
-const forget = (url) => url?.startsWith("blob:") && URL.revokeObjectURL(url);
-async function thumbURL(path) {
+const assetStamp = (path) => (srcFiles?.assets || []).find((a) => a.path === path)?.size ?? ""; // (a new upload under an old name shows anew)
+async function pdfThumb(path) {
   try {
     const r = await fetch(`asset?${new URLSearchParams({ path })}`, { cache: "no-store" });
     if (!r.ok) return null;
-    if (!/\.pdf$/i.test(path)) return URL.createObjectURL(await r.blob());
     const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(await r.arrayBuffer()), ...pdfAssets }).promise;
     try {
       const page = await pdf.getPage(1), unit = page.getViewport({ scale: 1 });
@@ -234,7 +233,7 @@ okBtn.onclick = async () => {
     if (error) formError.textContent = error;
     else closeForm();
   } finally {
-    okBtn.disabled = false;
+    if (action === now || !action) okBtn.disabled = false;
   }
 };
 
@@ -268,6 +267,7 @@ async function uploadFigure(name, { file }) {
     return error;
   }
   setStatus(`Uploaded ${done.path}`, "fresh");
+  thumbs.delete(done.path);
   preview = done.path;
   await loadFiles();
 }
@@ -277,6 +277,8 @@ async function renameFile(name, { path }) {
   const [done, error] = await send("file/rename", { from: path, to: name });
   if (error) return error;
   setStatus(`Renamed ${path} to ${done.path}`, "fresh");
+  thumbs.delete(path);
+  thumbs.delete(done.path);
   if (preview === path) preview = done.path;
   await loadFiles();
   if (open) await openFile(done.path);
@@ -288,6 +290,7 @@ async function removeFile(path) {
   const [, error] = await send("file/delete", { path });
   if (error) return setStatus(`${path}: ${error}`, "error");
   setStatus(`Removed ${path}`);
+  thumbs.delete(path);
   if (preview === path) preview = null;
   await loadFiles();
   await closeTab(path, { discard: true });

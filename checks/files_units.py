@@ -22,8 +22,8 @@ def files_checks():
 
 def scratch_server(root, state):
     """A stand-in for an instance on the paper in root, with what the Files tab's requests use."""
-    return types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", editable=None, assets=None, added=set(),
-                                 added_file=os.path.join(state, "added.json"), uploads={}, autocommit=False,
+    return types.SimpleNamespace(paper_root=root, paper_id="paper-test", default_pdf="main.pdf", editable=None, assets=None,
+                                 added=set(), added_file=os.path.join(state, "added", "paper-test-main.json"), uploads={}, autocommit=False,
                                  pending_file=os.path.join(state, "pending.json"),
                                  last_writer={}, pending={}, pending_lock=threading.Lock(), write_seq=0)
 
@@ -148,7 +148,7 @@ def request_checks():
     from latexlive import config, editor, sources
     owner = {"id": "owner", "name": "Owner", "role": "owner", "macro": "", "email": None, "via": "token"}
     ed = {"id": "ed", "name": "Eden", "role": "editor", "macro": "ed", "email": None, "via": "proxy"}
-    saved = (config.SHARED, editor.paused, editor.UPLOAD_TOTAL, editor.UPLOAD_RATE, editor.ASSETS_LIMIT)
+    saved = (config.SHARED, config.STATE, editor.paused, editor.UPLOAD_TOTAL, editor.UPLOAD_RATE, editor.ASSETS_LIMIT)
     with tempfile.TemporaryDirectory(prefix="latex-live-requests-") as root, tempfile.TemporaryDirectory() as state:
         put(os.path.join(root, "main.tex"), "\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n")
         put_bytes(os.path.join(root, "figures", "old.png"), b"x" * 10)
@@ -157,7 +157,7 @@ def request_checks():
         server = scratch_server(root, state)
         b64 = lambda data: __import__("base64").b64encode(data).decode()
         try:
-            editor.paused = lambda s: None
+            editor.paused, config.STATE = (lambda s: None), state
             want = lambda result, status, what: result[0] == status or fail(f"{what}: {result}, not {status}")
             want(editor.upload_request(server, {"path": "sec.tex", "data": b64(b"x")}, ed), 400, "uploading a source")
             want(editor.create_request(server, {"path": "sec/new.tex", "text": "New\n"}, ed), 200, "making sec/new.tex")
@@ -198,7 +198,7 @@ def request_checks():
             if restarted.added != {"figures/renamed.png", "figures/c.png"}:
                 fail(f"the files added, as a restart reads them back: {restarted.added}")
         finally:
-            config.SHARED, editor.paused, editor.UPLOAD_TOTAL, editor.UPLOAD_RATE, editor.ASSETS_LIMIT = saved
+            config.SHARED, config.STATE, editor.paused, editor.UPLOAD_TOTAL, editor.UPLOAD_RATE, editor.ASSETS_LIMIT = saved
     ok("the Files tab's requests: a source made, never uploaded; the main file kept; the limits on uploads (a coauthor's"
        " bytes a day, not the owner's); a coauthor's figures are the document's; the files added listed and kept for a"
        " restart; every change remembered for its commit")

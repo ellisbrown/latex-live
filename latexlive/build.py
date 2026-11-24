@@ -14,6 +14,7 @@ from . import config
 from .files import clean_file, job_file, mtime, read_json
 from .instances import record_port, take_lock
 from .latex import root_docs
+from .sources import load_added
 from .standby import stop_standbys
 
 
@@ -40,6 +41,7 @@ def set_doc(server, doc):
     if old and old != doc:  # (its viewers' hub URLs still name it: HubServer.find)
         server.was = [d for d in getattr(server, "was", []) if d != doc] + [old]
     server.default_pdf = f"{doc}.pdf"
+    load_added(server)
     server.bases, server.base_checked = {"head": {}, "push": {}}, {"head": 0, "push": 0}
     if server.diff.get("state") != "running":
         server.diff = {}
