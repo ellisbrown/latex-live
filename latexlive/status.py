@@ -105,21 +105,24 @@ def presence_request(server, req, user):
     if not isinstance(tab, str) or not PAGE_ID_RE.fullmatch(tab):
         return 400, {"error": "expected tab: the page's name"}
     uid, now = user["id"] or "owner", time.monotonic()
+    key = (uid, tab)
+    if req.get("leave") is True:
+        with server.presence_lock:
+            server.presence.pop(key, None)
+        return 200, {}
     shown = req.get("open")
     shown = shown if isinstance(shown, str) and shown in editable_files(server, fresh=False) else None
     line = req.get("line")
     line = min(max(line, 1), PRESENCE_LINE) if shown and type(line) is int else None
     name = (user["name"] or owner_name(server))[:80]  # (as the users file gives it; the owner's, as coauthors see it)
-    key = (uid, tab)
     with server.presence_lock:
         table = server.presence
         for gone in [k for k, entry in table.items() if now - entry["seen"] > PRESENCE_TTL]:
             del table[gone]
-        if req.get("leave") is True:
-            table.pop(key, None)
-            return 200, {}
-        if key not in table and (sum(k[0] == uid for k in table) >= PRESENCE_TABS or len(table) >= PRESENCE_LIMIT):
+        if key not in table and sum(k[0] == uid for k in table) >= PRESENCE_TABS:
             return 429, {"error": f"at most {PRESENCE_TABS} pages of each user are listed"}
+        if key not in table and len(table) >= PRESENCE_LIMIT:
+            return 429, {"error": f"{PRESENCE_LIMIT} pages are listed already, the most there can be"}
         table[key] = {"uid": uid, "user": presence_key(uid), "tab": presence_key(uid, tab), "name": name, "file": shown,
                       "line": line, "seen": now}
         return 200, {"tab": table[key]["tab"]}

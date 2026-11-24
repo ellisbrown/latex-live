@@ -9,10 +9,11 @@ import { addEditorExtension } from "./cm.js";
 import { cmView, ed, setTabPeers } from "./editor.js";
 
 // This page tells live.py where it is when its file or line changes (once that has held for a tick, TICK ms) and every
-// HEARTBEAT ms besides, while it is shown; live.py lists a page until it has been quiet for 30 s. A pop-out window or a
-// comparison is part of another page, and says nothing.
+// HEARTBEAT ms besides (moving or not), while it is shown; live.py lists a page until it has been quiet for 30 s. A
+// pop-out window or a comparison is part of another page, and says nothing. Until live.py first answers (told), this
+// page doesn't know its own key in the list (ownTab), so the list shows none of the user's own pages yet.
 const TICK = 500, HEARTBEAT = 12000;
-let started = false, listed = false, sending = false, sentAt = 0, sentKey = "", seenKey = "", ownTab = "";
+let started = false, listed = false, sending = false, told = false, sentAt = 0, sentKey = "", seenKey = "", ownTab = "";
 
 const PALETTE = ["#2563eb", "#0d9488", "#d97706", "#7c3aed", "#db2777", "#16a34a", "#0284c7", "#dc2626"];
 export function peerColor(key) {
@@ -31,21 +32,22 @@ async function tell(where, key) {
   try {
     const r = await postJSON("presence", { tab: EDITOR_ID, ...where });
     const body = r.ok ? await r.json() : null;
-    if (typeof body?.tab === "string" && body.tab !== ownTab) {
-      ownTab = body.tab;
-      render(true);
-    }
+    if (typeof body?.tab === "string") ownTab = body.tab;
   } catch {} // (the next heartbeat tries again)
   sending = false;
+  told = true;
+  render();
 }
 function tick() {
   if (document.hidden || sending || !listed) return;
   const where = here(), key = JSON.stringify(where);
-  if (key !== sentKey && key !== seenKey) return void (seenKey = key); // (still moving: wait for it to settle)
+  const due = Date.now() - sentAt > HEARTBEAT;
+  if (key !== sentKey && key !== seenKey && !due) return void (seenKey = key); // (still moving: wait for it to settle)
   seenKey = key;
-  if (key !== sentKey || Date.now() - sentAt > HEARTBEAT) tell(where, key);
+  if (key !== sentKey || due) tell(where, key);
 }
-function leave() {
+function leave() { // (only once, and only while this page says where it is)
+  if (!listed || !sentAt) return;
   sentAt = 0;
   postJSON("presence", { tab: EDITOR_ID, leave: true }, true).catch(() => {});
 }
@@ -70,15 +72,16 @@ export function showPresence(next) {
   if (!listed && !started) return;
   if (!started) start();
   list = listed ? next : []; // (none: the role no longer sees it)
-  render(false);
+  render();
 }
-function render(force) {
-  const key = JSON.stringify(list.filter((p) => p.tab !== ownTab)); // (this page's own moves change nothing shown)
-  if (key === shownKey && !force) return;
+function render() {
+  const others = list.filter((p) => p.tab !== ownTab && (told || !p.you)); // (this page's own moves change nothing shown)
+  const key = JSON.stringify(others);
+  if (key === shownKey) return;
   shownKey = key;
   byFile = {};
-  for (const p of list) {
-    if (p.tab === ownTab || !p.file) continue;
+  for (const p of others) {
+    if (!p.file) continue;
     const peer = { user: p.user, name: p.you ? "You (another page)" : p.name, line: p.line, color: peerColor(p.user), you: !!p.you };
     if (!(byFile[p.file] ||= []).some((q) => q.user === peer.user && q.line === peer.line)) byFile[p.file].push(peer);
   }
@@ -97,8 +100,8 @@ export function onPresence(fn) {
 
 // The avatars: one for each other user with the paper open, with their name and where they are.
 const initials = (name) => {
-  const words = String(name || "?").trim().split(/\s+/);
-  return (words.length > 1 ? words[0][0] + words.at(-1)[0] : words[0].slice(0, 2)).toUpperCase();
+  const words = (String(name || "").trim() || "?").split(/\s+/).map((w) => [...w]); // (by code point: an emoji is one)
+  return (words.length > 1 ? words[0][0] + words.at(-1)[0] : words[0].slice(0, 2).join("")).toUpperCase();
 };
 function showAvatars() {
   const users = new Map();
