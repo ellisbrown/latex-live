@@ -68,7 +68,7 @@ python3 ~/.local/share/latex-live/live.py --no-open
 ```
 
 It builds the root `.tex` file (one with a `\documentclass`) whose sources
-were edited last; the viewer's toolbar switches to another. To start with a
+were edited last; the viewer's top bar switches to another. To start with a
 given one, name it, e.g. `live.py main --no-open`. Without `--no-open`, it also
 opens the PDF in a VS Code editor tab.
 

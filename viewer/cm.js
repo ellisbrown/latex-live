@@ -1,6 +1,8 @@
 // CodeMirror, for the source pane: loaded on first use, with the pane's theme, highlighting, keys, and completion of
 // labels in \ref and keys in \cite.
 
+import { onThemeChange, theme as currentTheme } from "./theme.js";
+
 export let CM = null, cmLoading = null, cmExtensions = null; // CodeMirror, once loaded (loadEditor)
 
 // (save and edited: what Cmd/Ctrl+S and every change to the text call, saveSource and sourceEdited)
@@ -11,40 +13,16 @@ export function loadEditor({ save, edited }) {
       import("@codemirror/search"), import("@codemirror/autocomplete"), import("@codemirror/legacy-modes/mode/stex"),
       import("@lezer/highlight")]);
     const { EditorView } = view;
-    const theme = EditorView.theme({ // (dark, as the rest of the chrome: panels #2a2d2f, bars #323639)
-      "&": { height: "100%", color: "#ddd", backgroundColor: "#2a2d2f", fontSize: "12.5px" },
-      ".cm-scroller": { fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", lineHeight: "1.5" },
-      ".cm-content": { caretColor: "#fff" },
-      ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#fff" },
-      "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection":
-        { backgroundColor: "#2f5f8f99" },
-      ".cm-gutters": { color: "#6e7478", backgroundColor: "#26292b", border: "none", borderRight: "1px solid #33373a" },
-      ".cm-activeLine": { backgroundColor: "#ffffff0a" },
-      ".cm-activeLineGutter": { color: "#bbb", backgroundColor: "#ffffff0d" },
-      "&.cm-focused .cm-matchingBracket": { backgroundColor: "#4a4f52", outline: "1px solid #888" },
-      "&.cm-focused .cm-nonmatchingBracket": { backgroundColor: "#6a2424" },
-      ".cm-panels": { color: "#eee", backgroundColor: "#323639" },
-      ".cm-panels.cm-panels-top": { borderBottom: "1px solid #1d1f20" },
-      ".cm-textfield": { color: "#eee", backgroundColor: "#202124", border: "1px solid #555", borderRadius: "3px" },
-      ".cm-button": { color: "#eee", backgroundImage: "none", backgroundColor: "#4a4f52", border: "0", borderRadius: "3px" },
-      ".cm-searchMatch": { backgroundColor: "#e0a04033", outline: "1px solid #e0a04099" },
-      ".cm-searchMatch.cm-searchMatch-selected": { backgroundColor: "#e0a04080" },
-      ".cm-tooltip": { color: "#ddd", backgroundColor: "#2a2d2f", border: "1px solid #444" },
-      ".cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]": { color: "#fff", backgroundColor: "#2f5f8f" },
-      ".cm-completionDetail": { color: "#9aa3a7", marginLeft: "1em" },
-      ".cm-remote": { backgroundColor: "#2f6fb033" }, // (lines someone else just changed: flashLines)
-    }, { dark: true });
-    const colors = language.HighlightStyle.define([ // (the token kinds of CodeMirror's stex mode)
-      { tag: t.comment, color: "#9aa3a7", fontStyle: "italic" },
-      { tag: t.tagName, color: "#79b8ff" },                 // \commands
-      { tag: t.keyword, color: "#f0a35e" },                 // $, \[, \( (math)
-      { tag: t.atom, color: "#c5a5ff" },                    // environment names, labels, citation keys
-      { tag: [t.number, t.string], color: "#b5cea8" },
-      { tag: t.special(t.variableName), color: "#e5c07b" }, // letters in math
-      { tag: t.standard(t.variableName), color: "#56b6c2" },
-      { tag: t.bracket, color: "#9aa0a6" },
-      { tag: t.invalid, color: "#ff7b72" },
-    ]);
+    // The look follows the viewer's theme, in the editors open now and in those made later (a file opened anew).
+    const look = new state.Compartment(), lookOf = (dark) => editorLook(EditorView, language, t, dark);
+    const shown = new Set(), views = view.ViewPlugin.define((v) => (shown.add(v), { destroy: () => shown.delete(v) }));
+    let shownLook = look.of(lookOf(currentTheme === "dark"));
+    onThemeChange(({ theme }) => {
+      const next = lookOf(theme === "dark"), was = shownLook;
+      shownLook = look.of(next);
+      cmExtensions = cmExtensions.map((x) => (x === was ? shownLook : x));
+      for (const v of shown) v.dispatch({ effects: look.reconfigure(next) });
+    });
     // Lines someone else just changed, highlighted for a moment (flashLines sets them, or none).
     const flashLines = state.StateEffect.define();
     const flashed = state.StateField.define({
@@ -57,8 +35,8 @@ export function loadEditor({ save, edited }) {
       view.lineNumbers(), view.highlightActiveLineGutter(), view.highlightSpecialChars(), view.drawSelection(),
       view.highlightActiveLine(), commands.history(), language.bracketMatching(), autocomplete.closeBrackets(),
       autocomplete.autocompletion({ override: [completeRefs], icons: false }),
-      search.search({ top: true }), language.StreamLanguage.define(stex), language.syntaxHighlighting(colors),
-      EditorView.lineWrapping, EditorView.contentAttributes.of({ spellcheck: "true" }), theme, flashed,
+      search.search({ top: true }), language.StreamLanguage.define(stex), shownLook, views,
+      EditorView.lineWrapping, EditorView.contentAttributes.of({ spellcheck: "true" }), flashed,
       view.keymap.of([{ key: "Mod-s", run: () => { save(); return true; }, preventDefault: true },
                       ...autocomplete.closeBracketsKeymap, ...autocomplete.completionKeymap, ...commands.defaultKeymap,
                       ...search.searchKeymap, ...commands.historyKeymap, commands.indentWithTab]),
@@ -68,6 +46,50 @@ export function loadEditor({ save, edited }) {
            Decoration: view.Decoration, flashLines, remoteLine: view.Decoration.line({ class: "cm-remote" }) };
   })().catch((err) => { cmLoading = null; throw err; });
   return cmLoading;
+}
+
+// The editor's look in the light or dark theme: its chrome in the theme's colors (viewer.css), and the highlighting of
+// the token kinds of CodeMirror's stex mode.
+function editorLook(EditorView, language, t, dark) {
+  const blue = (alpha) => (dark ? `rgba(96, 165, 250, ${alpha + 0.1})` : `rgba(37, 99, 235, ${alpha})`);
+  const ui = EditorView.theme({
+    "&": { height: "100%", color: "var(--ink)", backgroundColor: "var(--bg-surface)", fontSize: "13.5px" },
+    ".cm-scroller": { fontFamily: "var(--font-mono)", lineHeight: "1.65" },
+    ".cm-content": { caretColor: "var(--ink)", padding: "8px 12px 40px 4px" },
+    ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--accent)", borderLeftWidth: "2px" },
+    "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection":
+      { backgroundColor: blue(0.18) },
+    ".cm-gutters": { color: "var(--ink-3)", backgroundColor: "var(--bg-surface)", border: "none", padding: "0 4px" },
+    ".cm-lineNumbers .cm-gutterElement": { minWidth: "34px", fontSize: "11.5px", paddingRight: "8px" },
+    ".cm-activeLine": { backgroundColor: dark ? "rgba(255, 255, 255, 0.035)" : "rgba(24, 24, 27, 0.03)" },
+    ".cm-activeLineGutter": { color: "var(--ink)", backgroundColor: "transparent", fontWeight: "600" },
+    "&.cm-focused .cm-matchingBracket": { backgroundColor: blue(0.15), outline: "1px solid var(--accent)", borderRadius: "2px" },
+    "&.cm-focused .cm-nonmatchingBracket": { backgroundColor: "var(--err-bg)", outline: "1px solid var(--err)" },
+    ".cm-panels": { color: "var(--ink)", backgroundColor: "var(--bg-panel)" },
+    ".cm-panels.cm-panels-top": { borderBottom: "1px solid var(--border)" },
+    ".cm-search": { padding: "6px 10px", fontSize: "12.5px", fontFamily: "var(--font-ui)" },
+    ".cm-textfield": { color: "var(--ink)", backgroundColor: "var(--bg-input)", border: "1px solid var(--border-strong)",
+                       borderRadius: "5px", padding: "3px 7px" },
+    ".cm-button": { color: "var(--ink)", backgroundImage: "none", backgroundColor: "var(--bg-surface-2)",
+                    border: "1px solid var(--border)", borderRadius: "5px", padding: "3px 8px", cursor: "pointer" },
+    ".cm-searchMatch": { backgroundColor: "var(--warn-bg)", outline: "1px solid var(--warn-border)", borderRadius: "2px" },
+    ".cm-searchMatch.cm-searchMatch-selected": { backgroundColor: "rgba(217, 119, 6, 0.35)" },
+    ".cm-tooltip": { color: "var(--ink)", backgroundColor: "var(--bg-surface)", border: "1px solid var(--border-strong)",
+                     borderRadius: "8px", boxShadow: "var(--shadow-pop)", fontFamily: "var(--font-ui)", fontSize: "12.5px" },
+    ".cm-tooltip.cm-tooltip-autocomplete > ul": { padding: "4px", maxHeight: "240px" },
+    ".cm-tooltip.cm-tooltip-autocomplete > ul > li": { padding: "4px 8px", borderRadius: "5px" },
+    ".cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]": { color: "var(--ink)", backgroundColor: "var(--accent-soft)" },
+    ".cm-completionDetail": { color: "var(--ink-3)", marginLeft: "1em", fontSize: "11.5px" },
+    ".cm-remote": { backgroundColor: "var(--accent-soft)" }, // (lines someone else just changed: flashLines)
+  }, { dark });
+  // [comment, \commands, $ \[ \( (math), environment names, labels and citation keys, numbers and strings, letters in
+  // math, other names, brackets, errors]
+  const palette = dark ? ["#7c8491", "#7dd3fc", "#fbbf24", "#c4b5fd", "#86efac", "#fcd34d", "#67e8f9", "#94a3b8", "#f87171"]
+                       : ["#71717a", "#7c3f00", "#b45309", "#6d28d9", "#15803d", "#9a3412", "#0e7490", "#64748b", "#dc2626"];
+  const kinds = [t.comment, t.tagName, t.keyword, t.atom, [t.number, t.string], t.special(t.variableName),
+                 t.standard(t.variableName), t.bracket, t.invalid];
+  const colors = language.HighlightStyle.define(kinds.map((tag, i) => ({ tag, color: palette[i], ...(i ? {} : { fontStyle: "italic" }) })));
+  return [ui, language.syntaxHighlighting(colors)];
 }
 
 // Completion in the argument of \ref (and \eqref, \cref, \autoref…), from the labels of the paper's files and of the

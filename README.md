@@ -16,7 +16,8 @@ nothing beyond Python's standard library.
   in VS Code highlights the current line in the PDF.
 - Notes: a notes-free view with each note in a margin bubble, and notes
   written, replied to, resolved and edited from the viewer.
-- An editor in the browser, beside the PDF, that merges with changes saved elsewhere.
+- An editor in the browser, beside the PDF or alone (the PDF in a window of its own, for a second
+  screen), that merges with changes saved elsewhere. Light and dark themes.
 - Change highlights against the last push, commit or build, and latexdiff against any commit.
 - A page-limit badge, space hints, and pre-submission checks: anonymity,
   references, fonts, figure placement, what the arXiv source would expose, and more.
@@ -46,7 +47,7 @@ and troubleshooting.
 - [Setup](docs/setup.md): installing, the VS Code tasks, ports and the token,
   options and environment variables, updating, keeping the TeX image, and
   [troubleshooting](docs/setup.md#troubleshooting).
-- [The viewer](docs/viewer.md): the toolbar and ⋯ menu, notes and the
+- [The viewer](docs/viewer.md): the layout, the bars and ⋯ menus, notes and the
   notes-free view, the source pane, change highlights and comparing, downloads
   and the review copy, the sidebar, page limits and checks, and keyboard
   shortcuts.

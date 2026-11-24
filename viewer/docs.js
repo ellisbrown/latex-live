@@ -1,6 +1,6 @@
 // The document menu.
 
-import { $, docFile, el, hubBase, isDiff, setStatus } from "./page.js";
+import { $, docFile, el, hubBase, isDiff, isPopout, setStatus } from "./page.js";
 import { postJSON } from "./net.js";
 import { me } from "./role.js";
 import { ed, flushSource } from "./editor.js";
@@ -19,7 +19,7 @@ export async function openDoc(pdf) {
   }
   setTimeout(() => (leaving = false), 30000); // (should the page stay anyway)
   const dir = hubBase ? `${hubBase}${encodeURIComponent(pdf.slice(0, -4))}/` : ""; // (under the hub, the document's own path)
-  location.href = `${dir}viewer.html?${new URLSearchParams({ file: pdf })}`;
+  location.href = `${dir}viewer.html?${new URLSearchParams({ file: pdf, ...(isPopout ? { mode: "pdf" } : {}) })}`; // (a pop-out stays one)
 }
 // The document menu: this paper's root files (switching what this instance builds), the other
 // papers that latex-live instances on this machine preview (their viewers: through the hub, else

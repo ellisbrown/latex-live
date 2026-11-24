@@ -88,7 +88,7 @@ export async function loadAuthors() {
     pick.hidden = !canComment();
     return;
   }
-  pick.replaceChildren(el("option", { value: "", textContent: "💬 Comment as…" }),
-                       ...authors.map((a) => el("option", { value: a.macro, textContent: `💬 ${a.author}`, selected: a.macro === who })));
+  pick.replaceChildren(el("option", { value: "", textContent: "Comment as…" }),
+                       ...authors.map((a) => el("option", { value: a.macro, textContent: `As ${a.author}`, selected: a.macro === who })));
   pick.hidden = isDiff || !authors.length;
 }
