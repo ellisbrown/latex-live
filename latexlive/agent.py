@@ -62,7 +62,7 @@ def run_plugin(cmd, request, timeout=None):
     fills while another waits; stdout past OUTPUT_LIMIT stops the plugin, and of stderr only the last
     STDERR_KEPT bytes are kept. At the timeout, or when it exits, its process group is killed: nothing it
     started outlives it."""
-    timeout = timeout or config.AGENT_TIMEOUT
+    timeout = config.AGENT_TIMEOUT if timeout is None else timeout
     try:
         argv = shlex.split(cmd)
     except ValueError as e:
@@ -120,22 +120,27 @@ def run_plugin(cmd, request, timeout=None):
                 proc.wait(2)
             except subprocess.TimeoutExpired:
                 pass
-        with state["lock"]:  # (what it left running, which may hold its pipes open)
-            kill_group(proc.pid, signal.SIGKILL)
-            state["finished"] = True
-        proc.wait()
-        end = time.monotonic() + 2
-        for t in threads:
-            t.join(max(0, end - time.monotonic()))
-        for pipe, reader in ((proc.stdout, threads[1]), (proc.stderr, threads[2])):
-            if not reader.is_alive():  # (else something that left its process group holds it: the reader keeps it)
-                pipe.close()
+        finally:
+            # What it left running, which may hold its pipes open. (Its group's id is free for another process only
+            # once none of the group is left, and pids are handed out in turn, so this signals nothing else.)
+            with state["lock"]:
+                kill_group(proc.pid, signal.SIGKILL)
+                state["finished"] = True
+            proc.wait()
+            end = time.monotonic() + 2
+            for t in threads:
+                t.join(max(0, end - time.monotonic()))
+            for pipe, reader in ((proc.stdout, threads[1]), (proc.stderr, threads[2])):
+                if not reader.is_alive():  # (else something that left its process group holds it: the reader keeps it)
+                    pipe.close()
+    if threads[1].is_alive():  # (its output is not complete, and still being read)
+        return "the plugin left a process running that holds its output open", None
     if timed_out:
         return f"the plugin did not answer within {timeout} s", None
     if over.is_set():
         return f"the plugin printed more than {OUTPUT_LIMIT >> 10} KB", None
     if proc.returncode:
-        lines = err.decode("utf-8", "replace").strip().splitlines()
+        lines = bytes(err).decode("utf-8", "replace").strip().splitlines()
         return f"the plugin exited with {proc.returncode}" + (f": {lines[-1][:300]}" if lines else ""), None
     return answer(bytes(out))
 
@@ -150,7 +155,7 @@ def answer(out):
     if not isinstance(got, dict):
         return "the plugin did not print one JSON object", None
     if isinstance(got.get("error"), str) and got["error"].strip():
-        return f"the plugin says: {got['error'].strip()[:300]}", None
+        return f"the plugin says: {got['error'].replace(chr(0), '').strip()[:300]}", None
     replacement, rationale = got.get("replacement"), got.get("rationale")
     if not isinstance(replacement, str):
         return "the plugin's answer has no replacement (a string)", None

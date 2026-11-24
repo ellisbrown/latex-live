@@ -29,6 +29,9 @@ PLUGINS = {
                "open(os.path.join(sys.argv[1], 'pids'), 'w').write(f'{os.getpid()} {child.pid}')\ntime.sleep(60)\n",
     "leaves": "import json, os, subprocess, sys\nsys.stdin.read()\nchild = subprocess.Popen(['sleep', '60'], stdout=sys.stdout)\n"
               "open(os.path.join(sys.argv[1], 'pids'), 'w').write(str(child.pid))\nprint(json.dumps({'replacement': 'x'}))\n",
+    "escapes": "import json, os, subprocess, sys\nsys.stdin.read()\nchild = subprocess.Popen(['sleep', '60'], stdout=sys.stdout,"
+               " start_new_session=True)\nopen(os.path.join(sys.argv[1], 'pids'), 'w').write(str(child.pid))\n"
+               "print(json.dumps({'replacement': 'x'}))\n",
     "floods": "import sys, time\nsys.stdout.write('x' * (1 << 20))\nsys.stdout.flush()\ntime.sleep(60)\n",
     "deaf": "import json\nprint(json.dumps({'replacement': 'deaf'}))\n",
     "noisy": "import json, sys\nsys.stdin.read()\nsys.stderr.write('e' * (1 << 20))\nprint(json.dumps({'replacement': 'ok'}))\n",
@@ -107,10 +110,10 @@ def stop_checks(agent, cmd, tmp):
     """A plugin that runs past the timeout, or prints too much, is stopped with what it started; what an answered one
     left running too; big input and stderr stall nothing."""
     started = time.monotonic()
-    error, _ = agent.run_plugin(cmd("sleeper", tmp), REQUEST, timeout=1)
+    error, _ = agent.run_plugin(cmd("sleeper", tmp), REQUEST, timeout=3)  # (time to start and write its pids, if slow)
     took = time.monotonic() - started
     pids = [int(p) for p in open(os.path.join(tmp, "pids")).read().split()]
-    if error != "the plugin did not answer within 1 s" or took > 5:
+    if error != "the plugin did not answer within 3 s" or took > 8:
         fail(f"a plugin past its timeout: {error!r} after {took:.1f} s")
     wait_for("the timed-out plugin and its child to be gone", lambda: all(gone(p) for p in pids), timeout=5)
     os.remove(os.path.join(tmp, "pids"))
@@ -119,6 +122,10 @@ def stop_checks(agent, cmd, tmp):
     if error or result["replacement"] != "x":
         fail(f"a plugin that answers and leaves a child running (on its stdout): {error!r} {result}")
     wait_for("the child a plugin left running to be gone", lambda: gone(child), timeout=5)
+    error, result = agent.run_plugin(cmd("escapes", tmp), REQUEST, timeout=20)  # (a child in a session of its own)
+    os.kill(int(open(os.path.join(tmp, "pids")).read()), 9)
+    if result is not None or error != "the plugin left a process running that holds its output open":
+        fail(f"a plugin whose child left its process group, holding its stdout: {error!r} {result}")
     started = time.monotonic()
     error, _ = agent.run_plugin(cmd("floods"), REQUEST, timeout=20)
     if error != f"the plugin printed more than {agent.OUTPUT_LIMIT >> 10} KB" or time.monotonic() - started > 5:
@@ -130,7 +137,8 @@ def stop_checks(agent, cmd, tmp):
         if error or result["replacement"] != want or time.monotonic() - started > 5:
             fail(f"the {name} plugin on a big request: {error!r} {result} after {time.monotonic() - started:.1f} s")
     ok("an agent plugin past its timeout is stopped with the processes it started, and so is what an answered one left"
-       " running; one that prints too much is stopped at once; a big request to a plugin that reads none, and 1 MB of"
+       " running (one that left the group holding the output fails the answer); one that prints too much is stopped at"
+       " once; a big request to a plugin that reads none, and 1 MB of"
        " stderr, stall nothing")
 
 

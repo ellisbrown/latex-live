@@ -150,7 +150,10 @@ function cardElement(v) {
   const button = (text, onclick, cls = "") => el("button", { textContent: text, className: cls, onclick });
   const noteBox = (placeholder) => el("input", { className: "cm-agent-note", value: v.note || "", placeholder, maxLength: NOTE_LIMIT,
                                                  spellcheck: false, title: "A note for the agent" });
-  const again = (box) => ask({ from: v.from, to: v.to }, box.value.trim());
+  const again = (box) => { // (the text where it is now: the card's own value is from when it was drawn)
+    const now = card();
+    if (now) ask({ from: now.from, to: now.to }, box.value.trim());
+  };
   const parts = [el("div", { className: "cm-agent-head", textContent: { note: "Polish with the agent", loading: "Asking the agent…",
                                                                          error: "The agent's revision", result: "The agent's revision" }[v.kind] })];
   let box = null;
@@ -175,7 +178,7 @@ function cardElement(v) {
   const node = el("div", { className: "cm-agent-card" }, ...parts);
   node.addEventListener("keydown", (e) => { // (the editor ignores keys typed here)
     if (e.key === "Escape") { e.preventDefault(); dismiss(); }
-    else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); accept(); }
+    else if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && v.kind === "result") { e.preventDefault(); accept(); }
     else if (e.key === "Enter" && e.target === box) { e.preventDefault(); again(box); }
     else return;
     e.stopPropagation();
