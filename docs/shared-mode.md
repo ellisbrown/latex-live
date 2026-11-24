@@ -493,6 +493,9 @@ instance treats the paper and everything TeX writes as theirs.
   limit; what they answer goes into the `.bib` file as plain text. Without the
   setting, the Refs tab still lists, counts and inserts citations and adds
   pasted BibTeX.
+- **Agent plugins.** A shared instance never runs an [agent
+  plugin](agent-plugins.md), whatever `LATEX_LIVE_AGENT_CMD` says, not even for
+  the owner.
 - **Links and tokens.** Anyone with a personal link is that person: send links
   privately, and delete a token to end that access. The instance's owner token
   (in `$LATEX_LIVE_STATE`) opens everything: keep it to yourself; if others can

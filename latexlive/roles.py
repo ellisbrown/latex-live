@@ -7,7 +7,8 @@ from .auth import ROLES
 
 def least_role(method, path):
     """The least role that may make a request in shared mode, or None for what no one may there (switch:
-    a shared preview serves one document); whatever is not listed is the owner's (open, instances,
+    a shared preview serves one document; agent/revise: the agent hook runs a program of the owner's on this
+    machine, which shared mode never does); whatever is not listed is the owner's (open, instances,
     papers, commit, and the arXiv package, which holds every source file the build reads: arxiv).
     Downloading the paper without its notes (export) or with its notes in the margin (review) is
     reading it: each builds at most once per build of the document (start_export,
@@ -22,6 +23,8 @@ def least_role(method, path):
     uploading, renaming and removing files (file/create, file/upload, file/rename, file/delete). So is the History tab,
     whose commits name their authors and show earlier versions of the text (history, history/diff), and putting a
     source back as a commit left it (history/restore), which is an edit."""
+    if path == "/agent/revise":  # (in any method)
+        return None
     if method == "GET" and path.startswith(("/check/", "/logs/")):  # (the checks and the log quote the sources)
         return "editor"
     if method == "GET" and path.startswith(READ_PATHS + STATIC_DIRS):

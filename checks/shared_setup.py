@@ -13,7 +13,7 @@ import subprocess
 import sys
 
 from .base import ENV, HERE, SECRETS, SHARED_PORT, fail, ok, prints_token, wait_for
-from .helpers import editor_stub, git, git_out, make_state, put, read_json_file, start, stop, texlive_image, write_text
+from .helpers import agent_example, editor_stub, git, git_out, make_state, put, read_json_file, start, stop, texlive_image, write_text
 from .shared_helpers import (
     PROXY_HOST, PUBLIC, commit_user, expect, expect_dict, recorded, send, shared_status, with_token, write_users)
 
@@ -79,7 +79,7 @@ def shared_setup(tmp, sharing):
     sh["env"] = {**ENV, "LATEX_LIVE_STATE": state, "LATEX_LIVE_USERS": sh["users_file"], "LATEX_LIVE_IDENTITY_HEADER": "x-test-user",
                  "LATEX_LIVE_PROXY_HOST": PROXY_HOST, "LATEX_LIVE_PUBLIC_URL": PUBLIC, "LATEX_LIVE_COMMIT": "1",
                  "LATEX_LIVE_COMMIT_IDLE": "2", "LATEX_LIVE_PROTECTED": r"\\eb\{as written\}", "LATEX_LIVE_EDITOR": stub,
-                 "LATEX_LIVE_BUILD_LIMIT": "64",
+                 "LATEX_LIVE_BUILD_LIMIT": "64", "LATEX_LIVE_AGENT_CMD": agent_example(),  # (which shared mode never runs)
                  "PATH": host_tex + os.pathsep + ENV.get("PATH", os.defpath)}
     if sys.platform.startswith("linux"):  # (the server looks the peer's uid up in /proc/net)
         sh["env"]["LATEX_LIVE_PROXY_UID"] = str(os.getuid())

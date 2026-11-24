@@ -8,6 +8,7 @@ import re
 import urllib.parse
 
 from . import config
+from .agent import revise_request, enabled as agent_enabled
 from .arxiv import start_arxiv
 from .auth import owner_name
 from .baselines import baseline_request, start_diff
@@ -44,7 +45,8 @@ def me(server, user):
     request, the paper without its notes (export) and with its notes in the margin (review), which
     take the same role; arxiv: whether they may make and download the arXiv package (the owner's); logs: whether they
     may read the build's log (editors); history and restore: whether they may read the paper's git history and put a
-    source back as a commit left it (editors); signOut: whether the browser signed in with a token (POST logout forgets it),
+    source back as a commit left it (editors); agent: whether the source pane may ask the agent plugin to revise a selection
+    (the owner's, with LATEX_LIVE_AGENT_CMD set, never in shared mode); signOut: whether the browser signed in with a token (POST logout forgets it),
     not through the proxy."""
     defined = bool(user["macro"]) and user["macro"] in paper_note_kinds(server.paper_root, server.default_pdf)
     can = lambda path: allowed(user, "POST", path)
@@ -55,12 +57,12 @@ def me(server, user):
                     "openHost": can("/open") and (not config.SHARED or editor_cli() is not None),
                     "download": can("/export") and can("/review"), "arxiv": can("/arxiv"), "checks": allowed(user, "GET", "/check/"),
                     "logs": allowed(user, "GET", "/logs/"), "history": allowed(user, "GET", "/history"),
-                    "restore": can("/history/restore"),
+                    "restore": can("/history/restore"), "agent": agent_enabled() and user["role"] == "owner",
                     "signOut": user["via"] != "proxy"}}
 
 
 STATIC = {"/viewer.html"}  # plus the files in the folders of STATIC_DIRS (static_file)
-ACTIONS = ("/open", "/diff", "/switch", "/export", "/review", "/arxiv")  # (POST only: a GET of one is answered 405)
+ACTIONS = ("/open", "/diff", "/switch", "/export", "/review", "/arxiv", "/agent/revise")  # (POST only: a GET of one is answered 405)
 ASSET_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'none'"  # (a figure opened alone runs nothing)
 
 
@@ -89,8 +91,8 @@ class Handler(BaseHandler):
         if not allowed(user, method, path):
             before and before()
             need = least_role(method, path)
-            self.send_json(403, {"error": "a shared preview serves one document" if need is None
-                                 else f"this takes the {need} role here (yours is {user['role']})"})
+            self.send_json(403, {"error": f"this takes the {need} role here (yours is {user['role']})" if need
+                                 else "a shared preview serves one document" if path == "/switch" else "not in shared mode"})
             return False
         if user["role"] == "owner":
             return True
@@ -226,7 +228,7 @@ class Handler(BaseHandler):
 
     def do_POST(self):
         """Actions (POST /note, /file, the Files tab's /file/create, /file/upload, /file/rename and /file/delete, the History
-        tab's /history/restore, /rebuild, /switch, /diff, /open, /commit, /logout, /presence), and the builds made on
+        tab's /history/restore, the source pane's /agent/revise, /rebuild, /switch, /diff, /open, /commit, /logout, /presence), and the builds made on
         request (POST /export, /review, /arxiv, and in shared mode /baseline). Only with the session cookie, which
         SameSite=Strict keeps off other sites' requests, a JSON body, which other sites can't send without asking
         first, and from the viewer's own page (origin_allowed), as the role allows; both are checked before the body
@@ -292,6 +294,8 @@ class Handler(BaseHandler):
             self.send_json(*add_request(self.server, req, self.principal))
         elif path == "/bib/verify":
             self.send_json(*start_verify(self.server))
+        elif path == "/agent/revise":
+            self.send_json(*(revise_request(req) if isinstance(req, dict) else (400, {"error": "expected a JSON object"})))
         elif path == "/presence" and isinstance(req, dict):
             self.send_json(*presence_request(self.server, req, self.principal))
         elif path == "/logout":

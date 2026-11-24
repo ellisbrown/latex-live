@@ -21,9 +21,10 @@ from .files import open_output
 from .instances import is_live_instance
 
 
-# Bytes of a POST body: the browser editor saves whole files, and the Files tab uploads a figure of up to 10 MB
-# (sources.ASSET_SIZE) as base64.
-POST_LIMIT, POST_LIMITS = 100_000, {"/file": 8_000_000, "/file/upload": 14_000_000}
+# Bytes of a POST body: the browser editor saves whole files, the Files tab uploads a figure of up to 10 MB
+# (sources.ASSET_SIZE) as base64, and the agent hook takes a selection and its paragraph (agent.PARAGRAPH_LIMIT
+# characters, up to 4 bytes each in UTF-8).
+POST_LIMIT, POST_LIMITS = 100_000, {"/file": 8_000_000, "/file/upload": 14_000_000, "/agent/revise": 256_000}
 
 
 def content_length(headers, limit):

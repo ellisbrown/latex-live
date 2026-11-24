@@ -198,6 +198,10 @@ comments.
   the other one whole.
 - A file that changes on disk reloads in place. Edits that could not be saved
   yet stay in the browser and are offered back when you open the file again.
+- With an [agent plugin](agent-plugins.md) set up, "Polish with the agent" in
+  the palette proposes a revision of the selection (or of the paragraph at the
+  cursor), shown under it as a word diff to accept (Cmd/Ctrl+Enter) or reject
+  (Esc).
 
 ## Changes and comparing
 

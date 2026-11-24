@@ -2,7 +2,7 @@
 order unit_checks runs them: the review copy's layout and matching, shared mode's (shared_units), the downloads'
 bounds, failures and waits, the bibliography's SyncTeX lookups, tool timeouts, the warm standby's snapshot, the
 timing lines, the restart prompt, the static files the server sends, the bibliography (bib_units), the Files tab
-(files_units) and the History tab (history_units)."""
+(files_units), the History tab (history_units) and the agent hook (agent_units)."""
 
 import collections
 import glob
@@ -24,6 +24,7 @@ from .shared_units import baseline_failure_checks, confinement_checks, shared_bu
 from .bib_units import bib_checks
 from .files_units import files_checks
 from .history_units import history_checks
+from .agent_units import agent_checks
 
 
 def unit_checks():
@@ -32,7 +33,7 @@ def unit_checks():
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
                   code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, completion_checks, assets_checks, search_checks, logs_checks, presence_checks, word_column_checks, venue_checks, diff_retry_checks,
                   arxiv_strip_checks, graphics_synctex_checks, turned_page_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks,
-                  bib_checks, files_checks, history_checks):
+                  bib_checks, files_checks, history_checks, agent_checks):
         check()
 
 
