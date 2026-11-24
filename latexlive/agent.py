@@ -128,7 +128,7 @@ def run_plugin(cmd, request, timeout=None):
                 state["finished"] = True
             proc.wait()
             end = time.monotonic() + 2
-            for t in threads:
+            for t in threads[1:] + threads[:1]:  # (the readers first: a feed held up by an escaped child waits last)
                 t.join(max(0, end - time.monotonic()))
             for pipe, reader in ((proc.stdout, threads[1]), (proc.stderr, threads[2])):
                 if not reader.is_alive():  # (else something that left its process group holds it: the reader keeps it)
@@ -140,7 +140,7 @@ def run_plugin(cmd, request, timeout=None):
     if over.is_set():
         return f"the plugin printed more than {OUTPUT_LIMIT >> 10} KB", None
     if proc.returncode:
-        lines = bytes(err).decode("utf-8", "replace").strip().splitlines()
+        lines = [] if threads[2].is_alive() else bytes(err).decode("utf-8", "replace").strip().splitlines()
         return f"the plugin exited with {proc.returncode}" + (f": {lines[-1][:300]}" if lines else ""), None
     return answer(bytes(out))
 
@@ -154,8 +154,9 @@ def answer(out):
         return "the plugin did not print one JSON object", None
     if not isinstance(got, dict):
         return "the plugin did not print one JSON object", None
-    if isinstance(got.get("error"), str) and got["error"].strip():
-        return f"the plugin says: {got['error'].replace(chr(0), '').strip()[:300]}", None
+    error = got["error"].replace("\0", "").strip() if isinstance(got.get("error"), str) else ""
+    if error:
+        return f"the plugin says: {error[:300]}", None
     replacement, rationale = got.get("replacement"), got.get("rationale")
     if not isinstance(replacement, str):
         return "the plugin's answer has no replacement (a string)", None
