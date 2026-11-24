@@ -175,7 +175,8 @@ comments.
   environments, with their `\end`; and after a `\`, common commands (Tab goes
   to the next field).
 - Resting the pointer on a citation key, a reference or a figure shows a card:
-  the entry's title, or the line with the label, with a link to it.
+  the entry's title, the line with the label, with a link to it, or a preview of
+  the figure.
 - Headings and environments fold (the arrows beside the line numbers, or
   Ctrl+Shift+[ and ]; Cmd+Alt+[ and ] on a Mac). The rail at the right edge
   has a mark for each heading of the file; click one to go there.
@@ -277,6 +278,16 @@ the arXiv package, which holds every source file, is the owner's.
   published since. Looking up IDs and Check go online, to arXiv and Crossref
   (Check sends the cited entries' titles); a preview that doesn't allow that
   says so, and pasting BibTeX still works ([setup](setup.md#environment-variables)).
+- **Files** (editors): the paper's sources and figures, in folders that fold,
+  with a filter and a colored dot for each person who has a file open. Click a
+  source to open it in the source pane, or a figure to see it, with a button
+  that types its `\includegraphics` at the cursor. **+** makes a new `.tex`,
+  `.bib`, `.sty` or `.cls` file (in a folder, if you name one), and the upload
+  button adds a figure (PNG, JPEG, PDF, SVG, EPS, WebP or GIF, up to 10 MB); each
+  file renames, moves or goes from the buttons on its row. Nothing is ever
+  written over a file that is there, a rename keeps a source a source and a
+  figure a figure, and the main file stays. Names hold letters, digits, `-`,
+  `_`, `+` and dots, at most four folders deep.
 
 ## Page limit and space
 

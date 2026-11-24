@@ -18,7 +18,8 @@ def least_role(method, path):
     quotes the sources, and the baselines show earlier versions of the text, which only editors see (shared_pdfs,
     viewer_status). The bibliography is the editors' too (bib): it adds to the .bib files and, with
     LATEX_LIVE_LOOKUPS, asks arXiv and Crossref. So is who has the paper open, and which file and line
-    (presence): viewers and commenters neither say so nor see it."""
+    (presence): viewers and commenters neither say so nor see it. So is the Files tab: the figures (asset) and making,
+    uploading, renaming and removing files (file/create, file/upload, file/rename, file/delete)."""
     if method == "GET" and path.startswith(("/check/", "/logs/")):  # (the checks and the log quote the sources)
         return "editor"
     if method == "GET" and path.startswith(READ_PATHS + STATIC_DIRS):
@@ -27,12 +28,13 @@ def least_role(method, path):
         return {"/": "viewer", "/me": "viewer", "/docs": "viewer", "/forward": "viewer", "/synctex": "viewer",
                 "/viewer.html": "viewer", "/favicon.ico": "viewer", "/export": "viewer", "/review": "viewer", "/commits": "editor",
                 "/files": "editor", "/file": "editor", "/completions": "editor", "/search": "editor",
-                "/papers/index": "editor", "/bib/verify": "editor"}.get(path, "owner")
+                "/papers/index": "editor", "/bib/verify": "editor", "/asset": "editor"}.get(path, "owner")
     if path == "/switch":
         return None
     return {"/note": "commenter", "/rebuild": "editor", "/diff": "editor", "/file": "editor", "/export": "viewer",
             "/review": "viewer", "/baseline": "editor", "/logout": "viewer", "/bib/lookup": "editor", "/bib/add": "editor",
-            "/bib/verify": "editor", "/presence": "editor"}.get(path, "owner")
+            "/bib/verify": "editor", "/presence": "editor", "/file/create": "editor", "/file/upload": "editor",
+            "/file/rename": "editor", "/file/delete": "editor"}.get(path, "owner")
 
 
 def at_least(user, role):

@@ -238,7 +238,10 @@ def role_checks(sh):
                  ("GET", "/search?q=quokka", None), ("GET", "/logs/main.pdf", None), ("GET", "/papers/index", None),
                  ("GET", "/bib/verify", None), ("POST", "/bib/lookup", {"query": "@misc{x, title={X}}"}),
                  ("POST", "/bib/add", {"bibtex": "@misc{x, title={X}}"}), ("POST", "/bib/verify", {}),
-                 ("POST", "/presence", {"tab": "probe", "open": "body.tex", "line": 3}))
+                 ("POST", "/presence", {"tab": "probe", "open": "body.tex", "line": 3}),
+                 ("GET", "/asset?path=figures/x.png", None), ("POST", "/file/create", {"path": "role-probe.tex"}),
+                 ("POST", "/file/upload", {"path": "figures/role-probe.png", "data": "eA=="}),
+                 ("POST", "/file/rename", {"from": "body.tex", "to": "moved.tex"}), ("POST", "/file/delete", {"path": "body.tex"}))
     for uid in ("vw", "cm", "ed"):
         for method, path, body in owner_only + (() if uid == "ed" else editor_up):
             expect(via_proxy(uid, path, method, body), 403, f"{method} {path} for {sh['users'][uid]['role']} {uid}")

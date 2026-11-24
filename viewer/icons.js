@@ -26,6 +26,11 @@ const PATHS = {
   plus: "M8 3.2v9.6M3.2 8h9.6",
   edit: "M10.8 2.8 13.2 5.2 5.6 12.8H3.2v-2.4l7.6-7.6Z",
   log: "M3 3.5h10M3 6.5h10M3 9.5h7M3 12.5h5",
+  folder: "M2.5 4.5a1 1 0 0 1 1-1H6.2l1.2 1.4h5.1a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-7Z",
+  upload: "M8 10.5V3m-3 2.8L8 2.8l3 3M2.8 12.8h10.4",
+  trash: "M3.2 4.5h9.6M5.8 4.5V3.2h4.4v1.3M4.5 4.5l.6 8.3h5.8l.6-8.3",
+  chevronRight: "M6 3.8 10.2 8 6 12.2",
+  chevronDown: "M3.8 6 8 10.2 12.2 6",
 };
 
 // An icon as an <svg> element, size pixels square (decorative: the button it sits in has the label).

@@ -22,6 +22,7 @@ from .instances import instance_answers, instances, paper_id, record_port, runs_
 from .latex import paper_root_of, pick_doc, root_docs
 from .navigation import open_in_editor
 from .shared_build import start_shared_build
+from .sources import load_added
 from .shared_watch import watch_build_size
 from .status import code_updated
 from .timing import start_timing
@@ -64,6 +65,9 @@ def serve(paper_root, default_pdf, port, page_limit, hub_port=None):
     server.latexmk, server.lock, server.stopping, server.retried, server.no_build = None, None, False, -60, False
     server.requests = queue.Queue()  # document switches and rebuilds, for the main thread (on_main_thread)
     server.editable, server.assets = None, None  # (editable_files, project_assets)
+    server.added_file = os.path.join(config.STATE, "added", f"{server.paper_id}.json")  # (the Files tab's: remember_added)
+    load_added(server)
+    server.uploads = {}  # (upload_request: each user's uploads of the last day)
     server.versions, server.versions_lock = collections.OrderedDict(), threading.Lock()  # (remember_version)
     server.bib_verify, server.bib_lock = {}, threading.Lock()  # (the Refs panel's check: start_verify)
     server.presence, server.presence_lock = {}, threading.Lock()  # (who has the paper open: presence_request)

@@ -19,7 +19,8 @@ nothing beyond Python's standard library.
   written, replied to, resolved and edited from the viewer.
 - An editor in the browser, beside the PDF or alone (the PDF in a window of its own, for a second
   screen), that merges with changes saved elsewhere: tabs, folding, completion of labels, citations
-  and figures, search across files, and a Cmd/Ctrl+K palette. Light and dark themes.
+  and figures, search across files, a Files tab (new files, figure uploads, renames), and a Cmd/Ctrl+K palette.
+  Light and dark themes.
 - A bibliography panel: citation counts, one-click `\cite`, and adding entries by arXiv ID, DOI or BibTeX.
 - Change highlights against the last push, commit or build, and latexdiff against any commit.
 - A page-limit badge, space hints, and pre-submission checks: anonymity,

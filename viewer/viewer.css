@@ -466,6 +466,63 @@ body.pdf-invert .thumb canvas {
 }
 .refs-acts button { height: 22px; padding: 0 7px; font-size: 11px; background: var(--bg-surface-2); }
 
+/* The Files tab (files.js): a bar to filter, make and upload; the form for a name; the tree of sources and figures,
+   in folders, each file with its size, who has it open, and its actions on hover; a figure's preview. */
+.files button, .files input {
+  font: inherit; font-size: 12px; color: var(--ink); background: var(--bg-input);
+  border: 1px solid var(--border); border-radius: var(--radius-ctl);
+}
+.files button { background: var(--bg-surface); cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.files button:hover:not(:disabled) { background: var(--bg-hover); }
+.files button:disabled { opacity: 0.5; cursor: default; }
+.files button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+.files-bar { display: flex; gap: 5px; padding: 2px 10px 8px; border-bottom: 1px solid var(--hairline); }
+.files-bar input { flex: 1; min-width: 0; height: 27px; padding: 0 8px; }
+.files-bar button { flex: none; height: 27px; padding: 0 7px; }
+.files-form {
+  margin: 8px 10px; padding: 8px; border-radius: 8px; background: var(--bg-surface); border: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 6px; font-size: 12px;
+}
+.files-form[hidden] { display: none; }
+.files-form input { height: 27px; padding: 0 8px; font-family: var(--font-mono); font-size: 11.5px; }
+.files-row { display: flex; gap: 6px; justify-content: flex-end; }
+.files-row button { height: 25px; padding: 0 9px; }
+.files-note { font-size: 11.5px; color: var(--ink-3); line-height: 1.4; }
+.files-note.empty { padding: 10px; }
+.files-error { font-size: 11.5px; color: var(--err); }
+.files-error:empty { display: none; }
+.files-head {
+  display: flex; justify-content: space-between; padding: 8px 12px 3px; font-size: 10.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-3);
+}
+.files .files-folder {
+  display: flex; width: calc(100% - 8px); margin: 0 4px; height: 26px; padding: 0 8px; border: 0; border-radius: 5px;
+  background: none; color: var(--ink-2); font-size: 12.5px; text-align: left;
+}
+.files-folder span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-file {
+  display: flex; align-items: center; gap: 6px; height: 27px; margin: 1px 4px; padding: 0 6px 0 10px;
+  border-radius: 6px; cursor: pointer; font-size: 12.5px;
+}
+.files-file.nested { padding-left: 26px; }
+.files-file:hover { background: var(--bg-hover); }
+.files-file.on { background: var(--bg-active); font-weight: 600; }
+.files-file > svg { flex: none; color: var(--ink-3); }
+.files-file .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-file .size { flex: none; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.files-peer { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+.files-acts { display: none; gap: 2px; }
+.files-file:hover .files-acts, .files-file:focus-within .files-acts { display: inline-flex; }
+.files-file:hover .size, .files-file:focus-within .size { display: none; }
+.files .files-acts button { width: 22px; height: 22px; padding: 0; justify-content: center; border: 0; background: none; color: var(--ink-2); }
+.files .files-acts button:hover { background: var(--bg-active); color: var(--ink); }
+.files-preview { margin: 2px 10px 8px 26px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.files-preview button { height: 24px; padding: 0 8px; font-size: 11.5px; }
+.fig-thumb { font-size: 11.5px; color: var(--ink-3); }
+.fig-thumb img { display: block; max-width: 100%; max-height: 180px; background: #fff; border: 1px solid var(--border); border-radius: 4px; }
+.cm-hover-card .fig-thumb { margin-top: 6px; }
+.cm-hover-card .fig-thumb img { max-width: 240px; }
+
 /* The source pane (Split: beside the PDF; Source: alone): a header with the tabs of the files opened, the file picker,
    Show in PDF and ✕ over CodeMirror and the rail of the file's headings, and a status bar under it. */
 #editorPane { flex: none; width: var(--editor-w); background: var(--bg-surface); color: var(--ink); }

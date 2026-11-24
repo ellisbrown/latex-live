@@ -328,7 +328,10 @@ async function completeLatex(context, autocomplete) {
 }
 
 // The card for what the pointer rests on: a citation key (its title, and a link to its entry), a reference (where its
-// label is, the line around it, and a link there), or a figure (its file). open(path, line) follows a link.
+// label is, the line around it, and a link there), or a figure (its file, and a preview of it where another part of the
+// viewer gives one: setFigurePreview(fn), fn(path) an element). open(path, line) follows a link.
+let figurePreview = null;
+export function setFigurePreview(fn) { figurePreview = fn; }
 function hoverCards(view, open) {
   const card = (kind, ...rows) => {
     const dom = document.createElement("div");
@@ -384,8 +387,12 @@ function hoverCards(view, open) {
       if (!name) return null;
       const figures = (await completionData()).figures;
       const found = figures.find((f) => f === name) || figures.find((f) => f.replace(/\.[^./]+$/, "") === name);
-      return { pos: line.from + m.index, end: line.from + m.index + m[0].length, above: true,
-               create: () => card(`Figure · ${found || name}`, ["hc-meta", found ? "" : "No such figure in the paper"]) };
+      return { pos: line.from + m.index, end: line.from + m.index + m[0].length, above: true, create: () => {
+        const shown = card(`Figure · ${found || name}`, ["hc-meta", found ? "" : "No such figure in the paper"]);
+        const preview = found && figurePreview?.(found);
+        if (preview) shown.dom.append(preview);
+        return shown;
+      } };
     }
     return null;
   }, { hoverTime: 300 });
