@@ -24,7 +24,9 @@ does).
    Every server keeps to 64 connections at once. The Refs panel's bibliography lists the entries with their citation
    counts, adds entries through the editor's save (no key twice, braces paired, within 4 MB), turns what arXiv and
    Crossref answer (stand-ins: never online) into plain BibTeX, and looks up only with LATEX_LIVE_LOOKUPS (off in
-   shared mode by default), over https to those hosts (redirects too), two at once and spaced per host.
+   shared mode by default), over https to those hosts (redirects too), two at once and spaced per host. Who has the
+   paper open lists a page with a file only if the editor opens it, its line clamped, until it goes quiet or leaves,
+   at most 4 pages per user, under names and opaque keys; reading the list changes nothing.
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a git
    repository with a pushed commit and a local one) gets a live.py instance, with the hub on port
    44180, or below the ports that outgoing connections take where 44180 is among them (Linux: 28180), or the first
@@ -33,7 +35,8 @@ does).
    LATEX_LIVE_ALLOWED_HOSTS of its own):
    - the build publishes main.pdf, and the notes-free pass main-clean.pdf;
    - the hub redirects an old bookmark, needs the token or its cookie, and forwards every
-     endpoint (POST /rebuild and the build's log too, which says how long the build took); the hub and the previews refuse HEAD and bad or oversized POST
+     endpoint (POST /rebuild, the build's log, which says how long the build took, and POST /presence, which a
+     GET of /status never does); the hub and the previews refuse HEAD and bad or oversized POST
      bodies; SyncTeX finds a source line; /instances lists the instance;
    - /me reports the owner with every capability; the viewer's and the editor's modules and the
      viewer's style are served (as JavaScript, and CSS), the viewer's revalidated; SyncTeX answers
@@ -110,7 +113,8 @@ does).
      relative to it),
      the Origin rules for POSTs (a loopback one only on the instance's own port), POST body limits,
      non-owners pinned to the document, and the viewer's security headers; the Refs panel for editors, without
-     online lookups;
+     online lookups; who has the paper open for editors and the owner (names, files and lines, no ids or roles),
+     never for viewers or commenters;
    - sessions: a personal link's session cookie is new each time, never the token, and works only
      while its token does; sign-out is offered to those who came with a token and expires the cookie
      only from the viewer's page, and through the proxy there is nothing to forget; the instance's

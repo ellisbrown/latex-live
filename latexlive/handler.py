@@ -30,7 +30,7 @@ from .notes import margin_notes, note_authors, notes, paper_note_kinds, shown_no
 from .review import start_review
 from .roles import READ_PATHS, STATIC_DIRS, allowed, at_least, least_role, shared_pdfs, viewer_status
 from .shared_build import shared_rebuild_request
-from .status import status
+from .status import presence, presence_request, status
 from .web import BaseHandler, POST_LIMIT, POST_LIMITS, content_length, json_query
 
 
@@ -128,6 +128,8 @@ class Handler(BaseHandler):
                 info = status(self.server, name, query.get("base") == ["push"])
                 if "open" in query and allowed(self.principal, "GET", "/file"):
                     info["source"] = source_status(self.server, query["open"][0])
+                if allowed(self.principal, "POST", "/presence"):  # (who else has the paper open: editors and the owner)
+                    info["presence"] = presence(self.server, self.principal)
                 body = json.dumps(viewer_status(info) if below_editor else info).encode()
             elif path.startswith("/outline/"):
                 body = json.dumps(toc_outline(self.server.paper_root, doc_pdf, name.endswith("-clean.pdf"))).encode()
@@ -202,7 +204,7 @@ class Handler(BaseHandler):
             self.send_error(404)
 
     def do_POST(self):
-        """Actions (POST /note, /file, /rebuild, /switch, /diff, /open, /commit, /logout), and the builds made on
+        """Actions (POST /note, /file, /rebuild, /switch, /diff, /open, /commit, /logout, /presence), and the builds made on
         request (POST /export, /review, /arxiv, and in shared mode /baseline). Only with the session cookie, which
         SameSite=Strict keeps off other sites' requests, a JSON body, which other sites can't send without asking
         first, and from the viewer's own page (origin_allowed), as the role allows; both are checked before the body
@@ -247,6 +249,8 @@ class Handler(BaseHandler):
             self.send_json(*add_request(self.server, req, self.principal))
         elif path == "/bib/verify":
             self.send_json(*start_verify(self.server))
+        elif path == "/presence" and isinstance(req, dict):
+            self.send_json(*presence_request(self.server, req, self.principal))
         elif path == "/logout":
             self.logout()
         elif path == "/commit":

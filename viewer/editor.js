@@ -138,7 +138,8 @@ export function insertText(text) {
 }
 
 // The tabs above the text: the files opened in this paper (remembered across visits), the open one marked, with a dot
-// while it has edits not saved. A click opens one (once the open one is saved), and its × closes it.
+// while it has edits not saved, and a colored one for each other person who has it open (setTabPeers). A click opens
+// one (once the open one is saved), and its × closes it.
 const TABS_KEY = `latex-live:${hubBase}editorTabs`, MAX_TABS = 12;
 let openTabs = [];
 try { openTabs = JSON.parse(localStorage.getItem(TABS_KEY) || "[]").filter((p) => typeof p === "string").slice(0, MAX_TABS); } catch {}
@@ -153,7 +154,8 @@ function showTabs() {
     const close = el("button", { className: "x", textContent: "✕", title: `Close ${name}`, onclick: (e) => { e.stopPropagation(); closeTab(path); } });
     const tab = el("div", { className: `tab${path === ed?.path ? " on" : ""}`, title: path, dataset: { path },
                             onclick: () => openFile(path).then(() => cmView?.focus()) },
-                   el("span", { className: "name", textContent: name }), el("span", { className: "dot", title: "Not saved yet" }), close);
+                   el("span", { className: "name", textContent: name }), el("span", { className: "peers" }),
+                   el("span", { className: "dot", title: "Not saved yet" }), close);
     tab.setAttribute("role", "tab");
     tab.setAttribute("aria-selected", String(path === ed?.path));
     close.setAttribute("aria-label", `Close ${name}`);
@@ -161,9 +163,25 @@ function showTabs() {
   }));
   $("editorTabs").querySelector(".tab.on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
   showTabState();
+  showTabPeers();
 }
 function showTabState() { // (the open file's dot)
   for (const tab of $("editorTabs").children) tab.classList.toggle("dirty", tab.dataset.path === ed?.path && !!ed?.dirty);
+}
+// Who else has each file open (presence.js: {path: [{name, line, color}]}), a dot each on its tab.
+let tabPeers = {};
+export function setTabPeers(peers) {
+  tabPeers = peers;
+  showTabPeers();
+}
+function showTabPeers() {
+  for (const tab of $("editorTabs").children) {
+    tab.querySelector(".peers").replaceChildren(...(tabPeers[tab.dataset.path] || []).slice(0, 3).map((p) => {
+      const dot = el("span", { className: "peer", title: `${p.name}${p.line ? `, at line ${p.line}` : ""}` });
+      dot.style.background = p.color;
+      return dot;
+    }));
+  }
 }
 // Close a file's tab: the open one, once its edits are saved (then the tab before it opens, if any), unless discard (the
 // file is gone from the paper: its edits go too).

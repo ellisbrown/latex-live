@@ -55,6 +55,7 @@ From left to right:
 | Space hints | [Space hints](#page-limit-and-space). |
 | Δ | [Change highlights](#changes-and-comparing), with the baseline ("vs …") and arrows to step through the changes. |
 | Download | Its menu (on hover or click) saves the PDF four ways, and the arXiv package ([Downloads](#downloads-and-the-review-copy)). |
+| Avatars | Who else has the paper open, for editors and the owner; rest the pointer on one for their name and the file and line they are on. |
 | Name badge | In a shared preview, your name and role. |
 | ⚠ TeX image missing | The TeX Live image is not pulled ([setup](setup.md#2-get-the-code-and-the-tex-image)). |
 | ⟳ restart to update | latex-live changed on disk since this preview started; restart its task, then reload. |
@@ -163,7 +164,8 @@ comments.
 
 - The file menu (▾) lists the paper's `.tex`, `.bib`, `.sty` and `.cls` files by
   folder, with a filter. Each file you open gets a tab, and the tabs come back
-  when you return to the paper; a dot marks edits not saved yet.
+  when you return to the paper; a dot marks edits not saved yet, and a colored
+  dot each person who has that file open too.
 - Edits save by themselves a moment after you stop typing (Cmd/Ctrl+S saves at
   once), and the PDF rebuilds.
 - In the braces of `\ref` (`\eqref`, `\cref`, `\autoref`…), it offers the
@@ -186,6 +188,8 @@ comments.
   under the text: all its errors and warnings, or only one kind (boxes too
   wide or too loose with the warnings), or the end of the log itself; click
   one to go to its line.
+- A colored bar beside a line, with a name at its end, marks the line where
+  someone else's cursor is (yours, in another tab of your own preview).
 - If the file changed meanwhile (saved in another editor or tab, or a note from
   the viewer), your edits are merged with that change. Where both changed the
   same lines, the pane shows both versions between `<<<<<<<` and `>>>>>>>`

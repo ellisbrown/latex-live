@@ -247,6 +247,16 @@ body.pdf-invert .thumb canvas {
 #cutNav { background: var(--warn-bg); color: var(--warn); border: 1px solid var(--warn-border); }
 .navgroup button { height: 22px !important; padding: 0 5px !important; color: inherit !important; }
 
+/* Who else has the paper open (presence.js): an avatar each, overlapping. */
+.presence { display: inline-flex; align-items: center; }
+.presence .avatar {
+  display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%;
+  margin-left: -6px; border: 2px solid var(--bg-topbar); color: #fff; font-size: 10.5px; font-weight: 700;
+  cursor: default; user-select: none;
+}
+.presence .avatar:first-child { margin-left: 0; }
+.presence .avatar.more { background: var(--bg-surface-2); color: var(--ink-2); }
+
 /* Who you are in shared mode (live.py /me), the page badge, and the build's status. */
 #me {
   padding: 2px 8px; border-radius: 99px; background: var(--bg-surface-2);
@@ -485,6 +495,9 @@ body.resizing { cursor: col-resize; user-select: none; }
 #editorTabs .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #editorTabs .dot { display: none; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); flex: none; }
 #editorTabs .tab.dirty .dot { display: inline-block; }
+#editorTabs .peers { display: inline-flex; gap: 2px; }
+#editorTabs .peers:empty { display: none; }
+#editorTabs .peer { width: 7px; height: 7px; border-radius: 50%; flex: none; }
 #editorHead #editorTabs .x { width: 18px; height: 18px; padding: 0; font-size: 10px; color: var(--ink-3); opacity: 0; border-radius: 4px; }
 #editorTabs .tab:hover .x, #editorTabs .tab.on .x, #editorTabs .x:focus-visible { opacity: 1; }
 #editorBody { flex: 1; min-height: 0; display: flex; }
@@ -560,6 +573,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 .log-msg { min-width: 0; color: var(--ink); overflow-wrap: anywhere; }
 .log-raw { margin: 0; padding: 8px 10px; font: 11.5px/1.45 var(--font-mono); color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
 /* The errors and warnings in the source: a wavy underline, and a dot in the gutter. */
+.cm-peer-line { box-shadow: inset 3px 0 0 var(--peer-color); }
+.cm-peer-badge {
+  display: inline-block; margin-left: 8px; padding: 0 6px; border-radius: 99px; color: #fff; opacity: 0.9;
+  font: 600 10.5px/16px var(--font-ui); vertical-align: middle; pointer-events: none;
+}
 .cm-diag-error { text-decoration: wavy underline var(--err); text-underline-offset: 3px; text-decoration-skip-ink: none; }
 .cm-diag-warning { text-decoration: wavy underline var(--warn); text-underline-offset: 3px; text-decoration-skip-ink: none; }
 .cm-diag-gutter .cm-gutterElement { display: flex; align-items: center; justify-content: center; width: 9px; }

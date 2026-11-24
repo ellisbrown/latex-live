@@ -1,7 +1,7 @@
 """Who is asking in shared mode, and what each may see and do: Host names, the identity header, tokens and cookies,
-GET me per role (identity_checks); every endpoint per role, non-owners pinned to the document, the Origin rules
-for POSTs, POST body limits, the viewer's security headers, and SyncTeX as JSON (role_checks). Extend role_checks
-with each new endpoint."""
+GET me per role (identity_checks); every endpoint per role (and who has the paper open: presence_checks), non-owners
+pinned to the document, the Origin rules for POSTs, POST body limits, the viewer's security headers, and SyncTeX as
+JSON (role_checks). Extend role_checks with each new endpoint."""
 
 import gzip
 import json
@@ -33,6 +33,31 @@ def check_me(me, what, role, defined=True, **fields):
     got_can = {c: (me.get("can") if isinstance(me.get("can"), dict) else {}).get(c) for c in CAPS}
     if got != want or got_can != can:
         fail(f"GET me for {what}: {got}, can {got_can}; not {want}, can {can}")
+
+
+def presence_checks():
+    """Who has the paper open: editors and the owner say where they are (POST /presence) and see one another's names,
+    files and lines in their status, without ids or roles; viewers and commenters neither (role_checks: 403) nor see
+    it, not even the editors' (whose POSTs come first)."""
+    expect(via_proxy("ed", "/presence", "POST", {"tab": "edpage", "open": "body.tex", "line": 3}), 200, "POST presence for the editor")
+    expect(via_proxy("owner1", "/presence", "POST", {"tab": "ownerpage", "open": "main.tex", "line": 2}), 200,
+           "POST presence for the owner")
+    listed = expect_dict(via_proxy("ed", "/status/main.pdf"), 200, "GET status for the editor").get("presence")
+    places = sorted((p.get("name"), p.get("file"), p.get("line"), p.get("you")) for p in listed or [])
+    if places != [("Eden Doyle", "body.tex", 3, True), ("Owner Example", "main.tex", 2, False)]:
+        fail(f"the presence list in the editor's status: {listed}")
+    if any(set(p) != {"user", "tab", "name", "file", "line", "you"} for p in listed) or any(
+            word in json.dumps(listed) for word in ('"ed"', "owner1", "editor", "owner@", "eden@", "edpage", "ownerpage")):
+        fail(f"the presence list shows an editor more than names and places (ids, roles, page names): {listed}")
+    for uid in ("vw", "cm"):
+        if "presence" in expect_dict(via_proxy(uid, "/status/main.pdf"), 200, f"GET status for {uid}"):
+            fail(f"the {uid} {'viewer' if uid == 'vw' else 'commenter'}'s status lists who has the paper open")
+    for uid, tab in (("ed", "edpage"), ("owner1", "ownerpage")):
+        expect(via_proxy(uid, "/presence", "POST", {"tab": tab, "leave": True}), 200, f"POST presence (leaving) for {uid}")
+    if expect_dict(via_proxy("ed", "/status/main.pdf"), 200, "GET status for the editor").get("presence") != []:
+        fail("pages that left are still listed")
+    ok("presence: editors and the owner say where they are and see one another's names, files and lines, without ids or"
+       " roles; viewers and commenters can't say so and see none of it")
 
 
 def identity_checks(sh):
@@ -210,7 +235,8 @@ def role_checks(sh):
                  ("GET", "/commits", None), ("POST", "/diff", {"rev": "HEAD"}), ("GET", "/completions", None),
                  ("GET", "/search?q=quokka", None), ("GET", "/logs/main.pdf", None), ("GET", "/papers/index", None),
                  ("GET", "/bib/verify", None), ("POST", "/bib/lookup", {"query": "@misc{x, title={X}}"}),
-                 ("POST", "/bib/add", {"bibtex": "@misc{x, title={X}}"}), ("POST", "/bib/verify", {}))
+                 ("POST", "/bib/add", {"bibtex": "@misc{x, title={X}}"}), ("POST", "/bib/verify", {}),
+                 ("POST", "/presence", {"tab": "probe", "open": "body.tex", "line": 3}))
     for uid in ("vw", "cm", "ed"):
         for method, path, body in owner_only + (() if uid == "ed" else editor_up):
             expect(via_proxy(uid, path, method, body), 403, f"{method} {path} for {sh['users'][uid]['role']} {uid}")
@@ -233,6 +259,7 @@ def role_checks(sh):
     if expect_dict(via_proxy("ed", "/search?q=Quokka.narwhal&regex=1"), 200, "GET search with regex=1 for the editor").get("matches"):
         fail("search takes a coauthor's text as a regular expression in shared mode")
     bib_checks()
+    presence_checks()
     listing = expect_dict(with_token(owner, "/instances"), 200, "GET instances for the owner")
     if listing.get("self") != sh["proc"].pid:
         fail(f"GET instances for the owner: {listing}")

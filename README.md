@@ -27,7 +27,8 @@ nothing beyond Python's standard library.
 - Downloads: as built, without notes (an exact build), or with the notes in the margin;
   and an arXiv package without comments or notes, checked by building it alone.
 - Shared mode: coauthors without a LaTeX setup open one link and read,
-  comment or edit, each in their role, with every TeX run confined to a container.
+  comment or edit, each in their role, with every TeX run confined to a container; editors see
+  who else is in the paper, and on which line.
 
 ## Quick start
 
