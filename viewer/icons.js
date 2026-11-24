@@ -20,6 +20,9 @@ const PATHS = {
   popout: "M9.5 2.8h3.7v3.7M13 3 7.8 8.2M11.5 9.2v3.3a.8.8 0 0 1-.8.8H3.5a.8.8 0 0 1-.8-.8V5.3a.8.8 0 0 1 .8-.8h3.3",
   sync: "M8 2.5v2.2m0 6.6v2.2M2.5 8h2.2m6.6 0h2.2M8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z",
   close: "M4.2 4.2 11.8 11.8M11.8 4.2 4.2 11.8",
+  search: "M7.2 2.8a4.4 4.4 0 1 0 0 8.8 4.4 4.4 0 0 0 0-8.8Zm3.2 7.6 2.8 2.8",
+  file: "M4 2.5h5.2L12.5 5.8v7.7a.5.5 0 0 1-.5.5H4a.5.5 0 0 1-.5-.5V3a.5.5 0 0 1 .5-.5Zm5 0v3.5h3.5",
+  edit: "M10.8 2.8 13.2 5.2 5.6 12.8H3.2v-2.4l7.6-7.6Z",
 };
 
 // An icon as an <svg> element, size pixels square (decorative: the button it sits in has the label).

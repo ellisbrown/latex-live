@@ -22,7 +22,7 @@ export async function renderOutline() {
       const span = el("span", { title: item.title }, ...(item.num ? [el("span", { className: "num", textContent: item.num })] : []),
                       el("span", { className: "t", textContent: item.title }), pp);
       span.onclick = () => (item.dest ? linkService.goToDestination(item.dest) : goToHeading(item));
-      outlineRows.push({ item, depth, pp });
+      outlineRows.push({ item, depth, pp, span });
       li.append(span);
       if (item.items.length) li.append(build(item.items, depth + 1));
       ul.append(li);
@@ -41,6 +41,9 @@ export async function renderOutline() {
   nav.scrollTop = scroll;
   fillSectionPages();
 }
+// The outline's headings, for the palette: [{title (with its number), depth, go (shows it in the PDF)}].
+export const outlineHeadings = () => outlineRows.map(({ item, depth, span }) => ({ title: `${item.num ? `${item.num} ` : ""}${item.title}`,
+                                                                                  depth, go: () => span.onclick() }));
 export async function fillSectionPages() {
   const d = doc, r = displayedResult(), rows = outlineRows;
   if (!r || !rows.length) return;

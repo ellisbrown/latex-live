@@ -1,12 +1,13 @@
 // The notes: listed in the sidebar, and as bubbles in the margin of the notes-free view.
 
 import { $, cleanFile, el, file, hubBase, isDiff } from "./page.js";
-import { canOpenFile, opensAt, setWho, who } from "./role.js";
+import { authors, canOpenFile, editorAllowed, opensAt, setWho, who } from "./role.js";
 import { doc, eventBus, pageFrame, shownVariant, viewer } from "./pdfview.js";
 import { GUTTER, setGutter } from "./layout.js";
 import { columnAt, columnMid, norm, textLines } from "./pagetext.js";
 import { openSource, showSource } from "./links.js";
 import { noteTools } from "./comments.js";
+import { setNoteMacros } from "./cm.js";
 
 // Notes (\todo and per-author note macros) from live.py, in reading order. Click one to see
 // it in the PDF; click its file:line to open it in the editor.
@@ -19,6 +20,12 @@ export async function loadNotes() {
   noteList = await (await fetch(`notes/${encodeURIComponent(file)}`)).json();
   document.querySelector("#tabs [data-tab=notes] .n").textContent = noteList.length || "";
   renderNotes();
+  if (editorAllowed()) markNotes();
+}
+// The note macros, marked in the source pane in their authors' colors: those of the notes, and those the paper defines.
+function markNotes() {
+  const macros = new Map([...authors, ...noteList].filter((n) => n.macro).map((n) => [n.macro, n.author]));
+  setNoteMacros([...macros].map(([macro, author]) => ({ macro, author, color: authorColor(author) })));
 }
 function renderNotes() {
   const panel = $("notes");

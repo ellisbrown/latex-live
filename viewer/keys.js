@@ -12,12 +12,26 @@ import { showDownloads } from "./downloads.js";
 import { keepFocusIn, showWelcome } from "./welcome.js";
 import { closeNotePop, startComment } from "./comments.js";
 import { goToChange, toggleChanges } from "./changes.js";
+import { closePalette, openPalette, paletteOpen } from "./palette.js";
+
+// The viewer's own shortcuts with Cmd (on a Mac) or Ctrl (elsewhere), which also work in the source pane, unless the
+// editor took the key first (on a Mac, Ctrl+K there deletes to the end of the line): [key, shift, what it does (false:
+// nothing for this user, and the key goes on)].
+const IS_MAC = /^Mac|^iP/.test(navigator.platform);
+const APP_KEYS = [["k", false, () => openPalette("go")], ["f", true, () => editorAllowed() && openPalette("search")]];
 
 window.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;
   if (!$("welcome").hidden) { // (while the guide is open, only its own keys)
     if (e.key === "Escape") showWelcome(false);
     else if (e.key === "Tab" && !e.defaultPrevented) keepFocusIn($("welcome"), e); // (not a Tab the source pane took, to indent)
+    return;
+  }
+  const appKey = (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.altKey && !e.defaultPrevented &&
+                 APP_KEYS.find(([key, shift]) => e.key.toLowerCase() === key && e.shiftKey === shift);
+  if (appKey && appKey[2]() !== false) return void e.preventDefault();
+  if (paletteOpen()) { // (its own keys, in its box; Esc also from elsewhere)
+    if (e.key === "Escape") closePalette();
     return;
   }
   if (e.target.closest?.("#editorPane")) { // (keys typed in the source pane are the editor's: c, d, Cmd+F, ...)

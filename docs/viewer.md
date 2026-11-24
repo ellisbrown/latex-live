@@ -50,6 +50,7 @@ From left to right:
 | Document menu | Switches to another root `.tex` file of the paper; every open viewer follows. It also lists the papers that other previews on the machine show, and opens their viewers. |
 | ← → | Back and forward after following a link, a reference or a forward search. |
 | Source, Split, PDF | The [layout](#the-layout). |
+| Go to… | The [palette](#the-palette) (Cmd/Ctrl+K). |
 | Pop-out | The PDF in a window of its own ([layout](#the-layout)). |
 | Space hints | [Space hints](#page-limit-and-space). |
 | Δ | [Change highlights](#changes-and-comparing), with the baseline ("vs …") and arrows to step through the changes. |
@@ -156,13 +157,25 @@ layout](#the-layout)); drag its right edge to resize it. The bar under the text
 shows the cursor's line and column, whether your edits are saved, and the word
 count (of the selection, when there is one), without commands and comments.
 
-- The file menu lists the paper's `.tex`, `.bib`, `.sty` and `.cls` files by
-  folder, with a filter.
+- The file menu (▾) lists the paper's `.tex`, `.bib`, `.sty` and `.cls` files by
+  folder, with a filter. Each file you open gets a tab, and the tabs come back
+  when you return to the paper; a dot marks edits not saved yet.
 - Edits save by themselves a moment after you stop typing (Cmd/Ctrl+S saves at
   once), and the PDF rebuilds.
 - In the braces of `\ref` (`\eqref`, `\cref`, `\autoref`…), it offers the
-  paper's labels; in those of `\cite` (`\citet`, `\citep`…), the keys of its
-  `.bib` files, with their titles.
+  paper's labels, with the line each is on; in those of `\cite` (`\citet`,
+  `\citep`…), the keys of its `.bib` files, with their titles; in those of
+  `\includegraphics`, the paper's figures; in those of `\begin`, common
+  environments, with their `\end`; and after a `\`, common commands (Tab goes
+  to the next field).
+- Resting the pointer on a citation key, a reference or a figure shows a card:
+  the entry's title, or the line with the label, with a link to it.
+- Headings and environments fold (the arrows beside the line numbers, or
+  Ctrl+Shift+[ and ]; Cmd+Alt+[ and ] on a Mac). The rail at the right edge
+  has a mark for each heading of the file; click one to go there.
+- Notes are tinted in their author's color. Cmd/Ctrl+B and Cmd/Ctrl+I wrap the
+  selection in `\textbf` and `\textit`, and Cmd/Ctrl+/ comments lines out or
+  back in.
 - If the file changed meanwhile (saved in another editor or tab, or a note from
   the viewer), your edits are merged with that change. Where both changed the
   same lines, the pane shows both versions between `<<<<<<<` and `>>>>>>>`
@@ -292,12 +305,24 @@ The Checks tab of the sidebar lists, each as ok, info, warning or failure:
   (`sideways`) floats aren't checked against the text area.
 - **Consistent terms**, **typos**, and **overfull lines**.
 
+## The palette
+
+Cmd/Ctrl+K (or Go to… in the top bar) opens a box that goes to a source file,
+a heading of the outline, or a command (the theme, the layout, rebuilding…);
+type to narrow it down, or start with `>` for the commands alone. Editors also
+search the text of every source file in it (Cmd/Ctrl+Shift+F, or Search): each
+match opens its file at that spot. Aa matches case, and `.*` takes the text as
+a regular expression (not in a shared preview, which searches for the text as
+typed).
+
 ## Keyboard shortcuts
 
 `?` in the viewer lists the ones your role can use.
 
 | Key | Does |
 | --- | --- |
+| Cmd/Ctrl K | The [palette](#the-palette): go to a file, a heading or a command |
+| Cmd/Ctrl Shift F | Search the text of every source file (editors) |
 | Cmd/Ctrl F | Search; Enter / Shift Enter for the next / previous match, Esc to clear |
 | Ctrl + / Ctrl − | Zoom in / out |
 | Ctrl 0 | Fit width |
@@ -306,5 +331,6 @@ The Checks tab of the sidebar lists, each as ok, info, warning or failure:
 | `,` / `.` | Previous / next change |
 | `c` | Comment on the selected text |
 | `e` | Split or PDF: the source pane beside the PDF, or not (Cmd/Ctrl S there saves at once) |
+| Cmd/Ctrl B, I, / | In the source pane: bold, italic, comment out or back in |
 | Double-click | Open the source line |
 | `?` | The list of shortcuts |
