@@ -95,7 +95,7 @@ function show(list, note = "") {
       main.textContent = it.title;
     }
     if (it.depth) main.style.paddingLeft = `${Math.min(it.depth, 3) * 12}px`;
-    const row = el("div", { className: "pal-row", onclick: () => run(it), onmousemove: () => choose(i) },
+    const row = el("div", { className: "pal-row", onclick: () => run(it), onmousemove: () => i !== chosen && choose(i) },
                    icon(it.icon || "file", 14), main, el("span", { className: "pal-sub", textContent: it.sub || "" }));
     row.setAttribute("role", "option");
     rows.push(row);
@@ -127,6 +127,7 @@ function setMode(next) {
   $("searchOptions").hidden = mode !== "search";
   $("searchRegex").hidden = me.shared; // (shared mode searches for the text as typed)
   $("paletteInput").placeholder = mode === "search" ? "Search the text of every source file" : "Go to a file, a heading or a command (> for commands)";
+  if (mode === "search") show([], "Searching…"); // (not the other mode's items, to run with Enter meanwhile)
   refresh();
 }
 

@@ -137,7 +137,7 @@ let openTabs = [];
 try { openTabs = JSON.parse(localStorage.getItem(TABS_KEY) || "[]").filter((p) => typeof p === "string").slice(0, MAX_TABS); } catch {}
 function setTabs(paths) {
   openTabs = paths.slice(-MAX_TABS);
-  localStorage.setItem(TABS_KEY, JSON.stringify(openTabs));
+  try { localStorage.setItem(TABS_KEY, JSON.stringify(openTabs)); } catch {} // (past the storage quota: they are just not remembered)
   showTabs();
 }
 function showTabs() {
@@ -174,9 +174,9 @@ export async function closeTab(path, { discard = false } = {}) {
   }
   setTabs(openTabs.filter((p) => p !== path));
   if (ed?.path !== path) return;
-  const next = openTabs[Math.max(0, i - 1)];
+  const next = openTabs[Math.max(0, i - 1)], asked = openSeq + 1;
   if (next) await openFile(next);
-  if (ed?.path !== path) return;
+  if (ed?.path !== path || (next && openSeq !== asked)) return; // (another file was asked for meanwhile: that one opens)
   if (ed.dirty && !ed.gone) { // (typed in while the next one loaded: it stays)
     setTabs([...openTabs, path]);
     return setStatus(`${path} has new edits, so its tab stays open`, "error");
@@ -223,6 +223,7 @@ function showRail(update = null) {
     railTimer = setTimeout(showRail, 400);
   }
   if (update) return void (update.selectionSet && markRail());
+  clearTimeout(railTimer);
   railHeadings = cmView ? sectionHeadings(cmView.state.doc) : [];
   const rail = $("outlineRail");
   rail.hidden = railHeadings.length < 2;

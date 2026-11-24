@@ -173,7 +173,8 @@ def project_assets(server):
 
     for rel in project_inputs(root, fls_file(root, server.default_pdf)):
         add(os.path.normpath(rel))
-    for folder, dirs, names in os.walk(root):  # (figures not in the document yet; os.walk follows no links to folders)
+    walk = os.walk(root) if len(found) < ASSETS_LIMIT else ()  # (figures not in the document yet; it follows no links)
+    for folder, dirs, names in walk:
         here = os.path.relpath(folder, root)
         depth = 0 if here == "." else here.count(os.sep) + 1
         dirs[:] = sorted(d for d in dirs if depth < ASSETS_DEPTH and not d.startswith(".")

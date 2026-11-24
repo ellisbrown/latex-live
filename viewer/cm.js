@@ -369,8 +369,9 @@ function hoverCards(view, open) {
     }
     for (const m of text.matchAll(/\\(?!href)[a-zA-Z]*ref\*?\{([^{}]*)\}/g)) {
       if (!at(m, col)) continue;
-      const [label, start] = entryAt(m, col), data = await completionData();
+      const [label, start] = entryAt(m, col);
       if (!label) return null;
+      const data = await completionData();
       const target = data.labels.find((l) => l.label === label);
       return { pos: line.from + start, end: line.from + start + label.length, above: true,
                create: () => (target ? card(`Reference · ${target.file}:${target.line}`, ["hc-code", data.labelContext[label]],
@@ -379,8 +380,9 @@ function hoverCards(view, open) {
     }
     for (const m of text.matchAll(/\\includegraphics\*?(?:\[[^\]]*\])?\{([^{}]*)\}/g)) {
       if (!at(m, col)) continue;
-      const name = m[1].trim(), figures = (await completionData()).figures;
+      const name = m[1].trim();
       if (!name) return null;
+      const figures = (await completionData()).figures;
       const found = figures.find((f) => f === name) || figures.find((f) => f.replace(/\.[^./]+$/, "") === name);
       return { pos: line.from + m.index, end: line.from + m.index + m[0].length, above: true,
                create: () => card(`Figure · ${found || name}`, ["hc-meta", found ? "" : "No such figure in the paper"]) };
