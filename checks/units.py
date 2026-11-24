@@ -959,11 +959,11 @@ def assets_checks():
 def search_checks():
     """Search in the sources (editor.search_request): the first match of each line (shown from a little before it on
     a long line), case-insensitive unless asked, as a regular expression only outside shared mode (with $ at the line's
-    end, before a \\r), at most SEARCH_LIMIT matches."""
+    end, before a \\r), at most SEARCH_LIMIT matches; places in UTF-16 units, as the editor counts."""
     from latexlive import config, editor
     with tempfile.TemporaryDirectory(prefix="latex-live-search-") as root:
         put(os.path.join(root, "main.tex"), "\\documentclass{article}\r\n\\begin{document}\r\nAlpha beta. alpha\r\n\\input{sec}\r\n\\end{document}\r\n")
-        put(os.path.join(root, "sec.tex"), "axb and a.b\n" + "word " * 80 + "needle\n" + "line\n" * 300)
+        put(os.path.join(root, "sec.tex"), "axb and a.b\n\U0001d6fc astral\n" + "word " * 80 + "needle\n" + "line\n" * 300)
         server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", editable=None)
         search = lambda **q: editor.search_request(server, {k: [v] for k, v in q.items()})
         code, found = search(q="alpha")
@@ -980,6 +980,8 @@ def search_checks():
                     fail(f"search for a.b as a regular expression ({'shared' if shared else 'not shared'}): {hits}")
         finally:
             config.SHARED = saved
+        if [(m["col"], m["at"], m["len"]) for m in search(q="astral")[1]["matches"]] != [(3, 3, 6)]:
+            fail(f"search after a character outside the BMP (two UTF-16 units): {search(q='astral')}")
         far = search(q="needle")[1]["matches"]
         if [(m["col"], m["text"][:1], m["text"][m["at"]:m["at"] + m["len"]]) for m in far] != [(400, "…", "needle")]:
             fail(f"search for a word far into a long line: {far}")
