@@ -15,6 +15,7 @@ import "./filemenu.js";
 import "./keys.js";
 import "./refs.js";
 import "./files.js";
+import "./history.js";
 
 // Controls follow the role (once /me has answered): a collaborator comments only as themselves,
 // and sees no controls for what their role can't do (live.py refuses those anyway).
@@ -34,6 +35,7 @@ function applyRole() {
   if (!isDiff) showTabButton("checks", me.can.checks !== false);
   if (!isDiff) showTabButton("refs", editorAllowed() && !isPopout);
   if (!isDiff) showTabButton("files", editorAllowed() && !isPopout);
+  if (!isDiff) showTabButton("history", !!me.can.history && !isPopout);
 }
 
 // The layout as it was left, for start.

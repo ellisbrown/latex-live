@@ -288,6 +288,15 @@ the arXiv package, which holds every source file, is the owner's.
   written over a file that is there, a rename keeps a source a source and a
   figure a figure, and the main file stays. Names hold letters, digits, `-`,
   `_`, `+` and dots, at most four folders deep.
+- **History** (editors): the commits that changed the paper's folder, newest
+  first, under the changes not committed yet (dot files and the build folder
+  left out). Click one to see the files it changed and what changed in each.
+  **Compare** shows the paper with what changed since that commit marked, as
+  [Compare with an earlier version](#changes-and-comparing) does, and
+  **Restore** puts a source file back as that commit left it, or, for a file
+  that the commit removed, as it was just before. A file open in the source
+  pane is saved first and then shows the restored text; a removed file comes
+  back under its name, never over another file.
 
 ## Page limit and space
 

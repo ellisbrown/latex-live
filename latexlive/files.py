@@ -1,5 +1,5 @@
 """The paper's files and the build's: where each is (job_file, pdf_path...), which of them are the
-paper's own (in_paper), and reading what TeX wrote within bounds (open_output, read_capped, read_output),
+paper's own (in_paper) or in the build directory (in_build), and reading what TeX wrote within bounds (open_output, read_capped, read_output),
 since the paper's TeX decides how big those files are."""
 
 import glob
@@ -117,6 +117,13 @@ def child_aux(folder, name):
     if os.path.realpath(path) != os.path.join(os.path.realpath(folder), os.path.relpath(path, folder)):  # (a link on the way)
         return None
     return path
+
+
+def in_build(rel):
+    """Whether rel (relative to the paper root, normalized) is the build directory or in it, in any case (where the file
+    system ignores case, Build/ is build/)."""
+    folded, build = rel.casefold(), os.path.normpath(config.BUILD).casefold()
+    return folded == build or folded.startswith(os.path.join(build, ""))
 
 
 def in_paper(paper_root, path):

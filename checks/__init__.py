@@ -31,7 +31,12 @@ does).
    build/ (in any case), with names of a safe set of characters; uploads only figures, within the paper's and a
    coauthor's limits; keeps a source a source and a figure a figure, and the main file; pins a coauthor to the
    document's figures; keeps the files added for a restart; and commits new files (added to git) and removals as
-   their writer's. A figure's sandboxing CSP is its response's only.
+   their writer's. A figure's sandboxing CSP is its response's only. The History tab, on a paper in a folder of a bigger
+   repository, lists only the commits that changed its shown files (no dot files, build/ or the rest of the repository,
+   nor their messages; a merge with what it brought in; its limit counted after), names nothing outside the paper's
+   folder in the uncommitted changes, diffs the shown files first, names commits only by their ids, and restores a
+   source over the file the editor opens (at the version given) or a removed one anew, committed as its restorer's,
+   never over another file, a coauthor only from commits the branch builds on.
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a git
    repository with a pushed commit and a local one) gets a live.py instance, with the hub on port
    44180, or below the ports that outgoing connections take where 44180 is among them (Linux: 28180), or the first
@@ -40,8 +45,8 @@ does).
    LATEX_LIVE_ALLOWED_HOSTS of its own):
    - the build publishes main.pdf, and the notes-free pass main-clean.pdf;
    - the hub redirects an old bookmark, needs the token or its cookie, and forwards every
-     endpoint (POST /rebuild, the build's log, which says how long the build took, and POST /presence, which a
-     GET of /status never does); the hub and the previews refuse HEAD and bad or oversized POST
+     endpoint (POST /rebuild, the build's log, which says how long the build took, POST /presence, which a
+     GET of /status never does, and the History tab's); the hub and the previews refuse HEAD and bad or oversized POST
      bodies; SyncTeX finds a source line; /instances lists the instance;
    - /me reports the owner with every capability; the viewer's and the editor's modules and the
      viewer's style are served (as JavaScript, and CSS), the viewer's revalidated; SyncTeX answers
@@ -119,7 +124,8 @@ does).
      the Origin rules for POSTs (a loopback one only on the instance's own port), POST body limits,
      non-owners pinned to the document, and the viewer's security headers; the Refs panel for editors, without
      online lookups; who has the paper open for editors and the owner (names, files and lines, no ids or roles),
-     never for viewers or commenters;
+     never for viewers or commenters; the History tab for editors and the owner, an editor's without another
+     branch's commits (nor restoring from one);
    - sessions: a personal link's session cookie is new each time, never the token, and works only
      while its token does; sign-out is offered to those who came with a token and expires the cookie
      only from the viewer's page, and through the proxy there is nothing to forget; the instance's
@@ -171,7 +177,7 @@ Exits non-zero on the first failure.
 Its modules, from the bottom up (each imports only from those below it): base (where the checks run, and how they
 report: ok, fail, wait_for, in_thread), helpers (files, git, instances and requests to them, stand-ins, the TeX Live
 image), papers (the scratch paper), access (who reaches the owner's preview: hosts, origins, sessions), static (the
-checkout as it is), shared_units, bib_units, files_units and units (the server's parts without an instance), standby, early, clean_standby
+checkout as it is), shared_units, bib_units, files_units, history_units and units (the server's parts without an instance), standby, early, clean_standby
 and landscape (the threads beside the instance checks: the warm standby, the early notes-free pass and its warm
 standby, turned pages), shared_helpers, shared_setup, shared_access, shared_sessions, shared_sandbox, shared_downloads,
 shared_notes, shared_editor, shared_rebuild, shared_commits, shared_files and shared (shared mode, the other thread), preview (the

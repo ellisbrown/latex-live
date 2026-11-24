@@ -17,7 +17,7 @@ import urllib.parse
 from .base import ENV, HERE, LOGS, PORT, START_LOCK, TOKEN, fail, hub
 
 
-CAPS = ("comment", "edit", "rebuild", "compare", "switch", "openHost", "download")  # what GET me says a user can do
+CAPS = ("comment", "edit", "rebuild", "compare", "switch", "openHost", "download", "history", "restore")  # what GET me says a user can do
 
 JS_TYPE_RE = re.compile(r"(?:text|application)/(?:x-)?javascript\b")
 

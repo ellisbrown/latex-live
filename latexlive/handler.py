@@ -18,10 +18,10 @@ from .commits import commit_request
 from .document import floats, graphics, toc_outline
 from .editor import (
     UPLOAD_SLOTS, asset_request, completions, create_request, delete_request, file_request, files_listing, rename_request,
-    save_request, search_request, source_status, upload_request)
+    restore_request, save_request, search_request, source_status, upload_request)
 from .export import start_export
 from .files import pdf_path
-from .git import commits
+from .git import commit_diff, commits, history
 from .hub import papers_page
 from .instances import instances
 from .latex import root_docs
@@ -43,7 +43,8 @@ def me(server, user):
     editor opens here (a service has none); download: whether they may download the builds made on
     request, the paper without its notes (export) and with its notes in the margin (review), which
     take the same role; arxiv: whether they may make and download the arXiv package (the owner's); logs: whether they
-    may read the build's log (editors); signOut: whether the browser signed in with a token (POST logout forgets it),
+    may read the build's log (editors); history and restore: whether they may read the paper's git history and put a
+    source back as a commit left it (editors); signOut: whether the browser signed in with a token (POST logout forgets it),
     not through the proxy."""
     defined = bool(user["macro"]) and user["macro"] in paper_note_kinds(server.paper_root, server.default_pdf)
     can = lambda path: allowed(user, "POST", path)
@@ -53,7 +54,8 @@ def me(server, user):
                     "rebuild": can("/rebuild"), "compare": can("/diff"), "switch": can("/switch"),
                     "openHost": can("/open") and (not config.SHARED or editor_cli() is not None),
                     "download": can("/export") and can("/review"), "arxiv": can("/arxiv"), "checks": allowed(user, "GET", "/check/"),
-                    "logs": allowed(user, "GET", "/logs/"),
+                    "logs": allowed(user, "GET", "/logs/"), "history": allowed(user, "GET", "/history"),
+                    "restore": can("/history/restore"),
                     "signOut": user["via"] != "proxy"}}
 
 
@@ -202,6 +204,11 @@ class Handler(BaseHandler):
             self.send_json(*forward_request(self.server, query, self.principal))
         elif path == "/commits":
             self.send_json(200, commits(self.server.paper_root))
+        elif path == "/history":
+            self.send_json(200, history(self.server.paper_root))
+        elif path == "/history/diff":  # (a coauthor sees only commits that the copy's branch builds on, as with /diff)
+            self.send_json(*commit_diff(self.server.paper_root, query.get("rev", [""])[0], query.get("path", [None])[0],
+                                        any_rev=self.principal["role"] == "owner"))
         elif path == "/instances":
             self.send_json(200, {"self": os.getpid(), "instances": instances()})
         elif path == "/papers":
@@ -218,8 +225,8 @@ class Handler(BaseHandler):
             self.send_error(404)
 
     def do_POST(self):
-        """Actions (POST /note, /file, the Files tab's /file/create, /file/upload, /file/rename and /file/delete, /rebuild,
-        /switch, /diff, /open, /commit, /logout, /presence), and the builds made on
+        """Actions (POST /note, /file, the Files tab's /file/create, /file/upload, /file/rename and /file/delete, the History
+        tab's /history/restore, /rebuild, /switch, /diff, /open, /commit, /logout, /presence), and the builds made on
         request (POST /export, /review, /arxiv, and in shared mode /baseline). Only with the session cookie, which
         SameSite=Strict keeps off other sites' requests, a JSON body, which other sites can't send without asking
         first, and from the viewer's own page (origin_allowed), as the role allows; both are checked before the body
@@ -277,6 +284,8 @@ class Handler(BaseHandler):
             self.send_json(*rename_request(self.server, req, self.principal))
         elif path == "/file/delete" and isinstance(req, dict):
             self.send_json(*delete_request(self.server, req, self.principal))
+        elif path == "/history/restore" and isinstance(req, dict):
+            self.send_json(*restore_request(self.server, req, self.principal))
         elif path == "/bib/lookup" and isinstance(req, dict):
             self.send_json(*lookup_request(req))
         elif path == "/bib/add" and isinstance(req, dict):

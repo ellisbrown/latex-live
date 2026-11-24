@@ -2,7 +2,8 @@
 and POST /file saves one, merged (git merge-file) with what was saved meanwhile since the version the edits
 started from; GET /completions lists what it completes in \\ref, \\cite and \\includegraphics, and GET /search
 finds text in all of them. The Files tab sends a figure (GET /asset), makes a source file (POST /file/create),
-uploads a figure (POST /file/upload), and renames or removes a source or figure (POST /file/rename, /file/delete).
+uploads a figure (POST /file/upload), and renames or removes a source or figure (POST /file/rename, /file/delete). The
+History tab puts a source back as a commit left it (POST /history/restore).
 
 A file's version is a hash of its bytes; the editor works with \\n line ends, and a file that uses \\r\\n
 gets them back on save. Reads and saves go through read_editable and write_source under NOTE_LOCK, as notes
@@ -19,6 +20,7 @@ import time
 
 from . import config
 from .commits import commit_others, paused, remember_write, updating
+from .git import commit_sha, file_at_commit
 from .latex import brace_group
 from .sources import (
     ADDED_LIMIT, ASSET_EXTS, ASSET_SIZE, ASSETS_LIMIT, EDITABLE_EXTS, EDITABLE_SIZE, NOTE_LOCK, SourceChanged, add_file,
@@ -543,3 +545,62 @@ def delete_request(server, req, user):
             return 500, {"error": f"could not remove {norm}: {e.strerror or e}"}
         files_changed(server, user, drop=[norm])
     return 200, {"path": norm}
+
+
+def restore_request(server, req, user):
+    """POST /history/restore {rev, path, version?}: put a source back as commit rev (a hexadecimal id; for a coauthor, one
+    that HEAD builds on) left it, as user: written over the file the editor opens (only if it is still at version, when
+    given: else 409), or, if it is gone, made again (create_source: never over anything that is there, 409; then listed
+    and committed as a file the Files tab made). 200 {"path", "version", "created"}."""
+    rev, rel, version = req.get("rev"), req.get("path"), req.get("version")
+    if not isinstance(rev, str) or not isinstance(rel, str) or not isinstance(version, (str, type(None))):
+        return 400, {"error": "expected rev and path (and maybe version)"}
+    rel = os.path.normpath(rel.strip() or ".")
+    if not rel.lower().endswith(EDITABLE_EXTS):
+        return 400, {"error": f"only sources ({', '.join(EDITABLE_EXTS)}) are restored here"}
+    if not (sha := commit_sha(server.paper_root, rev, any_rev=user["role"] == "owner")):
+        return 404, {"error": "no such commit here"}
+    data, why = file_at_commit(server.paper_root, sha, rel, EDITABLE_SIZE)
+    if data is None:
+        return 404, {"error": why}
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return 415, {"error": f"{rel} is not UTF-8 there, so the editor can't restore it"}
+    with NOTE_LOCK:
+        if paused(server):
+            return updating()
+        real = editable_files(server).get(rel)
+        try:
+            if real:
+                raw = read_editable(real)
+                if version is not None and file_version(raw) != version:
+                    return 409, {"error": f"{rel} changed meanwhile: look again before restoring it"}
+                written = os.path.relpath(real, os.path.realpath(server.paper_root))
+                if raw != data:
+                    if not commit_others(server, user, written):
+                        return updating()
+                    write_source(real, raw.decode("utf-8"), text)
+                    remember_write(server, user, written, "edit")
+                    wrote(server, user, written)
+            else:
+                if len(server.added) >= ADDED_LIMIT:
+                    return 409, {"error": f"{ADDED_LIMIT} files were added here already: remove some first"}
+                rel = new_path(server.paper_root, rel, EDITABLE_EXTS)
+                if not commit_others(server, user, rel):
+                    return updating()
+                create_source(server.paper_root, rel, text)
+                files_changed(server, user, add=[rel])
+        except ValueError as e:
+            return 400, {"error": f"{rel}: {e}"}
+        except FileExistsError:
+            return 409, {"error": f"{rel} is there, but not as a file the editor opens, so it was left as it is"}
+        except SourceChanged:
+            return 409, {"error": f"{rel} or a folder on the way changed; try again"}
+        except UnicodeDecodeError:
+            return 415, {"error": f"{rel} is not UTF-8, so the editor can't restore it"}
+        except OSError as e:
+            return 500, {"error": f"could not restore {rel}: {e.strerror or e}"}
+        new_version = file_version(data)
+        remember_version(server, rel, new_version, editor_text(text)[0])
+    return 200, {"path": rel, "version": new_version, "created": not real}

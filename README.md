@@ -22,7 +22,8 @@ nothing beyond Python's standard library.
   and figures, search across files, a Files tab (new files, figure uploads, renames), and a Cmd/Ctrl+K palette.
   Light and dark themes.
 - A bibliography panel: citation counts, one-click `\cite`, and adding entries by arXiv ID, DOI or BibTeX.
-- Change highlights against the last push, commit or build, and latexdiff against any commit.
+- Change highlights against the last push, commit or build, latexdiff against any commit, and a
+  History tab of commits with their diffs, to restore a file from.
 - A page-limit badge, space hints, and pre-submission checks: anonymity,
   references, fonts, figure placement, what the arXiv source would expose, and more.
 - Downloads: as built, without notes (an exact build), or with the notes in the margin;

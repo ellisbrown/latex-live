@@ -16,7 +16,7 @@ import time
 
 from . import config
 from .auth import owner_name
-from .files import fls_file, project_inputs, read_json
+from .files import fls_file, in_build, project_inputs, read_json
 from .latex import source_tree
 
 
@@ -140,13 +140,6 @@ def paper_file(paper_root, rel, exts, limit):
     except (OSError, ValueError):
         return None
     return real if stat.S_ISREG(st.st_mode) and st.st_size <= limit else None
-
-
-def in_build(rel):
-    """Whether rel (relative to the paper root, normalized) is the build directory or in it, in any case (where the file
-    system ignores case, Build/ is build/)."""
-    folded, build = rel.casefold(), os.path.normpath(config.BUILD).casefold()
-    return folded == build or folded.startswith(os.path.join(build, ""))
 
 
 # The figures and images in the paper (asset_real), which the editor completes in \includegraphics.

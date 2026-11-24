@@ -37,9 +37,11 @@ before it may:
   against the last commit or push); uses the Refs tab (the bibliography, with
   online lookups only if you turn them on: `LATEX_LIVE_LOOKUPS`); sees who else
   has the paper open, by name, and which file and line each is on (the other
-  editors and the owner, who see the same of them); and uses the Files tab:
+  editors and the owner, who see the same of them); uses the Files tab:
   makes source files, uploads figures (at most 100 MB a day each), and renames
-  and removes the document's sources and figures;
+  and removes the document's sources and figures; and uses the History tab: the
+  commits of the copy's branch that changed the paper's files, by author, what
+  each changed, and restoring a source as one left it;
 - **owner:** everything a preview of your own allows (the arXiv package
   too), except switching to another document: a shared instance serves one.
 
@@ -123,8 +125,9 @@ Run the shared instance there, never in your own checkout:
   saves and notes, and the files they make, upload, rename or remove in the
   Files tab (but those that git ignores).
 
-Editors can compare with any commit that the copy's branch builds on, so its
-whole history is part of what you share. Share a branch whose history you are
+Editors can compare with any commit that the copy's branch builds on, and see
+its changes and authors in the History tab, so its whole history (in the paper's
+folder) is part of what you share. Share a branch whose history you are
 happy to show (e.g. one squashed commit on top of what you would publish).
 
 While it runs, leave the copy's files to latex-live: a commit takes whole
