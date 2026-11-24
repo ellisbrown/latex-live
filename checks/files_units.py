@@ -207,7 +207,7 @@ def request_checks():
 def commit_checks():
     """commit_files with the Files tab's changes: a new file is added to git (unless git ignores it), a removed one is
     committed as removed, a rename as both; a file made and removed before its commit, nothing; an edit after a file
-    was made keeps it a new file (remember_write)."""
+    was made keeps it a new file (remember_write); a commit that fails leaves nothing in the index."""
     from latexlive import commits
     with tempfile.TemporaryDirectory(prefix="latex-live-commits-") as root, tempfile.TemporaryDirectory() as state:
         git(root, "init", "-q")
@@ -231,6 +231,18 @@ def commit_checks():
         paths = server.pending["ed"]["paths"]
         if paths["sec.tex"][0] != "files":
             fail(f"an edit of a file the Files tab made makes it an edit only: {paths['sec.tex']}")
+        run = commits.subprocess.run  # (a commit that fails: the new files it added leave the index again)
+        commits.subprocess.run = lambda args, **kw: (types.SimpleNamespace(returncode=1, stdout="", stderr="refused")
+                                                     if "--only" in args else run(args, **kw))
+        try:
+            commits.commit_files(server, user, dict(paths))
+            fail("commit_files did not say that git refused the commit")
+        except RuntimeError:
+            pass
+        finally:
+            commits.subprocess.run = run
+        if git_out(root, "diff", "--cached", "--name-only"):
+            fail(f"a failed commit left new files in the index: {git_out(root, 'diff', '--cached', '--name-only')}")
         made = commits.commit_files(server, user, dict(paths))
         changes = sorted(git_out(root, "show", "--name-status", "--format=", "-M", "HEAD").splitlines())
         want = sorted(["A\tfigures/new.png", "A\tsec.tex", "R100\tfigures/old.png\tfigures/moved.png"])

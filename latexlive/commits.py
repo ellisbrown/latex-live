@@ -11,6 +11,7 @@ command holding the index). Who wrote what, not committed yet, is kept in the st
 uncommitted at the start that no one's writes account for are committed then, as the owner's
 (UNATTRIBUTED), rather than in the next coauthor's commit of that file."""
 
+import contextlib
 import json
 import math
 import os
@@ -324,41 +325,47 @@ def commit_files(server, user, paths):
     env = {key: value for key, value in os.environ.items() if key != "GIT_OPTIONAL_LOCKS"}  # (a commit takes the index)
     files = sorted(rel for rel in paths if os.path.isfile(os.path.join(root, rel))
                    or paths[rel][0] == "files" and not os.path.lexists(os.path.join(root, rel)))
-    if files:
-        tracked = set(run(["ls-files", "-z", "--", *files], git_read_env()).stdout.split("\0"))
-        new = [rel for rel in files if rel not in tracked and paths[rel][0] == "files"]  # (made by the Files tab)
-        if new:
-            addable = set(run(["ls-files", "-z", "--others", "--exclude-standard", "--", *new], git_read_env()).stdout.split("\0"))
-            new = [rel for rel in new if rel in addable and not os.path.islink(os.path.join(root, rel))]  # (not those git ignores)
+    added = []  # (new files added to git for this commit: out of the index again unless it is made, to be added anew)
+    try:
+        if files:
+            tracked = set(run(["ls-files", "-z", "--", *files], git_read_env()).stdout.split("\0"))
+            new = [rel for rel in files if rel not in tracked and paths[rel][0] == "files"]  # (made by the Files tab)
             if new:
-                r = run(["add", "--", *new], env)
-                if r.returncode:
-                    raise RuntimeError((r.stderr.strip() or f"git add failed ({r.returncode})").splitlines()[-1])
-                tracked.update(new)
-        r = run(["diff", "--name-only", "--no-renames", "-z", "--relative", "HEAD", "--", *files], git_read_env())
-        changed = set(r.stdout.split("\0")) if r.returncode == 0 else set(files)  # (no HEAD yet: all of them)
-        files = [rel for rel in files if rel in tracked and rel in changed]
-    if not files:
-        return None
-    owner, owner_email = committer(server)
-    name = user["name"] or owner
-    email = user["email"] or (owner_email if user["role"] == "owner" else "")
-    listed = ", ".join(re.sub(r"[\x00-\x1f\x7f]", "?", rel) for rel in files[:3]) + (f" and {len(files) - 3} more" if len(files) > 3 else "")
-    if user["id"] == UNATTRIBUTED:
-        subject, trailer = f"Edits found uncommitted at the start: {listed}", "unattributed"
-    else:
-        verb = "notes in" if all(paths[rel][0] == "notes" for rel in files) else "edit"
-        subject, trailer = f"{name}: {verb} {listed}", user["id"]
-    r = run(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "gc.auto=0", "-c", f"user.name={owner}",
-             "-c", f"user.email={owner_email}", "commit", "--only", f"--author={name} <{email}>",
-             "-m", f"{subject}\n\nLatex-Live-Shared: {trailer}", "--", *files], env)
-    if r.returncode:
-        if new:  # (the new files added for it leave the index again, to be added anew the next time)
-            run(["rm", "--cached", "-q", "--ignore-unmatch", "--", *new], env)
-        raise RuntimeError((r.stderr.strip() or r.stdout.strip() or f"git commit failed ({r.returncode})").splitlines()[-1])
-    sha = run(["rev-parse", "--short", "HEAD"], git_read_env()).stdout.strip()
-    print(f"=== latex-live: committed {sha}: {subject}", flush=True)
-    return {"user": trailer, "commit": sha, "subject": subject, "files": files}
+                addable = set(run(["ls-files", "-z", "--others", "--exclude-standard", "--", *new], git_read_env()).stdout.split("\0"))
+                new = [rel for rel in new if rel in addable and not os.path.islink(os.path.join(root, rel))]  # (not those git ignores)
+                if new:
+                    r = run(["add", "--", *new], env)
+                    if r.returncode:
+                        raise RuntimeError((r.stderr.strip() or f"git add failed ({r.returncode})").splitlines()[-1])
+                    tracked.update(new)
+                    added = new
+            r = run(["diff", "--name-only", "--no-renames", "-z", "--relative", "HEAD", "--", *files], git_read_env())
+            changed = set(r.stdout.split("\0")) if r.returncode == 0 else set(files)  # (no HEAD yet: all of them)
+            files = [rel for rel in files if rel in tracked and rel in changed]
+        if not files:
+            return None
+        owner, owner_email = committer(server)
+        name = user["name"] or owner
+        email = user["email"] or (owner_email if user["role"] == "owner" else "")
+        listed = ", ".join(re.sub(r"[\x00-\x1f\x7f]", "?", rel) for rel in files[:3]) + (f" and {len(files) - 3} more" if len(files) > 3 else "")
+        if user["id"] == UNATTRIBUTED:
+            subject, trailer = f"Edits found uncommitted at the start: {listed}", "unattributed"
+        else:
+            verb = "notes in" if all(paths[rel][0] == "notes" for rel in files) else "edit"
+            subject, trailer = f"{name}: {verb} {listed}", user["id"]
+        r = run(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "gc.auto=0", "-c", f"user.name={owner}",
+                 "-c", f"user.email={owner_email}", "commit", "--only", f"--author={name} <{email}>",
+                 "-m", f"{subject}\n\nLatex-Live-Shared: {trailer}", "--", *files], env)
+        if r.returncode:
+            raise RuntimeError((r.stderr.strip() or r.stdout.strip() or f"git commit failed ({r.returncode})").splitlines()[-1])
+        added = []  # (committed)
+        sha = run(["rev-parse", "--short", "HEAD"], git_read_env()).stdout.strip()
+        print(f"=== latex-live: committed {sha}: {subject}", flush=True)
+        return {"user": trailer, "commit": sha, "subject": subject, "files": files}
+    finally:
+        if added:
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                run(["rm", "--cached", "-q", "--ignore-unmatch", "--", *added], env)
 
 
 def committer(server):

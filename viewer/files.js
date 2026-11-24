@@ -12,7 +12,7 @@ import { editorShown, el, isPopout, setStatus } from "./page.js";
 import { postJSON, readBody } from "./net.js";
 import { editorAllowed } from "./role.js";
 import { assets as pdfAssets, pdfjsLib } from "./pdfview.js";
-import { closeTab, ed, flushSource, insertText, onFileOpen, openFile, setSrcFiles, showEditor, srcFiles } from "./editor.js";
+import { closeTab, cmView, ed, flushSource, insertText, onFileOpen, openFile, setSrcFiles, showEditor, srcFiles } from "./editor.js";
 import { setFigurePreview } from "./cm.js";
 import { onPresence } from "./presence.js";
 import { addTab, showSide, showTab } from "./sidebar.js";
@@ -280,9 +280,14 @@ async function renameFile(name, { path }) {
   thumbs.delete(path);
   thumbs.delete(done.path);
   if (preview === path) preview = done.path;
-  await loadFiles();
-  if (open) await openFile(done.path);
+  const typed = ed?.path === path && ed.dirty ? cmView.state.doc.toString() : null; // (typed meanwhile: they go to the new name)
   await closeTab(path, { discard: true });
+  await loadFiles();
+  if (!open) return;
+  await openFile(done.path);
+  if (typed !== null && ed?.path === done.path && cmView.state.doc.toString() !== typed) {
+    cmView.dispatch({ changes: { from: 0, to: cmView.state.doc.length, insert: typed }, userEvent: "input" });
+  }
 }
 async function removeFile(path) {
   const unsaved = ed?.path === path && ed.dirty ? " Its edits not saved yet go too." : "";
