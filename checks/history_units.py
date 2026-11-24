@@ -4,10 +4,11 @@ brought in, the limit counted after leaving the others out), the uncommitted cha
 folder names nothing outside it), a commit's diff (never a dot file or build/, however big, and the files shown first),
 commits named only by their ids, and restoring a source: over the file the editor opens (only at the version given), a
 removed one made again and committed as its restorer's, never over another file, a coauthor only from commits the branch
-builds on."""
+builds on; in a folder of the paper too."""
 
 import json
 import os
+import shutil
 import tempfile
 import threading
 
@@ -40,6 +41,7 @@ def make_history_repo(repo):
     put(os.path.join(root, "main.tex"), "\\documentclass{article}\n\\begin{document}\n\\input{sec}\nOne.\n\\end{document}\n")
     put(os.path.join(root, "sec.tex"), "Section one.\n")
     put(os.path.join(root, "gone.tex"), "Removed later.\n")
+    put(os.path.join(root, "sections", "intro.tex"), "In a folder.\n")
     put(os.path.join(repo, "outside.tex"), "Outside the paper.\n")
     put(os.path.join(repo, "theirs.tex"), "Another project's file.\n")
     commit(repo, "start")
@@ -133,6 +135,13 @@ def diff_checks(repo, root):
             fail(f"commit_diff shows {path} at {rev[:7]}")
     if history.commit_diff(root, elsewhere, any_rev=False)[0] != 404 or history.commit_diff(root, elsewhere)[0] != 200:
         fail("commit_diff of a commit HEAD doesn't build on: refused for a coauthor, shown for the owner")
+    saved, history.LOG_LIMIT = history.LOG_LIMIT, 12  # (a list cut short at its limit: what came is used)
+    try:
+        cut = history.changed_files(root, shas["second"], shas["remove gone.tex"])
+    finally:
+        history.LOG_LIMIT = saved
+    if cut is None or len(cut) > 1:
+        fail(f"changed_files cut short at its limit: {cut}")
     if history.commit_diff(root, "WORKTREE")[0] != 200:
         fail("commit_diff of the uncommitted changes")
     os.symlink("main.tex", os.path.join(root, "link.tex"))
@@ -194,5 +203,9 @@ def restore_checks(repo, root, state):
     if git_out(repo, "show", "-s", "--format=%an", "HEAD") != "Eden Doyle" or "paper/gone.tex" not in git_out(repo, "ls-files"):
         fail("a file restored after it was removed is not committed as its restorer's")
     want(editor.restore_request(server, {"rev": shas["merge the side"], "path": "gone.tex"}, ed), 200, "restoring it again (as it is)")
+    shutil.rmtree(os.path.join(root, "sections"))
+    result = editor.restore_request(server, {"rev": shas["start"], "path": "sections/intro.tex"}, ed)
+    if result[:1] != (200,) or read_text(os.path.join(root, "sections", "intro.tex")) != "In a folder.\n":
+        fail(f"restoring sections/intro.tex, whose folder is gone too: {result}")
     ok("restore: over the file the editor opens (at the version given), a removed file made again, listed and committed as"
        " its restorer's, never over another file, sources only; a coauthor only from commits the branch builds on")

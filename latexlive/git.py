@@ -162,7 +162,7 @@ def changed_files(paper_root, base, target=None):
     working tree), paths relative to the paper root; None if git failed."""
     code, data, more = git_capped(paper_root, ["diff", "--name-status", "-z", "--no-renames", "--relative", "--no-color",
                                                base, *([target] if target else []), "--", "."], LOG_LIMIT)
-    if code != 0:
+    if code is None or code != 0 and not more:  # (stopped past the limit: what came is used)
         return None
     parts = data.decode("utf-8", "replace").split("\0")
     if more:
@@ -202,8 +202,8 @@ def read_commits(paper_root, limit):
     """history's commits (see there), or None if git failed."""
     code, data, more = git_capped(paper_root, [
         "log", f"-n{HISTORY_SCAN}", "-z", "--no-renames", "--relative", "--name-status", "--no-show-signature",
-        "--no-color", "--format=%x1e%H%x1f%P%x1f%an%x1f%at%x1f%s", "--", "."], LOG_LIMIT, timeout=30)
-    if code is None or code != 0 and not data:
+        "--no-color", "--root", "--format=%x1e%H%x1f%P%x1f%an%x1f%at%x1f%s", "--", "."], LOG_LIMIT, timeout=30)
+    if code is None or code != 0 and not more:
         return None
     records = data.decode("utf-8", "replace").split("\x1e")[1:]
     if more:
@@ -256,7 +256,7 @@ def commit_diff(paper_root, rev, path=None, any_rev=True):
     code, data, more = git_capped(paper_root, [
         "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--relative", "--src-prefix=a/",
         "--dst-prefix=b/", base, *([target] if target else []), "--", *paths[:DIFF_FILES]], DIFF_LIMIT)
-    if code is None or code != 0 and not data:
+    if code is None or code != 0 and not more:
         return 500, {"error": "git could not show the changes"}
     text = data.decode("utf-8", "replace")
     if more:
