@@ -329,7 +329,8 @@ def commit_files(server, user, paths):
         new = [rel for rel in files if rel not in tracked and paths[rel][0] == "files"]  # (made by the Files tab)
         if new:
             addable = set(run(["ls-files", "-z", "--others", "--exclude-standard", "--", *new], git_read_env()).stdout.split("\0"))
-            if new := [rel for rel in new if rel in addable]:  # (not those that git ignores, nor a removed one never added)
+            new = [rel for rel in new if rel in addable and not os.path.islink(os.path.join(root, rel))]  # (not those git ignores)
+            if new:
                 r = run(["add", "--", *new], env)
                 if r.returncode:
                     raise RuntimeError((r.stderr.strip() or f"git add failed ({r.returncode})").splitlines()[-1])
@@ -352,6 +353,8 @@ def commit_files(server, user, paths):
              "-c", f"user.email={owner_email}", "commit", "--only", f"--author={name} <{email}>",
              "-m", f"{subject}\n\nLatex-Live-Shared: {trailer}", "--", *files], env)
     if r.returncode:
+        if new:  # (the new files added for it leave the index again, to be added anew the next time)
+            run(["rm", "--cached", "-q", "--ignore-unmatch", "--", *new], env)
         raise RuntimeError((r.stderr.strip() or r.stdout.strip() or f"git commit failed ({r.returncode})").splitlines()[-1])
     sha = run(["rev-parse", "--short", "HEAD"], git_read_env()).stdout.strip()
     print(f"=== latex-live: committed {sha}: {subject}", flush=True)

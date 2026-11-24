@@ -65,8 +65,7 @@ def serve(paper_root, default_pdf, port, page_limit, hub_port=None):
     server.latexmk, server.lock, server.stopping, server.retried, server.no_build = None, None, False, -60, False
     server.requests = queue.Queue()  # document switches and rebuilds, for the main thread (on_main_thread)
     server.editable, server.assets = None, None  # (editable_files, project_assets)
-    server.added_file = os.path.join(config.STATE, "added", f"{server.paper_id}.json")  # (the Files tab's: remember_added)
-    load_added(server)
+    load_added(server)  # (the Files tab's added files: server.added, server.added_file)
     server.uploads = {}  # (upload_request: each user's uploads of the last day)
     server.versions, server.versions_lock = collections.OrderedDict(), threading.Lock()  # (remember_version)
     server.bib_verify, server.bib_lock = {}, threading.Lock()  # (the Refs panel's check: start_verify)

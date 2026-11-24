@@ -22,7 +22,7 @@ from .commits import commit_others, paused, remember_write, updating
 from .latex import brace_group
 from .sources import (
     ADDED_LIMIT, ASSET_EXTS, ASSET_SIZE, ASSETS_LIMIT, EDITABLE_EXTS, EDITABLE_SIZE, NOTE_LOCK, SourceChanged, add_file,
-    cached_version, create_source, doc_assets, editable_files, editable_real, file_version, invalidate_assets, move_file,
+    asset_real, cached_version, create_source, doc_assets, doc_figures, editable_files, editable_real, file_version, invalidate_assets, move_file,
     new_path, open_source, project_assets, read_editable, remember_added, remove_file, write_source, wrote)
 
 
@@ -43,9 +43,16 @@ def files_listing(server, user):
 
 
 def listed_assets(server, user):
-    """The figures that user's Files tab lists, GET /asset sends and the Files tab renames and removes: the paper's
-    (project_assets); in shared mode, a coauthor's are the document's (doc_assets), as their sources are."""
+    """The figures that user's Files tab lists: the paper's (project_assets); in shared mode, a coauthor's are the
+    document's (doc_assets), as their sources are."""
     return doc_assets(server) if config.SHARED and user["role"] != "owner" else project_assets(server)
+
+
+def user_asset(server, user, rel):
+    """The real path of rel if it is a figure that user may see, rename and remove (asset_real; in shared mode, for a
+    coauthor, one of the document's: doc_figures), else None."""
+    real = asset_real(server.paper_root, rel)
+    return real if real and (not config.SHARED or user["role"] == "owner" or rel in doc_figures(server)) else None
 
 
 LABEL_RE = re.compile(r"\\label\s*\{([^{}\n]{1,200})\}")
@@ -54,7 +61,7 @@ BIB_TITLE_RE = re.compile(r"\btitle\s*=\s*([{\"])", re.I)
 COMPLETIONS_LIMIT = 5000
 
 
-def completions(server, user, cache={}):
+def completions(server, user, *, cache={}):
     """GET /completions: what the browser editor offers in \\ref, \\cite and \\includegraphics, and shows when the
     pointer rests on one, from the files it opens (so nothing an editor couldn't read there) and the paper's figures:
     {"labels": [{"label", "file", "line"}] from the \\label commands outside comments, "labelContext": {label: the
@@ -348,15 +355,17 @@ ASSET_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
 
 
 def asset_request(server, query, user):
-    """GET /asset?path=<rel>: (status, content type, bytes) of a figure that user's Files tab lists (listed_assets), as
-    open_source reads it; 404 for any other path."""
+    """GET /asset?path=<rel>: (status, content type, bytes) of a figure that user may see (user_asset), as open_source
+    reads it; 404 for any other path."""
     rel = os.path.normpath(query.get("path", [""])[0] or ".")
-    if rel not in {a["path"] for a in listed_assets(server, user)}:
+    if not (real := user_asset(server, user, rel)):
         return 404, None, b""
     try:
-        with open_source(os.path.join(os.path.realpath(server.paper_root), rel), limit=ASSET_SIZE) as f:
+        with open_source(real, limit=ASSET_SIZE) as f:
             data = f.read(ASSET_SIZE + 1)
     except (OSError, SourceChanged):
+        return 404, None, b""
+    if len(data) > ASSET_SIZE:  # (grown since it was checked)
         return 404, None, b""
     return 200, ASSET_TYPES.get(os.path.splitext(rel)[1].lower(), "application/octet-stream"), data
 
@@ -378,8 +387,11 @@ def files_changed(server, user, add=(), drop=()):
     invalidate_assets(server)
     for rel in (*drop, *add):
         remember_write(server, user, rel, "files")
+    for rel in drop:
+        server.last_writer.pop(rel, None)
     for rel in add:
-        wrote(server, user, rel)
+        if rel.lower().endswith(EDITABLE_EXTS):  # (who saved a source, should a save conflict: save_file's "by")
+            wrote(server, user, rel)
 
 
 def create_request(server, req, user):
@@ -466,11 +478,11 @@ def upload_request(server, req, user):
 
 def managed(server, user, rel):
     """rel, normalized, if user's Files tab may rename or remove it: a source the editor opens (editable_files) or a
-    figure it lists (listed_assets), but the document's main file; else None."""
+    figure they may see (user_asset), but the document's main file; else None."""
     norm = os.path.normpath(rel) if isinstance(rel, str) and rel.strip() and "\0" not in rel else None
     if not norm or norm == f"{server.default_pdf[:-4]}.tex":
         return None
-    return norm if norm in editable_files(server) or norm in {a["path"] for a in listed_assets(server, user)} else None
+    return norm if norm in editable_files(server) or user_asset(server, user, norm) else None
 
 
 def rename_request(server, req, user):
