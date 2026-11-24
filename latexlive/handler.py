@@ -16,7 +16,9 @@ from .build import on_main_thread, rebuild_doc, request_switch
 from .checks import cached_checks
 from .commits import commit_request
 from .document import floats, graphics, toc_outline
-from .editor import completions, file_request, files_listing, save_request, search_request, source_status
+from .editor import (
+    UPLOAD_SLOTS, asset_request, completions, create_request, delete_request, file_request, files_listing, rename_request,
+    save_request, search_request, source_status, upload_request)
 from .export import start_export
 from .files import pdf_path
 from .git import commits
@@ -57,6 +59,7 @@ def me(server, user):
 
 STATIC = {"/viewer.html"}  # plus the files in the folders of STATIC_DIRS (static_file)
 ACTIONS = ("/open", "/diff", "/switch", "/export", "/review", "/arxiv")  # (POST only: a GET of one is answered 405)
+ASSET_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'none'"  # (a figure opened alone runs nothing)
 
 
 def static_file(path):
@@ -168,9 +171,20 @@ class Handler(BaseHandler):
             else:
                 self.send_text(*synctex_edit(self.server.paper_root, query))
         elif path == "/files":
-            self.send_json(200, files_listing(self.server))
+            self.send_json(200, files_listing(self.server, self.principal))
+        elif path == "/asset":
+            code, content_type, body = asset_request(self.server, query, self.principal)
+            if code != 200:
+                return self.send_error(code)
+            self.csp_override = ASSET_CSP
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.write_body(body)
         elif path == "/completions":
-            self.send_json(200, completions(self.server))
+            self.send_json(200, completions(self.server, self.principal))
         elif path == "/search":
             self.send_json(*search_request(self.server, query))
         elif path == "/papers/index":
@@ -204,7 +218,8 @@ class Handler(BaseHandler):
             self.send_error(404)
 
     def do_POST(self):
-        """Actions (POST /note, /file, /rebuild, /switch, /diff, /open, /commit, /logout, /presence), and the builds made on
+        """Actions (POST /note, /file, the Files tab's /file/create, /file/upload, /file/rename and /file/delete, /rebuild,
+        /switch, /diff, /open, /commit, /logout, /presence), and the builds made on
         request (POST /export, /review, /arxiv, and in shared mode /baseline). Only with the session cookie, which
         SameSite=Strict keeps off other sites' requests, a JSON body, which other sites can't send without asking
         first, and from the viewer's own page (origin_allowed), as the role allows; both are checked before the body
@@ -229,6 +244,17 @@ class Handler(BaseHandler):
             return self.send_error(403, "not from this preview's own page (Origin)")
         if not self.permitted("POST", path, {}, before=drain):
             return
+        if path == "/file/upload" and not UPLOAD_SLOTS.acquire(blocking=False):  # (each upload's body is held in memory)
+            drain()
+            return self.send_json(429, {"error": "other uploads are on their way; try again in a moment", "retry": True})
+        try:
+            self.post(path, length)
+        finally:
+            if path == "/file/upload":
+                UPLOAD_SLOTS.release()
+
+    def post(self, path, length):
+        """do_POST's reading of the body and its answer, once the request may be made."""
         try:
             data = self.rfile.read(length)
         except OSError:  # (the client stopped sending: the timeout)
@@ -243,6 +269,14 @@ class Handler(BaseHandler):
             self.send_json(*note_request(self.server, req, self.principal))
         elif path == "/file" and isinstance(req, dict):
             self.send_json(*save_request(self.server, req, self.principal))
+        elif path == "/file/create" and isinstance(req, dict):
+            self.send_json(*create_request(self.server, req, self.principal))
+        elif path == "/file/upload" and isinstance(req, dict):
+            self.send_json(*upload_request(self.server, req, self.principal))
+        elif path == "/file/rename" and isinstance(req, dict):
+            self.send_json(*rename_request(self.server, req, self.principal))
+        elif path == "/file/delete" and isinstance(req, dict):
+            self.send_json(*delete_request(self.server, req, self.principal))
         elif path == "/bib/lookup" and isinstance(req, dict):
             self.send_json(*lookup_request(req))
         elif path == "/bib/add" and isinstance(req, dict):

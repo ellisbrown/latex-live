@@ -28,8 +28,11 @@ let saveId = EDITOR_ID;
 
 export let cmView = null; // the open file's editor (CodeMirror's view)
 
-export let srcFiles = null; // live.py /files: {files: [{path, size}], main}
+export let srcFiles = null; // live.py /files: {files: [{path, size}], main, assets: [{path, size}], uploadSize}
 export function setSrcFiles(list) { srcFiles = list; }
+// For other parts of the viewer (the Files tab): fn() each time a file opens in the pane, or the pane closes its last.
+const fileOpened = [];
+export const onFileOpen = (fn) => fileOpened.push(fn);
 // The open file: {path, base (its text as the server has it, at version baseVersion; null when that
 // version is not known, so that the server merges from base), dirty (edits not saved yet), markers
 // (conflict markers in the text), error ({short, why}: why the last save was refused), gone (the file
@@ -122,6 +125,7 @@ export async function openFile(path, line = 0, column = 0) {
   showSaveState();
   if (line) goToLine(line, column);
   offerKept(f);
+  for (const fn of fileOpened) fn();
 }
 function goToLine(line, column = 0) {
   const doc = cmView.state.doc, to = doc.line(Math.min(Math.max(1, +line || 1), doc.lines));
@@ -223,6 +227,7 @@ function closeFile() {
   showTabs();
   showRail();
   showSaveState();
+  for (const fn of fileOpened) fn();
 }
 
 // The status bar under the text: the cursor's line and column, and the words of the text, or of the selection (counted

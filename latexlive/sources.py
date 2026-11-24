@@ -1,19 +1,22 @@
 """Writing the paper's sources: the files the browser editor opens, the lock that every write
-(a note, a save) takes, writing a file in one step unless it changed meanwhile, and who wrote which
-version of a file."""
+(a note, a save) takes, writing a file in one step unless it changed meanwhile, who wrote which
+version of a file, and the Files tab's changes (a file made, uploaded, renamed or removed)."""
 
 import contextlib
 import errno
 import glob
 import hashlib
+import json
 import os
+import re
+import secrets
 import stat
 import threading
 import time
 
 from . import config
 from .auth import owner_name
-from .files import fls_file, project_inputs
+from .files import fls_file, project_inputs, read_json
 from .latex import source_tree
 
 
@@ -130,14 +133,20 @@ def paper_file(paper_root, rel, exts, limit):
     real = os.path.realpath(os.path.join(root, rel))
     for path in (os.path.normpath(rel), os.path.relpath(real, root)):
         parts = path.split(os.sep)
-        if (any(part.startswith(".") for part in parts) or os.path.splitext(path)[1].lower() not in exts
-                or path == config.BUILD or path.startswith(os.path.join(config.BUILD, ""))):
+        if any(part.startswith(".") for part in parts) or os.path.splitext(path)[1].lower() not in exts or in_build(path):
             return None
     try:
         st = os.stat(real)
     except (OSError, ValueError):
         return None
     return real if stat.S_ISREG(st.st_mode) and st.st_size <= limit else None
+
+
+def in_build(rel):
+    """Whether rel (relative to the paper root, normalized) is the build directory or in it, in any case (where the file
+    system ignores case, Build/ is build/)."""
+    folded, build = rel.casefold(), os.path.normpath(config.BUILD).casefold()
+    return folded == build or folded.startswith(os.path.join(build, ""))
 
 
 # The figures and images in the paper (asset_real), which the editor completes in \includegraphics.
@@ -178,7 +187,7 @@ def project_assets(server):
         here = os.path.relpath(folder, root)
         depth = 0 if here == "." else here.count(os.sep) + 1
         dirs[:] = sorted(d for d in dirs if depth < ASSETS_DEPTH and not d.startswith(".")
-                         and os.path.normpath(os.path.join(here, d)) != config.BUILD)
+                         and not in_build(os.path.normpath(os.path.join(here, d))))
         for name in sorted(names):
             if os.path.splitext(name)[1].lower() in ASSET_EXTS and not name.startswith("."):
                 add(name if here == "." else os.path.join(here, name))
@@ -198,9 +207,9 @@ def editable_files(server, fresh=True):
     """The files the browser editor opens, {path relative to the paper root: real path}, the main file
     first, then by path: those of the document's files that editable_real allows, which are the files
     its last build read (fls_file), its main file, the .bib files in the paper root and in the folders
-    in it (as find_bib_entry looks for them), and the files its \\input and \\include commands name
-    (source_tree, so they show before the first build). Without fresh, a list up to 2 s old does
-    (status polls)."""
+    in it (as find_bib_entry looks for them), the files its \\input and \\include commands name
+    (source_tree, so they show before the first build), and the sources added through the Files tab (server.added).
+    Without fresh, a list up to 2 s old does (status polls)."""
     cached = server.editable
     if not fresh and cached and time.monotonic() - cached[0] < 2 and cached[1] == server.default_pdf:
         return cached[2]
@@ -210,6 +219,7 @@ def editable_files(server, fresh=True):
     names += [os.path.relpath(p, root) for pattern in ("*.bib", os.path.join("*", "*.bib"))
               for p in glob.glob(os.path.join(glob.escape(root), pattern))]
     names += [os.path.relpath(os.path.normpath(p), root) for p in source_tree(root, doc)]
+    names += [rel for rel in getattr(server, "added", ()) if rel.lower().endswith(EDITABLE_EXTS)]
     found = {}
     for rel in sorted({os.path.normpath(name) for name in names}, key=lambda rel: (rel != main, rel)):
         if real := editable_real(root, rel):
@@ -246,3 +256,197 @@ def wrote(server, user, rel, version=None):
         except (OSError, SourceChanged):
             return
     server.last_writer[rel] = (version, user["name"] or (owner_name(server) if user["role"] == "owner" else user["id"]))
+
+
+# The Files tab's changes (editor.py): files made, uploaded, renamed or removed through the server. A new name holds
+# NAME_RE's parts, at most ASSETS_DEPTH folders deep (where project_assets looks), never in the build directory nor a
+# .pdf in the paper root (a document's build); an upload is a figure (ASSET_EXTS), never a source, which only the
+# editor's save writes; and nothing is written over a file that is there.
+NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_+.-]{0,99}")  # (no space, comma, colon, quote or control character)
+ADDED_LIMIT = 400  # files added through the server that it keeps listing (server.added)
+
+
+def new_path(paper_root, rel, exts):
+    """rel, normalized, if a new file with one of exts may go there (see above): its folders, where there, are folders
+    of the paper, not links. Else ValueError, saying why. (FileExistsError comes when it is written.)"""
+    if not isinstance(rel, str) or not rel.strip() or "\0" in rel:
+        raise ValueError("expected a file name")
+    norm = os.path.normpath(rel.strip())
+    parts = norm.split(os.sep)
+    if os.path.isabs(norm) or not all(NAME_RE.fullmatch(part) for part in parts):
+        raise ValueError("a name holds letters, digits, -, _, + and dots (not first), with / between folders")
+    ext = os.path.splitext(norm)[1].lower()
+    if ext not in exts:
+        raise ValueError(f"expected a {', '.join(exts)} file")
+    if len(parts) - 1 > ASSETS_DEPTH:
+        raise ValueError(f"at most {ASSETS_DEPTH} folders deep")
+    if in_build(norm):
+        raise ValueError("the build folder holds what the build writes")
+    if ext == ".pdf" and len(parts) == 1:
+        raise ValueError("a PDF figure goes in a folder: a PDF in the paper's folder is a document's")
+    root = folder = os.path.realpath(paper_root)
+    for part in parts[:-1]:
+        folder = os.path.join(folder, part)
+        if os.path.islink(folder) or os.path.lexists(folder) and not os.path.isdir(folder):
+            raise ValueError(f"{os.path.relpath(folder, root)} is not a folder of the paper")
+    return norm
+
+
+def paper_folder(paper_root, folder, make=False):
+    """A descriptor of folder (relative to the paper root), opened one part at a time from the paper root without
+    following a link, as source_folder opens a source's; with make, the parts not there yet are made first.
+    SourceChanged if a part is a link or a file now."""
+    fd = source_folder(os.path.join(os.path.realpath(paper_root), "x"))
+    try:
+        for part in [p for p in folder.split(os.sep) if p]:
+            if make:
+                with contextlib.suppress(FileExistsError):
+                    os.mkdir(part, 0o755, dir_fd=fd)
+            try:
+                fd, parent = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd), fd
+            except OSError as e:
+                if e.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise SourceChanged() from e
+                raise
+            os.close(parent)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def create_source(paper_root, rel, text):
+    """Make rel, a new source file (new_path, EDITABLE_EXTS), holding text, never over a file that is there
+    (FileExistsError). Returns rel normalized."""
+    norm = new_path(paper_root, rel, EDITABLE_EXTS)
+    folder = paper_folder(paper_root, os.path.dirname(norm), make=True)
+    name = os.path.basename(norm)
+    try:
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=folder)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(text.encode("utf-8"))
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(name, dir_fd=folder)
+            raise
+    finally:
+        os.close(folder)
+    return norm
+
+
+def add_file(paper_root, rel, data):
+    """Write data as rel, a new figure (new_path, ASSET_EXTS), in one step: into a file of a random name beside it, then
+    linked to its name, which fails where a file is there (FileExistsError: nothing written over, even one that came
+    meanwhile), and the random name removed. Returns rel normalized."""
+    norm = new_path(paper_root, rel, ASSET_EXTS)
+    folder = paper_folder(paper_root, os.path.dirname(norm), make=True)
+    tmp = f".latex-live-up-{secrets.token_hex(8)}"
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=folder)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            os.link(tmp, os.path.basename(norm), src_dir_fd=folder, dst_dir_fd=folder)
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp, dir_fd=folder)
+    finally:
+        os.close(folder)
+    return norm
+
+
+def own_file(paper_root, rel):
+    """(rel normalized, its real path) if it is a source or figure of the paper (editable_real, asset_real) reached
+    without a link on the way, so that renaming or removing it changes that file alone; else FileNotFoundError."""
+    norm = os.path.normpath(rel) if isinstance(rel, str) and rel.strip() and "\0" not in rel else None
+    real = norm and (editable_real(paper_root, norm) or asset_real(paper_root, norm))
+    if not real or real != os.path.join(os.path.realpath(paper_root), norm):
+        raise FileNotFoundError(rel)
+    return norm, real
+
+
+def move_file(paper_root, rel, new_rel):
+    """Rename rel, a source or figure of the paper (own_file), to new_rel (new_path, with the extensions of rel's kind:
+    a source stays a source, a figure a figure), never over a file that is there (a hard link to the new name, which
+    fails then: FileExistsError, then the old name removed). Returns new_rel normalized."""
+    old, real = own_file(paper_root, rel)
+    norm = new_path(paper_root, new_rel, EDITABLE_EXTS if old.lower().endswith(EDITABLE_EXTS) else ASSET_EXTS)
+    src = source_folder(real)
+    try:
+        if not stat.S_ISREG(os.lstat(os.path.basename(real), dir_fd=src).st_mode):
+            raise SourceChanged()
+        dst = paper_folder(paper_root, os.path.dirname(norm), make=True)
+        try:
+            os.link(os.path.basename(real), os.path.basename(norm), src_dir_fd=src, dst_dir_fd=dst, follow_symlinks=False)
+        finally:
+            os.close(dst)
+        os.unlink(os.path.basename(real), dir_fd=src)
+    finally:
+        os.close(src)
+    return norm
+
+
+def remove_file(paper_root, rel):
+    """Remove rel, a source or figure of the paper (own_file). Returns rel normalized."""
+    norm, real = own_file(paper_root, rel)
+    folder = source_folder(real)
+    try:
+        if not stat.S_ISREG(os.lstat(os.path.basename(real), dir_fd=folder).st_mode):
+            raise SourceChanged()
+        os.unlink(os.path.basename(real), dir_fd=folder)
+    finally:
+        os.close(folder)
+    return norm
+
+
+def changed_path(paper_root, rel):
+    """Whether rel may be a path the Files tab changed (to commit it, as load_pending reads it back): one it could have
+    made (no dot part, a source's or a figure's extension, outside the build directory), and gone, or one of the
+    paper's own files there (own_file)."""
+    if not isinstance(rel, str) or not rel or "\0" in rel or os.path.isabs(rel):
+        return False
+    norm = os.path.normpath(rel)
+    if (any(part.startswith(".") for part in norm.split(os.sep)) or in_build(norm)
+            or not norm.lower().endswith((*EDITABLE_EXTS, *ASSET_EXTS))):
+        return False
+    if not os.path.lexists(os.path.join(os.path.realpath(paper_root), norm)):
+        return True
+    try:
+        return own_file(paper_root, norm)[0] == norm
+    except FileNotFoundError:
+        return False
+
+
+def load_added(server):
+    """The files added through the Files tab (made, uploaded, renamed to), which it lists whether or not the document
+    reads them yet, as the state folder keeps them (server.added_file: remember_added), those still there."""
+    data = read_json(server.added_file)
+    names = data.get("files") if isinstance(data, dict) and data.get("root") == server.paper_root else None
+    root = os.path.realpath(server.paper_root)
+    server.added = {os.path.normpath(rel) for rel in (names if isinstance(names, list) else [])[:ADDED_LIMIT]
+                    if isinstance(rel, str) and rel and not os.path.isabs(rel) and (editable_real(root, rel) or asset_real(root, rel))}
+
+
+def remember_added(server, add=(), drop=()):
+    """Add files to the ones added through the Files tab (load_added) and drop others, and keep the list in the state
+    folder. The caller holds NOTE_LOCK."""
+    server.added = (server.added - set(drop)) | set(add)
+    path = server.added_file
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+            json.dump({"root": server.paper_root, "files": sorted(server.added)}, f)
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f"=== latex-live: could not keep the list of files added through the viewer in {path} ({e})", flush=True)
+
+
+def doc_assets(server):
+    """The figures of the document, which a coauthor's Files tab lists and changes in shared mode: of the paper's
+    figures (project_assets), those its last build read and those added through the Files tab."""
+    root = os.path.realpath(server.paper_root)
+    own = {os.path.normpath(rel) for rel in project_inputs(root, fls_file(root, server.default_pdf))}
+    own |= getattr(server, "added", set())
+    return [a for a in project_assets(server) if a["path"] in own]

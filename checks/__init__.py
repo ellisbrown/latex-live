@@ -26,7 +26,12 @@ does).
    Crossref answer (stand-ins: never online) into plain BibTeX, and looks up only with LATEX_LIVE_LOOKUPS (off in
    shared mode by default), over https to those hosts (redirects too), two at once and spaced per host. Who has the
    paper open lists a page with a file only if the editor opens it, its line clamped, until it goes quiet or leaves,
-   at most 4 pages per user, under names and opaque keys; reading the list changes nothing.
+   at most 4 pages per user, under names and opaque keys; reading the list changes nothing. The Files tab makes,
+   uploads, renames and removes files never over another (also one that comes meanwhile), through a link or into
+   build/ (in any case), with names of a safe set of characters; uploads only figures, within the paper's and a
+   coauthor's limits; keeps a source a source and a figure a figure, and the main file; pins a coauthor to the
+   document's figures; keeps the files added for a restart; and commits new files (added to git) and removals as
+   their writer's. A figure's sandboxing CSP is its response's only.
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a git
    repository with a pushed commit and a local one) gets a live.py instance, with the hub on port
    44180, or below the ports that outgoing connections take where 44180 is among them (Linux: 28180), or the first
@@ -41,7 +46,7 @@ does).
    - /me reports the owner with every capability; the viewer's and the editor's modules and the
      viewer's style are served (as JavaScript, and CSS), the viewer's revalidated; SyncTeX answers
      as JSON without opening the editor, while POST /open and plain /synctex still open it (a
-     stand-in that logs its arguments), and GET /open is 405; the hub takes a source file's save above the other
+     stand-in that logs its arguments), and GET /open is 405; the hub takes a source file's save and the Files tab's upload above the other
      actions' size limit, refuses bodies above its limits, and survives a non-ASCII token;
      /favicon.ico is answered, not refused;
    - the HEAD and last-push baselines build (they differ: one commit is unpushed), and the
@@ -153,6 +158,10 @@ does).
      busy), and every write waits out a merge in the shared copy (503); the HEAD baseline is not
      rebuilt for each commit; the edits build; a GET of the status builds no baseline, a viewer's
      POST baseline does;
+   - the Files tab: editors make a source and upload a figure (sent back sandboxed), not over another, not a source as
+     an upload, not into Build/; the main file stays; a figure the document doesn't use is the owner's alone; each
+     change is committed as its writer's (a rename of another's new file after their commit); an upload's body is at
+     most 14 MB;
    - stopping the instance leaves no container, running or created and never started; an edit still uncommitted when it stops
      (a merge in progress) is committed as its writer's at the next start; restarted with an https public URL, cookies are Secure on its
      Host; the identity header from a peer whose uid is not LATEX_LIVE_PROXY_UID is not trusted
@@ -162,9 +171,9 @@ Exits non-zero on the first failure.
 Its modules, from the bottom up (each imports only from those below it): base (where the checks run, and how they
 report: ok, fail, wait_for, in_thread), helpers (files, git, instances and requests to them, stand-ins, the TeX Live
 image), papers (the scratch paper), access (who reaches the owner's preview: hosts, origins, sessions), static (the
-checkout as it is), shared_units, bib_units and units (the server's parts without an instance), standby, early, clean_standby
+checkout as it is), shared_units, bib_units, files_units and units (the server's parts without an instance), standby, early, clean_standby
 and landscape (the threads beside the instance checks: the warm standby, the early notes-free pass and its warm
 standby, turned pages), shared_helpers, shared_setup, shared_access, shared_sessions, shared_sandbox, shared_downloads,
-shared_notes, shared_editor, shared_rebuild, shared_commits and shared (shared mode, the other thread), preview (the
+shared_notes, shared_editor, shared_rebuild, shared_commits, shared_files and shared (shared mode, the other thread), preview (the
 instance checks, which start the threads), and main.
 """

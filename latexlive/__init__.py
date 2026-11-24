@@ -48,7 +48,8 @@
   biber and makeindex itself, each in a confined container of the TeX Live image.
 - The LaTeX can also be edited in the viewer, beside the PDF (the browser editor): a save
   is merged with what was saved to the file meanwhile (git merge-file), and in shared mode
-  with LATEX_LIVE_COMMIT=1 each coauthor's edits and notes are committed to git as theirs.
+  with LATEX_LIVE_COMMIT=1 each coauthor's edits and notes are committed to git as theirs. Its Files
+  tab makes source files, uploads figures, and renames and removes either (committed so too).
 
 The server is this package, which live.py starts (main). Its modules, from the bottom up: config
 (settings), standby (the warm standbys of the live build and of its notes-free pass, which latexmkrc runs as a

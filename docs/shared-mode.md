@@ -37,7 +37,9 @@ before it may:
   against the last commit or push); uses the Refs tab (the bibliography, with
   online lookups only if you turn them on: `LATEX_LIVE_LOOKUPS`); sees who else
   has the paper open, by name, and which file and line each is on (the other
-  editors and the owner, who see the same of them);
+  editors and the owner, who see the same of them); and uses the Files tab:
+  makes source files, uploads figures (at most 100 MB a day each), and renames
+  and removes the document's sources and figures;
 - **owner:** everything a preview of your own allows (the arXiv package
   too), except switching to another document: a shared instance serves one.
 
@@ -117,7 +119,9 @@ Run the shared instance there, never in your own checkout:
   [Security model](#security-model)), and a worktree holds only the branch's
   files: git's own folder, with your remotes' settings, stays outside it;
 - with `LATEX_LIVE_COMMIT=1`, each person's edits become commits on `shared`,
-  authored by them, which you merge like any other branch (step 6).
+  authored by them, which you merge like any other branch (step 6): their
+  saves and notes, and the files they make, upload, rename or remove in the
+  Files tab (but those that git ignores).
 
 Editors can compare with any commit that the copy's branch builds on, so its
 whole history is part of what you share. Share a branch whose history you are
@@ -420,6 +424,13 @@ instance treats the paper and everything TeX writes as theirs.
   shouldn't see. Commenters write plain text only. The browser editor and the
   notes read and write a file only as it was checked: a folder or file that
   something on this machine swaps for a link meanwhile is not followed.
+- **The Files tab** shows a coauthor the document's files only: the sources the
+  editor opens, and the figures its last build read or that were added through
+  the Files tab (yours too, once the document includes them). Uploads are
+  figures only, up to 10 MB each, 100 MB a day per coauthor, and 250 MB and
+  400 figures for the whole paper, so the copy and its history stay bounded;
+  nothing is written over a file that is there, into the build folder, or
+  through a link.
 - **No latexmk.** latexmk is a Perl program on the host that reads the files
   TeX writes, and it passes the bibliography names in the `.aux` to a shell, so
   a crafted name would run a command here. live.py itself watches the paper's

@@ -3,6 +3,8 @@ run beside it (the warm standbys, the early notes-free pass, shared mode); the h
 baselines, a rebuild, the downloads (review_checks, arxiv_checks), the owner's own preview (owner_checks), switching documents
 (switch_checks), a second document, a second instance, --replace, and instances and hubs that no longer answer."""
 
+import base64
+import contextlib
 import http.client
 import io
 import json
@@ -498,6 +500,37 @@ def owner_checks(token, own, editor_log, paper):
         os.remove(refs)
     ok("through the hub, /papers/index lists the bibliography (lookups on by default outside shared mode), and /bib/add adds"
        " an entry")
+    figure = os.urandom(300_000)  # (an upload's body, above the other actions' limit)
+    try:
+        made = post("/file/create", token, body={"path": "sections/hub-new.tex", "text": "x\n"})
+        sent = post("/file/upload", token, body={"path": "figures/hub-plot.png", "data": base64.b64encode(figure).decode()})
+        moved = post("/file/rename", token, body={"from": "figures/hub-plot.png", "to": "figures/hub-moved.png"})
+        listing = hub_get("/files", token)
+        conn = http.client.HTTPConnection("127.0.0.1", hub["port"], timeout=30)  # (the preview's CSP and the hub's: both count)
+        conn.request("GET", f"{hub['base']}main/asset?path=figures/hub-moved.png", headers={"Cookie": f"latex_live={token}"})
+        r = conn.getresponse()
+        status, csp, data = r.status, " | ".join(r.msg.get_all("Content-Security-Policy") or []), r.read()
+        conn.close()
+        if (made != {"path": "sections/hub-new.tex"} or sent != {"path": "figures/hub-plot.png", "size": len(figure)}
+                or moved != {"from": "figures/hub-plot.png", "path": "figures/hub-moved.png"}
+                or "sections/hub-new.tex" not in [f["path"] for f in listing["files"]]
+                or "figures/hub-moved.png" not in [a["path"] for a in listing["assets"]]
+                or status != 200 or data != figure or "sandbox" not in csp):
+            fail(f"the Files tab through the hub: {made}, {sent}, {moved}, GET asset {status} {csp}")
+        for path in ("sections/hub-new.tex", "figures/hub-moved.png"):
+            post("/file/delete", token, body={"path": path})
+        if any(os.path.exists(os.path.join(paper, rel)) for rel in ("sections/hub-new.tex", "figures/hub-plot.png", "figures/hub-moved.png")):
+            fail("the Files tab's removals through the hub left a file")
+    except OSError as e:
+        fail(f"the Files tab through the hub: {e}")
+    finally:
+        for folder in ("sections", "figures"):  # (made for these files; only if empty)
+            with contextlib.suppress(OSError):
+                os.rmdir(os.path.join(paper, folder))
+    if (status := post_length(hub["port"], f"{hub['base']}main/file/upload", 14_000_001, [("Cookie", f"latex_live={token}")])) != 413:
+        fail(f"a 14 000 001-byte POST /file/upload through the hub: {status}, not 413")
+    ok("through the hub, the Files tab makes a source, uploads a figure (above the actions' size limit, up to 14 MB),"
+       " renames, sends and removes it")
     page, x, y = text_point(lambda path: hub_get(path, token), "main.tex", 9)
     spot = f"file=main.pdf&page={page}&x={x:.2f}&y={y:.2f}"
     line = hub_get(f"/synctex?{spot}&json=1", token)["line"]

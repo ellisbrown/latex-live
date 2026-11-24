@@ -1,7 +1,8 @@
 """Auto-commit (shared mode, LATEX_LIVE_COMMIT=1): what the server writes for each user (their saves, their
 notes) is committed to git as theirs, one commit per pause of theirs (LATEX_LIVE_COMMIT_IDLE seconds),
 only the files the server wrote for them, with a "Latex-Live-Shared: <user id>" trailer; the owner
-commits everything pending at once with POST /commit. A commit takes a whole file, so before the server
+commits everything pending at once with POST /commit. A file the Files tab made, uploaded, renamed or removed
+is committed so too: added to git, or its removal. A commit takes a whole file, so before the server
 writes a file for one user, what it wrote there for others is committed first (commit_others): each
 commit holds one person's edits. Commits run under NOTE_LOCK, as writes do, so no write lands in a file
 while it is committed. They wait while git is busy (a merge, rebase or cherry-pick, or another git
@@ -23,15 +24,17 @@ from . import config
 from .auth import ROLES, USER_ID_RE, users_owner
 from .files import read_json
 from .git import git_busy, git_operation, git_read_env
-from .sources import NOTE_LOCK, editable_files
+from .sources import NOTE_LOCK, changed_path, editable_files
 
 
 UNATTRIBUTED = "(unattributed)"  # (the pending entry of edits found uncommitted at the start; no user has this id: USER_ID_RE)
+KINDS = ("notes", "edit", "files")  # (a write's kind; a file written in several ways keeps the last of these)
 
 
 def remember_write(server, user, rel, kind):
     """Remember that the server wrote rel (relative to the paper root) for user (a principal), kind
-    "edit" (a save) or "notes", to commit it as theirs once they pause (commit_loop)."""
+    "edit" (a save), "notes", or "files" (the Files tab made, uploaded, renamed or removed it: commit_files adds it to
+    git, or its removal), to commit it as theirs once they pause (commit_loop)."""
     if not server.autocommit:
         return
     with server.pending_lock:
@@ -39,7 +42,7 @@ def remember_write(server, user, rel, kind):
         entry = server.pending.setdefault(user["id"], {"paths": {}})
         old = entry["paths"].get(rel)
         entry.update(user=user, due=time.monotonic() + config.COMMIT_IDLE)
-        entry["paths"][rel] = ("edit" if kind == "edit" or (old and old[0] == "edit") else kind, server.write_seq)
+        entry["paths"][rel] = (max(kind, old[0] if old else kind, key=KINDS.index), server.write_seq)
         save_pending(server)
 
 
@@ -106,7 +109,8 @@ def save_pending(server):
 def load_pending(server):
     """The writes the last run left uncommitted (save_pending), pending again, to be committed as
     theirs right away: those of valid users (as load_users checks them) to files that are editable
-    (editable_files; the state folder could have been changed meanwhile)."""
+    (editable_files; the state folder could have been changed meanwhile), or for the Files tab's changes, to paths it
+    could have changed (changed_path)."""
     root = os.path.realpath(server.paper_root)
     editable = set(editable_files(server).values())
     data = read_json(server.pending_file)
@@ -122,7 +126,10 @@ def load_pending(server):
                 continue  # (as load_users checks the users file: they go into the commit's author and subject)
             kept = {}
             for rel, kind in paths.items():
-                if isinstance(rel, str) and kind in ("edit", "notes") and not os.path.isabs(rel) \
+                if kind == "files" and changed_path(root, rel):
+                    server.write_seq += 1
+                    kept[os.path.normpath(rel)] = (kind, server.write_seq)
+                elif isinstance(rel, str) and kind in ("edit", "notes") and not os.path.isabs(rel) \
                         and os.path.realpath(os.path.join(root, rel)) in editable:
                     server.write_seq += 1
                     kept[os.path.relpath(os.path.realpath(os.path.join(root, rel)), root)] = (kind, server.write_seq)
@@ -307,16 +314,27 @@ def commit_notice(server, message):
 def commit_files(server, user, paths):
     """Commit paths ({path relative to the paper root: (kind, sequence number)}) as user, as they are
     in the working tree and nothing else (git commit --only; the committer is the owner), leaving
-    out what git doesn't track, what is gone, and what is as committed. Returns {user, commit,
-    subject, files}, or None if nothing is left; RuntimeError if git refuses."""
+    out what git doesn't track, what is gone, and what is as committed; but the Files tab's changes (kind "files"):
+    a new file is added to git first (unless git ignores it), and one gone is committed as removed. Returns {user,
+    commit, subject, files}, or None if nothing is left; RuntimeError if git refuses."""
     root = server.paper_root
     git = ["git", "-C", root, "--literal-pathspecs"]
     run = lambda args, env: subprocess.run(git + args, capture_output=True, encoding="utf-8", errors="surrogateescape", env=env,
                                            timeout=60)  # (NOTE_LOCK is held; file names as Python has them, even if not UTF-8)
-    files = sorted(rel for rel in paths if os.path.isfile(os.path.join(root, rel)))
+    env = {key: value for key, value in os.environ.items() if key != "GIT_OPTIONAL_LOCKS"}  # (a commit takes the index)
+    files = sorted(rel for rel in paths if os.path.isfile(os.path.join(root, rel))
+                   or paths[rel][0] == "files" and not os.path.lexists(os.path.join(root, rel)))
     if files:
         tracked = set(run(["ls-files", "-z", "--", *files], git_read_env()).stdout.split("\0"))
-        r = run(["diff", "--name-only", "-z", "--relative", "HEAD", "--", *files], git_read_env())
+        new = [rel for rel in files if rel not in tracked and paths[rel][0] == "files"]  # (made by the Files tab)
+        if new:
+            addable = set(run(["ls-files", "-z", "--others", "--exclude-standard", "--", *new], git_read_env()).stdout.split("\0"))
+            if new := [rel for rel in new if rel in addable]:  # (not those that git ignores, nor a removed one never added)
+                r = run(["add", "--", *new], env)
+                if r.returncode:
+                    raise RuntimeError((r.stderr.strip() or f"git add failed ({r.returncode})").splitlines()[-1])
+                tracked.update(new)
+        r = run(["diff", "--name-only", "--no-renames", "-z", "--relative", "HEAD", "--", *files], git_read_env())
         changed = set(r.stdout.split("\0")) if r.returncode == 0 else set(files)  # (no HEAD yet: all of them)
         files = [rel for rel in files if rel in tracked and rel in changed]
     if not files:
@@ -328,9 +346,8 @@ def commit_files(server, user, paths):
     if user["id"] == UNATTRIBUTED:
         subject, trailer = f"Edits found uncommitted at the start: {listed}", "unattributed"
     else:
-        verb = "edit" if any(paths[rel][0] == "edit" for rel in files) else "notes in"
+        verb = "notes in" if all(paths[rel][0] == "notes" for rel in files) else "edit"
         subject, trailer = f"{name}: {verb} {listed}", user["id"]
-    env = {key: value for key, value in os.environ.items() if key != "GIT_OPTIONAL_LOCKS"}  # (a commit takes the index)
     r = run(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "gc.auto=0", "-c", f"user.name={owner}",
              "-c", f"user.email={owner_email}", "commit", "--only", f"--author={name} <{email}>",
              "-m", f"{subject}\n\nLatex-Live-Shared: {trailer}", "--", *files], env)

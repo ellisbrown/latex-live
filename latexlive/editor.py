@@ -1,37 +1,51 @@
-"""The browser editor's file API: GET /files lists the sources it opens, GET /file reads one, and
-POST /file saves one, merged (git merge-file) with what was saved meanwhile since the version the edits
+"""The browser editor's file API: GET /files lists the sources it opens and the paper's figures, GET /file reads one,
+and POST /file saves one, merged (git merge-file) with what was saved meanwhile since the version the edits
 started from; GET /completions lists what it completes in \\ref, \\cite and \\includegraphics, and GET /search
-finds text in all of them.
+finds text in all of them. The Files tab sends a figure (GET /asset), makes a source file (POST /file/create),
+uploads a figure (POST /file/upload), and renames or removes a source or figure (POST /file/rename, /file/delete).
 
 A file's version is a hash of its bytes; the editor works with \\n line ends, and a file that uses \\r\\n
 gets them back on save. Reads and saves go through read_editable and write_source under NOTE_LOCK, as notes
 do, so the two never overwrite each other, and neither follows a link swapped in since the file was checked."""
 
+import base64
+import binascii
 import os
 import re
 import subprocess
 import tempfile
+import threading
+import time
 
 from . import config
 from .commits import commit_others, paused, remember_write, updating
 from .latex import brace_group
 from .sources import (
-    EDITABLE_SIZE, NOTE_LOCK, SourceChanged, cached_version, editable_files, editable_real, file_version, project_assets,
-    read_editable, write_source, wrote)
+    ADDED_LIMIT, ASSET_EXTS, ASSET_SIZE, ASSETS_LIMIT, EDITABLE_EXTS, EDITABLE_SIZE, NOTE_LOCK, SourceChanged, add_file,
+    cached_version, create_source, doc_assets, editable_files, editable_real, file_version, invalidate_assets, move_file,
+    new_path, open_source, project_assets, read_editable, remember_added, remove_file, write_source, wrote)
 
 
 MERGE_LABELS = ("saved meanwhile", "base", "your edit")  # (git's conflict markers name the two sides)
 
 
-def files_listing(server):
-    """GET /files: {"files": [{"path", "size"}], "main"}, the files the browser editor opens."""
+def files_listing(server, user):
+    """GET /files: {"files": [{"path", "size"}], "main", "assets": [{"path", "size"}], "uploadSize"}: the files the
+    browser editor opens, and the figures that the Files tab lists for user (listed_assets) and the largest it uploads."""
     files = []
     for rel, real in editable_files(server).items():
         try:
             files.append({"path": rel, "size": os.stat(real).st_size})
         except OSError:
             pass
-    return {"files": files, "main": f"{server.default_pdf[:-4]}.tex"}
+    return {"files": files, "main": f"{server.default_pdf[:-4]}.tex", "assets": listed_assets(server, user),
+            "uploadSize": ASSET_SIZE}
+
+
+def listed_assets(server, user):
+    """The figures that user's Files tab lists, GET /asset sends and the Files tab renames and removes: the paper's
+    (project_assets); in shared mode, a coauthor's are the document's (doc_assets), as their sources are."""
+    return doc_assets(server) if config.SHARED and user["role"] != "owner" else project_assets(server)
 
 
 LABEL_RE = re.compile(r"\\label\s*\{([^{}\n]{1,200})\}")
@@ -40,13 +54,13 @@ BIB_TITLE_RE = re.compile(r"\btitle\s*=\s*([{\"])", re.I)
 COMPLETIONS_LIMIT = 5000
 
 
-def completions(server, cache={}):
+def completions(server, user, cache={}):
     """GET /completions: what the browser editor offers in \\ref, \\cite and \\includegraphics, and shows when the
     pointer rests on one, from the files it opens (so nothing an editor couldn't read there) and the paper's figures:
     {"labels": [{"label", "file", "line"}] from the \\label commands outside comments, "labelContext": {label: the
     line it is on (or the one above, for a \\label alone on its line)}, "keys": [{"key", "title", "file", "line"}] from
-    the .bib files' entries, "figures": [path] (project_assets)}, at most COMPLETIONS_LIMIT labels and keys. Each file
-    is read again only once it has changed."""
+    the .bib files' entries, "figures": [path] (listed_assets: those user's Files tab lists)}, at most COMPLETIONS_LIMIT
+    labels and keys. Each file is read again only once it has changed."""
     labels, keys, context = [], [], {}
     for rel, real in editable_files(server).items():
         if not rel.endswith((".tex", ".bib")) or len(labels) >= COMPLETIONS_LIMIT and len(keys) >= COMPLETIONS_LIMIT:
@@ -70,7 +84,7 @@ def completions(server, cache={}):
                     context.setdefault(label, around[label])
     if len(cache) > 256:
         cache.clear()
-    return {"labels": labels, "labelContext": context, "keys": keys, "figures": [a["path"] for a in project_assets(server)]}
+    return {"labels": labels, "labelContext": context, "keys": keys, "figures": [a["path"] for a in listed_assets(server, user)]}
 
 
 def label_lines(text, with_context=False):
@@ -325,3 +339,195 @@ def search_request(server, query):
                 matches.append({"file": rel, "line": n, "col": utf16(line[:m.start()]), "len": utf16(m.group()),
                                 "text": shown, "at": utf16(shown[:m.start() - start + (1 if start else 0)])})
     return 200, {"matches": matches, "truncated": False}
+
+
+# The Files tab's figures, as GET /asset sends them (an image's own type; the handler adds a CSP that runs nothing in
+# one opened alone, e.g. an SVG's scripts).
+ASSET_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
+               ".svg": "image/svg+xml", ".pdf": "application/pdf", ".eps": "application/postscript"}
+
+
+def asset_request(server, query, user):
+    """GET /asset?path=<rel>: (status, content type, bytes) of a figure that user's Files tab lists (listed_assets), as
+    open_source reads it; 404 for any other path."""
+    rel = os.path.normpath(query.get("path", [""])[0] or ".")
+    if rel not in {a["path"] for a in listed_assets(server, user)}:
+        return 404, None, b""
+    try:
+        with open_source(os.path.join(os.path.realpath(server.paper_root), rel), limit=ASSET_SIZE) as f:
+            data = f.read(ASSET_SIZE + 1)
+    except (OSError, SourceChanged):
+        return 404, None, b""
+    return 200, ASSET_TYPES.get(os.path.splitext(rel)[1].lower(), "application/octet-stream"), data
+
+
+# Uploads: at most ASSET_SIZE bytes each, the paper's figures (project_assets) at most UPLOAD_TOTAL bytes and
+# ASSETS_LIMIT files, and in shared mode a coauthor's uploads at most UPLOAD_RATE bytes a day (UPLOAD_WINDOW), so that
+# neither the copy nor its git history (LATEX_LIVE_COMMIT: an upload, committed, removed, uploaded again…) grows
+# without end. UPLOAD_SLOTS: uploads read at once (each body is held in memory: web.POST_LIMITS).
+UPLOAD_TOTAL, UPLOAD_RATE, UPLOAD_WINDOW = 250_000_000, 100_000_000, 86400  # (bytes, bytes, seconds)
+UPLOAD_SLOTS = threading.BoundedSemaphore(2)
+
+
+def files_changed(server, user, add=(), drop=()):
+    """After a Files tab action for user (holding NOTE_LOCK): the files added are listed from now on, those dropped no
+    longer (remember_added); the lists of sources and figures are made again; and each path is committed as user's
+    (remember_write, kind "files": added to git, or removed)."""
+    remember_added(server, add, drop)
+    server.editable = None
+    invalidate_assets(server)
+    for rel in (*drop, *add):
+        remember_write(server, user, rel, "files")
+    for rel in add:
+        wrote(server, user, rel)
+
+
+def create_request(server, req, user):
+    """POST /file/create {path, text?}: make a new source file (create_source: a .tex, .bib, .sty or .cls file, never
+    over one that is there: 409) holding text, as user. 200 {"path"}."""
+    rel, text = req.get("path"), req.get("text", "")
+    if not isinstance(rel, str) or not isinstance(text, str):
+        return 400, {"error": "expected path (and maybe text)"}
+    with NOTE_LOCK:
+        if paused(server):
+            return updating()
+        if len(server.added) >= ADDED_LIMIT:
+            return 409, {"error": f"{ADDED_LIMIT} files were added here already: remove some first"}
+        try:
+            norm = new_path(server.paper_root, rel, EDITABLE_EXTS)
+            if not commit_others(server, user, norm):  # (a removal of this name, someone else's, not committed yet)
+                return updating()
+            create_source(server.paper_root, norm, text)
+        except ValueError as e:
+            return 400, {"error": f"{rel.strip()}: {e}"}
+        except FileExistsError:
+            return 409, {"error": f"{norm} is there already"}
+        except SourceChanged:
+            return 409, {"error": f"a folder on the way to {norm} changed; try again"}
+        except UnicodeEncodeError:
+            return 400, {"error": "the text is not valid Unicode"}
+        except OSError as e:
+            return 500, {"error": f"could not make {norm}: {e.strerror or e}"}
+        files_changed(server, user, add=[norm])
+    return 200, {"path": norm}
+
+
+def upload_request(server, req, user):
+    """POST /file/upload {path, data (base64)}: upload a figure (add_file: one of ASSET_EXTS, never over a file that is
+    there: 409), as user, within the limits above (413, 429). Sources are made empty (create_request) and written by the
+    editor's save, never uploaded. 200 {"path", "size"}."""
+    rel, data = req.get("path"), req.get("data")
+    if not isinstance(rel, str) or not isinstance(data, str):
+        return 400, {"error": "expected path and data (base64)"}
+    if rel.strip().lower().endswith(EDITABLE_EXTS):
+        return 400, {"error": "a source file is made with New file and written in the editor, not uploaded"}
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except (binascii.Error, ValueError):
+        return 400, {"error": "data is not base64"}
+    if not raw:
+        return 400, {"error": "the file is empty"}
+    if len(raw) > ASSET_SIZE:
+        return 413, {"error": f"a figure uploads up to {ASSET_SIZE // 1_000_000} MB"}
+    uid, now = user["id"], time.monotonic()
+    with NOTE_LOCK:
+        if paused(server):
+            return updating()
+        try:
+            norm = new_path(server.paper_root, rel, ASSET_EXTS)
+        except ValueError as e:
+            return 400, {"error": f"{rel.strip()}: {e}"}
+        invalidate_assets(server)
+        figures = project_assets(server)
+        if len(figures) >= ASSETS_LIMIT:
+            return 413, {"error": f"the paper has {ASSETS_LIMIT} figures, the most the Files tab lists: remove some first"}
+        if sum(a["size"] for a in figures) + len(raw) > UPLOAD_TOTAL:
+            return 413, {"error": f"the paper's figures would pass {UPLOAD_TOTAL // 1_000_000} MB: remove some first"}
+        uploads = server.uploads.setdefault(uid, [])
+        uploads[:] = [(t, n) for t, n in uploads if now - t < UPLOAD_WINDOW]
+        if config.SHARED and user["role"] != "owner" and sum(n for _, n in uploads) + len(raw) > UPLOAD_RATE:
+            return 429, {"error": f"you uploaded {UPLOAD_RATE // 1_000_000} MB today, the most a coauthor uploads in a day"}
+        if len(server.added) >= ADDED_LIMIT:
+            return 409, {"error": f"{ADDED_LIMIT} files were added here already: remove some first"}
+        if not commit_others(server, user, norm):
+            return updating()
+        try:
+            add_file(server.paper_root, norm, raw)
+        except FileExistsError:
+            return 409, {"error": f"{norm} is there already: pick another name, or remove it first"}
+        except SourceChanged:
+            return 409, {"error": f"a folder on the way to {norm} changed; try again"}
+        except (OSError, ValueError) as e:
+            return 500, {"error": f"could not save {norm}: {getattr(e, 'strerror', None) or e}"}
+        uploads.append((now, len(raw)))
+        files_changed(server, user, add=[norm])
+    return 200, {"path": norm, "size": len(raw)}
+
+
+def managed(server, user, rel):
+    """rel, normalized, if user's Files tab may rename or remove it: a source the editor opens (editable_files) or a
+    figure it lists (listed_assets), but the document's main file; else None."""
+    norm = os.path.normpath(rel) if isinstance(rel, str) and rel.strip() and "\0" not in rel else None
+    if not norm or norm == f"{server.default_pdf[:-4]}.tex":
+        return None
+    return norm if norm in editable_files(server) or norm in {a["path"] for a in listed_assets(server, user)} else None
+
+
+def rename_request(server, req, user):
+    """POST /file/rename {from, to}: rename a source or figure (managed; move_file: a source stays a source and a figure
+    a figure, never over a file that is there: 409), as user. 200 {"from", "path"}."""
+    old, new = req.get("from"), req.get("to")
+    if not isinstance(old, str) or not isinstance(new, str):
+        return 400, {"error": "expected from and to"}
+    with NOTE_LOCK:
+        if paused(server):
+            return updating()
+        if not (norm := managed(server, user, old)):
+            return 404, {"error": f"{old}: not a file that can be renamed here (the main file can't)"}
+        exts = EDITABLE_EXTS if norm.lower().endswith(EDITABLE_EXTS) else ASSET_EXTS
+        if new.strip().lower().endswith((*EDITABLE_EXTS, *ASSET_EXTS)) and not new.strip().lower().endswith(exts):
+            return 400, {"error": "a source stays a source, and a figure a figure"}
+        try:
+            target = new_path(server.paper_root, new, exts)
+        except ValueError as e:
+            return 400, {"error": f"{new.strip()}: {e}"}
+        if target == norm:
+            return 400, {"error": f"{norm} has that name already"}
+        if not (commit_others(server, user, norm) and commit_others(server, user, target)):
+            return updating()
+        try:
+            move_file(server.paper_root, norm, target)
+        except FileNotFoundError:
+            return 404, {"error": f"{norm} is not there"}
+        except FileExistsError:
+            return 409, {"error": f"{target} is there already"}
+        except SourceChanged:
+            return 409, {"error": f"{norm} or a folder on the way changed; try again"}
+        except (OSError, ValueError) as e:
+            return 500, {"error": f"could not rename {norm}: {getattr(e, 'strerror', None) or e}"}
+        files_changed(server, user, add=[target], drop=[norm])
+    return 200, {"from": norm, "path": target}
+
+
+def delete_request(server, req, user):
+    """POST /file/delete {path}: remove a source or figure (managed; remove_file), as user. 200 {"path"}."""
+    rel = req.get("path")
+    if not isinstance(rel, str):
+        return 400, {"error": "expected path"}
+    with NOTE_LOCK:
+        if paused(server):
+            return updating()
+        if not (norm := managed(server, user, rel)):
+            return 404, {"error": f"{rel}: not a file that can be removed here (the main file can't)"}
+        if not commit_others(server, user, norm):
+            return updating()
+        try:
+            remove_file(server.paper_root, norm)
+        except FileNotFoundError:
+            return 404, {"error": f"{norm} is not there"}
+        except SourceChanged:
+            return 409, {"error": f"{norm} changed; try again"}
+        except OSError as e:
+            return 500, {"error": f"could not remove {norm}: {e.strerror or e}"}
+        files_changed(server, user, drop=[norm])
+    return 200, {"path": norm}
