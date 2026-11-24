@@ -2,7 +2,7 @@
 // command; and, for editors, search the text of every source file (Cmd/Ctrl+Shift+F). Other parts of the viewer add
 // their commands (registerCommands).
 
-import { $, editorShown, el } from "./page.js";
+import { $, editorShown, el, isPopout } from "./page.js";
 import { editorAllowed, me } from "./role.js";
 import { rebuild } from "./build.js";
 import { cmView, ed, setSrcFiles, showEditor, srcFiles } from "./editor.js";
@@ -14,6 +14,8 @@ import { icon } from "./icons.js";
 
 const IS_MAC = /^Mac|^iP/.test(navigator.platform);
 $("paletteBtn").querySelector("kbd").textContent = IS_MAC ? "⌘K" : "Ctrl K";
+
+const editsHere = () => editorAllowed() && !isPopout; // (a pop-out window shows the PDF alone)
 
 // The commands: functions that return what they offer now, each [{title, run, sub?, icon?, group? ("Commands")}], in
 // the order registered. A part of the viewer adds its own with registerCommands.
@@ -42,7 +44,7 @@ function goItems(typed) {
   const matches = (...texts) => !words || texts.join(" ").toLowerCase().includes(words);
   const items = [];
   if (!commandsOnly) {
-    if (editorAllowed()) {
+    if (editsHere()) {
       for (const f of srcFiles?.files || []) {
         if (matches(f.path)) items.push({ group: "Files", icon: "file", title: f.path.slice(f.path.lastIndexOf("/") + 1),
                                           sub: f.path.slice(0, f.path.lastIndexOf("/") + 1),
@@ -69,8 +71,8 @@ async function searchItems(typed) {
   const r = await fetch(`search?${query}`, { cache: "no-store" }).catch(() => null);
   const found = r ? await r.json().catch(() => ({})) : {};
   if (seq !== searchSeq || mode !== "search") return;
-  if (!r?.ok) return show([], found.error || "The search did not answer.");
-  show(found.matches.map((m) => ({ group: m.file, icon: "file", title: m.text, sub: `${m.line}`, mark: [m.col, m.len],
+  if (!r?.ok || !Array.isArray(found.matches)) return show([], found.error || "The search did not answer.");
+  show(found.matches.map((m) => ({ group: m.file, icon: "file", title: m.text, sub: `${m.line}`, mark: [m.at, m.len],
                                    run: () => showEditor(true, { path: m.file, line: m.line, column: m.col }) })),
        found.matches.length ? (found.truncated ? `The first ${found.matches.length} matches.` : "") : "No matches.");
 }
@@ -120,7 +122,7 @@ function refresh() {
   else searchTimer = setTimeout(() => searchItems($("paletteInput").value), 150);
 }
 function setMode(next) {
-  mode = next === "search" && editorAllowed() ? "search" : "go";
+  mode = next === "search" && editsHere() ? "search" : "go";
   for (const b of $("palette").querySelectorAll(".palette-modes button")) b.classList.toggle("on", b.dataset.mode === mode);
   $("searchOptions").hidden = mode !== "search";
   $("searchRegex").hidden = me.shared; // (shared mode searches for the text as typed)
@@ -132,11 +134,11 @@ export const paletteOpen = () => !$("paletteBackdrop").hidden;
 export async function openPalette(want = "go") {
   if (!paletteOpen()) before = document.activeElement;
   $("paletteBackdrop").hidden = false;
-  $("palette").querySelector(".palette-modes").hidden = !editorAllowed();
+  $("palette").querySelector(".palette-modes").hidden = !editsHere();
   setMode(want);
   $("paletteInput").select();
   $("paletteInput").focus();
-  if (editorAllowed() && !srcFiles) { // (the source pane did not list them yet)
+  if (editsHere() && !srcFiles) { // (the source pane did not list them yet)
     const r = await fetch("files", { cache: "no-store" }).catch(() => null);
     const list = r?.ok ? await r.json().catch(() => null) : null;
     if (Array.isArray(list?.files)) setSrcFiles(list);
@@ -145,6 +147,8 @@ export async function openPalette(want = "go") {
 }
 // Close it; refocus (cancelled, not run) what had the focus before.
 export function closePalette(refocus = true) {
+  clearTimeout(searchTimer);
+  searchSeq++; // (a search on its way shows nothing)
   $("paletteBackdrop").hidden = true;
   if (refocus && before?.isConnected) before.focus();
   before = null;

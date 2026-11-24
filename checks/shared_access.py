@@ -220,7 +220,7 @@ def role_checks(sh):
                                        ("GET", "/search?q=quokka", None, 200)):
         expect(via_proxy("ed", path, method, body), status, f"{method} {path} for the editor")
     found = expect_dict(via_proxy("ed", "/search?q=quokka"), 200, "GET search for the editor")
-    if [(m["file"], m["text"][m["col"]:m["col"] + m["len"]]) for m in found.get("matches", [])] != [("body.tex", "Quokka")]:
+    if [(m["file"], m["text"][m["at"]:m["at"] + m["len"]]) for m in found.get("matches", [])] != [("body.tex", "Quokka")]:
         fail(f"GET search for quokka, for the editor: {found}")
     if expect_dict(via_proxy("ed", "/search?q=Quokka.narwhal&regex=1"), 200, "GET search with regex=1 for the editor").get("matches"):
         fail("search takes a coauthor's text as a regular expression in shared mode")

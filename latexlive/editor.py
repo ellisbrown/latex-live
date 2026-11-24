@@ -53,13 +53,14 @@ def completions(server, cache={}):
             continue
         try:
             st = os.stat(real)
-            if cache.get(real, (None,))[0] != (st.st_mtime_ns, st.st_size):
+            entry = cache.get(real)
+            if not entry or entry[0] != (st.st_mtime_ns, st.st_size):
                 text = read_editable(real).decode("utf-8", errors="replace")
                 found = (bib_completions(text), {}) if rel.endswith(".bib") else label_lines(text, True)
-                cache[real] = ((st.st_mtime_ns, st.st_size), *found)
+                entry = cache[real] = ((st.st_mtime_ns, st.st_size), *found)
         except (OSError, SourceChanged):
             continue
-        found, around = cache[real][1:]
+        found, around = entry[1:]
         if rel.endswith(".bib"):
             keys += [{**key, "file": rel} for key in found[:COMPLETIONS_LIMIT - len(keys)]]
         else:
@@ -290,12 +291,13 @@ def merge_texts(current, base, new):
     return r.returncode, r.stdout.decode("utf-8")
 
 
-SEARCH_LIMIT, SEARCH_QUERY = 200, 200  # (matches, and characters of a query)
+SEARCH_LIMIT, SEARCH_QUERY, SEARCH_TEXT = 200, 200, 200  # (matches, characters of a query, of a line shown)
 
 
 def search_request(server, query):
     """GET /search?q=<text>&case=1&regex=1: the lines of the files the browser editor opens that hold q, the first
-    match of each, [{"file", "line", "col" (from 0), "len", "text" (the line, at most 200 characters)}], at most
+    match of each, [{"file", "line", "col" (from 0), "len", "text" (SEARCH_TEXT characters of the line, from a little
+    before the match when it lies further in, after an ellipsis), "at" (where the match is in text)}], at most
     SEARCH_LIMIT of them ("truncated" then). Case-insensitive unless case=1; q is a regular expression with regex=1,
     except in shared mode, where it is always taken as written (a coauthor's pattern could take the server's time)."""
     q = query.get("q", [""])[0]
@@ -313,9 +315,12 @@ def search_request(server, query):
         except (OSError, SourceChanged):
             continue
         for n, line in enumerate(text.split("\n"), 1):
+            line = line.removesuffix("\r")
             if (m := pattern.search(line)) and m.end() > m.start():
                 if len(matches) == SEARCH_LIMIT:
                     return 200, {"matches": matches, "truncated": True}
-                matches.append({"file": rel, "line": n, "col": m.start(), "len": m.end() - m.start(),
-                                "text": line[:200].rstrip("\r")})
+                start = 0 if m.end() <= SEARCH_TEXT else max(0, m.start() - 60)
+                shown = ("…" if start else "") + line[start:start + SEARCH_TEXT]
+                matches.append({"file": rel, "line": n, "col": m.start(), "len": m.end() - m.start(), "text": shown,
+                                "at": m.start() - start + (1 if start else 0)})
     return 200, {"matches": matches, "truncated": False}

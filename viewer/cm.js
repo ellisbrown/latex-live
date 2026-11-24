@@ -344,27 +344,35 @@ function hoverCards(view, open) {
     return { dom };
   };
   const at = (m, col) => col >= m.index && col <= m.index + m[0].length;
+  // The entry of a list in braces (m[1], the end of m) under the pointer, or the first one when the pointer is on the
+  // command: [entry, its column], or [""] in empty braces.
+  const entryAt = (m, col) => {
+    let from = m.index + m[0].length - 1 - m[1].length, first = null;
+    for (const part of m[1].split(",")) {
+      const entry = part.trim(), start = from + part.indexOf(entry);
+      from += part.length + 1;
+      if (entry && col >= start && col <= start + entry.length) return [entry, start];
+      first ??= entry ? [entry, start] : null;
+    }
+    return first || [""];
+  };
   return view.hoverTooltip(async (v, pos) => {
     const line = v.state.doc.lineAt(pos), col = pos - line.from, text = line.text;
     for (const m of text.matchAll(/\\[a-zA-Z]*cite[a-zA-Z]*\*?(?:\[[^\]]*\]){0,2}\{([^{}]*)\}/g)) {
       if (!at(m, col)) continue;
-      let from = m.index + m[0].length - 1 - m[1].length; // (the keys' start, after the {)
-      for (const part of m[1].split(",")) {
-        const key = part.trim(), start = from + part.indexOf(key);
-        from += part.length + 1;
-        if (!key || col < start || col > start + key.length) continue;
-        const entry = (await completionData()).keys.find((k) => k.key === key);
-        return { pos: line.from + start, end: line.from + start + key.length, above: true,
-                 create: () => card(`Citation · ${key}`, ["hc-title", entry ? entry.title || "(no title)" : "Not in the paper's .bib files"],
-                                    entry && ["hc-link", `Open ${entry.file}:${entry.line}`, () => open(entry.file, entry.line)]) };
-      }
-      return null;
+      const [key, start] = entryAt(m, col);
+      if (!key) return null;
+      const entry = (await completionData()).keys.find((k) => k.key === key);
+      return { pos: line.from + start, end: line.from + start + key.length, above: true,
+               create: () => card(`Citation · ${key}`, ["hc-title", entry ? entry.title || "(no title)" : "Not in the paper's .bib files"],
+                                  entry && ["hc-link", `Open ${entry.file}:${entry.line}`, () => open(entry.file, entry.line)]) };
     }
     for (const m of text.matchAll(/\\(?!href)[a-zA-Z]*ref\*?\{([^{}]*)\}/g)) {
       if (!at(m, col)) continue;
-      const label = m[1].split(",")[0].trim(), data = await completionData();
+      const [label, start] = entryAt(m, col), data = await completionData();
+      if (!label) return null;
       const target = data.labels.find((l) => l.label === label);
-      return { pos: line.from + m.index, end: line.from + m.index + m[0].length, above: true,
+      return { pos: line.from + start, end: line.from + start + label.length, above: true,
                create: () => (target ? card(`Reference · ${target.file}:${target.line}`, ["hc-code", data.labelContext[label]],
                                             ["hc-link", "Go to the label", () => open(target.file, target.line)])
                                      : card(`Reference · ${label}`, ["hc-meta", "No such label in the paper's files"])) };
@@ -372,6 +380,7 @@ function hoverCards(view, open) {
     for (const m of text.matchAll(/\\includegraphics\*?(?:\[[^\]]*\])?\{([^{}]*)\}/g)) {
       if (!at(m, col)) continue;
       const name = m[1].trim(), figures = (await completionData()).figures;
+      if (!name) return null;
       const found = figures.find((f) => f === name) || figures.find((f) => f.replace(/\.[^./]+$/, "") === name);
       return { pos: line.from + m.index, end: line.from + m.index + m[0].length, above: true,
                create: () => card(`Figure · ${found || name}`, ["hc-meta", found ? "" : "No such figure in the paper"]) };
