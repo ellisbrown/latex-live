@@ -419,8 +419,9 @@ body.pdf-invert .thumb canvas {
   display: flex; flex-direction: column; gap: 6px; font-size: 12px;
 }
 .refs-add[hidden], .refs-verify[hidden] { display: none; }
-.refs-add input { height: 27px; padding: 0 8px; }
-.refs-add textarea { min-height: 110px; padding: 5px 8px; font-family: var(--font-mono); font-size: 11.5px; resize: vertical; }
+.refs-add textarea { padding: 5px 8px; resize: vertical; }
+.refs-add .refs-query { min-height: 27px; }
+.refs-add .refs-preview { min-height: 110px; font-family: var(--font-mono); font-size: 11.5px; }
 .refs-row { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
 .refs-row > :first-child:is(span, strong) { margin-right: auto; }
 .refs-row button { height: 25px; padding: 0 9px; }

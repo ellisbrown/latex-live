@@ -32,7 +32,7 @@ FIELD_RE = re.compile(r"\b([a-zA-Z][a-zA-Z0-9_-]*)\s*=\s*")
 CITE_RE = re.compile(r"\\[a-zA-Z]*cite[a-zA-Z]*\*?(?:\[[^\]]*\]){0,2}\{([^{}]+)\}")
 ARXIV_ID_RE = re.compile(r"(?:(?:https?://)?(?:www\.)?arxiv\.org/(?:abs|pdf|html)/|arXiv:)?"
                          r"(\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[A-Z]{2})?/\d{7}(?:v\d+)?)(?:\.pdf)?", re.I)
-# (a DOI as Crossref recommends matching them, which takes nearly all: no character that TeX or BibTeX treats specially)
+# (a DOI as Crossref recommends matching them, which takes nearly all: nothing that can end a field or begin a command)
 DOI_RE = re.compile(r"(?:(?:https?://)?(?:dx\.)?doi\.org/|doi:\s*)?(10\.\d{4,9}/[-._;()/:A-Z0-9]{1,200})", re.I)
 ENTRY_START_RE = re.compile(r"(?m)^[ \t]*(@)[A-Za-z]+\s*[{(]")  # (where an @string, @comment or @preamble may begin too)
 ADD_LIMIT = 50_000  # (characters of BibTeX added at once)
@@ -49,7 +49,7 @@ def parse_bib_entries(text, rel=""):
         if m.group(1).lower() in ("comment", "string", "preamble"):
             continue
         line, at = line + text.count("\n", at, m.start()), m.start()
-        fields = bib_fields(text[m.end():starts[bisect.bisect_right(starts, m.start())]])
+        fields = bib_fields(text[m.end():starts[bisect.bisect_left(starts, m.end())]])
         arxiv = fields.get("eprint", "")
         if not arxiv and (am := ARXIV_ID_RE.search(fields.get("url", ""))) and "arxiv" in fields.get("url", "").lower():
             arxiv = am.group(1)
@@ -70,7 +70,7 @@ def bib_fields(body):
             value, i = brace_group(body, j)
         elif body[j] == '"':  # (it ends at a quote outside braces)
             k, depth = j + 1, 0
-            while k < n and (body[k] != '"' or depth):
+            while k < n and (body[k] != '"' or depth > 0):
                 depth += {"{": 1, "}": -1}.get(body[k], 0)
                 k += 1
             value, i = body[j + 1:k], k + 1
@@ -267,7 +267,7 @@ def fetch(url, accept="application/json", background=False):
         req = urllib.request.Request(url, headers={"User-Agent": agent, "Accept": accept})
         deadline = time.monotonic() + NET_TIMEOUT
         with OPENER.open(req, timeout=NET_TIMEOUT) as r:
-            data = b""
+            data = bytearray()
             while len(data) <= NET_READ and (chunk := r.read1(1 << 16)):
                 if time.monotonic() > deadline:
                     raise TimeoutError("the answer took too long")
@@ -276,7 +276,7 @@ def fetch(url, accept="application/json", background=False):
         NET_SLOTS.release()
     if len(data) > NET_READ:
         raise ValueError("the answer is too large")
-    return data
+    return bytes(data)
 
 
 def bib_text(value):
@@ -377,11 +377,15 @@ def lookup_request(req):
         return 400, {"error": "enter an arXiv ID (2312.00752), a DOI (10.1000/xyz) or a BibTeX entry"}
     try:
         found = lookup_arxiv(arxiv.group(1)) if arxiv else lookup_doi(doi.group(1))
+    except urllib.error.HTTPError as e:  # (Crossref answers 404 for a DOI it doesn't know)
+        if e.code != 404:
+            return 502, {"error": f"the lookup failed ({e})"}
+        found = None
     except LookupsOff:
         return 403, {"error": "online lookups are off in this preview: paste the BibTeX instead", "lookupsOff": True}
     except LookupBusy:
         return 429, {"error": "too many lookups just now; try again in a few seconds"}
-    except (OSError, ValueError, ET.ParseError, AttributeError, TypeError) as e:  # (URLError and timeouts are OSErrors)
+    except (OSError, ValueError, ET.ParseError, AttributeError, TypeError, LookupError) as e:  # (URLError, timeouts: OSError)
         return 502, {"error": f"the lookup failed ({e})"}
     if not found:
         return 404, {"error": f"arXiv has no paper {arxiv.group(1)}" if arxiv else f"Crossref doesn't know {doi.group(1)}"}
@@ -451,7 +455,7 @@ def run_verify(server, job):
                              .get("message") or {}).get("items") or []
                     checked += 1
                     compare_crossref(e, items, note)
-            except (OSError, ValueError, LookupBusy, AttributeError, TypeError):
+            except (OSError, ValueError, LookupBusy, AttributeError, TypeError, LookupError):
                 failed += 1
                 if failed >= 3 and not checked:
                     break
@@ -473,7 +477,7 @@ def compare_crossref(e, items, note):
     title = plain_title(e["title"])
     for item in items:
         theirs = plain_title(str((item.get("title") or [""])[0]))
-        if theirs and (theirs == title or len(title) > 20 and (title in theirs or theirs in title)):
+        if theirs and (theirs == title or min(len(title), len(theirs)) > 20 and (title in theirs or theirs in title)):
             venue, year = " ".join(str((item.get("container-title") or [""])[0]).split()), crossref_year(item)
             if (e["arxiv"] or "arxiv" in e["venue"].lower()) and venue and "arxiv" not in venue.lower():
                 note("warn", "published-version", e, f"Published since, in {venue}" + (f" ({year})" if year else ""))
