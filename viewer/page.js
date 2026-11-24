@@ -8,7 +8,12 @@ export const hubBase = location.pathname.match(/^\/p\/[^/]+\//)?.[0] || "";
 // Someone new to latex-live in this browser: nothing remembered yet (read before anything is written).
 export const firstVisit = !Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i)).some((k) => k?.startsWith("latex-live:"));
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-export const el = (tag, props = {}, ...children) => { const e = Object.assign(document.createElement(tag), props); e.append(...children); return e; };
+export const el = (tag, { dataset, ...props } = {}, ...children) => {
+  const e = Object.assign(document.createElement(tag), props);
+  Object.assign(e.dataset, dataset); // (dataset is read-only: its entries are set one by one)
+  e.append(...children);
+  return e;
+};
 
 // What the status line says when the server can't be asked: it refused (403: the access ended), a
 // page came back instead of an answer (a proxy's sign-in page), or nothing came back (offline, or the
@@ -18,6 +23,8 @@ export const SIGNED_OUT = "Your sign-in may have expired — reload the page";
 export const UNREACHABLE = "Can't reach the preview server — retrying…";
 export const file = new URLSearchParams(location.search).get("file");
 export const isDiff = file.endsWith("-diff.pdf");
+// A pop-out window (?mode=pdf): the PDF alone, e.g. on a second screen, beside a main window with the source.
+export const isPopout = new URLSearchParams(location.search).get("mode") === "pdf";
 export const docFile = file.replace(/-(clean|diff)\.pdf$/, ".pdf"); // the document a derived PDF belongs to
 export const cleanFile = docFile.replace(/\.pdf$/, "-clean.pdf");
 

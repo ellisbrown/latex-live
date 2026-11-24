@@ -1,19 +1,35 @@
-// How the window is shared out: the sidebar (open or not, and its tab), the source pane's width, and the gutters for the
-// margin bubbles ("Fit width" fits the page in what they leave), with the toggles remembered across sessions.
+// How the window is shared out: the sidebar (open or not, its tab and its width), the layout (the source alone, the
+// source beside the PDF, or the PDF alone) and the source pane's width, and the gutters for the margin bubbles ("Fit
+// width" fits the page in what they leave), with the toggles remembered across sessions. And the channel between the
+// windows of a document: a pop-out window (?mode=pdf) shows the PDF alone, beside the main window with the source.
 
-import { $, editorShown, isDiff, setStatus } from "./page.js";
+import { $, docFile, editorShown, hubBase, isDiff, isPopout, setStatus } from "./page.js";
 import { container, refit } from "./pdfview.js";
 
-// Toggles remembered across sessions: dark mode, the sidebar and the source pane. The sidebar's tab is remembered too.
-export function setToggle(name, on) {
+// Toggles remembered across sessions: the sidebar, say. A pop-out window leaves the main window's settings alone.
+function setToggle(name, on) {
   document.body.classList.toggle(name, on);
-  localStorage.setItem(`latex-live:${name}`, on ? "1" : "");
+  if (!isPopout) localStorage.setItem(`latex-live:${name}`, on ? "1" : "");
 }
 
-// The sidebar's tab (a comparison has no notes, checks or figures).
+// The sidebar's tab (a comparison has no notes, checks or figures: sidebar.js shows the outline then).
 export let tab = localStorage.getItem("latex-live:tab") || "outline";
-if (isDiff && (tab === "notes" || tab === "checks" || tab === "figures")) tab = "outline";
+export function setTab(name) {
+  tab = name;
+  if (!isPopout && !isDiff) localStorage.setItem("latex-live:tab", name); // (nor does a comparison, which has fewer tabs)
+}
+export const sideOpen = (name) => !$("side").hidden && tab === name;
 
+// The sidebar's width: as dragged last, between its least and most, and leaving the rest of the window some room.
+let sideWidth = +localStorage.getItem("latex-live:sideWidth") || 276;
+const SIDE_MIN = 210, SIDE_MAX = 440;
+function fitSide() {
+  const most = Math.max(SIDE_MIN, Math.min(SIDE_MAX, innerWidth - 420));
+  const width = Math.round(Math.max(SIDE_MIN, Math.min(most, sideWidth)));
+  document.documentElement.style.setProperty("--side-w", `${width}px`);
+  return width;
+}
+fitSide();
 export function setSide(on) {
   $("side").hidden = !on;
   $("toggleSide").classList.toggle("on", on);
@@ -21,65 +37,128 @@ export function setSide(on) {
   fitEditor(); // (the source beside the PDF leaves the PDF some room)
   refit();
 }
-export function setTab(name) {
-  tab = name;
-  localStorage.setItem("latex-live:tab", name);
+
+// The layout: "pdf" (the PDF alone), "split" (the source beside it) or "source" (the source alone, e.g. with the PDF
+// in a pop-out window on another screen). The source pane shows in the last two (editor.js showEditor); alone, it
+// hides the PDF, which stays laid out (viewer.css), so that its place survives the rebuilds meanwhile. A browser from
+// before the layouts remembered only whether the pane was open.
+export let layoutMode = isPopout ? "pdf"
+  : localStorage.getItem("latex-live:layout") || (localStorage.getItem("latex-live:editor") ? "split" : "pdf");
+export function setLayoutMode(mode, remember = true) {
+  if (!["pdf", "split", "source"].includes(mode)) mode = "pdf";
+  layoutMode = mode;
+  if (remember && !isPopout) localStorage.setItem("latex-live:layout", mode);
+  for (const m of ["pdf", "split", "source"]) document.body.classList.toggle(`layout-${m}`, m === mode);
+  for (const b of $("layoutSwitch").querySelectorAll("button")) b.classList.toggle("on", b.dataset.mode === mode);
+  fitEditor();
+  refit();
 }
 
-export const sideOpen = (name) => !$("side").hidden && tab === name;
-
-// The pane's width: as dragged last (else about a third of the window), but leaving the PDF readable
-// beside it: room for the margin bubbles' gutters as shown, and about 500 px for the page, which "Fit
-// width" then shows at half its size or more. Where opening the pane leaves it less than its least
-// width, the sidebar makes way (and the status line says so).
+// The pane's width beside the PDF: as dragged last (else about half of what the sidebar leaves), but leaving the PDF
+// readable beside it: room for the margin bubbles' gutters as shown, and about 420 px for the page, which "Fit width"
+// then shows at half its size or more. Where opening the pane leaves it less than its least width, the sidebar makes
+// way (and the status line says so). Alone (Source), the pane takes the whole width.
 let editorWidth = +localStorage.getItem("latex-live:editorWidth") || 0;
-const PDF_ROOM = 500, EDITOR_MIN = 280;
+const PDF_ROOM = 420, EDITOR_MIN = 300, FRAME = 18; // (FRAME: the workspace's padding and the gaps between its panes)
 export function fitEditor(opening = false) {
+  if (layoutMode === "source") return editorWidth;
   const gutters = GUTTER * (+container.classList.contains("gutter") + +container.classList.contains("gutter-left"));
-  const room = () => innerWidth - ($("side").hidden ? 0 : 290) - gutters - PDF_ROOM;
+  const side = () => ($("side").hidden ? 0 : fitSide() + 6);
+  const room = () => innerWidth - FRAME - side() - gutters - PDF_ROOM;
   if (opening && room() < EDITOR_MIN && !$("side").hidden) {
     setSide(false);
-    setStatus("closed the sidebar to make room for the source");
+    setStatus("closed the sidebar to make room for the source and the PDF");
   }
-  const width = Math.round(Math.max(EDITOR_MIN, Math.min(room(), editorWidth || innerWidth * 0.35)));
-  document.body.style.setProperty("--editor-w", `${width}px`);
+  const width = Math.round(Math.max(EDITOR_MIN, Math.min(room(), editorWidth || (innerWidth - side()) * 0.48)));
+  document.documentElement.style.setProperty("--editor-w", `${width}px`);
   return width;
 }
-$("editorGrip").addEventListener("pointerdown", (e) => {
-  if (e.button !== 0) return;
-  e.preventDefault();
-  const grip = e.currentTarget;
-  grip.setPointerCapture(e.pointerId);
-  document.body.classList.add("resizing");
-  let frame = 0;
-  const move = (ev) => {
-    editorWidth = innerWidth - ev.clientX;
-    fitEditor();
-    frame ||= requestAnimationFrame(() => { frame = 0; refit(); });
-  };
-  grip.addEventListener("pointermove", move);
-  grip.addEventListener("lostpointercapture", () => {
-    grip.removeEventListener("pointermove", move);
-    document.body.classList.remove("resizing");
-    editorWidth = fitEditor();
-    localStorage.setItem("latex-live:editorWidth", editorWidth);
-    refit();
-  }, { once: true });
+
+// A grip on a pane's right edge resizes it: move(x) takes the pointer's position, and done() the final one's width.
+function grip(node, move, done) {
+  node.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    node.setPointerCapture(e.pointerId);
+    document.body.classList.add("resizing");
+    let frame = 0;
+    const onMove = (ev) => {
+      move(ev.clientX);
+      frame ||= requestAnimationFrame(() => { frame = 0; refit(); });
+    };
+    node.addEventListener("pointermove", onMove);
+    node.addEventListener("lostpointercapture", () => {
+      node.removeEventListener("pointermove", onMove);
+      document.body.classList.remove("resizing");
+      done();
+      refit();
+    }, { once: true });
+  });
+}
+grip($("sideGrip"), (x) => {
+  sideWidth = x - $("side").getBoundingClientRect().left;
+  fitSide();
+  if (editorShown()) fitEditor();
+}, () => {
+  sideWidth = fitSide();
+  localStorage.setItem("latex-live:sideWidth", sideWidth);
+  if (editorShown()) fitEditor();
 });
-window.addEventListener("resize", () => { if (editorShown()) { fitEditor(); refit(); } });
+grip($("editorGrip"), (x) => {
+  editorWidth = x - $("editorPane").getBoundingClientRect().left;
+  fitEditor();
+}, () => {
+  editorWidth = fitEditor();
+  localStorage.setItem("latex-live:editorWidth", editorWidth);
+});
+window.addEventListener("resize", () => {
+  fitSide();
+  if (editorShown()) { fitEditor(); refit(); }
+});
 
 // The width of a gutter for the margin bubbles (notes.js), beside the page.
 export const GUTTER = 250;
 
-// Fitting the page width leaves room for the gutters: PDF.js measures the container's clientWidth.
+// Fitting the page width leaves room for the gutters: PDF.js measures the container's clientWidth. Never less than a
+// narrow page, though: in a pane narrower than its gutters, a fit to nothing would be no zoom at all.
 const clientWidthOf = Object.getOwnPropertyDescriptor(Element.prototype, "clientWidth").get;
 Object.defineProperty(container, "clientWidth", { get() {
-  return clientWidthOf.call(this) - (this.classList.contains("gutter") ? GUTTER : 0) - (this.classList.contains("gutter-left") ? GUTTER : 0);
+  const gutters = (this.classList.contains("gutter") ? GUTTER : 0) + (this.classList.contains("gutter-left") ? GUTTER : 0);
+  return Math.max(120, clientWidthOf.call(this) - gutters);
 } });
 export function setGutter(on, left = false) {
   if (container.classList.contains("gutter") === on && container.classList.contains("gutter-left") === left) return;
   container.classList.toggle("gutter", on);
   container.classList.toggle("gutter-left", left);
-  if (editorShown()) fitEditor(); // (the source pane leaves the gutters room too)
+  if (editorShown()) fitEditor(true); // (the source pane leaves the gutters room too; where it can't, the sidebar makes way)
   refit();
 }
+
+// The windows showing this document (not those of another document, or of another paper under the hub) talk over a
+// channel of their own: a pop-out follows the main window's source, and the main window opens the source lines
+// double-clicked in a pop-out (links.js). A window answers a message that asks for something (askWindows) once it
+// takes it on; whoever asked then knows that some window did.
+const channel = !isDiff && typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(`latex-live:${hubBase}${docFile}`) : null;
+const handlers = new Map(), asked = new Map();
+const windowId = Math.random().toString(36).slice(2);
+let asks = 0;
+// What a message of a kind does here: fn(message) returns whether this window takes it on.
+export const onWindowMessage = (kind, fn) => handlers.set(kind, fn);
+export function tellWindows(message) {
+  try { channel?.postMessage(message); } catch {} // (a closed channel: the page is going away)
+}
+// Ask the other windows: whether one of them took it on within wait ms.
+export function askWindows(message, wait = 400) {
+  if (!channel) return Promise.resolve(false);
+  const id = `${windowId}:${++asks}`;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { asked.delete(id); resolve(false); }, wait);
+    asked.set(id, () => { clearTimeout(timer); asked.delete(id); resolve(true); });
+    tellWindows({ ...message, id });
+  });
+}
+if (channel) channel.onmessage = ({ data: message }) => {
+  if (!message || typeof message !== "object") return;
+  if (message.kind === "taken") return asked.get(message.id)?.();
+  if (handlers.get(message.kind)?.(message) && message.id) tellWindows({ kind: "taken", id: message.id });
+};

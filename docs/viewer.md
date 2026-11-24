@@ -6,7 +6,9 @@ after the first visit, `http://localhost:44100/` opens the only preview or
 lists them all. In a shared preview, coauthors see only what their role
 allows: see [shared-mode.md](shared-mode.md#roles).
 
-- [The toolbar](#the-toolbar)
+- [The layout](#the-layout)
+- [The top bar](#the-top-bar)
+- [The PDF's bar](#the-pdfs-bar)
 - [Building and errors](#building-and-errors)
 - [Source and PDF: SyncTeX](#source-and-pdf-synctex)
 - [Notes](#notes)
@@ -18,29 +20,61 @@ allows: see [shared-mode.md](shared-mode.md#roles).
 - [Pre-submission checks](#pre-submission-checks)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 
-## The toolbar
+## The layout
+
+The window holds the sidebar, the source pane and the PDF side by side, each
+with a header of its own, under a top bar. Drag the right edge of the sidebar or
+of the source pane to resize it.
+
+- **Source | Split | PDF** (top bar; for those who may edit): the LaTeX alone,
+  beside the PDF, or the PDF alone. `e` switches between Split and PDF.
+- **Pop-out PDF** (top bar): opens the PDF in a window of its own, e.g. on a
+  second screen. It follows the main window: Show in PDF, and the notes and
+  checks you click there, show their spot in it too. Double-clicking it opens the
+  source line where the main window would: in the main window's source pane when
+  that is open, else in VS Code; with neither, it opens a main window at that
+  line. With the PDF popped out, **Source** gives the LaTeX the whole main
+  window; without a pop-out, Show in PDF brings the PDF back beside it.
+- **Look** (⋯ menu, and the sun or moon in the top bar): a light or dark theme,
+  four surface tints (Graphite, Paper, Sage, Mist), and **Invert PDF colors**,
+  for reading the pages dark in either theme. Every window of the viewer
+  follows.
+
+## The top bar
 
 From left to right:
 
 | Control | What it does |
 | --- | --- |
-| ☰ | Opens the [sidebar](#the-sidebar). |
+| Sidebar button | Opens the [sidebar](#the-sidebar). |
 | Document menu | Switches to another root `.tex` file of the paper; every open viewer follows. It also lists the papers that other previews on the machine show, and opens their viewers. |
 | ← → | Back and forward after following a link, a reference or a forward search. |
-| Page, zoom, search | Page number, zoom (fit width, fit page, or a percentage; trackpad pinch zooms the PDF), and search. |
-| Notes: off / on | Switches between the notes-free build and the build with the notes in the text ([Notes](#notes)). |
-| 💬 | Shows or hides the notes as bubbles in the margin of the notes-free view. |
-| 💬 Comment as… | Who you are, for writing notes. |
-| ✂ | [Space hints](#page-limit-and-space). |
+| Source, Split, PDF | The [layout](#the-layout). |
+| Pop-out | The PDF in a window of its own ([layout](#the-layout)). |
+| Space hints | [Space hints](#page-limit-and-space). |
 | Δ | [Change highlights](#changes-and-comparing), with the baseline ("vs …") and arrows to step through the changes. |
 | Download | Its menu (on hover or click) saves the PDF four ways, and the arXiv package ([Downloads](#downloads-and-the-review-copy)). |
-| ✎ Source | Opens the [source pane](#the-source-pane). |
 | Name badge | In a shared preview, your name and role. |
 | ⚠ TeX image missing | The TeX Live image is not pulled ([setup](setup.md#2-get-the-code-and-the-tex-image)). |
 | ⟳ restart to update | latex-live changed on disk since this preview started; restart its task, then reload. |
-| ⋯ | Dark mode (it inverts the PDF), Compare with an earlier version, Keyboard shortcuts, the Welcome guide, Sign out (the browser forgets its sign-in, for every preview at that address, until you open the link with `?t=` again), and the version, which links to the repository. On a narrow window, the toolbar stays one row: the controls that don't fit move into this menu, least used first. |
 | ↻ | Rebuilds from scratch, e.g. after another build (`make`) replaced the PDF and SyncTeX no longer matches it. |
 | Pages, status | The [page badge](#page-limit-and-space) and the build's status. |
+| Sun or moon | The light or dark theme. |
+| ⋯ | The look ([layout](#the-layout)), Compare with an earlier version, Keyboard shortcuts, the Welcome guide, Sign out (the browser forgets its sign-in, for every preview at that address, until you open the link with `?t=` again), and the version, which links to the repository. On a narrow window, the top bar stays one row: the controls that don't fit move into this menu, least used first. |
+
+## The PDF's bar
+
+| Control | What it does |
+| --- | --- |
+| Page | Page number, and the previous and next page. |
+| Search | Search the PDF (Cmd/Ctrl F). |
+| Zoom | Fit width, fit page, or a percentage; trackpad pinch zooms the PDF too. |
+| Notes: off / on | Switches between the notes-free build and the build with the notes in the text ([Notes](#notes)). |
+| Margin bubbles | Shows or hides the notes as bubbles in the margin of the notes-free view. |
+| Comment as… | Who you are, for writing notes. |
+
+When the PDF's pane is narrow, the controls that don't fit move into its own ⋯
+menu at the right of its bar.
 
 Hovering over a reference shows a preview of its target (in a two-column paper,
 the target's column; all of a `figure*`). Scroll position and zoom survive
@@ -90,7 +124,7 @@ Notes are the paper's note macros: one-argument commands that go through
   it sits in the text. Hover a bubble to expand it; click it to open the source.
   In two columns, a bubble sits beside its column (left of the page for the left
   column). Notes: on shows the live build, notes in the text.
-- **Writing a note.** Pick who you are in 💬 Comment as… (in a shared preview,
+- **Writing a note.** Pick who you are in Comment as… (in a shared preview,
   you comment as yourself), select text in the PDF, and press 💬 or `c`. Your
   note goes into the source right after the selected words, and the rebuild
   shows it. Typed text is escaped, so `%`, `&` and `_` are safe; characters
@@ -117,7 +151,10 @@ Notes are the paper's note macros: one-argument commands that go through
 
 ## The source pane
 
-✎ Source (or `e`) opens the LaTeX beside the PDF; drag its edge to resize it.
+Split (or `e`) opens the LaTeX beside the PDF, and Source shows it alone ([the
+layout](#the-layout)); drag its right edge to resize it. The bar under the text
+shows the cursor's line and column, whether your edits are saved, and the word
+count (of the selection, when there is one), without commands and comments.
 
 - The file menu lists the paper's `.tex`, `.bib`, `.sty` and `.cls` files by
   folder, with a filter.
@@ -141,7 +178,7 @@ Notes are the paper's note macros: one-argument commands that go through
   switches the baseline: the last push (the commit that the branch's
   remote-tracking branch is at, so no network; the default), the last commit
   (`HEAD`, rebuilt when it moves; the default when nothing was pushed), or the
-  previous build. `,` and `.` (or the toolbar arrows) step through the changes.
+  previous build. `,` and `.` (or the arrows in the top bar) step through the changes.
 - **Compare with an earlier version** (in the ⋯ menu): latexdiff of the working
   tree against any git commit, in a new tab. When the document with latexdiff's
   marks doesn't build, it is built again with plainer marks (changes in math,
@@ -268,6 +305,6 @@ The Checks tab of the sidebar lists, each as ok, info, warning or failure:
 | `d` | Change highlights on / off |
 | `,` / `.` | Previous / next change |
 | `c` | Comment on the selected text |
-| `e` | The source pane (Cmd/Ctrl S there saves at once) |
+| `e` | Split or PDF: the source pane beside the PDF, or not (Cmd/Ctrl S there saves at once) |
 | Double-click | Open the source line |
 | `?` | The list of shortcuts |

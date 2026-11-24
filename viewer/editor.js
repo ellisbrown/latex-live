@@ -1,17 +1,17 @@
 // The source pane: the open file, saving it (live.py merges others' changes), its conflicts, reloading it when it changes
 // on disk, the notice above the text, and the edits this browser keeps until they are saved.
 
-import { $, editorShown, el, hubBase, setStatus, SIGNED_OUT } from "./page.js";
+import { $, editorShown, el, hubBase, isPopout, setStatus, SIGNED_OUT } from "./page.js";
 import { fitsKeepalive, postJSON, readBody, signInPage, unreachable } from "./net.js";
 import { lineHunks } from "./diff.js";
 import { dropKept, EDITOR_ID, keptKey, newSaveId, readKept } from "./drafts.js";
 import { editorAllowed, me, openTitles, ownerName } from "./role.js";
 import { refit } from "./pdfview.js";
 import { wrote } from "./build.js";
-import { fitEditor, setToggle } from "./layout.js";
+import { fitEditor, layoutMode, setLayoutMode } from "./layout.js";
 import { CM, cmExtensions, loadEditor } from "./cm.js";
 
-// The LaTeX source beside the PDF (✎ Source, or E), for editors and the owner: live.py /files and
+// The LaTeX source beside the PDF (Split, or E) or alone (Source), for editors and the owner: live.py /files and
 // /file, in CodeMirror (codemirror/, through the import map), loaded on first use. Edits save by
 // themselves 1.5 s after the last change, and at once on Cmd/Ctrl+S, a file switch, closing the
 // pane, and leaving the page. live.py merges a save with changes made to the file meanwhile (by
@@ -45,25 +45,27 @@ let offline = null, offlineSince = 0, retryDelay = 2000, noticeTimer = null;
 export let sourceEpoch = 0; // (bumped whenever the open file's version changes: a status answer from before is stale)
 let conflict = null; // a conflict of this session, not resolved yet: {by: who saved the other side, if live.py says}
 
-// Show or hide the source pane; showing it opens path at line (and column, from 0), else the file open last time (in
-// this paper) or the main file (with a hint on how to get to the source of a spot in the PDF).
-export async function showEditor(on, { path = null, line = 0, column = 0, focus = true } = {}) {
-  if (on && !editorAllowed()) return;
+// Show or hide the source pane, beside the PDF (mode "split", the default) or alone ("source"); showing it
+// opens path at line (and column, from 0), else the file open last time (in this paper) or the main file (with a hint
+// on how to get to the source of a spot in the PDF). A pop-out window shows the PDF alone.
+export async function showEditor(on, { path = null, line = 0, column = 0, focus = true, mode = null } = {}) {
+  if (on && (!editorAllowed() || isPopout)) return;
   if (!on) {
     $("fileMenu").hidden = true;
     saveSource();
   }
-  if (editorShown() !== on) {
+  const next = !on ? "pdf" : mode || (layoutMode === "source" ? "source" : "split");
+  if (editorShown() !== on || layoutMode !== next) {
+    const opening = on && !editorShown();
     $("editorPane").hidden = !on;
-    $("editBtn").classList.toggle("on", on);
-    setToggle("editor", on);
-    fitEditor(on);
+    setLayoutMode(next);
+    fitEditor(opening);
     refit();
     openTitles();
   }
   if (!on) return;
   try {
-    await loadEditor({ save: saveSource, edited: sourceEdited });
+    await loadEditor({ save: saveSource, edited: (update) => { sourceEdited(update); showCursor(update); } });
     let hint = false;
     if (!path && !ed) [path, hint] = await firstFile();
     if (path) await openFile(path, line, column);
@@ -113,6 +115,7 @@ export async function openFile(path, line = 0, column = 0) {
     cmView = new CM.EditorView({ state, parent: $("editorHost") });
   }
   $("filePick").textContent = `${f.path} ▾`;
+  showCursor();
   $("editorHint").hidden = true;
   localStorage.setItem(`latex-live:${hubBase}editorFile`, f.path);
   showSaveState();
@@ -124,6 +127,31 @@ function goToLine(line, column = 0) {
   const at = to.from + Math.min(Math.max(0, +column || 0), to.length);
   cmView.dispatch({ selection: { anchor: at }, effects: CM.EditorView.scrollIntoView(at, { y: "center" }) });
   cmView.focus();
+}
+
+// The status bar under the text: the cursor's line and column, and the words of the text, or of the selection (counted
+// a moment after typing stops, as that reads the whole file).
+let countTimer = 0;
+function showCursor(update = null) {
+  if (!cmView || (update && !update.docChanged && !update.selectionSet)) return;
+  const { state } = cmView, at = state.selection.main, line = state.doc.lineAt(at.head);
+  $("cursorPos").textContent = `Ln ${line.number}, Col ${at.head - line.from + 1}`;
+  clearTimeout(countTimer);
+  countTimer = setTimeout(() => {
+    if (!cmView) return;
+    const { state: now } = cmView, sel = now.selection.main, total = countWords(now.doc.toString()).toLocaleString();
+    $("wordCount").textContent = sel.empty ? `${total} words` : `${countWords(now.sliceDoc(sel.from, sel.to)).toLocaleString()} / ${total} words`;
+  }, update?.docChanged ? 250 : 50);
+}
+// The words of LaTeX text: between \begin{document} and \end{document} when it has them, without comments, commands,
+// or the arguments that aren't words (references, labels, file names).
+function countWords(text) {
+  const begin = text.indexOf("\\begin{document}"), end = text.indexOf("\\end{document}");
+  const body = text.slice(begin < 0 ? 0 : begin + 16, end < 0 ? undefined : end)
+    .replace(/(?<!\\)%.*$/gm, " ")
+    .replace(/\\(?:[a-z]*cite[a-z]*|[a-z]*ref|label|includegraphics|input|include|usepackage|bibliography(?:style)?)\*?(?:\[[^\]]*\])*\{[^{}]*\}/gi, " ")
+    .replace(/\\[a-zA-Z]+\*?/g, " ");
+  return body.match(/[\p{L}\p{N}]+(?:['’-][\p{L}\p{N}]+)*/gu)?.length || 0;
 }
 
 // Every change to the text: the user's own make it unsaved (and start the autosave's countdown).
@@ -555,7 +583,10 @@ async function restoreKept(kept) {
   saveSource();
 }
 
-$("editBtn").onclick = () => showEditor(!editorShown());
+// The layout switch in the top bar: the source alone, beside the PDF, or the PDF alone.
+for (const b of $("layoutSwitch").querySelectorAll("button")) {
+  b.onclick = () => (b.dataset.mode === "pdf" ? showEditor(false) : showEditor(true, { mode: b.dataset.mode }));
+}
 $("editorClose").onclick = () => showEditor(false);
 $("editorHint").querySelector(".close").onclick = () => { $("editorHint").hidden = true; };
 

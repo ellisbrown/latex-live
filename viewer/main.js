@@ -1,14 +1,14 @@
 // The viewer's script (viewer.html loads it): the modules in this folder, imported from here, set up the page as they
 // load; then the controls follow the role, and start starts the viewer.
 
-import { $, isDiff } from "./page.js";
+import { $, isDiff, isPopout } from "./page.js";
 import { latestKept } from "./drafts.js";
 import { editorAllowed, isCollaborator, loadAuthors, loadMe, me, setWho } from "./role.js";
-import { tab } from "./layout.js";
+import { layoutMode, setLayoutMode, tellWindows } from "./layout.js";
 import { showEditor } from "./editor.js";
 import { showAccessEnded } from "./banner.js";
 import { showWelcome, welcomeDue } from "./welcome.js";
-import { showSide, showTab } from "./sidebar.js";
+import { showSide, showTabButton } from "./sidebar.js";
 import { loadDocs } from "./docs.js";
 import { poll } from "./poll.js";
 import "./filemenu.js";
@@ -22,22 +22,26 @@ function applyRole() {
   if (isCollaborator()) setWho(me.macro || "");
   $("rebuild").hidden = isDiff || !me.can.rebuild;
   $("compare").hidden = !me.can.compare;
-  $("editBtn").hidden = !editorAllowed();
+  $("layoutSwitch").hidden = !editorAllowed() || isPopout;
+  setLayoutMode("pdf", false); // (the PDF alone until the source pane opens: start)
   $("me").hidden = !me.shared;
   $("me").textContent = `${me.name || me.id} · ${me.role}`;
   $("me").title = `Signed in as ${me.id}: ${ROLES[me.role] || me.role}`;
   $("welcomeBtn").hidden = $("keys").querySelector(".welcome").hidden = !me.shared; // (the guide is for coauthors)
   $("signOut").hidden = !me.can.signOut; // (not for a coauthor whom the proxy signs in)
-  document.querySelector("#tabs [data-tab=checks]").hidden = isDiff || me.can.checks === false;
-  if (me.can.checks === false && tab === "checks") showTab("outline");
+  if (!isDiff) showTabButton("checks", me.can.checks !== false);
 }
 
-// The sidebar, as it was left.
-if (localStorage.getItem("latex-live:side")) showSide(true);
+// The layout as it was left, for start.
+const leftLayout = layoutMode;
+
+// The sidebar, as it was left (a pop-out window starts without it).
+if (localStorage.getItem("latex-live:side") && !isPopout) showSide(true);
 
 // Start: who is asking first (it decides the controls, and whose notes new ones are), then the
 // documents (the owner's menu), the authors, the status poll, the source pane if it was open (or on
 // a file with unsaved edits this browser kept, to restore), and the welcome guide when it is due.
+// A main window then tells pop-out windows that it is there, for a source line one has for it (links.js).
 async function start() {
   if (!(await loadMe())) return showAccessEnded();
   applyRole();
@@ -48,9 +52,11 @@ async function start() {
   const authorsLoaded = isDiff ? null : loadAuthors().catch(() => {});
   poll();
   setInterval(poll, isCollaborator() ? 500 : 250); // (coauthors: half as often, as there may be many)
-  const kept = editorAllowed() ? latestKept() : null;
-  if (kept || (editorAllowed() && localStorage.getItem("latex-live:editor"))) showEditor(true, { path: kept?.path, focus: false });
+  const kept = editorAllowed() && !isPopout ? latestKept() : null;
+  const mode = leftLayout === "pdf" ? null : leftLayout;
+  const opened = kept || (editorAllowed() && mode) ? showEditor(true, { path: kept?.path, focus: false, mode }) : null;
+  if (!isPopout) Promise.resolve(opened).then(() => tellWindows({ kind: "mainWindow" })); // (once its own file is open)
   await authorsLoaded; // (the guide names your initials)
-  if (welcomeDue()) showWelcome(true, true);
+  if (welcomeDue() && !isPopout) showWelcome(true, true);
 }
 start();

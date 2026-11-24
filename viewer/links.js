@@ -1,10 +1,12 @@
 // Between the PDF and the sources (SyncTeX): from a spot in the PDF to its source line, and from a source line to the
-// PDF; opening a source line, in VS Code or in the source pane.
+// PDF; opening a source line, in VS Code or in the source pane. A pop-out window (?mode=pdf) shows the source lines
+// that the main window shows in the PDF, and has the main window open those double-clicked in it.
 
-import { $, file, isDiff, setStatus } from "./page.js";
+import { $, file, isDiff, isPopout, setStatus } from "./page.js";
 import { postJSON, readBody } from "./net.js";
 import { canOpenFile, editable, editorAllowed, me, opensInBrowser, opensSources } from "./role.js";
 import { container, eventBus, pageFrame, pagesReady, shownVariant, viewer } from "./pdfview.js";
+import { askWindows, layoutMode, onWindowMessage } from "./layout.js";
 import { flash, reveal } from "./navigation.js";
 import { cmView, ed, showEditor } from "./editor.js";
 
@@ -28,7 +30,8 @@ container.addEventListener("dblclick", async (e) => {
                                   ...clickedWord(pageDiv, e.clientX, e.clientY) });
   try {
     let why = null; // (VS Code's failure to open, when the source pane opens instead)
-    if (me.legacy || (!me.shared && me.can.openHost && !opensInBrowser())) { // (the server opens VS Code itself, as it always has)
+    // (the server opens VS Code itself, as it always has; not for a pop-out, whose main window may have the pane open)
+    if (me.legacy || (!me.shared && me.can.openHost && !opensInBrowser() && !isPopout)) {
       const r = await fetch(`synctex?${q}`);
       const text = await r.text();
       // 409: found, but VS Code did not open (e.g. not run in a VS Code terminal); the pane, then
@@ -113,9 +116,12 @@ export function showForward(t) {
   reveal(t.page, [x0 - 2, y0 - 2, x1 + 2, y1 + 2]);
   setStatus(`← page ${t.page}`, "fresh");
 }
-// Show a source line in the PDF; sources with no PDF location (e.g. a .bib entry) open in the editor.
+// Show a source line in the PDF; sources with no PDF location (e.g. a .bib entry) open in the editor. Pop-out windows
+// show it too; with the source alone (Source) and no pop-out to show it, the PDF comes back beside the source.
 const cleanParam = () => (shownVariant === "clean" ? { clean: 1 } : {}); // SyncTeX of the notes-free build
 export async function showSource(file, line, openIfMissing = false) {
+  const elsewhere = isPopout ? null : askWindows({ kind: "showSource", file, line });
+  if (layoutMode === "source" && !(await elsewhere)) await showEditor(true, { mode: "split", focus: false });
   const r = await fetch(`forward?${new URLSearchParams({ file, line, ...cleanParam() })}`);
   const body = await r.json().catch(() => ({ error: `${file}:${line} is not in the PDF (${r.status})` }));
   if (r.ok) return showForward(body);
@@ -126,8 +132,12 @@ export async function showSource(file, line, openIfMissing = false) {
 // Open a source line: in the source pane beside the PDF when that is open (for a collaborator who
 // may edit, or the owner of a shared preview without VS Code: always), else in the host's editor
 // (the owner's VS Code, live.py /open), or the pane when that does not open.
+// A pop-out window has no pane: there, a main window's pane opens the line where that is open, and VS Code otherwise.
 export async function openSource(file, line, column = 0) {
-  if (opensInBrowser() && editable(file)) return showEditor(true, { path: file, line, column });
+  if (isPopout && editorAllowed() && editable(file) && (await askWindows({ kind: "openSource", file, line, column }))) {
+    return setStatus(`→ ${file}:${line}, in the main window`, "fresh");
+  }
+  if (opensInBrowser() && editable(file)) return inPane(file, line, column);
   if (!me.can.openHost) return setStatus(`${file} can't be opened here`, "error");
   try {
     const r = me.legacy ? await fetch(`open?${new URLSearchParams({ file, line })}`)
@@ -136,11 +146,43 @@ export async function openSource(file, line, column = 0) {
     const why = (await readBody(r)).error; // e.g. latex-live is not running in a VS Code terminal
     if (!editorAllowed() || !editable(file)) return setStatus(why, "error");
     setStatus(`${file}:${line} is in the source pane (VS Code did not open: ${why})`);
-    showEditor(true, { path: file, line, column });
+    inPane(file, line, column);
   } catch (err) {
     setStatus(`${err.message || err}`, "error");
   }
 }
+// The source pane at a line; for a pop-out window, a main window's, opened for it if needs be (or a new main window,
+// which takes the line once it is there: "mainWindow").
+let forMainWindow = null;
+async function inPane(file, line, column) {
+  if (!isPopout) return showEditor(true, { path: file, line, column });
+  const message = { kind: "openSource", file, line, column, anyway: true };
+  if (await askWindows(message)) return setStatus(`→ ${file}:${line}, in the main window`, "fresh");
+  const url = new URL(location.href);
+  url.searchParams.delete("mode");
+  if (!window.open(url, "_blank")) return setStatus(`${file}:${line} opens in the main window, which the browser didn't let this one open`, "error");
+  forMainWindow = message;
+  setStatus(`→ ${file}:${line}, in a new main window`, "fresh");
+}
+
+// What the other windows of this document ask: a pop-out shows a source line in its PDF, and a main window opens a
+// line in its pane where it would itself (or anyway, when a pop-out has no other place for it).
+onWindowMessage("showSource", ({ file, line }) => {
+  if (!isPopout || typeof file !== "string") return false;
+  fetch(`forward?${new URLSearchParams({ file, line, ...cleanParam() })}`)
+    .then((r) => (r.ok ? r.json() : null)).then((t) => t && showForward(t)).catch(() => {});
+  return true;
+});
+onWindowMessage("openSource", ({ file, line, column, anyway }) => {
+  if (isPopout || typeof file !== "string" || !editorAllowed() || !editable(file) || !(anyway || opensInBrowser())) return false;
+  showEditor(true, { path: file, line, column: column || 0 });
+  return true;
+});
+onWindowMessage("mainWindow", () => {
+  if (forMainWindow) askWindows(forMainWindow, 2000);
+  forMainWindow = null;
+  return false;
+});
 
 $("showInPdf").onclick = () => {
   if (ed && cmView) showSource(ed.path, cmView.state.doc.lineAt(cmView.state.selection.main.head).number);

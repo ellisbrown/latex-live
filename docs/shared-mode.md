@@ -53,7 +53,7 @@ The earlier versions (the baselines and the diff) are for editors and the
 owner. The downloads with notes in the margin and as comments show every note
 outside a false branch, even while `\todotxt` hides them in the PDF.
 
-A badge in the toolbar shows each person their name and role. Double-clicking
+A badge in the top bar shows each person their name and role. Double-clicking
 the PDF opens the source pane for editors and names the source line for
 others. The first time a coauthor opens the preview, a short welcome guide for
 their role explains the live PDF, commenting, editing, finding your way, the
@@ -244,7 +244,7 @@ curl -s -H 'Host: proxy.internal' -H 'x-remote-user: ben' http://127.0.0.1:44120
 With `LATEX_LIVE_PROXY_UID` set, the second prints nothing (it gets a 403)
 unless you run it as the proxy's user: that setting keeps other users of the
 machine from signing in as anyone. Then open the public URL in a browser, as
-a coauthor would: the toolbar badge shows their name and role. Use the public
+a coauthor would: the badge in the top bar shows their name and role. Use the public
 URL for your own visits too: your browser keeps one latex-live cookie per host
 name, whatever the port, so the local link would replace the cookie your own
 previews use on `localhost`.
