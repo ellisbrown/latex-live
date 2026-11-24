@@ -176,7 +176,12 @@ export async function closeTab(path, { discard = false } = {}) {
   if (ed?.path !== path) return;
   const next = openTabs[Math.max(0, i - 1)];
   if (next) await openFile(next);
-  if (ed?.path === path) closeFile(); // (no other tab, or it did not open)
+  if (ed?.path !== path) return;
+  if (ed.dirty && !ed.gone) { // (typed in while the next one loaded: it stays)
+    setTabs([...openTabs, path]);
+    return setStatus(`${path} has new edits, so its tab stays open`, "error");
+  }
+  closeFile(); // (no other tab, or it did not open)
 }
 // The pane with no file open: no editor to type into (its text would go nowhere), just a hint.
 function closeFile() {
@@ -188,7 +193,7 @@ function closeFile() {
   hideNotice("restore"); // (a notice with text to copy stays, as on a switch to another file)
   localStorage.removeItem(`latex-live:${hubBase}editorFile`);
   $("editorHost").replaceChildren(el("div", { className: "msg", textContent: "No file open: pick one with the button above, or press " +
-                                              `${navigator.platform.startsWith("Mac") ? "Cmd" : "Ctrl"}+K.` }));
+                                              `${/^Mac|^iP/.test(navigator.platform) ? "Cmd" : "Ctrl"}+K.` }));
   $("cursorPos").textContent = $("wordCount").textContent = "";
   showTabs();
   showRail();
@@ -526,7 +531,7 @@ function flashChanged(changes) {
   });
   cmView.dispatch({ effects: CM.flashLines.of(CM.Decoration.set(lines, true)) });
   const seq = ++flashSeq;
-  setTimeout(() => { if (seq === flashSeq) cmView.dispatch({ effects: CM.flashLines.of(CM.Decoration.none) }); }, 2000);
+  setTimeout(() => { if (seq === flashSeq) cmView?.dispatch({ effects: CM.flashLines.of(CM.Decoration.none) }); }, 2000); // (none if closed)
 }
 // The text becomes text, as the user's own edit (unsaved, and undoable).
 function replaceSource(text) {

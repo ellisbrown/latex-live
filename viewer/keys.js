@@ -1,6 +1,6 @@
 // The keyboard shortcuts.
 
-import { $, editorShown, isDiff, setStatus } from "./page.js";
+import { $, editorShown, isDiff, isPopout, setStatus } from "./page.js";
 import { canComment, editorAllowed, isCollaborator, me, notSetUp, ownerName } from "./role.js";
 import { viewer } from "./pdfview.js";
 import { find } from "./search.js";
@@ -18,7 +18,7 @@ import { closePalette, openPalette, paletteOpen } from "./palette.js";
 // editor took the key first (on a Mac, Ctrl+K there deletes to the end of the line): [key, shift, what it does (false:
 // nothing for this user, and the key goes on)].
 const IS_MAC = /^Mac|^iP/.test(navigator.platform);
-const APP_KEYS = [["k", false, () => openPalette("go")], ["f", true, () => editorAllowed() && openPalette("search")]];
+const APP_KEYS = [["k", false, () => openPalette("go")], ["f", true, () => editorAllowed() && !isPopout && openPalette("search")]];
 
 window.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;

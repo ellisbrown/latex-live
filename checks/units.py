@@ -957,16 +957,17 @@ def assets_checks():
 
 
 def search_checks():
-    """Search in the sources (editor.search_request): the first match of each line, case-insensitive unless asked,
-    as a regular expression only outside shared mode, at most SEARCH_LIMIT matches."""
+    """Search in the sources (editor.search_request): the first match of each line (shown from a little before it on
+    a long line), case-insensitive unless asked, as a regular expression only outside shared mode (with $ at the line's
+    end, before a \\r), at most SEARCH_LIMIT matches."""
     from latexlive import config, editor
     with tempfile.TemporaryDirectory(prefix="latex-live-search-") as root:
         put(os.path.join(root, "main.tex"), "\\documentclass{article}\r\n\\begin{document}\r\nAlpha beta. alpha\r\n\\input{sec}\r\n\\end{document}\r\n")
-        put(os.path.join(root, "sec.tex"), "axb and a.b\n" + "line\n" * 300)
+        put(os.path.join(root, "sec.tex"), "axb and a.b\n" + "word " * 80 + "needle\n" + "line\n" * 300)
         server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", editable=None)
         search = lambda **q: editor.search_request(server, {k: [v] for k, v in q.items()})
         code, found = search(q="alpha")
-        if code != 200 or found["matches"] != [{"file": "main.tex", "line": 3, "col": 0, "len": 5, "text": "Alpha beta. alpha"}]:
+        if code != 200 or found["matches"] != [{"file": "main.tex", "line": 3, "col": 0, "len": 5, "text": "Alpha beta. alpha", "at": 0}]:
             fail(f"search for alpha: {code} {found}")
         if search(q="alpha", case="1")[1]["matches"][0]["col"] != 12:
             fail(f"a case-sensitive search: {search(q='alpha', case='1')}")
@@ -974,11 +975,16 @@ def search_checks():
         try:
             for shared, want in ((False, ["a b", "axb"]), (True, ["a.b"])):
                 config.SHARED = shared
-                hits = [m["text"][m["col"]:m["col"] + m["len"]] for m in search(q="a.b", regex="1")[1]["matches"]]
+                hits = [m["text"][m["at"]:m["at"] + m["len"]] for m in search(q="a.b", regex="1")[1]["matches"]]
                 if hits != want:
                     fail(f"search for a.b as a regular expression ({'shared' if shared else 'not shared'}): {hits}")
         finally:
             config.SHARED = saved
+        far = search(q="needle")[1]["matches"]
+        if [(m["col"], m["text"][:1], m["text"][m["at"]:m["at"] + m["len"]]) for m in far] != [(400, "…", "needle")]:
+            fail(f"search for a word far into a long line: {far}")
+        if [(m["file"], m["line"]) for m in search(q="article}$", regex="1")[1]["matches"]] != [("main.tex", 1)]:
+            fail(f"search for article}}$ in a file with \\r\\n line ends: {search(q='article}$', regex='1')}")
         code, found = search(q="line")
         if len(found["matches"]) != editor.SEARCH_LIMIT or not found["truncated"] or search(q="(", regex="1")[0] != 400:
             fail(f"search for a word on 300 lines: {len(found['matches'])} matches (truncated: {found['truncated']})")
