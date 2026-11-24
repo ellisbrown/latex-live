@@ -207,7 +207,8 @@ def role_checks(sh):
                   ("POST", "/open", {"file": "main.tex", "line": 9}), ("POST", "/commit", {}), ("POST", "/arxiv", {}),
                   ("GET", "/arxiv.tar.gz", None))
     editor_up = (("GET", "/files", None), ("GET", "/file?path=body.tex", None), ("POST", "/file", probe), ("POST", "/rebuild", {}),
-                 ("GET", "/commits", None), ("POST", "/diff", {"rev": "HEAD"}), ("GET", "/completions", None))
+                 ("GET", "/commits", None), ("POST", "/diff", {"rev": "HEAD"}), ("GET", "/completions", None),
+                 ("GET", "/search?q=quokka", None))
     for uid in ("vw", "cm", "ed"):
         for method, path, body in owner_only + (() if uid == "ed" else editor_up):
             expect(via_proxy(uid, path, method, body), 403, f"{method} {path} for {sh['users'][uid]['role']} {uid}")
@@ -215,8 +216,14 @@ def role_checks(sh):
                         (via_proxy("owner1", "/switch", "POST", {"doc": "appendix"}), "for the owner, through the proxy")):
         expect(result, 403, f"POST switch {who} (a shared preview serves one document)")
     for method, path, body, status in (("GET", "/files", None, 200), ("GET", "/file?path=body.tex", None, 200),
-                                       ("GET", "/commits", None, 200), ("POST", "/file", probe, 409), ("GET", "/completions", None, 200)):
+                                       ("GET", "/commits", None, 200), ("POST", "/file", probe, 409), ("GET", "/completions", None, 200),
+                                       ("GET", "/search?q=quokka", None, 200)):
         expect(via_proxy("ed", path, method, body), status, f"{method} {path} for the editor")
+    found = expect_dict(via_proxy("ed", "/search?q=quokka"), 200, "GET search for the editor")
+    if [(m["file"], m["text"][m["col"]:m["col"] + m["len"]]) for m in found.get("matches", [])] != [("body.tex", "Quokka")]:
+        fail(f"GET search for quokka, for the editor: {found}")
+    if expect_dict(via_proxy("ed", "/search?q=Quokka.narwhal&regex=1"), 200, "GET search with regex=1 for the editor").get("matches"):
+        fail("search takes a coauthor's text as a regular expression in shared mode")
     listing = expect_dict(with_token(owner, "/instances"), 200, "GET instances for the owner")
     if listing.get("self") != sh["proc"].pid:
         fail(f"GET instances for the owner: {listing}")
@@ -231,8 +238,9 @@ def role_checks(sh):
         fail(f"OPTIONS is answered with CORS headers: {preflight[1]}")
     if editor_calls(sh["editor_log"]):
         fail(f"the editor stand-in ran: {editor_calls(sh['editor_log'])}")
-    ok("roles: viewers read, commenters also comment, editors also edit, rebuild and compare, only the owner does the rest,"
-       " but for switching documents, which no one does; the old GET actions are gone; no CORS")
+    ok("roles: viewers read, commenters also comment, editors also edit, search the sources (as written), rebuild and"
+       " compare, only the owner does the rest, but for switching documents, which no one does; the old GET actions are"
+       " gone; no CORS")
 
     proxy, owners = [("Host", PROXY_HOST), ("X-Test-User", "ed")], [("Cookie", f"latex_live={owner}")]
     public = [("Host", "paper.invalid:8443"), ("Cookie", f"latex_live={sh['users']['tk']['token']}")]
