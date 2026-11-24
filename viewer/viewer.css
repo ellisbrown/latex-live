@@ -400,6 +400,61 @@ body.pdf-invert .thumb canvas {
 .check li { padding: 4px 10px 4px 28px; font-size: 12px; cursor: pointer; word-break: break-word; color: var(--ink-2); }
 .check li:hover { background: var(--bg-hover); color: var(--ink); }
 
+/* The Refs tab (refs.js): a bar to filter, order, add and check; the add box; the check's findings; a card per entry. */
+.refs button, .refs select, .refs input, .refs textarea {
+  font: inherit; font-size: 12px; color: var(--ink); background: var(--bg-input);
+  border: 1px solid var(--border); border-radius: var(--radius-ctl);
+}
+.refs button { background: var(--bg-surface); cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.refs button:hover:not(:disabled) { background: var(--bg-hover); }
+.refs button:disabled { opacity: 0.5; cursor: default; }
+.refs button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+.refs-bar { display: flex; gap: 5px; padding: 2px 10px 8px; border-bottom: 1px solid var(--hairline); }
+.refs-bar input { flex: 1; min-width: 0; height: 27px; padding: 0 8px; }
+.refs-bar select { flex: none; width: 92px; height: 27px; }
+.refs-bar button { flex: none; height: 27px; padding: 0 7px; }
+.refs-bar button.on { background: var(--bg-active); }
+.refs-add, .refs-verify {
+  margin: 8px 10px; padding: 8px; border-radius: 8px; background: var(--bg-surface); border: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 6px; font-size: 12px;
+}
+.refs-add[hidden], .refs-verify[hidden] { display: none; }
+.refs-add input { height: 27px; padding: 0 8px; }
+.refs-add textarea { min-height: 110px; padding: 5px 8px; font-family: var(--font-mono); font-size: 11.5px; resize: vertical; }
+.refs-row { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
+.refs-row > :first-child:is(span, strong) { margin-right: auto; }
+.refs-row button { height: 25px; padding: 0 9px; }
+.refs-row select { flex: 1; min-width: 0; height: 25px; }
+.refs-note { font-size: 11.5px; color: var(--ink-3); line-height: 1.4; }
+.refs-error { font-size: 11.5px; color: var(--err); }
+.refs-error:empty { display: none; }
+.refs .refs-finding {
+  display: flex; gap: 6px; align-items: flex-start; text-align: left; padding: 4px 2px; border: 0;
+  border-top: 1px solid var(--hairline); border-radius: 0; background: none; line-height: 1.35;
+}
+.refs-finding .sev { flex: none; width: 1em; font-weight: 700; color: var(--ink-3); }
+.refs-finding.fail .sev { color: var(--err); } .refs-finding.warn .sev { color: var(--warn); }
+.refs-card {
+  margin: 6px 8px; padding: 8px 10px; background: var(--bg-surface); border: 1px solid var(--border);
+  border-radius: 8px; display: flex; flex-direction: column; gap: 4px;
+}
+.refs-card:hover { border-color: var(--border-strong); }
+.refs-top { display: flex; align-items: flex-start; gap: 6px; }
+.refs-title { flex: 1; font-size: 12.5px; font-weight: 500; line-height: 1.35; }
+.refs .refs-count {
+  flex: none; padding: 0 6px; border: 0; border-radius: 99px; font-size: 11px; font-weight: 600;
+  font-variant-numeric: tabular-nums; background: var(--bg-surface-2); color: var(--ink-2);
+}
+.refs .refs-count.used { background: var(--accent-soft); color: var(--accent-ink); }
+.refs .refs-count:disabled { opacity: 1; }
+.refs-meta { font-size: 11.5px; color: var(--ink-3); line-height: 1.35; }
+.refs-acts { display: flex; gap: 4px; align-items: center; }
+.refs-acts code {
+  margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  font-family: var(--font-mono); font-size: 11px; color: var(--ink-3);
+}
+.refs-acts button { height: 22px; padding: 0 7px; font-size: 11px; background: var(--bg-surface-2); }
+
 /* The source pane (Split: beside the PDF; Source: alone): a header with the tabs of the files opened, the file picker,
    Show in PDF and ✕ over CodeMirror and the rail of the file's headings, and a status bar under it. */
 #editorPane { flex: none; width: var(--editor-w); background: var(--bg-surface); color: var(--ink); }

@@ -262,6 +262,17 @@ the arXiv package, which holds every source file, is the owner's.
 - **Checks:** the [pre-submission checks](#pre-submission-checks).
 - **Figures:** every figure and table, cropped from its page, with its caption;
   click one to go to it.
+- **Refs** (editors): the entries of the paper's `.bib` files, with how often
+  the paper cites each (3×, 0×: click it to go to the first citation), to
+  filter and sort. **Cite** types `\cite{key}` at the source pane's cursor
+  (Enter in the filter cites the first entry listed), and **.bib** opens the
+  entry. **+** adds an entry: look up an arXiv ID or a DOI, or paste BibTeX,
+  then change it if you like and add it to a `.bib` file (a key the paper has
+  already is refused). **Check** (the shield) lists keys and titles that are there twice,
+  entries never cited, and, from Crossref, years that differ and preprints
+  published since. Looking up IDs and Check go online, to arXiv and Crossref
+  (Check sends the cited entries' titles); a preview that doesn't allow that
+  says so, and pasting BibTeX still works ([setup](setup.md#environment-variables)).
 
 ## Page limit and space
 
@@ -318,7 +329,8 @@ The Checks tab of the sidebar lists, each as ok, info, warning or failure:
 ## The palette
 
 Cmd/Ctrl+K (or Go to… in the top bar) opens a box that goes to a source file,
-a heading of the outline, or a command (the theme, the layout, rebuilding…);
+a heading of the outline, or a command (the theme, the layout, rebuilding,
+citing or adding a reference…);
 type to narrow it down, or start with `>` for the commands alone. Editors also
 search the text of every source file in it (Cmd/Ctrl+Shift+F, or Search): each
 match opens its file at that spot. Aa matches case, and `.*` takes the text as
