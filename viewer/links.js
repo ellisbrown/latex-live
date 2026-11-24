@@ -121,9 +121,9 @@ export function showForward(t) {
 const cleanParam = () => (shownVariant === "clean" ? { clean: 1 } : {}); // SyncTeX of the notes-free build
 export async function showSource(file, line, openIfMissing = false) {
   const elsewhere = isPopout ? null : askWindows({ kind: "showSource", file, line });
-  if (layoutMode === "source" && !(await elsewhere)) await showEditor(true, { mode: "split", focus: false });
   const r = await fetch(`forward?${new URLSearchParams({ file, line, ...cleanParam() })}`);
   const body = await r.json().catch(() => ({ error: `${file}:${line} is not in the PDF (${r.status})` }));
+  if (r.ok && layoutMode === "source" && !(await elsewhere)) await showEditor(true, { mode: "split", focus: false });
   if (r.ok) return showForward(body);
   if (openIfMissing && canOpenFile(file)) return openSource(file, line);
   setStatus(body.error, "error");
@@ -134,7 +134,7 @@ export async function showSource(file, line, openIfMissing = false) {
 // (the owner's VS Code, live.py /open), or the pane when that does not open.
 // A pop-out window has no pane: there, a main window's pane opens the line where that is open, and VS Code otherwise.
 export async function openSource(file, line, column = 0) {
-  if (isPopout && editorAllowed() && editable(file) && (await askWindows({ kind: "openSource", file, line, column }))) {
+  if (isPopout && !opensInBrowser() && editorAllowed() && editable(file) && (await askWindows({ kind: "openSource", file, line, column }))) {
     return setStatus(`→ ${file}:${line}, in the main window`, "fresh");
   }
   if (opensInBrowser() && editable(file)) return inPane(file, line, column);
@@ -162,20 +162,23 @@ async function inPane(file, line, column) {
   url.searchParams.delete("mode");
   if (!window.open(url, "_blank")) return setStatus(`${file}:${line} opens in the main window, which the browser didn't let this one open`, "error");
   forMainWindow = message;
+  setTimeout(() => { if (forMainWindow === message) forMainWindow = null; }, 30000); // (a main window closed before it was there)
   setStatus(`→ ${file}:${line}, in a new main window`, "fresh");
 }
 
 // What the other windows of this document ask: a pop-out shows a source line in its PDF, and a main window opens a
 // line in its pane where it would itself (or anyway, when a pop-out has no other place for it).
+// (messages of the same origin, but checked: a file's path and a line, a column from 0)
+const isLine = (file, line, column = 0) => typeof file === "string" && Number.isInteger(line) && line > 0 && Number.isInteger(column) && column >= 0;
 onWindowMessage("showSource", ({ file, line }) => {
-  if (!isPopout || typeof file !== "string") return false;
+  if (!isPopout || !isLine(file, line)) return false;
   fetch(`forward?${new URLSearchParams({ file, line, ...cleanParam() })}`)
     .then((r) => (r.ok ? r.json() : null)).then((t) => t && showForward(t)).catch(() => {});
   return true;
 });
 onWindowMessage("openSource", ({ file, line, column, anyway }) => {
-  if (isPopout || typeof file !== "string" || !editorAllowed() || !editable(file) || !(anyway || opensInBrowser())) return false;
-  showEditor(true, { path: file, line, column: column || 0 });
+  if (isPopout || !isLine(file, line, column) || !editorAllowed() || !editable(file) || !(anyway || opensInBrowser())) return false;
+  showEditor(true, { path: file, line, column });
   return true;
 });
 onWindowMessage("mainWindow", () => {

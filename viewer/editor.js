@@ -6,7 +6,6 @@ import { fitsKeepalive, postJSON, readBody, signInPage, unreachable } from "./ne
 import { lineHunks } from "./diff.js";
 import { dropKept, EDITOR_ID, keptKey, newSaveId, readKept } from "./drafts.js";
 import { editorAllowed, me, openTitles, ownerName } from "./role.js";
-import { refit } from "./pdfview.js";
 import { wrote } from "./build.js";
 import { fitEditor, layoutMode, setLayoutMode } from "./layout.js";
 import { CM, cmExtensions, loadEditor } from "./cm.js";
@@ -58,9 +57,8 @@ export async function showEditor(on, { path = null, line = 0, column = 0, focus 
   if (editorShown() !== on || layoutMode !== next) {
     const opening = on && !editorShown();
     $("editorPane").hidden = !on;
-    setLayoutMode(next);
-    fitEditor(opening);
-    refit();
+    setLayoutMode(next); // (which fits the pane and the PDF)
+    if (opening) fitEditor(true); // (and makes room for the pane, closing the sidebar if needs be)
     openTitles();
   }
   if (!on) return;
@@ -146,8 +144,8 @@ function showCursor(update = null) {
 // The words of LaTeX text: between \begin{document} and \end{document} when it has them, without comments, commands,
 // or the arguments that aren't words (references, labels, file names).
 function countWords(text) {
-  const begin = text.indexOf("\\begin{document}"), end = text.indexOf("\\end{document}");
-  const body = text.slice(begin < 0 ? 0 : begin + 16, end < 0 ? undefined : end)
+  const begin = text.indexOf("\\begin{document}"), from = begin < 0 ? 0 : begin + 16, end = text.indexOf("\\end{document}", from);
+  const body = text.slice(from, end < 0 ? undefined : end)
     .replace(/(?<!\\)%.*$/gm, " ")
     .replace(/\\(?:[a-z]*cite[a-z]*|[a-z]*ref|label|includegraphics|input|include|usepackage|bibliography(?:style)?)\*?(?:\[[^\]]*\])*\{[^{}]*\}/gi, " ")
     .replace(/\\[a-zA-Z]+\*?/g, " ");

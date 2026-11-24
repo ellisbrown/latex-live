@@ -11,14 +11,14 @@ export const TINTS = [
 
 export let theme, tint, pdfInvert;
 // The look as remembered. Before themes, "dark" both darkened the chrome and inverted the PDF: a browser that had
-// it on starts with both.
+// it on starts with both (and from then on, the two are apart).
 function readLook() {
   const saved = localStorage.getItem("latex-live:theme"), oldDark = !!localStorage.getItem("latex-live:dark");
   theme = saved === "dark" || saved === "light" ? saved : oldDark ? "dark" : "light";
   const savedTint = localStorage.getItem("latex-live:tint");
   tint = TINTS.some((t) => t.id === savedTint) ? savedTint : "graphite";
   const invert = localStorage.getItem("latex-live:pdfInvert");
-  pdfInvert = invert === null ? oldDark && theme === "dark" : invert === "1";
+  pdfInvert = invert === null ? oldDark : invert === "1";
 }
 
 const listeners = new Set();

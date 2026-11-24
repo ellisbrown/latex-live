@@ -221,7 +221,7 @@ body.pdf-invert .thumb canvas {
   background: var(--bg-surface); color: var(--ink); font-size: 12.5px; cursor: pointer;
 }
 #docPick { font-weight: 600; max-width: 16em; field-sizing: content; } /* (as wide as the document shown; other previews can have long names) */
-#whoPick:disabled { appearance: none; background: transparent; border-color: transparent; color: var(--ink-2); cursor: default; } /* (shared mode: a label, you comment as yourself) */
+#whoPick:disabled { appearance: none; background: transparent; border-color: transparent; color: var(--ink-2); cursor: default; opacity: 1; } /* (shared mode: a label, you comment as yourself) */
 
 /* The layout switch: Source | Split | PDF. */
 .segmented {
@@ -296,10 +296,6 @@ body.pdf-invert .thumb canvas {
   flex: none; width: var(--side-w);
   background: var(--bg-panel); color: var(--ink);
 }
-#sideGrip {
-  position: absolute; top: 0; right: 0; bottom: 0; width: 6px; z-index: 12; cursor: col-resize;
-}
-#sideGrip:hover { background: var(--accent-soft); }
 
 #tabs {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(48px, 1fr)); gap: 2px; padding: 5px 6px;
@@ -417,8 +413,8 @@ body.resizing { cursor: col-resize; user-select: none; }
   display: flex; align-items: center; gap: 4px; height: 38px; padding: 0 7px; flex: none;
   background: var(--bg-panel); border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden;
 }
-#editorHead button { height: 26px; font-size: 12px; }
-#filePick { min-width: 0; max-width: 70%; overflow: hidden; text-overflow: ellipsis; display: block !important; color: var(--ink) !important; font-weight: 500; }
+#editorHead button { height: 26px; font-size: 12px; flex-shrink: 0; }
+#filePick { flex-shrink: 1 !important; min-width: 0; max-width: 70%; overflow: hidden; text-overflow: ellipsis; display: block !important; color: var(--ink) !important; font-weight: 500; }
 .head-spacer { margin-left: auto; }
 #editorHint {
   flex: none; padding: 5px 12px; font-size: 12px; color: var(--ink-2);
@@ -607,7 +603,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 #moreFixed, #moreItems { display: flex; flex-direction: column; gap: 2px; }
 #moreItems { border-top: 1px solid var(--hairline); padding-top: 6px; margin-top: 4px; }
 #moreItems:not(:has(> :not([hidden]))) { display: none; }
-.overflow-items > [data-label]:not(.grp)::after { content: attr(data-label); }
+.overflow-items [data-label]:not(.grp)::after { content: attr(data-label); }
 .overflow-items > .grp[data-label]::before { content: attr(data-label); min-width: 3.5em; color: var(--ink-3); font-size: 12px; }
 .overflow-items .txt { display: none; } /* (the label shows instead) */
 .overflow-items > select { margin: 2px 0; }
