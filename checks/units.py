@@ -25,7 +25,7 @@ def unit_checks():
     """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
     for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
-                  code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, completion_checks, assets_checks, search_checks, word_column_checks, venue_checks, diff_retry_checks,
+                  code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, completion_checks, assets_checks, search_checks, logs_checks, word_column_checks, venue_checks, diff_retry_checks,
                   arxiv_strip_checks, graphics_synctex_checks, turned_page_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks):
         check()
 
@@ -992,6 +992,111 @@ def search_checks():
             fail(f"search for a word on 300 lines: {len(found['matches'])} matches (truncated: {found['truncated']})")
     ok("search in the sources finds each line's first match, case-insensitive unless asked, a regular expression only"
        f" outside shared mode, at most {editor.SEARCH_LIMIT} matches")
+
+
+LOG = r"""This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2024) (preloaded format=pdflatex)  14 APR 2026 12:00
+entering extended mode
+({root}/main.tex
+LaTeX2e <2023-11-01>
+(/usr/share/texlive/texmf-dist/tex/latex/base/article.cls
+Document Class: article 2023/05/17 v1.4n Standard LaTeX document class
+Package foo Warning: a package's own warning on input line 99.
+(/usr/share/texlive/texmf-dist/tex/latex/base/size10.clo))
+2026-04-14 12:00: a timestamp
+bar.sty:12: a package's message
+main.tex.bak:3: not a source file
+(./sec/intro.tex
+LaTeX Warning: Reference `x' on page 1 undefined on input line 7.
+Overfull \hbox (12.0pt too wide) in paragraph at lines 3--9
+[]\OT1/cmr/m/n/10 text (with an unbalanced parenthesis (and another
+
+./sec/intro.tex:11: Undefined control sequence.
+l.11 \foo
+)
+Package hyperref Warning: Token not allowed in a PDF string (Unicode):
+(hyperref)                removing `math shift' on input line 20.
+
+build/main-live.aux:3: in the build folder
+.hidden.tex:2: a dot file
+../outside.tex:1: outside the paper
+Underfull \hbox (badness 10000) in paragraph at lines 21--21
+[]
+
+)
+Output written on build/main-live.pdf (1 page). See {real}/build and {root}.
+"""
+
+
+def logs_checks():
+    """The build's log for editors (logs.read_log, build_logs): errors only where their file:line names a source file
+    of the paper (not a timestamp, a package's message, a file in build/, a dot file or one outside the paper),
+    warnings and boxes in the file TeX's log opened last (none in a package), a package's wrapped warning as one; the
+    paper's folder as ./ in the raw log, also once links are resolved; the build's own errors after the log's; only
+    the log's end is read, and a log parsed once until it changes."""
+    from latexlive import config, logs
+    with tempfile.TemporaryDirectory(prefix="latex-live-logs-") as tmp:
+        real = os.path.join(tmp, "real")
+        root = os.path.join(tmp, "paper")  # (a link to real: the log may name either)
+        for name in ("main.tex", "sec/intro.tex", ".hidden.tex", "build/main-live.aux", "main.tex.bak"):
+            put(os.path.join(real, name), "x\n")
+        put(os.path.join(tmp, "outside.tex"), "x\n")
+        os.symlink(real, root)
+        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", shared={"status": None})
+        log = os.path.join(real, config.BUILD, "main-live.log")
+        put(log, LOG.format(root=root, real=real))
+        put(os.path.join(real, config.BUILD, "main-live.status.json"),
+            '{"ok": false, "time": "12:00:00", "durationMs": 1234, "errors": [{"file": "sec/intro.tex", "line": 11,'
+            ' "msg": "Undefined control sequence."}, {"file": null, "line": null, "msg": "a bibtex failure"}]}')
+        found = logs.build_logs(server, "main.pdf")
+        place = lambda d: (d["severity"], d["kind"], d["file"], d["line"])
+        if [place(e) + (e["msg"],) for e in found["errors"]] != [("error", "error", "sec/intro.tex", 11, "Undefined control sequence."),
+                                                                  ("error", "error", None, None, "a bibtex failure")]:
+            fail(f"the log's errors: {found['errors']}")
+        want = [("warning", "warning", None, None), ("warning", "warning", "sec/intro.tex", 7),
+                ("warning", "overfull", "sec/intro.tex", 9), ("warning", "warning", "main.tex", 20), ("info", "underfull", "main.tex", 21)]
+        if [place(w) for w in found["warnings"]] != want or "removing `math shift'" not in found["warnings"][3]["msg"]:
+            fail(f"the log's warnings: {[place(w) + (w['msg'][:40],) for w in found['warnings']]}")
+        if root in found["raw"] or real in found["raw"] or "See ./build and ." not in found["raw"] or "(./main.tex" not in found["raw"]:
+            fail(f"the raw log shows the paper's folder: {found['raw'][-200:]!r}")
+        if (found["ok"], found["durationMs"], found["truncated"]) != (False, 1234, False):
+            fail(f"the log's build: {found['ok']} {found['durationMs']} {found['truncated']}")
+        parse, calls = logs.parse_log, []
+        logs.parse_log = lambda *a: (calls.append(1), parse(*a))[1]
+        try:
+            again = logs.build_logs(server, "main.pdf")
+            if calls or again["warnings"] != found["warnings"]:
+                fail("the log is parsed again while it is unchanged")
+            filler = "".join(f"(./sec/intro.tex [{i}] line {i} of a long log)\n" for i in range(200_000))
+            put(log, LOG.format(root=root, real=real) + filler + "./main.tex:5: Missing $ inserted.\n")
+            t0 = time.monotonic()
+            big = logs.build_logs(server, "main.pdf")
+            took = time.monotonic() - t0
+        finally:
+            logs.parse_log = parse
+        if not calls or os.path.getsize(log) < 2 * logs.PARSE_LIMIT or not big["truncated"] or len(big["raw"]) > logs.RAW_TAIL:
+            fail(f"a changed log is parsed again, and only its end: {len(calls)} parses, {os.path.getsize(log)} bytes,"
+                 f" truncated {big['truncated']}, {len(big['raw'])} characters of it sent")
+        if [place(e) for e in big["errors"]][:1] != [("error", "error", "main.tex", 5)] or took > 5:
+            fail(f"the end of a long log: {big['errors'][:2]} in {took:.1f} s")
+        sys.path.insert(0, HERE)
+        import latex_report
+        saved = latex_report.BUILD
+        try:
+            latex_report.BUILD = os.path.join(real, config.BUILD)
+            began = os.path.join(latex_report.BUILD, "main-live.began")
+            put(began, "run\n")
+            os.utime(began, (time.time() - 3, time.time() - 3))
+            took = latex_report.run_duration("main-live")
+            again = latex_report.run_duration("main-live")
+        finally:
+            latex_report.BUILD = saved
+        with open(os.path.join(HERE, "latexmkrc")) as f:
+            first_pass = "[ -s $build/%R.began ] || echo run > $build/%R.began;" in f.read()
+        if not (took and 3000 <= took < 6000) or again is not None or os.path.getsize(began) or not first_pass:
+            fail(f"a run's time, from its first pass on: {took} ms, then {again}; latexmkrc marks the first pass: {first_pass}")
+    ok("the build's log: errors only in the paper's source files, warnings and boxes in the file they are in, the paper's"
+       " folder as ./, only the end of a long log read, and a log parsed once until it changes; a build is timed from its"
+       " first pass")
 
 
 def connection_cap_checks():

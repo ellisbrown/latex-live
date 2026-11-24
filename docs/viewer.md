@@ -90,6 +90,8 @@ only after a successful run, so a failed build keeps the previous PDF with a
 red banner, and SyncTeX keeps working on it; click an error to open its line.
 The same errors go to VS Code's Problems panel as `file:line` diagnostics,
 through the task's problem matcher.
+In the source pane, the build's errors and warnings are also marked in the
+text and listed under it ([the source pane](#the-source-pane)).
 
 Beside the live build, a second build without the notes runs in the
 background. It gives the notes-free view, and the page count without notes.
@@ -154,8 +156,10 @@ Notes are the paper's note macros: one-argument commands that go through
 
 Split (or `e`) opens the LaTeX beside the PDF, and Source shows it alone ([the
 layout](#the-layout)); drag its right edge to resize it. The bar under the text
-shows the cursor's line and column, whether your edits are saved, and the word
-count (of the selection, when there is one), without commands and comments.
+shows the cursor's line and column, whether your edits are saved, the last
+build's state (building, how long it took, or its errors, and its warnings),
+and the word count (of the selection, when there is one), without commands and
+comments.
 
 - The file menu (▾) lists the paper's `.tex`, `.bib`, `.sty` and `.cls` files by
   folder, with a filter. Each file you open gets a tab, and the tabs come back
@@ -176,6 +180,12 @@ count (of the selection, when there is one), without commands and comments.
 - Notes are tinted in their author's color. Cmd/Ctrl+B and Cmd/Ctrl+I wrap the
   selection in `\textbf` and `\textit`, and Cmd/Ctrl+/ comments lines out or
   back in.
+- The build's errors and warnings are underlined in the text, with a dot beside
+  the line; resting the pointer on one shows what the log says. The build's
+  state in the bar under the text (or Cmd/Ctrl+Shift+L) opens the build log
+  under the text: all its errors and warnings, or only one kind (boxes too
+  wide or too loose with the warnings), or the end of the log itself; click
+  one to go to its line.
 - If the file changed meanwhile (saved in another editor or tab, or a note from
   the viewer), your edits are merged with that change. Where both changed the
   same lines, the pane shows both versions between `<<<<<<<` and `>>>>>>>`
@@ -332,5 +342,6 @@ typed).
 | `c` | Comment on the selected text |
 | `e` | Split or PDF: the source pane beside the PDF, or not (Cmd/Ctrl S there saves at once) |
 | Cmd/Ctrl B, I, / | In the source pane: bold, italic, comment out or back in |
+| Cmd/Ctrl Shift L | The build log under the source (editors; in the source pane, with no text selected) |
 | Double-click | Open the source line |
 | `?` | The list of shortcuts |

@@ -22,6 +22,7 @@ from .git import commits
 from .hub import papers_page
 from .instances import instances
 from .latex import root_docs
+from .logs import build_logs
 from .navigation import editor_cli, forward_request, open_source, synctex_edit, synctex_lookup
 from .note_writer import note_request
 from .notes import margin_notes, note_authors, notes, paper_note_kinds, shown_notes
@@ -38,7 +39,8 @@ def me(server, user):
     note macro, without which a coauthor can't comment; openHost, in shared mode: whether the owner's
     editor opens here (a service has none); download: whether they may download the builds made on
     request, the paper without its notes (export) and with its notes in the margin (review), which
-    take the same role; arxiv: whether they may make and download the arXiv package (the owner's); signOut: whether the browser signed in with a token (POST logout forgets it),
+    take the same role; arxiv: whether they may make and download the arXiv package (the owner's); logs: whether they
+    may read the build's log (editors); signOut: whether the browser signed in with a token (POST logout forgets it),
     not through the proxy."""
     defined = bool(user["macro"]) and user["macro"] in paper_note_kinds(server.paper_root, server.default_pdf)
     can = lambda path: allowed(user, "POST", path)
@@ -48,6 +50,7 @@ def me(server, user):
                     "rebuild": can("/rebuild"), "compare": can("/diff"), "switch": can("/switch"),
                     "openHost": can("/open") and (not config.SHARED or editor_cli() is not None),
                     "download": can("/export") and can("/review"), "arxiv": can("/arxiv"), "checks": allowed(user, "GET", "/check/"),
+                    "logs": allowed(user, "GET", "/logs/"),
                     "signOut": user["via"] != "proxy"}}
 
 
@@ -134,6 +137,8 @@ class Handler(BaseHandler):
                 body = json.dumps(note_authors(self.server.paper_root, doc_pdf)).encode()
             elif path.startswith("/check/"):
                 body = json.dumps(cached_checks(self.server, doc_pdf)).encode()
+            elif path.startswith("/logs/"):
+                body = json.dumps(build_logs(self.server, doc_pdf)).encode()
             elif path.startswith("/graphics/"):  # (figure files, where in the sources, git's state: not in the PDF)
                 body = json.dumps([] if below_editor else graphics(self.server.paper_root, doc_pdf)).encode()
             elif path.startswith("/margin/"):

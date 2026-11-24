@@ -23,6 +23,7 @@ import { baseKind, changesOn, setBaselines, trackDocument, updateChanges, wordsP
 import { refreshTab } from "./sidebar.js";
 import { showDiffInfo } from "./compare.js";
 import { openDoc } from "./docs.js";
+import { noteBuild } from "./logs.js";
 
 // Which build to show: "notes" (the live build) or "clean" (the notes-free build, when there is one).
 let view = localStorage.getItem("latex-live:view") === "notes" ? "notes" : "clean"; // notes-free unless chosen otherwise
@@ -164,6 +165,7 @@ export async function poll() {
     pollFailed = false;
     sourceStatus(info.source, epoch);
     if (!isDiff) seeBuild(!!info.building, info.build?.ok === false);
+    if (!isDiff) noteBuild(info);
     if (!isDiff && info.doc && info.doc !== docFile) return openDoc(info.doc); // the server builds another document now
     if (info.layout) setArea(info.layout);
     setUncounted(info.uncounted);

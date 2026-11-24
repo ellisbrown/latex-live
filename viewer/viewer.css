@@ -190,13 +190,14 @@ body.pdf-invert .thumb canvas {
 .spacer { margin-left: auto; }
 
 /* Buttons in the bars and menus: quiet until hovered; .on for a toggle that is on. */
-#bar button, #pdfHead button, #editorHead button, .popover-menu button {
+#bar button, #pdfHead button, #editorHead button, #logsHead button, .popover-menu button {
   display: inline-flex; align-items: center; justify-content: center; gap: 5px;
   height: 28px; padding: 0 8px; border: 1px solid transparent; border-radius: var(--radius-ctl);
   background: transparent; color: var(--ink-2); cursor: pointer;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
-#bar button:hover:not(:disabled), #pdfHead button:hover:not(:disabled), #editorHead button:hover:not(:disabled) {
+#bar button:hover:not(:disabled), #pdfHead button:hover:not(:disabled), #editorHead button:hover:not(:disabled),
+#logsHead button:hover:not(:disabled) {
   background: var(--bg-hover); color: var(--ink);
 }
 #bar button:disabled, #pdfHead button:disabled { opacity: 0.35; cursor: default; }
@@ -470,9 +471,45 @@ body.resizing { cursor: col-resize; user-select: none; }
   font-size: 11.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden;
 }
 #saveState { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The build's state in the status bar (logs.js), which opens the build log. */
+#buildState {
+  display: inline-flex; align-items: center; height: 19px; padding: 0 7px; border-radius: 99px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg-surface); color: var(--ink-2); font: inherit; font-weight: 500;
+}
+#buildState:hover { filter: brightness(0.97); }
+#buildState.ok { background: var(--ok-bg); color: var(--ok); border-color: var(--ok-border); }
+#buildState.busy, #buildState.warn { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-border); }
+#buildState.error { background: var(--err-bg); color: var(--err); border-color: var(--err-border); }
 #saveState.dirty, #saveState.busy { color: var(--warn); font-weight: 500; }
 #saveState.error { color: var(--err); font-weight: 500; }
 #saveState.conflict, #saveState.retry { cursor: pointer; text-decoration: underline; }
+
+/* The build log's drawer under the source (logs.js): every error and warning, or by kind, or the log itself. */
+#logsDrawer { flex: none; height: 210px; display: flex; flex-direction: column; border-top: 1px solid var(--border-strong); background: var(--bg-panel); }
+#logsHead { display: flex; align-items: center; gap: 4px; height: 32px; padding: 0 8px; flex: none; border-bottom: 1px solid var(--hairline); }
+#logsTabs { display: flex; gap: 3px; }
+#logsHead button { height: 24px; font-size: 12px; font-weight: 500; }
+#logsTabs button.on { background: var(--bg-surface); color: var(--ink); border-color: var(--border); }
+#logsTabs .n:not(:empty) { margin-left: 3px; font-size: 11px; opacity: 0.8; }
+#logsBody { flex: 1; min-height: 0; overflow: auto; font-size: 12px; }
+#logsBody .empty { padding: 10px 12px; color: var(--ink-3); }
+.log-row { display: flex; align-items: baseline; gap: 8px; padding: 5px 10px; border-bottom: 1px solid var(--hairline); }
+.log-row.opens { cursor: pointer; }
+.log-row.opens:hover { background: var(--bg-hover); }
+.log-sev { flex: none; width: 58px; font-size: 10.5px; font-weight: 700; text-transform: uppercase; }
+.log-sev.error, .cm-hover-card .hc-kind.error { color: var(--err); }
+.log-sev.warning, .cm-hover-card .hc-kind.warning { color: var(--warn); }
+.log-sev.info { color: var(--ink-3); }
+.log-loc { flex: none; font-family: var(--font-mono); font-size: 11.5px; color: var(--accent-ink); }
+.log-msg { min-width: 0; color: var(--ink); overflow-wrap: anywhere; }
+.log-raw { margin: 0; padding: 8px 10px; font: 11.5px/1.45 var(--font-mono); color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The errors and warnings in the source: a wavy underline, and a dot in the gutter. */
+.cm-diag-error { text-decoration: wavy underline var(--err); text-underline-offset: 3px; text-decoration-skip-ink: none; }
+.cm-diag-warning { text-decoration: wavy underline var(--warn); text-underline-offset: 3px; text-decoration-skip-ink: none; }
+.cm-diag-gutter .cm-gutterElement { display: flex; align-items: center; justify-content: center; width: 9px; }
+.cm-diag-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
+.cm-diag-dot.error { background: var(--err); }
+.cm-diag-dot.warning { background: var(--warn); }
 
 /* The file picker's menu: the editable sources by folder, with a filter. */
 #fileMenu {

@@ -13,12 +13,14 @@ import { keepFocusIn, showWelcome } from "./welcome.js";
 import { closeNotePop, startComment } from "./comments.js";
 import { goToChange, toggleChanges } from "./changes.js";
 import { closePalette, openPalette, paletteOpen } from "./palette.js";
+import { showLogsKey } from "./logs.js";
 
 // The viewer's own shortcuts with Cmd (on a Mac) or Ctrl (elsewhere), which also work in the source pane, unless the
 // editor took the key first (on a Mac, Ctrl+K there deletes to the end of the line): [key, shift, what it does (false:
 // nothing for this user, and the key goes on)].
 const IS_MAC = /^Mac|^iP/.test(navigator.platform);
-const APP_KEYS = [["k", false, () => openPalette("go")], ["f", true, () => editorAllowed() && !isPopout && openPalette("search")]];
+const APP_KEYS = [["k", false, () => openPalette("go")], ["f", true, () => editorAllowed() && !isPopout && openPalette("search")],
+                  ["l", true, showLogsKey]]; // (in the source, Cmd/Ctrl+Shift+L with text selected selects its other matches)
 
 window.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;

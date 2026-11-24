@@ -1,6 +1,7 @@
 """The live build of the owner's previews: latexmk -pvc for the current document, started and
 stopped on the main thread, rebuilds and document switches, and the build's state."""
 
+import contextlib
 import ctypes
 import os
 import signal
@@ -56,6 +57,8 @@ def start_latexmk(server, force=False):
         return
     doc = server.default_pdf[:-4]
     force = force or (read_json(job_file(server.paper_root, server.default_pdf, ".status.json")) or {}).get("ok") is False
+    with contextlib.suppress(OSError):  # (a run cut off left its start: the next run times itself from its own)
+        os.truncate(job_file(server.paper_root, server.default_pdf, ".began"), 0)
     env = {**server.env, "LATEX_LIVE_DOC": doc}
     if config.STANDBY:  # (latexmkrc then runs each pass through standby.py, which stops its standbys when this process is gone)
         env["LATEX_LIVE_STANDBY_OWNER"] = str(os.getpid())
