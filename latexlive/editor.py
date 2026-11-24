@@ -298,8 +298,9 @@ def search_request(server, query):
     """GET /search?q=<text>&case=1&regex=1: the lines of the files the browser editor opens that hold q, the first
     match of each, [{"file", "line", "col" (from 0), "len", "text" (SEARCH_TEXT characters of the line, from a little
     before the match when it lies further in, after an ellipsis), "at" (where the match is in text)}], at most
-    SEARCH_LIMIT of them ("truncated" then). Case-insensitive unless case=1; q is a regular expression with regex=1,
-    except in shared mode, where it is always taken as written (a coauthor's pattern could take the server's time)."""
+    SEARCH_LIMIT of them ("truncated" then); col, len and at count UTF-16 code units, as the editor does.
+    Case-insensitive unless case=1; q is a regular expression with regex=1, except in shared mode, where it is always
+    taken as written (a coauthor's pattern could take the server's time)."""
     q = query.get("q", [""])[0]
     if not q.strip() or len(q) > SEARCH_QUERY:
         return 200, {"matches": [], "truncated": False}
@@ -308,7 +309,7 @@ def search_request(server, query):
         pattern = re.compile(q if regex else re.escape(q), 0 if query.get("case") == ["1"] else re.I)
     except re.error as e:
         return 400, {"error": f"not a regular expression: {e}"}
-    matches = []
+    matches, utf16 = [], lambda s: len(s.encode("utf-16-le")) // 2
     for rel, real in editable_files(server).items():
         try:
             text = read_editable(real).decode("utf-8", errors="replace")
@@ -321,6 +322,6 @@ def search_request(server, query):
                     return 200, {"matches": matches, "truncated": True}
                 start = 0 if m.end() <= SEARCH_TEXT else max(0, m.start() - 60)
                 shown = ("…" if start else "") + line[start:start + SEARCH_TEXT]
-                matches.append({"file": rel, "line": n, "col": m.start(), "len": m.end() - m.start(), "text": shown,
-                                "at": m.start() - start + (1 if start else 0)})
+                matches.append({"file": rel, "line": n, "col": utf16(line[:m.start()]), "len": utf16(m.group()),
+                                "text": shown, "at": utf16(shown[:m.start() - start + (1 if start else 0)])})
     return 200, {"matches": matches, "truncated": False}
