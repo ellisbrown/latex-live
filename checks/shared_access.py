@@ -208,7 +208,9 @@ def role_checks(sh):
                   ("GET", "/arxiv.tar.gz", None))
     editor_up = (("GET", "/files", None), ("GET", "/file?path=body.tex", None), ("POST", "/file", probe), ("POST", "/rebuild", {}),
                  ("GET", "/commits", None), ("POST", "/diff", {"rev": "HEAD"}), ("GET", "/completions", None),
-                 ("GET", "/search?q=quokka", None), ("GET", "/logs/main.pdf", None))
+                 ("GET", "/search?q=quokka", None), ("GET", "/logs/main.pdf", None), ("GET", "/papers/index", None),
+                 ("GET", "/bib/verify", None), ("POST", "/bib/lookup", {"query": "@misc{x, title={X}}"}),
+                 ("POST", "/bib/add", {"bibtex": "@misc{x, title={X}}"}), ("POST", "/bib/verify", {}))
     for uid in ("vw", "cm", "ed"):
         for method, path, body in owner_only + (() if uid == "ed" else editor_up):
             expect(via_proxy(uid, path, method, body), 403, f"{method} {path} for {sh['users'][uid]['role']} {uid}")
@@ -230,6 +232,7 @@ def role_checks(sh):
         fail(f"GET search for quokka, for the editor: {found}")
     if expect_dict(via_proxy("ed", "/search?q=Quokka.narwhal&regex=1"), 200, "GET search with regex=1 for the editor").get("matches"):
         fail("search takes a coauthor's text as a regular expression in shared mode")
+    bib_checks()
     listing = expect_dict(with_token(owner, "/instances"), 200, "GET instances for the owner")
     if listing.get("self") != sh["proc"].pid:
         fail(f"GET instances for the owner: {listing}")
@@ -331,3 +334,24 @@ def role_checks(sh):
         fail(f"synctex for line 99999 of body.tex, which has {last}: {clamped}, not its last line, with a note")
     ok("SyncTeX answers JSON for everyone in shared mode (file: null where the editor can't go, the last line for one past"
        " the end), and opens nothing")
+
+
+def bib_checks():
+    """The Refs panel for the editor: the bibliography with its counts, pasted BibTeX read, an entry whose key is taken
+    refused (writing nothing); and without LATEX_LIVE_LOOKUPS, shared mode's default, no lookup by ID and no check
+    against Crossref, saying why."""
+    index = expect_dict(via_proxy("ed", "/papers/index"), 200, "GET papers/index for the editor")
+    if (index.get("lookups") is not False or "refs.bib" not in index.get("bibFiles", [])
+            or not any(e.get("key") == "one" and e.get("citeCount") == 0 for e in index.get("entries", []))):
+        fail(f"GET papers/index for the editor: {str(index)[:300]}")
+    expect(via_proxy("ed", "/bib/verify"), 200, "GET bib/verify for the editor")
+    found = expect_dict(via_proxy("ed", "/bib/lookup", "POST", {"query": "@misc{x, title={X}}"}), 200, "POST bib/lookup of BibTeX for the editor")
+    if found.get("key") != "x":
+        fail(f"POST bib/lookup of BibTeX for the editor: {found}")
+    expect(via_proxy("ed", "/bib/add", "POST", {"bibtex": "@misc{One, title={Again}}", "file": "refs.bib"}), 409,
+           "POST bib/add of a key refs.bib has, for the editor")
+    for path, body in (("/bib/lookup", {"query": "2312.00752"}), ("/bib/verify", {})):
+        if not expect_dict(via_proxy("ed", path, "POST", body), 403, f"POST {path} without LATEX_LIVE_LOOKUPS").get("lookupsOff"):
+            fail(f"POST {path} without LATEX_LIVE_LOOKUPS is refused, but not as lookups that are off")
+    ok("the editor gets the bibliography with its counts, reads pasted BibTeX, and can't add a key the paper has; without"
+       " LATEX_LIVE_LOOKUPS (shared mode's default), lookups by ID and the check against Crossref are refused, saying why")

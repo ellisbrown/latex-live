@@ -25,8 +25,8 @@ from .base import ENV, HERE, PORT, TOKEN, _quiet, fail, hub, in_thread, ok, wait
 from .clean_standby import clean_standby_run
 from .early import early_run
 from .helpers import (
-    CAPS, JS_TYPE_RE, editor_calls, editor_stub, get, hub_get, post, post_length, read_bytes, read_hub, request, start, stop,
-    read_text, texlive_image, text_point)
+    CAPS, JS_TYPE_RE, editor_calls, editor_stub, get, hub_get, post, post_length, put, read_bytes, read_hub, request, start,
+    stop, read_text, texlive_image, text_point)
 from .landscape import landscape_run
 from .papers import composed, make_paper
 from .shared import shared_checks
@@ -477,6 +477,18 @@ def owner_checks(token, own, editor_log, paper):
         fail(f"/search for section{{Method, through the hub: {found}")
     ok("through the hub, /completions offers the labels with the line they are on and the figures, and /search finds text"
        " in the sources")
+    refs = os.path.join(paper, "refs.bib")  # (no build reads it; gone again after)
+    put(refs, "@misc{alpha, title={Alpha}}\n")
+    try:
+        index = hub_get("/papers/index", token)
+        added = post("/bib/add", token, body={"bibtex": "@misc{beta, title={Beta}}"})
+        if ([(e["key"], e["citeCount"]) for e in index.get("entries", [])] != [("alpha", 0)] or index.get("lookups") is not True
+                or added != {"file": "refs.bib", "keys": ["beta"]} or read_text(refs) != "@misc{alpha, title={Alpha}}\n\n@misc{beta, title={Beta}}\n"):
+            fail(f"the bibliography through the hub: {index}, adding: {added}")
+    finally:
+        os.remove(refs)
+    ok("through the hub, /papers/index lists the bibliography (lookups on by default outside shared mode), and /bib/add adds"
+       " an entry")
     page, x, y = text_point(lambda path: hub_get(path, token), "main.tex", 9)
     spot = f"file=main.pdf&page={page}&x={x:.2f}&y={y:.2f}"
     line = hub_get(f"/synctex?{spot}&json=1", token)["line"]

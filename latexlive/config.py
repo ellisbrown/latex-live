@@ -164,6 +164,21 @@ CLEAN_STANDBY = STANDBY and os.environ.get("LATEX_LIVE_CLEAN_STANDBY", "").strip
 TIMING = os.environ.get("LATEX_LIVE_TIMING", "").strip() == "1"
 
 
+# LATEX_LIVE_LOOKUPS: whether the Refs panel may look references up online (bib: an arXiv ID on export.arxiv.org, a
+# DOI on api.crossref.org, and the check of the bibliography, which sends its entries' titles and DOIs to Crossref).
+# These are the only requests latex-live sends out, and only on a click. On by default in a preview of your own, where
+# only you can click; off by default in shared mode, where its owner turns them on for the coauthors with
+# LATEX_LIVE_LOOKUPS=1; 0 turns them off in either.
+LOOKUPS_SETTING = os.environ.get("LATEX_LIVE_LOOKUPS", "").strip()
+LOOKUPS = LOOKUPS_SETTING == "1" or (LOOKUPS_SETTING == "" and not SHARED)
+if LOOKUPS_SETTING not in ("", "0", "1"):
+    if SHARED:
+        SHARED_PROBLEMS.append(f"LATEX_LIVE_LOOKUPS must be 1 (or 0), not {LOOKUPS_SETTING!r}")
+    else:  # (warn, not exit: forward.py imports this module too)
+        print(f"=== latex-live: LATEX_LIVE_LOOKUPS must be 1 (or 0), not {LOOKUPS_SETTING!r}: lookups are off",
+              file=sys.stderr, flush=True)
+
+
 # LATEX_LIVE_PROTECTED, a regular expression, marks text that must stay as written, e.g.
 # r"\\ch\{human-written\}" at the end of a paragraph or inside a caption: a note written from the viewer
 # goes after the paragraph or caption it marks, and the marker itself can't be changed there (note_writer).

@@ -129,6 +129,13 @@ function goToLine(line, column = 0) {
   cmView.dispatch({ selection: { anchor: at }, effects: CM.EditorView.scrollIntoView(at, { y: "center" }) });
   cmView.focus();
 }
+// Type text at the cursor of the open file (over the selection), as if typed there; false with no file open.
+export function insertText(text) {
+  if (!cmView || !ed || ed.gone) return false;
+  cmView.dispatch({ ...cmView.state.replaceSelection(text), scrollIntoView: true, userEvent: "input" });
+  cmView.focus();
+  return true;
+}
 
 // The tabs above the text: the files opened in this paper (remembered across visits), the open one marked, with a dot
 // while it has edits not saved. A click opens one (once the open one is saved), and its × closes it.

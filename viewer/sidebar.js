@@ -11,8 +11,8 @@ import { checksVersion, runChecks } from "./checks.js";
 
 // The tabs, in order: each a button in #tabs (with its icon, its label and a count, .n) and a panel with its name as
 // id, which refresh fills (when the tab shows, and after each build). A part of the viewer adds its own tab with
-// addTab; viewer.html has the buttons and panels of the ones here, which their modules fill as they load. A
-// comparison shows only the tabs for it (inDiff).
+// addTab, which returns the panel; viewer.html has the buttons and panels of the ones here, which their modules fill as
+// they load. A comparison shows only the tabs for it (inDiff).
 const tabs = new Map();
 export function addTab(name, { label, icon: iconName, title = label, refresh = null, inDiff = false }) {
   let button = $("tabs").querySelector(`[data-tab=${name}]`);
@@ -26,6 +26,7 @@ export function addTab(name, { label, icon: iconName, title = label, refresh = n
   button.onclick = () => showTab(name);
   tabs.set(name, { button, refresh });
   if (isDiff && !inDiff) showTabButton(name, false);
+  return $("side").querySelector(`#${name}.panel`);
 }
 addTab("outline", { label: "Outline", icon: "outline", inDiff: true });
 addTab("thumbs", { label: "Pages", icon: "pages", inDiff: true, refresh: () => doc && renderThumbs() });

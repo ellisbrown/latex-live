@@ -55,9 +55,9 @@ The server is this package, which live.py starts (main). Its modules, from the b
 script and latex_report.py loads), auth and
 roles (who is asking, and what each role may do), files, tools, git and latex (the
 paper's files and the build's, running TeX tools, git, reading LaTeX), synctex and document (the
-document as built), notes, sources, note_writer, commits and editor (reading and writing the
-sources), navigation, instances, build, baselines, status, logs (the build's log, for editors) and timing
-(LATEX_LIVE_TIMING=1: each build's phases), shared_watch and shared_build (shared
+document as built), notes, sources, note_writer, commits, editor and bib (reading and writing the
+sources, and the bibliography), navigation, instances, build, baselines, status, logs (the build's log, for editors) and
+timing (LATEX_LIVE_TIMING=1: each build's phases), shared_watch and shared_build (shared
 mode's builder), export, review_anchors, review_layout and review (the downloads), lints, arxiv and
 checks (the pre-submission checks, and the arXiv package), and web, hub, handler and main (serving it all).
 """

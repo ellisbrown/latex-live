@@ -34,7 +34,8 @@ before it may:
   searches them (for the text as typed, never as a regular expression), rebuilds (the coauthors together at most every 20 seconds), sees the
   pre-submission checks and the build's error messages and log, and compares with
   earlier commits of the copy's branch (the diff, and the change highlights
-  against the last commit or push);
+  against the last commit or push); uses the Refs tab (the bibliography, with
+  online lookups only if you turn them on: `LATEX_LIVE_LOOKUPS`);
 - **owner:** everything a preview of your own allows (the arXiv package
   too), except switching to another document: a shared instance serves one.
 
@@ -381,6 +382,8 @@ tunnel that sends another `Host`).
 - `LATEX_LIVE_BUILD_LIMIT`: the most disk space the build folder may take, in
   MB (default 2048). Past it, the build is stopped and the build folder
   emptied, and the viewer says so.
+- `LATEX_LIVE_LOOKUPS`: `1` lets editors look up references online in the Refs
+  tab (see [Online lookups](#security-model) below). Off by default here.
 
 ## Security model
 
@@ -463,6 +466,16 @@ instance treats the paper and everything TeX writes as theirs.
 - **Host tools.** The pre-submission checks read the PDF with poppler's tools
   on the host (the image has none), under time and memory limits, so only
   editors and the owner can run them.
+- **Online lookups.** A shared instance sends nothing out unless you set
+  `LATEX_LIVE_LOOKUPS=1`. Then an editor's click in the Refs tab can look up an
+  arXiv ID on export.arxiv.org or a DOI on api.crossref.org, and *Check* sends
+  the titles and DOIs of up to 30 cited entries to api.crossref.org, so turn it
+  on only for papers whose references may be seen there (not, say, unpublished
+  work under blind review). The requests go over HTTPS to those two hosts only
+  (redirects too), at most two at once and a few per minute, each with a time
+  limit; what they answer goes into the `.bib` file as plain text. Without the
+  setting, the Refs tab still lists, counts and inserts citations and adds
+  pasted BibTeX.
 - **Links and tokens.** Anyone with a personal link is that person: send links
   privately, and delete a token to end that access. The instance's owner token
   (in `$LATEX_LIVE_STATE`) opens everything: keep it to yourself; if others can

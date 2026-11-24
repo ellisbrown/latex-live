@@ -11,6 +11,7 @@ from . import config
 from .arxiv import start_arxiv
 from .auth import owner_name
 from .baselines import baseline_request, start_diff
+from .bib import add_request, lookup_request, papers_index, start_verify, verify_status
 from .build import on_main_thread, rebuild_doc, request_switch
 from .checks import cached_checks
 from .commits import commit_request
@@ -170,6 +171,10 @@ class Handler(BaseHandler):
             self.send_json(200, completions(self.server))
         elif path == "/search":
             self.send_json(*search_request(self.server, query))
+        elif path == "/papers/index":
+            self.send_json(200, papers_index(self.server))
+        elif path == "/bib/verify":
+            self.send_json(200, verify_status(self.server))
         elif path == "/arxiv.tar.gz":  # (the package that POST /arxiv made)
             self.send_pdf(os.path.join(self.server.paper_root, config.BUILD, f"{self.server.default_pdf[:-4]}-arxiv.tar.gz"),
                           "application/gzip")
@@ -236,6 +241,12 @@ class Handler(BaseHandler):
             self.send_json(*note_request(self.server, req, self.principal))
         elif path == "/file" and isinstance(req, dict):
             self.send_json(*save_request(self.server, req, self.principal))
+        elif path == "/bib/lookup" and isinstance(req, dict):
+            self.send_json(*lookup_request(req))
+        elif path == "/bib/add" and isinstance(req, dict):
+            self.send_json(*add_request(self.server, req, self.principal))
+        elif path == "/bib/verify":
+            self.send_json(*start_verify(self.server))
         elif path == "/logout":
             self.logout()
         elif path == "/commit":

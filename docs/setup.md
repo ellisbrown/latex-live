@@ -334,6 +334,12 @@ are in [shared-mode.md](shared-mode.md#settings).
   the pass without notes), in milliseconds after the save; and the viewer logs
   in the browser's console, for each new PDF, how long it took to notice it,
   fetch it, and draw its first page. Off by default.
+- `LATEX_LIVE_LOOKUPS=0`: turn off the Refs tab's online lookups. They are the
+  only requests latex-live sends out, and only on a click: looking up an arXiv
+  ID (on export.arxiv.org) or a DOI (on api.crossref.org), and *Check*, which
+  sends the titles and DOIs of up to 30 cited entries to Crossref. On by
+  default in your own previews, off in shared mode unless set to `1`
+  ([shared mode](shared-mode.md#security-model)).
 - `LATEX_LIVE_HOST`: a host name under which a browser reaches this machine,
   e.g. the name a tunnel exposes: the previews answer to it on their ports
   (see [Ports and the token](#ports-and-the-token)), and a direct viewer URL

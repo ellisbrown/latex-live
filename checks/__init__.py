@@ -21,7 +21,10 @@ does).
    boxes in the file TeX opened last, shows the paper's folder as ./, reads only a long log's end, and parses a log
    once until it changes; a build is timed from its first pass. On turned pages (/Rotate 90 or
    270), SyncTeX's records of a rotated body go where it is drawn and back, and nothing changes without poppler.
-   Every server keeps to 64 connections at once.
+   Every server keeps to 64 connections at once. The Refs panel's bibliography lists the entries with their citation
+   counts, adds entries through the editor's save (no key twice, braces paired, within 4 MB), turns what arXiv and
+   Crossref answer (stand-ins: never online) into plain BibTeX, and looks up only with LATEX_LIVE_LOOKUPS (off in
+   shared mode by default), over https to those hosts (redirects too), two at once and spaced per host.
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a git
    repository with a pushed commit and a local one) gets a live.py instance, with the hub on port
    44180, or below the ports that outgoing connections take where 44180 is among them (Linux: 28180), or the first
@@ -106,7 +109,8 @@ does).
      no document switch, for anyone) and every endpoint per role (the checks and the build's log for editors only, the log with the paper's files
      relative to it),
      the Origin rules for POSTs (a loopback one only on the instance's own port), POST body limits,
-     non-owners pinned to the document, and the viewer's security headers;
+     non-owners pinned to the document, and the viewer's security headers; the Refs panel for editors, without
+     online lookups;
    - sessions: a personal link's session cookie is new each time, never the token, and works only
      while its token does; sign-out is offered to those who came with a token and expires the cookie
      only from the viewer's page, and through the proxy there is nothing to forget; the instance's
@@ -154,7 +158,7 @@ Exits non-zero on the first failure.
 Its modules, from the bottom up (each imports only from those below it): base (where the checks run, and how they
 report: ok, fail, wait_for, in_thread), helpers (files, git, instances and requests to them, stand-ins, the TeX Live
 image), papers (the scratch paper), access (who reaches the owner's preview: hosts, origins, sessions), static (the
-checkout as it is), shared_units and units (the server's parts without an instance), standby, early, clean_standby
+checkout as it is), shared_units, bib_units and units (the server's parts without an instance), standby, early, clean_standby
 and landscape (the threads beside the instance checks: the warm standby, the early notes-free pass and its warm
 standby, turned pages), shared_helpers, shared_setup, shared_access, shared_sessions, shared_sandbox, shared_downloads,
 shared_notes, shared_editor, shared_rebuild, shared_commits and shared (shared mode, the other thread), preview (the
