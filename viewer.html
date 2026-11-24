@@ -119,7 +119,7 @@
   <button id="downloadArxiv" role="menuitem" hidden title="Save the sources for an arXiv submission: the files the exact build without notes reads, with their comments, notes and hidden blocks taken out and its .bbl, checked by building them alone and comparing the PDF">arXiv package (.tar.gz)</button>
 </div>
 <div id="keys" class="modal-card" hidden>
-  <div class="head">Keyboard shortcuts <button class="close" title="Close (Esc)" aria-label="Close">&#10005;</button><button class="welcome">Welcome guide</button></div>
+  <div class="head">Keyboard shortcuts <button class="welcome">Welcome guide</button><button class="close" title="Close (Esc)" aria-label="Close">&#10005;</button></div>
   <table>
     <tr><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>F</kbd></td><td>search; <kbd>Enter</kbd> / <kbd>Shift</kbd> <kbd>Enter</kbd> next / previous match, <kbd>Esc</kbd> clear</td></tr>
     <tr><td><kbd>Ctrl</kbd> <kbd>+</kbd> / <kbd>Ctrl</kbd> <kbd>&minus;</kbd></td><td>zoom in / out</td></tr>
@@ -180,7 +180,6 @@
 </div>
 <div id="workspace">
   <aside id="side" hidden>
-    <div id="sideGrip" title="Drag to resize"></div>
     <!-- (the tabs: sidebar.js addTab, which gives each its icon and label, and adds the panels of tabs not here) -->
     <div id="tabs" role="tablist">
       <button data-tab="outline" title="The outline, numbered as in the paper"></button>
@@ -195,8 +194,8 @@
     <div id="checks" class="panel" hidden></div>
     <div id="figures" class="panel" hidden></div>
   </aside>
+  <div id="sideGrip" class="grip" title="Drag to resize"></div>
   <section id="editorPane" tabindex="-1" hidden>
-    <div id="editorGrip" title="Drag to resize"></div>
     <div id="editorHead">
       <button id="filePick" title="Open another source file">&hellip;</button>
       <span class="head-spacer"></span>
@@ -222,6 +221,7 @@
       <span id="wordCount" title="Words of text (without commands, comments or the preamble); of the selection, when there is one"></span>
     </div>
   </section>
+  <div id="editorGrip" class="grip" title="Drag to resize"></div>
   <section id="pdfPane">
     <!-- The PDF's own controls; what doesn't fit moves into its ⋯ menu (pdfMore). -->
     <div id="pdfHead">

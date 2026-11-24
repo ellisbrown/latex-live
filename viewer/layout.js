@@ -42,15 +42,17 @@ export function setSide(on) {
 // in a pop-out window on another screen). The source pane shows in the last two (editor.js showEditor); alone, it
 // hides the PDF, which stays laid out (viewer.css), so that its place survives the rebuilds meanwhile. A browser from
 // before the layouts remembered only whether the pane was open.
-export let layoutMode = isPopout ? "pdf"
-  : localStorage.getItem("latex-live:layout") || (localStorage.getItem("latex-live:editor") ? "split" : "pdf");
+const LAYOUTS = ["pdf", "split", "source"];
+export let layoutMode = isPopout ? "pdf" : localStorage.getItem("latex-live:layout") || (localStorage.getItem("latex-live:editor") ? "split" : "pdf");
+if (!LAYOUTS.includes(layoutMode)) layoutMode = "pdf";
 export function setLayoutMode(mode, remember = true) {
-  if (!["pdf", "split", "source"].includes(mode)) mode = "pdf";
+  if (!LAYOUTS.includes(mode)) mode = "pdf";
+  const besidePdf = mode === "split" && layoutMode !== "split"; // (the pane comes beside the PDF: make room for it)
   layoutMode = mode;
   if (remember && !isPopout) localStorage.setItem("latex-live:layout", mode);
   for (const m of ["pdf", "split", "source"]) document.body.classList.toggle(`layout-${m}`, m === mode);
   for (const b of $("layoutSwitch").querySelectorAll("button")) b.classList.toggle("on", b.dataset.mode === mode);
-  fitEditor();
+  fitEditor(besidePdf);
   refit();
 }
 
@@ -59,7 +61,7 @@ export function setLayoutMode(mode, remember = true) {
 // then shows at half its size or more. Where opening the pane leaves it less than its least width, the sidebar makes
 // way (and the status line says so). Alone (Source), the pane takes the whole width.
 let editorWidth = +localStorage.getItem("latex-live:editorWidth") || 0;
-const PDF_ROOM = 420, EDITOR_MIN = 300, FRAME = 18; // (FRAME: the workspace's padding and the gaps between its panes)
+const PDF_ROOM = 420, EDITOR_MIN = 300, FRAME = 18; // (FRAME: the workspace's padding and the source pane's grip)
 export function fitEditor(opening = false) {
   if (layoutMode === "source") return editorWidth;
   const gutters = GUTTER * (+container.classList.contains("gutter") + +container.classList.contains("gutter-left"));
@@ -74,16 +76,18 @@ export function fitEditor(opening = false) {
   return width;
 }
 
-// A grip on a pane's right edge resizes it: move(x) takes the pointer's position, and done() the final one's width.
-function grip(node, move, done) {
+// A grip right of a pane resizes it: start() takes its width as the drag starts, move(dx) how far the pointer went
+// since, and done() the end.
+function grip(node, start, move, done) {
   node.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     e.preventDefault();
+    start();
     node.setPointerCapture(e.pointerId);
     document.body.classList.add("resizing");
     let frame = 0;
     const onMove = (ev) => {
-      move(ev.clientX);
+      move(ev.clientX - e.clientX);
       frame ||= requestAnimationFrame(() => { frame = 0; refit(); });
     };
     node.addEventListener("pointermove", onMove);
@@ -95,17 +99,18 @@ function grip(node, move, done) {
     }, { once: true });
   });
 }
-grip($("sideGrip"), (x) => {
-  sideWidth = x - $("side").getBoundingClientRect().left;
+let dragFrom = 0;
+grip($("sideGrip"), () => (dragFrom = $("side").offsetWidth), (dx) => {
+  sideWidth = dragFrom + dx;
   fitSide();
   if (editorShown()) fitEditor();
 }, () => {
   sideWidth = fitSide();
-  localStorage.setItem("latex-live:sideWidth", sideWidth);
+  if (!isPopout) localStorage.setItem("latex-live:sideWidth", sideWidth);
   if (editorShown()) fitEditor();
 });
-grip($("editorGrip"), (x) => {
-  editorWidth = x - $("editorPane").getBoundingClientRect().left;
+grip($("editorGrip"), () => (dragFrom = $("editorPane").offsetWidth), (dx) => {
+  editorWidth = dragFrom + dx;
   fitEditor();
 }, () => {
   editorWidth = fitEditor();
@@ -113,7 +118,8 @@ grip($("editorGrip"), (x) => {
 });
 window.addEventListener("resize", () => {
   fitSide();
-  if (editorShown()) { fitEditor(); refit(); }
+  if (editorShown()) fitEditor();
+  if (editorShown() || !$("side").hidden) refit(); // (after the panes' widths follow the window's)
 });
 
 // The width of a gutter for the margin bubbles (notes.js), beside the page.

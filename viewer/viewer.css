@@ -279,7 +279,7 @@ body.pdf-invert .thumb canvas {
    rebuilds meanwhile (layout.js setLayoutMode). */
 #workspace {
   position: fixed; top: var(--bar-h); left: 0; right: 0; bottom: 0;
-  display: flex; gap: 6px; padding: 6px;
+  display: flex; padding: 6px;
   background: var(--bg-chrome);
 }
 
@@ -405,9 +405,11 @@ body.pdf-invert .thumb canvas {
 #editorPane:focus { outline: none; } /* (focusable only so that keys typed after a click in its header stay out of the viewer's shortcuts) */
 body.layout-source #editorPane { flex: 1 1 auto; width: auto; }
 body.layout-source #pdfPane { position: absolute; top: 6px; right: 6px; bottom: 6px; width: 50%; visibility: hidden; }
-body.layout-source #editorGrip { display: none; }
-#editorGrip, #sideGrip { position: absolute; right: 0; top: 0; bottom: 0; width: 6px; z-index: 12; cursor: col-resize; }
-#editorGrip:hover, #sideGrip:hover { background: var(--accent-soft); }
+/* The grips are the gaps between the panes (clear of the panes' scroll bars), there only beside a pane they resize. */
+.grip { flex: none; width: 6px; border-radius: 3px; cursor: col-resize; }
+.grip:hover, body.resizing .grip:active { background: var(--accent-soft); }
+#side[hidden] + #sideGrip, #editorPane[hidden] + #editorGrip { display: none; }
+body.layout-source #editorGrip { visibility: hidden; }
 body.resizing { cursor: col-resize; user-select: none; }
 #editorHead, #pdfHead {
   display: flex; align-items: center; gap: 4px; height: 38px; padding: 0 7px; flex: none;

@@ -7,7 +7,7 @@ import { lineHunks } from "./diff.js";
 import { dropKept, EDITOR_ID, keptKey, newSaveId, readKept } from "./drafts.js";
 import { editorAllowed, me, openTitles, ownerName } from "./role.js";
 import { wrote } from "./build.js";
-import { fitEditor, layoutMode, setLayoutMode } from "./layout.js";
+import { layoutMode, setLayoutMode } from "./layout.js";
 import { CM, cmExtensions, loadEditor } from "./cm.js";
 
 // The LaTeX source beside the PDF (Split, or E) or alone (Source), for editors and the owner: live.py /files and
@@ -55,10 +55,8 @@ export async function showEditor(on, { path = null, line = 0, column = 0, focus 
   }
   const next = !on ? "pdf" : mode || (layoutMode === "source" ? "source" : "split");
   if (editorShown() !== on || layoutMode !== next) {
-    const opening = on && !editorShown();
     $("editorPane").hidden = !on;
-    setLayoutMode(next); // (which fits the pane and the PDF)
-    if (opening) fitEditor(true); // (and makes room for the pane, closing the sidebar if needs be)
+    setLayoutMode(next); // (which fits the pane and the PDF, making room for the pane)
     openTitles();
   }
   if (!on) return;
