@@ -68,8 +68,8 @@ def index_checks():
                 or (alpha["title"], alpha["author"], alpha["year"], alpha["venue"]) != ("Alpha Paper", "Doe, Jane and Roe, Rick", "2020", "J. Alpha")
                 or [(e["arxiv"], e["year"]) for e in found["entries"] if e["key"] == "gamma"] != [("2312.00752", "")]):
             fail(f"the bibliography's index: {got}, {found['bibFiles']}, {alpha}")
-        quoted = bib.parse_bib_entries('@misc{q, title = "A {"}quoted{"} B", year = 2000}')
-        if [(e["title"], e["year"]) for e in quoted] != [('A "quoted" B', "2000")]:
+        quoted = bib.parse_bib_entries('@misc{q, title = "A {"}quoted{"} B", year = 2000}\n@misc{r, title = "A } B", year = 2001}')
+        if [(e["title"], e["year"]) for e in quoted] != [('A "quoted" B', "2000"), ("A B", "2001")]:
             fail(f"a quoted field with a quote in braces: {quoted}")
         put(os.path.join(root, "sec.tex"), "\\cite{gamma}\n")
         os.utime(os.path.join(root, "sec.tex"), ns=(1, 1))  # (a new mtime as well as a new size)
@@ -160,6 +160,10 @@ def metadata_checks():
             fail("an Atom answer with a DOCTYPE was parsed")
         except ValueError:
             pass
+        bib.fetch = lambda url, *a, **k: (_ for _ in ()).throw(urllib.error.HTTPError(url, 404, "Not Found", {}, None))
+        unknown = bib.lookup_request({"query": "10.1000/unknown"})
+        if unknown[0] != 404 or "doesn't know" not in unknown[1].get("error", ""):
+            fail(f"looking up a DOI Crossref doesn't know: {unknown}")
     finally:
         bib.fetch = fetch
     for found in (arxiv, doi):
@@ -386,6 +390,12 @@ def verify_checks():
                 ("unknown-doi", "lost"), ("year-mismatch", "alpha")]
         if code != 202 or done.get("state") != "done" or kinds != want or done.get("checked") != 4 or done.get("offline"):
             fail(f"the check of the bibliography: {code} {state}, then {done.get('state')} {kinds} (checked {done.get('checked')})")
+        found = []
+        bib.compare_crossref({"key": "k", "title": "A Long Title: An Introduction to Things", "arxiv": "1", "venue": "",
+                              "year": "2020", "file": "refs.bib", "line": 1},
+                             [{"title": ["Introduction"], "container-title": ["Some Journal"]}], lambda *a: found.append(a))
+        if found:
+            fail(f"a short title on Crossref was taken for a longer one: {found}")
     finally:
         config.LOOKUPS, bib.fetch = saved, fetch
     ok("the check of the bibliography finds keys and titles twice, entries never cited, a year Crossref disagrees with,"

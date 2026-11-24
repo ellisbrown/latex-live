@@ -25,11 +25,11 @@ const sort = el("select", { title: "Order" }, ...[["cited", "Most cited"], ["yea
                                                     ["uncited", "Not cited"]].map(([value, textContent]) => el("option", { value, textContent })));
 const addBtn = el("button", { title: "Add an entry by arXiv ID, DOI or BibTeX" }, icon("plus", 13));
 const checkBtn = el("button", { title: "" }, icon("checks", 13));
-const query = el("input", { type: "text" });
+const query = el("textarea", { className: "refs-query", rows: 1, spellcheck: false, ariaLabel: "An arXiv ID, a DOI or BibTeX" }); // (BibTeX keeps its lines)
 const lookupBtn = el("button", { className: "primary", textContent: "Look up" });
 const offNote = el("div", { className: "refs-note" });
 const addError = el("div", { className: "refs-error" });
-const preview = el("textarea", { spellcheck: false, hidden: true, ariaLabel: "The entry to add, as BibTeX" });
+const preview = el("textarea", { className: "refs-preview", spellcheck: false, hidden: true, ariaLabel: "The entry to add, as BibTeX" });
 const target = el("select", { hidden: true, title: "The .bib file to add it to" });
 const saveBtn = el("button", { className: "primary", textContent: "Add to the .bib", hidden: true });
 const addBox = el("div", { className: "refs-add", hidden: true },
@@ -80,7 +80,6 @@ function renderList() {
     cards.push(el("div", { className: "empty", textContent: `The first 300 of ${shown.length}: filter to see the others.` }));
   }
   list.replaceChildren(...cards);
-  renderVerify();
 }
 
 function card(e) {
@@ -126,7 +125,12 @@ function resetAdd() {
   preview.hidden = saveBtn.hidden = target.hidden = true;
   lookupBtn.hidden = false;
 }
-query.onkeydown = (e) => { if (e.key === "Enter") lookUp(); };
+query.onkeydown = (e) => { // (Enter looks up; Shift+Enter starts a new line)
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    lookUp();
+  }
+};
 query.oninput = () => { if (!preview.hidden && !query.value.trim()) resetAdd(); };
 lookupBtn.onclick = lookUp;
 async function lookUp() {
