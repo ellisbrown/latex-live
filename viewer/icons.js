@@ -31,6 +31,8 @@ const PATHS = {
   trash: "M3.2 4.5h9.6M5.8 4.5V3.2h4.4v1.3M4.5 4.5l.6 8.3h5.8l.6-8.3",
   chevronRight: "M6 3.8 10.2 8 6 12.2",
   chevronDown: "M3.8 6 8 10.2 12.2 6",
+  history: "M3 8a5 5 0 1 0 1.4-3.5L3 6m0-3v3h3m2-.5v3l2 1.2",
+  restore: "M3.2 8a4.8 4.8 0 1 0 1.3-3.3L3 6.2m0-3v3h3",
 };
 
 // An icon as an <svg> element, size pixels square (decorative: the button it sits in has the label).

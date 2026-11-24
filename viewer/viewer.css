@@ -523,6 +523,41 @@ body.pdf-invert .thumb canvas {
 .cm-hover-card .fig-thumb { margin-top: 6px; }
 .cm-hover-card .fig-thumb img { max-width: 240px; }
 
+/* The History tab: the branch and a refresh over the commits, each a card that opens to its files, a file's diff, and
+   Compare and Restore. */
+.history button {
+  font: inherit; font-size: 12px; color: var(--ink); background: var(--bg-surface); cursor: pointer;
+  border: 1px solid var(--border); border-radius: var(--radius-ctl); display: inline-flex; align-items: center; gap: 4px;
+}
+.history button:hover { background: var(--bg-hover); }
+.hist-top { display: flex; align-items: center; gap: 6px; padding: 2px 10px 8px; font-size: 12px; color: var(--ink-2);
+            border-bottom: 1px solid var(--hairline); }
+.hist-top button { margin-left: auto; height: 25px; padding: 0 7px; }
+.hist-branch { padding: 1px 7px; border-radius: 99px; border: 1px solid var(--border); font-family: var(--font-mono); font-size: 11px;
+               color: var(--ink); max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hist-item { margin: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); overflow: hidden; }
+.history .hist-head { display: flex; flex-direction: column; align-items: stretch; gap: 3px; width: 100%; padding: 7px 10px;
+                      border: 0; border-radius: 0; background: none; text-align: left; }
+.hist-subject { font-size: 12.5px; font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
+.hist-meta { display: flex; flex-wrap: wrap; gap: 7px; font-size: 11px; color: var(--ink-3); }
+.hist-meta code { font-family: var(--font-mono); color: var(--accent-ink); }
+.hist-files { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 8px; border-top: 1px solid var(--hairline); }
+.history .hist-file { max-width: 100%; height: 22px; padding: 0 6px; font-family: var(--font-mono); font-size: 11px; color: var(--ink-2); }
+.history .hist-file span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history .hist-file.on { border-color: var(--accent); color: var(--ink); }
+.hist-st { font-weight: 700; } .hist-st.st-A { color: var(--ok); } .hist-st.st-D { color: var(--err); }
+.hist-note { padding: 4px 10px 6px; font-size: 11.5px; color: var(--ink-3); }
+.hist-diff {
+  margin: 0 8px 6px; padding: 6px 0; max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 6px;
+  font: 11.5px/1.5 var(--font-mono); white-space: pre; color: var(--ink-2);
+}
+.hist-diff span { display: block; padding: 0 8px; min-width: max-content; }
+.hist-diff .d-add { background: var(--ok-bg); color: var(--ok); }
+.hist-diff .d-del { background: var(--err-bg); color: var(--err); }
+.hist-diff .d-hunk { color: var(--accent-ink); }
+.hist-acts { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 8px 8px; }
+.hist-acts button { height: 25px; padding: 0 9px; }
+
 /* The source pane (Split: beside the PDF; Source: alone): a header with the tabs of the files opened, the file picker,
    Show in PDF and ✕ over CodeMirror and the rail of the file's headings, and a status bar under it. */
 #editorPane { flex: none; width: var(--editor-w); background: var(--bg-surface); color: var(--ink); }

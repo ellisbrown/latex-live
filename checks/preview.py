@@ -148,6 +148,14 @@ def live_checks(tmp):
             fail(f"the owner's page, as listed in /status through the hub after POST /presence: {listed}")
         post("/presence", token, body={"tab": "page1", "leave": True})
         ok("POST /presence through the hub lists the owner's page in /status, with its file and line; a GET of /status writes nothing")
+        commits = get("/history", token).get("commits") or [{}]
+        changed = get(f"/history/diff?rev={commits[0].get('sha')}", token) if commits[0].get("sha") else {}
+        status, _, data = request(f"{hub['base']}main/history/restore", method="POST", cookie=token,
+                                  body={"rev": commits[0].get("sha"), "path": "main.tex", "version": "0" * 20})
+        if len(commits) < 2 or not changed.get("files") or status != 409:
+            fail(f"the History tab through the hub: {len(commits)} commits, {str(changed)[:200]}; a restore over another"
+                 f" version: {status} {data[:200]!r}, not 409")
+        ok("the History tab's commits, a commit's diff and a restore (refused here: over another version) work through the hub")
         with open(os.path.join(HERE, "VERSION")) as f:
             version = f.read().strip()
         reported = get("/status/main.pdf", token).get("latexLive")

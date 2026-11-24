@@ -26,7 +26,8 @@ $("compare").onclick = async () => {
     ...(dirty ? [row("HEAD", "", "uncommitted edits only", "the last commit vs. the working tree")] : []),
     ...commits.map((c) => row(c.rev, c.date, `${c.subject} — ${c.author}`, `${c.rev} ${c.date} ${c.author}: ${c.subject}`)));
 };
-async function startDiff(rev) {
+// Build the latexdiff against rev and show it in its own tab (also from the History tab).
+export async function startDiff(rev) {
   $("comparePanel").hidden = true;
   await flushSource(); // (the diff is of the files on disk)
   const r = me.legacy ? await fetch(`diff?${new URLSearchParams({ rev })}`) : await postJSON("diff", { rev });

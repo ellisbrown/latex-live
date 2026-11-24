@@ -1,7 +1,7 @@
 """Who is asking in shared mode, and what each may see and do: Host names, the identity header, tokens and cookies,
-GET me per role (identity_checks); every endpoint per role (and who has the paper open: presence_checks), non-owners
-pinned to the document, the Origin rules for POSTs, POST body limits, the viewer's security headers, and SyncTeX as
-JSON (role_checks). Extend role_checks with each new endpoint."""
+GET me per role (identity_checks); every endpoint per role (and who has the paper open: presence_checks; the History
+tab: history_checks), non-owners pinned to the document, the Origin rules for POSTs, POST body limits, the viewer's
+security headers, and SyncTeX as JSON (role_checks). Extend role_checks with each new endpoint."""
 
 import gzip
 import json
@@ -11,7 +11,7 @@ import secrets
 import urllib.parse
 
 from .base import HERE, SHARED_PORT, fail, ok, redact, wait_for
-from .helpers import CAPS, JS_TYPE_RE, editor_calls, post_length, put_bytes, read_bytes, read_text, text_point
+from .helpers import CAPS, JS_TYPE_RE, editor_calls, git_out, post_length, put_bytes, read_bytes, read_text, text_point
 from .shared_helpers import (
     PROXY_HOST, PUBLIC, as_editor, as_viewer, expect, expect_dict, header, line_of, send, settled, via_proxy,
     with_token, write_users)
@@ -19,8 +19,9 @@ from .shared_helpers import (
 
 # What each role can do in shared mode (no one switches documents: a shared preview serves one; everyone may download
 # the paper without its notes), and commenting only with a note macro the paper defines (check_me).
-ROLE_CAN = {"viewer": ("download",), "commenter": ("comment", "download"), "editor": ("comment", "edit", "rebuild", "compare", "download"),
-            "owner": ("comment", "edit", "rebuild", "compare", "openHost", "download")}
+ROLE_CAN = {"viewer": ("download",), "commenter": ("comment", "download"),
+            "editor": ("comment", "edit", "rebuild", "compare", "download", "history", "restore"),
+            "owner": ("comment", "edit", "rebuild", "compare", "openHost", "download", "history", "restore")}
 
 
 def check_me(me, what, role, defined=True, **fields):
@@ -60,6 +61,27 @@ def presence_checks():
         fail("pages that left are still listed")
     ok("presence: editors and the owner say where they are and see one another's names, files and lines, without ids or"
        " roles; viewers and commenters can't say so and see none of it")
+
+
+def history_checks(sh, restore):
+    """The History tab: editors and the owner list the commits of the copy's branch (not those of a branch it doesn't
+    build on) and see their diffs; an editor sees no other commit, nor restores from one, which the owner may; a restore
+    over a version other than the file's writes nothing (409), for both."""
+    owner, side = sh["token"], git_out(sh["root"], "rev-parse", "side")
+    for who, result in (("the editor", via_proxy("ed", "/history")), ("the owner", with_token(owner, "/history"))):
+        listed = expect_dict(result, 200, f"GET history for {who}")
+        shas = [c.get("sha") for c in listed.get("commits", [])]
+        if sh["base"] not in shas or side in shas or "side" in [c.get("subject") for c in listed.get("commits", [])]:
+            fail(f"GET history for {who}: {str(listed)[:400]} (want the branch's commits, not those of another)")
+    expect(via_proxy("ed", f"/history/diff?rev={sh['base']}"), 200, "GET history/diff for the editor")
+    expect(via_proxy("ed", f"/history/diff?rev={side}"), 404, "GET history/diff of another branch's commit for the editor")
+    expect(with_token(owner, f"/history/diff?rev={side}"), 200, "GET history/diff of another branch's commit for the owner")
+    expect(via_proxy("ed", "/history/restore", "POST", {"rev": side, "path": "side.tex"}), 404,
+           "POST history/restore from another branch's commit for the editor")
+    expect(via_proxy("ed", "/history/restore", "POST", restore), 409, "POST history/restore over another version, for the editor")
+    expect(with_token(owner, "/history/restore", "POST", restore), 409, "POST history/restore over another version, for the owner")
+    ok("history: editors and the owner see the branch's commits and their diffs, and restore from them; an editor sees no"
+       " other branch's commit, nor restores from one")
 
 
 def identity_checks(sh):
@@ -230,6 +252,7 @@ def role_checks(sh):
     ok("non-owners are pinned to the shared document")
 
     probe = {"path": "refs.bib", "base": "0" * 20, "text": "@misc{one}\n"}  # (a save on a version never seen: 409, writes nothing)
+    restore = {"rev": sh["base"], "path": "body.tex", "version": "0" * 20}  # (likewise: 409, writes nothing)
     owner_only = (("GET", "/instances", None), ("GET", "/papers", None), ("POST", "/switch", {"doc": "main"}),
                   ("POST", "/open", {"file": "main.tex", "line": 9}), ("POST", "/commit", {}), ("POST", "/arxiv", {}),
                   ("GET", "/arxiv.tar.gz", None))
@@ -241,7 +264,8 @@ def role_checks(sh):
                  ("POST", "/presence", {"tab": "probe", "open": "body.tex", "line": 3}),
                  ("GET", "/asset?path=figures/x.png", None), ("POST", "/file/create", {"path": "role-probe.tex"}),
                  ("POST", "/file/upload", {"path": "figures/role-probe.png", "data": "eA=="}),
-                 ("POST", "/file/rename", {"from": "body.tex", "to": "moved.tex"}), ("POST", "/file/delete", {"path": "body.tex"}))
+                 ("POST", "/file/rename", {"from": "body.tex", "to": "moved.tex"}), ("POST", "/file/delete", {"path": "body.tex"}),
+                 ("GET", "/history", None), ("GET", f"/history/diff?rev={sh['base']}", None), ("POST", "/history/restore", restore))
     for uid in ("vw", "cm", "ed"):
         for method, path, body in owner_only + (() if uid == "ed" else editor_up):
             expect(via_proxy(uid, path, method, body), 403, f"{method} {path} for {sh['users'][uid]['role']} {uid}")
@@ -265,6 +289,7 @@ def role_checks(sh):
         fail("search takes a coauthor's text as a regular expression in shared mode")
     bib_checks()
     presence_checks()
+    history_checks(sh, restore)
     listing = expect_dict(with_token(owner, "/instances"), 200, "GET instances for the owner")
     if listing.get("self") != sh["proc"].pid:
         fail(f"GET instances for the owner: {listing}")
