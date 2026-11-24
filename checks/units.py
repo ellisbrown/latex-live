@@ -1087,7 +1087,7 @@ def logs_checks():
                  f" truncated {big['truncated']}, {len(big['raw'])} characters of it sent")
         if [place(e) for e in big["errors"]][:1] != [("error", "error", "main.tex", 5)] or took > 5:
             fail(f"the end of a long log: {big['errors'][:2]} in {took:.1f} s")
-        put(log, "x" * (logs.RAW_TAIL + 10) + "\n" + "y" * (logs.RAW_TAIL + 10))
+        put(log, "x" * (logs.RAW_TAIL + 10) + "\n" + "y" * (logs.RAW_TAIL + 10) + "\n")
         if not logs.build_logs(server, "main.pdf")["raw"].startswith("y"):
             fail("the end of a log whose last line is longer than what is sent is sent empty")
         sys.path.insert(0, HERE)

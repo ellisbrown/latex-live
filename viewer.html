@@ -247,10 +247,10 @@
     <div id="logsDrawer" hidden>
       <div id="logsHead">
         <div id="logsTabs" role="tablist" aria-label="Show">
-          <button data-filter="all" class="on">All</button>
-          <button data-filter="error">Errors <span class="n" id="logsErrCount"></span></button>
-          <button data-filter="warning">Warnings <span class="n" id="logsWarnCount"></span></button>
-          <button data-filter="raw">Raw log</button>
+          <button role="tab" aria-selected="true" data-filter="all" class="on">All</button>
+          <button role="tab" aria-selected="false" data-filter="error">Errors <span class="n" id="logsErrCount"></span></button>
+          <button role="tab" aria-selected="false" data-filter="warning">Warnings <span class="n" id="logsWarnCount"></span></button>
+          <button role="tab" aria-selected="false" data-filter="raw">Raw log</button>
         </div>
         <span class="head-spacer"></span>
         <button id="logsClose" class="icon-btn" title="Close the build log (Cmd/Ctrl+Shift+L)" aria-label="Close the build log"></button>
@@ -261,7 +261,7 @@
       <span id="cursorPos"></span>
       <span id="saveState" aria-live="polite"></span>
       <span class="head-spacer"></span>
-      <button id="buildState" title="The build's errors and warnings (Cmd/Ctrl+Shift+L)" hidden></button>
+      <button id="buildState" aria-expanded="false" title="The build's errors and warnings (Cmd/Ctrl+Shift+L)" hidden></button>
       <span id="wordCount" title="Words of text (without commands, comments or the preamble); of the selection, when there is one"></span>
     </div>
   </section>
