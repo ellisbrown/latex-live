@@ -9,6 +9,7 @@ with LATEX_LIVE_LOOKUPS (config.LOOKUPS): over HTTPS to export.arxiv.org and api
 at most two at once (NET_SLOTS), spaced per host (HOSTS), each under a deadline and read up to NET_READ bytes. What
 they answer goes into BibTeX as plain text only (bib_text): it can't end a field or run a command."""
 
+import bisect
 import collections
 import html
 import json
@@ -31,7 +32,9 @@ FIELD_RE = re.compile(r"\b([a-zA-Z][a-zA-Z0-9_-]*)\s*=\s*")
 CITE_RE = re.compile(r"\\[a-zA-Z]*cite[a-zA-Z]*\*?(?:\[[^\]]*\]){0,2}\{([^{}]+)\}")
 ARXIV_ID_RE = re.compile(r"(?:(?:https?://)?(?:www\.)?arxiv\.org/(?:abs|pdf|html)/|arXiv:)?"
                          r"(\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[A-Z]{2})?/\d{7}(?:v\d+)?)(?:\.pdf)?", re.I)
-DOI_RE = re.compile(r"(?:(?:https?://)?(?:dx\.)?doi\.org/|doi:\s*)?(10\.\d{4,9}/[^\s\"'<>{}\\%]+)", re.I)
+# (a DOI as Crossref recommends matching them, which takes nearly all: no character that TeX or BibTeX treats specially)
+DOI_RE = re.compile(r"(?:(?:https?://)?(?:dx\.)?doi\.org/|doi:\s*)?(10\.\d{4,9}/[-._;()/:A-Z0-9]{1,200})", re.I)
+ENTRY_START_RE = re.compile(r"(?m)^[ \t]*(@)[A-Za-z]+\s*[{(]")  # (where an @string, @comment or @preamble may begin too)
 ADD_LIMIT = 50_000  # (characters of BibTeX added at once)
 
 
@@ -39,11 +42,14 @@ def parse_bib_entries(text, rel=""):
     """[{"key", "entryType", "title", "author", "year", "venue", "doi", "arxiv", "url", "file", "line"}] of the entries
     in a .bib file's text (not @string, @comment or @preamble): a forgiving reading, each field as written with its
     braces dropped, cut short."""
-    found = [m for m in BIB_ENTRY_RE.finditer(text) if m.group(1).lower() not in ("comment", "string", "preamble")]
+    found = list(BIB_ENTRY_RE.finditer(text))
+    starts = sorted({m.start() for m in found} | {m.start(1) for m in ENTRY_START_RE.finditer(text)} | {len(text)})
     entries, line, at = [], 1, 0
-    for m, after in zip(found, [*found[1:], None]):
+    for m in found:
+        if m.group(1).lower() in ("comment", "string", "preamble"):
+            continue
         line, at = line + text.count("\n", at, m.start()), m.start()
-        fields = bib_fields(text[m.end():after.start() if after else len(text)])
+        fields = bib_fields(text[m.end():starts[bisect.bisect_right(starts, m.start())]])
         arxiv = fields.get("eprint", "")
         if not arxiv and (am := ARXIV_ID_RE.search(fields.get("url", ""))) and "arxiv" in fields.get("url", "").lower():
             arxiv = am.group(1)
@@ -62,9 +68,10 @@ def bib_fields(body):
         j = m.end()
         if body[j] == "{":
             value, i = brace_group(body, j)
-        elif body[j] == '"':
-            k = j + 1
-            while k < n and not (body[k] == '"' and body[k - 1] != "\\"):
+        elif body[j] == '"':  # (it ends at a quote outside braces)
+            k, depth = j + 1, 0
+            while k < n and (body[k] != '"' or depth):
+                depth += {"{": 1, "}": -1}.get(body[k], 0)
                 k += 1
             value, i = body[j + 1:k], k + 1
         else:
@@ -110,7 +117,7 @@ def bib_sources(server, cache={}):
 
 def citations(text):
     """[(key, line)] of each key in the \\cite commands (\\citep, \\citet, \\nocite…) outside comments of a .tex file."""
-    bare, found, line, at = re.sub(r"(?<!\\)%.*", "", text), [], 1, 0
+    bare, found, line, at = re.sub(r"(?<!\\)(?:\\\\)*%.*", "", text), [], 1, 0
     for m in CITE_RE.finditer(bare):
         line, at = line + bare.count("\n", at, m.start()), m.start()
         found += [(key.strip(), line) for key in m.group(1).split(",") if key.strip()]
@@ -164,14 +171,14 @@ def add_request(server, req, user):
     target = os.path.normpath(target) if target else (bibs[0] if bibs else None)
     if target not in bibs:
         return 404, {"error": "no such .bib file in this paper" if bibs else "this paper has no .bib file yet"}
-    for rel, (kind, found) in bib_sources(server).items():
-        if kind == "bib" and rel != target and (clash := taken_key(keys, found)):
-            return 409, {"error": f"{clash} is already in {rel}"}
     for _ in range(3):  # (again when another program writes the file between our read and write)
         try:
             with NOTE_LOCK:
                 if paused(server):
                     return updating()
+                for rel, (kind, found) in bib_sources(server).items():
+                    if kind == "bib" and rel != target and (clash := taken_key(keys, found)):
+                        return 409, {"error": f"{clash} is already in {rel}"}
                 data = read_editable(files[target])
                 text = editor_text(data.decode("utf-8"))[0]
                 if clash := taken_key(keys, parse_bib_entries(text)):
@@ -199,8 +206,8 @@ def taken_key(keys, entries):
 
 # The lookups' requests: the hosts they may reach, each with the seconds between two requests to it (arXiv's terms ask
 # for 3); at most NET_SLOTS at once, NET_TIMEOUT seconds each, NET_READ bytes of an answer. A lookup someone waits for
-# is refused (LookupBusy: 429) rather than wait more than NET_WAIT seconds for its turn or for a slot at all; the check
-# against Crossref, in the background, waits.
+# is refused (LookupBusy: 429) when no slot is free, or when it would wait more than NET_WAIT seconds for its host's turn
+# (holding its slot meanwhile); the check against Crossref, in the background, waits.
 HOSTS = {"export.arxiv.org": 3.0, "api.crossref.org": 1.0}
 NET_SLOTS = threading.BoundedSemaphore(2)
 NET_TIMEOUT, NET_READ, NET_WAIT = 8, 1 << 20, 3.0
@@ -246,22 +253,22 @@ def fetch(url, accept="application/json", background=False):
     if not allowed_url(url):
         raise ValueError(f"not a host lookups may reach: {url}")
     host = urllib.parse.urlsplit(url).hostname
-    with net_lock:
-        now = time.monotonic()
-        turn = max(now, net_next.get(host, 0))
-        if turn - now > (60 if background else NET_WAIT):
-            raise LookupBusy()
-        net_next[host] = turn + HOSTS[host]
-    time.sleep(turn - now)
     if not NET_SLOTS.acquire(timeout=60 if background else 0):
         raise LookupBusy()
     try:
+        with net_lock:
+            now = time.monotonic()
+            turn = max(now, net_next.get(host, 0))
+            if turn - now > (60 if background else NET_WAIT):
+                raise LookupBusy()
+            net_next[host] = turn + HOSTS[host]
+        time.sleep(turn - now)
         agent = f"latex-live/{config.VERSION} (+https://github.com/ellisbrown/latex-live)"
         req = urllib.request.Request(url, headers={"User-Agent": agent, "Accept": accept})
         deadline = time.monotonic() + NET_TIMEOUT
         with OPENER.open(req, timeout=NET_TIMEOUT) as r:
             data = b""
-            while len(data) <= NET_READ and (chunk := r.read(1 << 16)):
+            while len(data) <= NET_READ and (chunk := r.read1(1 << 16)):
                 if time.monotonic() > deadline:
                     raise TimeoutError("the answer took too long")
                 data += chunk
@@ -305,10 +312,11 @@ def lookup_arxiv(arxiv_id):
     "arxiv", "bibtex"}, or None if arXiv has no such paper."""
     data = fetch(f"https://export.arxiv.org/api/query?id_list={urllib.parse.quote(arxiv_id, safe='')}",
                  "application/atom+xml")
-    if b"<!DOCTYPE" in data or b"<!ENTITY" in data:  # (an Atom feed has none; they could make the parser expand a lot)
+    text = data.decode("utf-8")  # (UnicodeDecodeError is a ValueError)
+    if "<!DOCTYPE" in text or "<!ENTITY" in text:  # (an Atom feed has none; they could make the parser expand a lot)
         raise ValueError("unexpected answer from arXiv")
     ns = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
-    entry = ET.fromstring(data).find("a:entry", ns)
+    entry = ET.fromstring(re.sub(r"^\s*<\?xml[^>]*\?>", "", text)).find("a:entry", ns)
     title = bib_text(entry.findtext("a:title", "", ns)) if entry is not None else ""
     if not title or title.lower() == "error":
         return None
@@ -373,7 +381,7 @@ def lookup_request(req):
         return 403, {"error": "online lookups are off in this preview: paste the BibTeX instead", "lookupsOff": True}
     except LookupBusy:
         return 429, {"error": "too many lookups just now; try again in a few seconds"}
-    except (OSError, ValueError, ET.ParseError, AttributeError) as e:  # (URLError and timeouts are OSErrors)
+    except (OSError, ValueError, ET.ParseError, AttributeError, TypeError) as e:  # (URLError and timeouts are OSErrors)
         return 502, {"error": f"the lookup failed ({e})"}
     if not found:
         return 404, {"error": f"arXiv has no paper {arxiv.group(1)}" if arxiv else f"Crossref doesn't know {doi.group(1)}"}
@@ -408,7 +416,8 @@ VERIFY_LIMIT = 30  # (entries checked against Crossref, the cited ones first)
 def run_verify(server, job):
     """start_verify's check: keys and titles that are in the bibliography twice and entries never cited; then, for up
     to VERIFY_LIMIT entries (the cited ones), Crossref's year for its DOI, or for its title, whether a preprint has come
-    out since, and Crossref's year."""
+    out since, and Crossref's year; and a DOI that Crossref doesn't know. When a few requests fail and none went
+    through, Crossref is offline, and the check ends there."""
     try:
         entries = papers_index(server)["entries"]
         findings, by_key, by_title = [], {}, {}
@@ -426,7 +435,13 @@ def run_verify(server, job):
         for e in [e for e in entries if e["citeCount"]][:VERIFY_LIMIT]:
             try:
                 if doi := DOI_RE.fullmatch(e["doi"].strip().rstrip(".")):
-                    found = lookup_doi(doi.group(1), background=True)
+                    try:
+                        found = lookup_doi(doi.group(1), background=True)
+                    except urllib.error.HTTPError as http:  # (Crossref answered, but not with the work)
+                        if http.code != 404:
+                            raise
+                        found = None
+                        note("warn", "unknown-doi", e, f"Crossref doesn't know its DOI {doi.group(1)}")
                     checked += 1
                     if found and e["year"] and found["year"] and e["year"] != found["year"]:
                         note("warn", "year-mismatch", e, f"Year {e['year']}; Crossref has {found['year']} for its DOI")
