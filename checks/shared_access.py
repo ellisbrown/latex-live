@@ -37,7 +37,7 @@ def check_me(me, what, role, defined=True, **fields):
 
 def presence_checks():
     """Who has the paper open: editors and the owner say where they are (POST /presence) and see one another's names,
-    files and lines in their status, without ids or roles; viewers and commenters neither (role_checks: 403) nor see
+    files and lines in their status, without ids or roles; viewers and commenters neither (403, leaving too) nor see
     it, not even the editors' (whose POSTs come first)."""
     expect(via_proxy("ed", "/presence", "POST", {"tab": "edpage", "open": "body.tex", "line": 3}), 200, "POST presence for the editor")
     expect(via_proxy("owner1", "/presence", "POST", {"tab": "ownerpage", "open": "main.tex", "line": 2}), 200,
@@ -52,6 +52,8 @@ def presence_checks():
     for uid in ("vw", "cm"):
         if "presence" in expect_dict(via_proxy(uid, "/status/main.pdf"), 200, f"GET status for {uid}"):
             fail(f"the {uid} {'viewer' if uid == 'vw' else 'commenter'}'s status lists who has the paper open")
+        expect(via_proxy(uid, "/presence", "POST", {"tab": "edpage", "leave": True}), 403, f"POST presence (leaving) for {uid}")
+    expect(via_proxy("ed", "/presence", "POST", {"tab": "a/b", "leave": True}), 400, "POST presence (leaving) with a bad page name")
     for uid, tab in (("ed", "edpage"), ("owner1", "ownerpage")):
         expect(via_proxy(uid, "/presence", "POST", {"tab": tab, "leave": True}), 200, f"POST presence (leaving) for {uid}")
     if expect_dict(via_proxy("ed", "/status/main.pdf"), 200, "GET status for the editor").get("presence") != []:

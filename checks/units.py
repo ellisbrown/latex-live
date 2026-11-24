@@ -1116,7 +1116,7 @@ def logs_checks():
 
 def presence_checks():
     """Who has the paper open (status.presence_request, presence): a page is listed with the file it has open only if
-    the editor opens that file, and its line clamped; it drops out after PRESENCE_TTL, or as it leaves; a user has at
+    the editor opens that file, and its line clamped; it drops out after PRESENCE_TTL, or as it leaves (which looks nothing else up); a user has at
     most PRESENCE_TABS pages listed and the list at most PRESENCE_LIMIT, without crowding out pages already there; the
     list names users and pages by opaque keys (no ids or roles), says which are the asker's, and reading it changes
     nothing."""
@@ -1163,21 +1163,31 @@ def presence_checks():
         say(ed, tab="a1", open="sec.tex", line=2)
         if [p["name"] for p in status.presence(server, tk)] != ["Eden Doyle"] or len(server.presence) != 1:
             fail(f"pages that went quiet stay in the table after a POST: {server.presence}")
-        say(ed, tab="a1", leave=True)
+        files = status.editable_files
+        try:
+            status.editable_files = lambda *a, **k: fail("POST presence (leaving) looked up the editor's files")
+            say(ed, tab="a1", leave=True, open="sec.tex", line=3)
+        finally:
+            status.editable_files = files
         if status.presence(server, tk) or server.presence:
             fail("a page that left is still listed")
         for i in range(status.PRESENCE_TABS):
             if say(ed, tab=f"t{i}")[0] != 200:
                 fail(f"page {i + 1} of a user was not listed")
-        if say(ed, tab="extra")[0] != 429 or say(ed, tab="t0", open="sec.tex", line=4)[0] != 200 or say(tk, tab="b1")[0] != 200:
-            fail(f"a user past {status.PRESENCE_TABS} pages: another of theirs is listed, or one already listed or someone else is not")
+        code, answer = say(ed, tab="extra")
+        if code != 429 or "of each user" not in answer.get("error", "") or say(ed, tab="t0", open="sec.tex", line=4)[0] != 200 \
+                or say(tk, tab="b1")[0] != 200:
+            fail(f"a user past {status.PRESENCE_TABS} pages: another of theirs is listed ({code} {answer}), or one already listed"
+                 " or someone else is not")
         if len(server.presence) != status.PRESENCE_TABS + 1:
             fail(f"the presence table after a user's pages reached the cap: {len(server.presence)} entries")
         saved = status.PRESENCE_LIMIT
         try:
             status.PRESENCE_LIMIT = len(server.presence)
-            if say(owner, tab="o2")[0] != 429 or say(tk, tab="b1", open="sec.tex", line=1)[0] != 200:
-                fail("a full presence table takes a new page, or refuses one already listed")
+            code, answer = say(owner, tab="o2")
+            if code != 429 or "of each user" in answer.get("error", "") or say(tk, tab="b1", open="sec.tex", line=1)[0] != 200:
+                fail(f"a full presence table takes a new page, or says why not as if the user had too many ({code} {answer}),"
+                     " or refuses one already listed")
         finally:
             status.PRESENCE_LIMIT = saved
     ok(f"presence: a page lists only a file the editor opens, its line clamped; it drops out when quiet (reading the list"
