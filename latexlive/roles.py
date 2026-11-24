@@ -14,9 +14,10 @@ def least_role(method, path):
     start_review), and the baselines that change highlights compare with (editors) once per commit
     (base_status); each starts only with a POST, whose Origin says it comes from the viewer's own page
     (a GET of the downloads is answered 405, so that an old viewer says why). Anyone signed in may sign
-    out (logout). The checks quote the sources' comments and the text in their false branches, and the
-    baselines show earlier versions of the text, which only editors see (shared_pdfs, viewer_status)."""
-    if method == "GET" and path.startswith("/check/"):  # (the checks quote the sources' comments and hidden text)
+    out (logout). The checks quote the sources' comments and the text in their false branches, the build's log
+    quotes the sources, and the baselines show earlier versions of the text, which only editors see (shared_pdfs,
+    viewer_status)."""
+    if method == "GET" and path.startswith(("/check/", "/logs/")):  # (the checks and the log quote the sources)
         return "editor"
     if method == "GET" and path.startswith(READ_PATHS + STATIC_DIRS):
         return "viewer"
@@ -70,5 +71,5 @@ def viewer_status(info):
             "cleanBuild": build(info.get("cleanBuild"))}
 
 
-READ_PATHS = ("/pdf/", "/status/", "/outline/", "/notes/", "/check/", "/graphics/", "/margin/", "/floats/", "/authors/")
+READ_PATHS = ("/pdf/", "/status/", "/outline/", "/notes/", "/check/", "/logs/", "/graphics/", "/margin/", "/floats/", "/authors/")
 STATIC_DIRS = ("/pdfjs/", "/codemirror/", "/viewer/")  # (the folders of the viewer's own files: handler.static_file)

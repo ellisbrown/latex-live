@@ -758,6 +758,7 @@ def main():
     doc, dest = publish_dest(root)
     stamp = time.strftime("%H:%M:%S")
     ok, report, log, files = run_report(root, status)
+    report["durationMs"] = run_duration(root)
     previous = {}
     try:
         with open(os.path.join(BUILD, f"{root}.status.json")) as f:
@@ -792,6 +793,20 @@ def main():
             why = f"was written by another TeX installation ({previous['tex']})" if other else "was cut off (by an interrupted run?)"
             print(f"=== live-reload: {BUILD}/{root}.aux {why}; rebuilding from scratch")
         keep_early(root, doc, drop=True)
+
+
+def run_duration(root):
+    """How long the run took, in milliseconds, from its first pass on (latexmkrc writes build/<root>.began then, and
+    this empties it for the next run), or None without that."""
+    began = os.path.join(BUILD, f"{root}.began")
+    try:
+        if not os.path.getsize(began):
+            return None
+        took = round((time.time() - os.path.getmtime(began)) * 1000)
+        os.truncate(began, 0)
+    except OSError:
+        return None
+    return took if 0 <= took < 3_600_000 else None
 
 
 def run_report(root, status, files=None):

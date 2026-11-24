@@ -243,7 +243,7 @@ def shared_run(server):
                 except OSError:
                     pass
             server.shared["wanted"].set()
-        server.shared["status"] = {**status, "began": began}
+        server.shared["status"] = {**status, "began": began, "durationMs": (time.time_ns() - began) // 1_000_000}
         note(server, "status")
         stamp = status["time"]
         print(f"=== live-reload: published {pdf} at {stamp}" if ok else f"=== live-reload: BUILD FAILED at {stamp}; kept the previous {pdf}",

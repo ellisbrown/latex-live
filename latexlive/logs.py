@@ -1,0 +1,158 @@
+"""The build's log, for editors (GET /logs/<doc>.pdf): its errors, warnings and overfull or underfull boxes, each
+with the paper's file and line where the log says, and the end of the log as it is, with the paper's folder as ./."""
+
+import os
+import re
+
+from .build import build_status
+from .files import job_file, open_output
+from .sources import editable_real
+
+PARSE_LIMIT = 4 << 20  # (the most of the log's end that is read: the paper decides how much TeX writes)
+RAW_TAIL = 64 << 10  # (the most of that sent as it is)
+MAX_DIAG = 250  # (errors, and warnings, each)
+RESOLVE_LIMIT = 2000  # (the most names of files one parse looks up: a paper reads far fewer)
+STACK_LIMIT = 1000  # (the deepest file stack kept: TeX's own is far shallower)
+
+ERROR_RE = re.compile(r"^([^:\s][^:]*):(\d+): (.*)$")  # (-file-line-error's file:line: message)
+WARN_RE = re.compile(r"^(LaTeX(?: Font)? Warning|Package \S+ Warning|Class \S+ Warning|pdfTeX warning(?: \(ext4\))?)\s*:\s*(.+)$")
+INPUT_LINE_RE = re.compile(r"on input line (\d+)")
+BOX_RE = re.compile(r"^(Overfull|Underfull) \\([hv]box) \(([^)]*)\) (?:in paragraph|in alignment|detected) at lines? (?:\d+--)?(\d+)")
+PAREN_RE = re.compile(r"\(([^\s()]*)|\)")
+
+
+def parse_log(text, paper_root):
+    """(errors, warnings) in a TeX log, each {severity, kind, file, line, msg}. An error counts only where its
+    file:line names a source file of the paper (editable_real: not in the build folder or a dot folder, not
+    outside the paper), so a timestamp or a package's message with :NN: is none. A warning or a box is in the
+    file that TeX's log opened last and has not closed ("(path" ... ")"), if that is one of the paper's, and
+    in none otherwise; a box's line is where its paragraph ends (where it began may be in another file)."""
+    root = os.path.abspath(paper_root)
+    bases = {root, os.path.realpath(root)}
+    found = {}  # (the names looked up: each once)
+
+    def resolve(name):
+        if name in found:
+            return found[name]
+        if len(found) >= RESOLVE_LIMIT:
+            return None
+        rel = name.strip('"')
+        if os.path.isabs(rel):
+            rel = next((rel[len(base) + 1:] for base in bases if rel.startswith(base + os.sep)), None)
+        rel = os.path.normpath(rel) if rel else None
+        found[name] = rel if rel and editable_real(root, rel) else None
+        return found[name]
+
+    def current():  # (the paper's file that the log opened last and has not closed, if it is one)
+        return resolve(next((name for name in reversed(stack) if name), "")) if stack else None
+
+    errors, warnings, seen = [], [], set()
+    stack, deeper, skipping = [], 0, False  # (deeper: names opened past STACK_LIMIT, still to close)
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        if skipping:  # (a box's contents, up to a blank line: their parentheses are not files)
+            skipping = bool(line.strip())
+            continue
+        error, box, warning = ERROR_RE.match(line), BOX_RE.match(line), WARN_RE.match(line)
+        if error and len(errors) < MAX_DIAG and not error[3].lstrip().startswith("==> Fatal error"):
+            path = resolve(error[1])
+            if path and ("e", path, error[2], error[3]) not in seen:
+                seen.add(("e", path, error[2], error[3]))
+                errors.append({"severity": "error", "kind": "error", "file": path, "line": int(error[2]),
+                               "msg": error[3].strip()[:300]})
+        elif box:
+            skipping = True
+            if len(warnings) < MAX_DIAG:
+                add_warning(warnings, seen, "info" if box[1] == "Underfull" else "warning", box[1].lower(), current(),
+                            int(box[4]), f"{box[1]} \\{box[2]} ({box[3]})")
+            continue
+        elif warning and len(warnings) < MAX_DIAG:
+            parts = [f"{warning[1]}: {warning[2].strip()}"]
+            while i < len(lines) and len(parts) < 6 and re.match(r"\(\S+\)\s", lines[i]):  # (a package's next lines)
+                parts.append(lines[i].split(")", 1)[1].strip())
+                i += 1
+            msg = " ".join(parts)
+            at = INPUT_LINE_RE.search(msg)
+            add_warning(warnings, seen, "warning", "warning", current(), int(at[1]) if at else None, msg)
+        for paren in PAREN_RE.finditer(line):
+            if paren[0] == ")":
+                if deeper:
+                    deeper -= 1
+                elif stack:
+                    stack.pop()
+            elif len(stack) >= STACK_LIMIT:
+                deeper += 1
+            else:
+                stack.append(paren[1] if "." in paren[1] else None)  # (a name with an extension opens a file)
+    return errors, warnings
+
+
+def add_warning(warnings, seen, severity, kind, path, line, msg):
+    """Add a warning, unless one with the same place and message is there already."""
+    msg = msg[:300]
+    if ("w", path, line, msg) not in seen:
+        seen.add(("w", path, line, msg))
+        warnings.append({"severity": severity, "kind": kind, "file": path, "line": line if path else None, "msg": msg})
+
+
+def redact_root(text, paper_root):
+    """text with the paper's folder (as given, and once links are resolved) as ".", so that the log shows the
+    paper's files relative to it, never the server's folders."""
+    for root in sorted({os.path.abspath(paper_root), os.path.realpath(paper_root)}, key=len, reverse=True):
+        if root != os.sep:
+            text = re.sub(re.escape(root) + r"(/|(?![\w~-]|\.[\w~-]))", lambda m: "./" if m[1] else ".", text)
+    return text
+
+
+def read_log(server, path):
+    """The parsed end of the log at path: {errors, warnings, raw, truncated}, at most PARSE_LIMIT bytes of it read,
+    without following a link in shared mode (open_output). The last one is kept for as long as the log's size and
+    modification time stay the same (each viewer of the paper asks after every build)."""
+    f = open_output(path)
+    if f is None:
+        return {"errors": [], "warnings": [], "raw": "", "truncated": False}
+    with f:
+        st = os.fstat(f.fileno())
+        key = (path, st.st_ino, st.st_mtime_ns, st.st_size)
+        cached = getattr(server, "parsed_log", None)
+        if cached and cached[0] == key:
+            return cached[1]
+        start = max(0, st.st_size - PARSE_LIMIT)
+        f.seek(start)
+        text = f.read(PARSE_LIMIT).decode("utf-8", errors="replace")
+    if start:  # (from the first whole line)
+        text = text.partition("\n")[2]
+    errors, warnings = parse_log(text, server.paper_root)
+    tail = text[-RAW_TAIL:]
+    if len(text) > RAW_TAIL:
+        tail = tail.partition("\n")[2]
+    for d in errors + warnings:
+        d["msg"] = redact_root(d["msg"], server.paper_root)
+    parsed = {"errors": errors, "warnings": warnings, "raw": redact_root(tail, server.paper_root),
+              "truncated": bool(start) or len(text) > RAW_TAIL}
+    server.parsed_log = (key, parsed)
+    return parsed
+
+
+def build_logs(server, pdf_name):
+    """GET /logs/<doc>.pdf: the last build's result (ok, time, durationMs), the errors and warnings of its log, with
+    the build's own errors that the log names no source file for (e.g. one in a package, or a bibtex failure)
+    after them, and the end of the log."""
+    status = build_status(server, pdf_name) or {}
+    parsed = read_log(server, job_file(server.paper_root, pdf_name, ".log"))
+    errors = list(parsed["errors"])
+    seen = {(e["line"], e["msg"]) for e in errors}
+    for e in status.get("errors") or []:
+        if not isinstance(e, dict):
+            continue
+        line, msg = e.get("line") if type(e.get("line")) is int else None, redact_root(str(e.get("msg") or "").strip(), server.paper_root)
+        if (line, msg) not in seen and len(errors) < MAX_DIAG:
+            seen.add((line, msg))
+            path = e.get("file") if isinstance(e.get("file"), str) else None
+            errors.append({"severity": "error", "kind": "error", "file": path and redact_root(path, server.paper_root),
+                           "line": line, "msg": msg[:300]})
+    return {"ok": status.get("ok"), "time": status.get("time"), "durationMs": status.get("durationMs"),
+            "errors": errors, "warnings": parsed["warnings"], "raw": parsed["raw"], "truncated": parsed["truncated"]}

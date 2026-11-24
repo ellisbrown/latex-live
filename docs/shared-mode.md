@@ -32,7 +32,7 @@ before it may:
   edits and deletes only their own notes, and replies to and resolves anyone's;
 - **editor:** also edits the sources in the browser (notes too, as LaTeX) and
   searches them (for the text as typed, never as a regular expression), rebuilds (the coauthors together at most every 20 seconds), sees the
-  pre-submission checks and the build's error messages, and compares with
+  pre-submission checks and the build's error messages and log, and compares with
   earlier commits of the copy's branch (the diff, and the change highlights
   against the last commit or push);
 - **owner:** everything a preview of your own allows (the arXiv package
@@ -454,8 +454,9 @@ instance treats the paper and everything TeX writes as theirs.
   the files there (the `.aux` files and the ones they name, file lists,
   SyncTeX, logs, JSON) only within the folder, without links, and up to a
   bound, and never sends its token to a port that a file there names. The
-  messages of downloads, diffs and baselines that fail name the paper's files
-  relative to it, never the server's folders. The build
+  messages of downloads, diffs and baselines that fail, and the build's log that
+  editors read, name the paper's files relative to it, never the server's
+  folders. The build
   folder may grow to `LATEX_LIVE_BUILD_LIMIT`, checked every second (with
   `--no-build` too); past it, it is emptied but for the instance's own lock
   file, and the build tried again a few times.

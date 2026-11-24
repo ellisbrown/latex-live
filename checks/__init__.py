@@ -16,7 +16,10 @@ does).
    for bibtex; a failed diff or baseline names no folder of the server's there. LATEX_LIVE_TIMING=1's lines
    leave out the events of a notes-free pass that a newer run superseded. The editor and the notes never read or
    write a source through a folder or file swapped for a link after the check. Forward search looks a line up
-   again a few seconds after it found nothing, and keeps what it finds for the build. On turned pages (/Rotate 90 or
+   again a few seconds after it found nothing, and keeps what it finds for the build. The build's log for editors
+   counts an error only in the paper's source files (not a timestamp or a package's message), places warnings and
+   boxes in the file TeX opened last, shows the paper's folder as ./, reads only a long log's end, and parses a log
+   once until it changes; a build is timed from its first pass. On turned pages (/Rotate 90 or
    270), SyncTeX's records of a rotated body go where it is drawn and back, and nothing changes without poppler.
    Every server keeps to 64 connections at once.
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a git
@@ -27,7 +30,7 @@ does).
    LATEX_LIVE_ALLOWED_HOSTS of its own):
    - the build publishes main.pdf, and the notes-free pass main-clean.pdf;
    - the hub redirects an old bookmark, needs the token or its cookie, and forwards every
-     endpoint (POST /rebuild too); the hub and the previews refuse HEAD and bad or oversized POST
+     endpoint (POST /rebuild and the build's log too, which says how long the build took); the hub and the previews refuse HEAD and bad or oversized POST
      bodies; SyncTeX finds a source line; /instances lists the instance;
    - /me reports the owner with every capability; the viewer's and the editor's modules and the
      viewer's style are served (as JavaScript, and CSS), the viewer's revalidated; SyncTeX answers
@@ -100,7 +103,8 @@ does).
    - Host names, the identity header (none, two, empty, unknown, on another Host), tokens and
      cookies, a page that says what to do for a browser without a working link, users added (and a
      broken users file) without a restart, /me (whether the paper defines the user's note macro, and
-     no document switch, for anyone) and every endpoint per role (the checks for editors only),
+     no document switch, for anyone) and every endpoint per role (the checks and the build's log for editors only, the log with the paper's files
+     relative to it),
      the Origin rules for POSTs (a loopback one only on the instance's own port), POST body limits,
      non-owners pinned to the document, and the viewer's security headers;
    - sessions: a personal link's session cookie is new each time, never the token, and works only

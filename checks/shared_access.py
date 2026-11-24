@@ -208,7 +208,7 @@ def role_checks(sh):
                   ("GET", "/arxiv.tar.gz", None))
     editor_up = (("GET", "/files", None), ("GET", "/file?path=body.tex", None), ("POST", "/file", probe), ("POST", "/rebuild", {}),
                  ("GET", "/commits", None), ("POST", "/diff", {"rev": "HEAD"}), ("GET", "/completions", None),
-                 ("GET", "/search?q=quokka", None))
+                 ("GET", "/search?q=quokka", None), ("GET", "/logs/main.pdf", None))
     for uid in ("vw", "cm", "ed"):
         for method, path, body in owner_only + (() if uid == "ed" else editor_up):
             expect(via_proxy(uid, path, method, body), 403, f"{method} {path} for {sh['users'][uid]['role']} {uid}")
@@ -217,8 +217,14 @@ def role_checks(sh):
         expect(result, 403, f"POST switch {who} (a shared preview serves one document)")
     for method, path, body, status in (("GET", "/files", None, 200), ("GET", "/file?path=body.tex", None, 200),
                                        ("GET", "/commits", None, 200), ("POST", "/file", probe, 409), ("GET", "/completions", None, 200),
-                                       ("GET", "/search?q=quokka", None, 200)):
+                                       ("GET", "/search?q=quokka", None, 200), ("GET", "/logs/main.pdf", None, 200),
+                                       ("GET", "/logs/appendix.pdf", None, 403)):
         expect(via_proxy("ed", path, method, body), status, f"{method} {path} for the editor")
+    logs = expect_dict(via_proxy("ed", "/logs/main.pdf"), 200, "GET logs for the editor")
+    if not isinstance(logs.get("raw"), str) or not logs["raw"].strip() or not isinstance(logs.get("warnings"), list):
+        fail(f"GET logs for the editor: {str(logs)[:300]}")
+    if any(root in json.dumps(logs) for root in {sh["root"], os.path.realpath(sh["root"])}):
+        fail("the build's log shows an editor the server's folder of the paper, not paths relative to it")
     found = expect_dict(via_proxy("ed", "/search?q=quokka"), 200, "GET search for the editor")
     if [(m["file"], m["text"][m["at"]:m["at"] + m["len"]]) for m in found.get("matches", [])] != [("body.tex", "Quokka")]:
         fail(f"GET search for quokka, for the editor: {found}")
@@ -238,7 +244,8 @@ def role_checks(sh):
         fail(f"OPTIONS is answered with CORS headers: {preflight[1]}")
     if editor_calls(sh["editor_log"]):
         fail(f"the editor stand-in ran: {editor_calls(sh['editor_log'])}")
-    ok("roles: viewers read, commenters also comment, editors also edit, search the sources (as written), rebuild and"
+    ok("roles: viewers read, commenters also comment, editors also edit, search the sources (as written), read the build's"
+       " log (with the paper's files relative to it), rebuild and"
        " compare, only the owner does the rest, but for switching documents, which no one does; the old GET actions are"
        " gone; no CORS")
 

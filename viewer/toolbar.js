@@ -3,7 +3,7 @@
 
 import { $, docFile, el, file, hubBase, isDiff, isPopout, setStatus } from "./page.js";
 import { postJSON } from "./net.js";
-import { canComment, editorAllowed, opensSources, openWhere } from "./role.js";
+import { canComment, editorAllowed, me, opensSources, openWhere } from "./role.js";
 import { icon } from "./icons.js";
 import { onThemeChange, pdfInvert, setPdfInvert, setTheme, setTint, theme, tint, TINTS } from "./theme.js";
 
@@ -65,6 +65,7 @@ export function showKeys(open) {
   if (open) {
     $("keysComment").hidden = !canComment();
     $("keysEdit").hidden = $("keysSearch").hidden = $("keysFormat").hidden = !editorAllowed() || isPopout;
+    $("keysLogs").hidden = !editorAllowed() || isPopout || !me.can.logs;
     $("keysDblclickRow").hidden = isDiff || !opensSources();
     $("keysDblclick").textContent = `open the source line in ${openWhere()}`;
   }

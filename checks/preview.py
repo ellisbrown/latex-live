@@ -130,6 +130,13 @@ def live_checks(tmp):
             except Exception as e:
                 fail(f"{path} (through the hub): {e}")
         ok("the viewer's endpoints answer through the hub")
+        logs, built = get("/logs/main.pdf", token), get("/status/main.pdf", token).get("build") or {}
+        took = built.get("durationMs")
+        if not isinstance(took, int) or not 0 < took < 600_000 or logs.get("durationMs") != took or not logs.get("raw"):
+            fail(f"the build's log through the hub, or how long the build took: {took} {str(logs)[:300]}")
+        if paper in logs["raw"] or os.path.realpath(paper) in logs["raw"]:
+            fail("the build's log shows the paper's folder, not paths relative to it")
+        ok(f"the build's log answers through the hub, with the paper's files relative to it; the whole build took {took} ms")
         with open(os.path.join(HERE, "VERSION")) as f:
             version = f.read().strip()
         reported = get("/status/main.pdf", token).get("latexLive")

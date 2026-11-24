@@ -23,6 +23,7 @@ const PATHS = {
   search: "M7.2 2.8a4.4 4.4 0 1 0 0 8.8 4.4 4.4 0 0 0 0-8.8Zm3.2 7.6 2.8 2.8",
   file: "M4 2.5h5.2L12.5 5.8v7.7a.5.5 0 0 1-.5.5H4a.5.5 0 0 1-.5-.5V3a.5.5 0 0 1 .5-.5Zm5 0v3.5h3.5",
   edit: "M10.8 2.8 13.2 5.2 5.6 12.8H3.2v-2.4l7.6-7.6Z",
+  log: "M3 3.5h10M3 6.5h10M3 9.5h7M3 12.5h5",
 };
 
 // An icon as an <svg> element, size pixels square (decorative: the button it sits in has the label).

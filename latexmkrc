@@ -19,7 +19,8 @@ my $build = $ENV{LATEX_LIVE_BUILD} || 'build';  # live.py --build-dir
 $pdf_mode = 1;
 # -halt-on-error: stop at the first error (fast failure, no cascade of follow-on errors).
 # Touching build/%R.building first lets the viewer show "building..." until latex_report.py
-# writes build/%R.status.json at the end of the run. After each successful pass, `--pass`
+# writes build/%R.status.json at the end of the run; the run's first pass also writes build/%R.began, from which
+# latex_report.py times the whole run (and empties it: a name that appears in build/ would put the warm standbys in doubt). After each successful pass, `--pass`
 # publishes the PDF already, so the viewer need not wait for a second pass (bibtex, references).
 # %P is the source with $pre_tex_code before it: once the preamble has run, it prints the page
 # layout (live.py reads the text area and line spacing from the log, so the viewer needs no
@@ -32,7 +33,7 @@ $pre_tex_code = '\\def\\latexlivelayout{\\typeout{latex-live layout:'
 # latexlive/standby.py, which runs it in a warm standby (a pdflatex that has read the preamble already)
 # when it can, else as before, with the same arguments and $exec (which it reads from the environment).
 my $pass = $ENV{LATEX_LIVE_STANDBY_OWNER} ? "python3 -I '$here/latexlive/standby.py'" : $exec;
-$pdflatex = "touch $build/%R.building; $pass pdflatex -synctex=1 -file-line-error -halt-on-error %O %P && python3 '$here/latex_report.py' --pass %R";
+$pdflatex = "touch $build/%R.building; [ -s $build/%R.began ] || echo run > $build/%R.began; $pass pdflatex -synctex=1 -file-line-error -halt-on-error %O %P && python3 '$here/latex_report.py' --pass %R";
 # LATEX_LIVE_TIMING=1 (live.py; latexlive/timing.py): note when each run and pass begins, when a pass's command
 # returns and latexmk has read what it wrote, when the run ends, and when bibtex starts, in build/<job>.timing.
 # The hooks need latexmk 4.80 or later; with an older one, only the other processes' notes are there.
