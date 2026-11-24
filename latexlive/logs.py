@@ -31,7 +31,7 @@ def parse_log(text, paper_root):
     in none otherwise; a box's line is where its paragraph ends (where it began may be in another file). An error's
     or a warning's own lines open and close no file. The messages show the paper's folder as ./ (redact_root)."""
     root = os.path.abspath(paper_root)
-    bases = {root, os.path.realpath(root)}
+    bases, redact = {root, os.path.realpath(root)}, redactor(root)
     found = {}  # (the names looked up: each once)
 
     def resolve(name):
@@ -60,10 +60,10 @@ def parse_log(text, paper_root):
             skipping = bool(line.strip())
             continue
         error, box, warning = ERROR_RE.match(line), BOX_RE.match(line), WARN_RE.match(line)
-        path = error and resolve(error[1])
-        if path:
-            msg = redact_root(error[3].strip(), root)[:300]
-            if len(errors) < MAX_DIAG and not msg.startswith("==> Fatal error") and ("e", path, error[2], msg) not in seen:
+        if error:  # (one of the paper's files, else another's: its message's parentheses are not files either way)
+            path = len(errors) < MAX_DIAG and not error[3].lstrip().startswith("==> Fatal error") and resolve(error[1])
+            msg = path and redact(error[3].strip())[:300]
+            if path and ("e", path, error[2], msg) not in seen:
                 seen.add(("e", path, error[2], msg))
                 errors.append({"severity": "error", "kind": "error", "file": path, "line": int(error[2]), "msg": msg})
             continue
@@ -71,15 +71,17 @@ def parse_log(text, paper_root):
             skipping = True
             if len(warnings) < MAX_DIAG:
                 add_warning(warnings, seen, "info" if box[1] == "Underfull" else "warning", box[1].lower(), current(),
-                            int(box[4]), redact_root(f"{box[1]} \\{box[2]} ({box[3]})", root))
+                            int(box[4]), redact(f"{box[1]} \\{box[2]} ({box[3]})"))
             continue
         if warning:
             parts = [f"{warning[1]}: {warning[2].strip()}"]
-            while i < len(lines) and len(parts) < 6 and re.match(r"\(\S+\)\s", lines[i]):  # (a package's next lines)
-                parts.append(lines[i].split(")", 1)[1].strip())
-                i += 1
+            end = i  # (a package's next lines; the first few go in the message)
+            while end < len(lines) and end - i < 50 and re.match(r"\(\S+\)\s", lines[end]):
+                end += 1
+            parts += [later.split(")", 1)[1].strip() for later in lines[i:end]]
+            i = end
             if len(warnings) < MAX_DIAG:
-                msg = redact_root(" ".join(parts), root)
+                msg = redact(" ".join(parts[:6]))
                 at = INPUT_LINE_RE.search(msg)
                 add_warning(warnings, seen, "warning", "warning", current(), int(at[1]) if at else None, msg)
             continue
@@ -99,19 +101,25 @@ def parse_log(text, paper_root):
 
 def add_warning(warnings, seen, severity, kind, path, line, msg):
     """Add a warning, unless one with the same place and message is there already."""
-    msg = msg[:300]
+    msg, line = msg[:300], line if path else None
     if ("w", path, line, msg) not in seen:
         seen.add(("w", path, line, msg))
-        warnings.append({"severity": severity, "kind": kind, "file": path, "line": line if path else None, "msg": msg})
+        warnings.append({"severity": severity, "kind": kind, "file": path, "line": line, "msg": msg})
+
+
+def redactor(paper_root):
+    """A function that gives a text with the paper's folder (as given, and once links are resolved) as ".", so that
+    the log shows the paper's files relative to it, never the server's folders."""
+    roots = sorted({os.path.abspath(paper_root), os.path.realpath(paper_root)} - {os.sep}, key=len, reverse=True)
+    if not roots:  # (a paper at /: nothing to hide)
+        return lambda text: text
+    pattern = re.compile("(?:" + "|".join(map(re.escape, roots)) + r")(/|(?![\w~-]|\.[\w~-]))")
+    return lambda text: pattern.sub(lambda m: "./" if m[1] else ".", text)
 
 
 def redact_root(text, paper_root):
-    """text with the paper's folder (as given, and once links are resolved) as ".", so that the log shows the
-    paper's files relative to it, never the server's folders."""
-    for root in sorted({os.path.abspath(paper_root), os.path.realpath(paper_root)}, key=len, reverse=True):
-        if root != os.sep:
-            text = re.sub(re.escape(root) + r"(/|(?![\w~-]|\.[\w~-]))", lambda m: "./" if m[1] else ".", text)
-    return text
+    """text with the paper's folder as "." (redactor)."""
+    return redactor(paper_root)(text)
 
 
 def read_log(server, path):
@@ -130,11 +138,11 @@ def read_log(server, path):
         start = max(0, st.st_size - PARSE_LIMIT)
         f.seek(start)
         text = f.read(PARSE_LIMIT).decode("utf-8", errors="replace")
-        if start:  # (from the first whole line)
+        if start and "\n" in text[:-1]:  # (from the first whole line)
             text = text.partition("\n")[2]
         errors, warnings = parse_log(text, server.paper_root)
         tail = text[-RAW_TAIL:]
-        if len(text) > RAW_TAIL and "\n" in tail:
+        if len(text) > RAW_TAIL and "\n" in tail[:-1]:
             tail = tail.partition("\n")[2]
         parsed = {"errors": errors, "warnings": warnings, "raw": redact_root(tail, server.paper_root),
                   "truncated": bool(start) or len(text) > RAW_TAIL}
@@ -153,7 +161,7 @@ def build_logs(server, pdf_name):
     for e in status.get("errors") or []:
         if not isinstance(e, dict):
             continue
-        line = e.get("line") if type(e.get("line")) is int else None
+        line = e.get("line") if type(e.get("line")) is int and e["line"] > 0 else None
         msg = redact_root(str(e.get("msg") or "").strip(), server.paper_root)[:300]
         if (line, msg) not in seen and len(errors) < MAX_DIAG:
             seen.add((line, msg))

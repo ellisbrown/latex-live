@@ -99,7 +99,10 @@ function showLogs() {
 for (const b of $("logsTabs").children) {
   b.onclick = () => {
     filter = b.dataset.filter;
-    for (const other of $("logsTabs").children) other.classList.toggle("on", other === b);
+    for (const other of $("logsTabs").children) {
+      other.classList.toggle("on", other === b);
+      other.setAttribute("aria-selected", String(other === b));
+    }
     showLogs();
   };
 }
