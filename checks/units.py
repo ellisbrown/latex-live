@@ -6,6 +6,7 @@ timing lines, the restart prompt, the static files the server sends, and the bib
 import collections
 import glob
 import gzip
+import json
 import os
 import re
 import shutil
@@ -26,7 +27,7 @@ def unit_checks():
     """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
     for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
-                  code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, completion_checks, assets_checks, search_checks, logs_checks, word_column_checks, venue_checks, diff_retry_checks,
+                  code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, completion_checks, assets_checks, search_checks, logs_checks, presence_checks, word_column_checks, venue_checks, diff_retry_checks,
                   arxiv_strip_checks, graphics_synctex_checks, turned_page_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks,
                   bib_checks):
         check()
@@ -1111,6 +1112,77 @@ def logs_checks():
     ok("the build's log: errors only in the paper's source files, warnings and boxes in the file they are in, the paper's"
        " folder as ./, only the end of a long log read, and a log parsed once until it changes; a build is timed from its"
        " first pass")
+
+
+def presence_checks():
+    """Who has the paper open (status.presence_request, presence): a page is listed with the file it has open only if
+    the editor opens that file, and its line clamped; it drops out after PRESENCE_TTL, or as it leaves; a user has at
+    most PRESENCE_TABS pages listed and the list at most PRESENCE_LIMIT, without crowding out pages already there; the
+    list names users and pages by opaque keys (no ids or roles), says which are the asker's, and reading it changes
+    nothing."""
+    from latexlive import status
+    with tempfile.TemporaryDirectory(prefix="latex-live-presence-") as root:
+        put(os.path.join(root, "main.tex"), "\\documentclass{article}\\begin{document}\\input{sec}\\end{document}\n")
+        put(os.path.join(root, "sec.tex"), "x\n")
+        put(os.path.join(root, "notes.txt"), "x\n")
+        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", editable=None, git_name="Owner Example",
+                                       presence={}, presence_lock=threading.Lock())
+        ed = {"id": "ed", "name": "Eden Doyle", "role": "editor"}
+        tk = {"id": "tk", "name": "Toni Kay", "role": "editor"}
+        owner = {"id": "owner", "name": None, "role": "owner"}
+        say = lambda user, **req: status.presence_request(server, req, user)
+        code, answer = say(ed, tab="a1", open="sec.tex", line=7)
+        if code != 200 or not isinstance(answer.get("tab"), str) or answer["tab"] in ("a1", "ed"):
+            fail(f"POST presence: {code} {answer}")
+        for req, want in (({"open": "notes.txt", "line": 3}, (None, None)), ({"open": "../main.tex", "line": 3}, (None, None)),
+                          ({"open": "sec.tex", "line": 0}, ("sec.tex", 1)), ({"open": "sec.tex", "line": 10**12}, ("sec.tex", status.PRESENCE_LINE)),
+                          ({"open": "sec.tex", "line": "7"}, ("sec.tex", None)), ({"open": "sec.tex", "line": True}, ("sec.tex", None)),
+                          ({"open": None, "line": 5}, (None, None)), ({"open": ["sec.tex"]}, (None, None))):
+            say(tk, tab="b1", **req)
+            got = next((p["file"], p["line"]) for p in status.presence(server, ed) if p["name"] == "Toni Kay")
+            if got != want:
+                fail(f"POST presence with {req}: listed at {got}, not {want}")
+        for tab in ("", "x" * 65, "a b", "a/b", None, 7):
+            if say(tk, tab=tab)[0] != 400:
+                fail(f"POST presence with the page name {tab!r} was taken")
+        listed = status.presence(server, ed)
+        if any(set(p) != {"user", "tab", "name", "file", "line", "you"} or {p["user"], p["tab"]} & {"ed", "tk", "a1", "b1"}
+               for p in listed) or "editor" in json.dumps(listed):
+            fail(f"the presence list shows more than names, keys and places (an id or a role?): {listed}")
+        if [p["you"] for p in listed] != [True, False] or [p["you"] for p in status.presence(server, tk)] != [False, True]:
+            fail(f"the presence list doesn't say which pages are the asker's: {listed}")
+        say(owner, tab="o1")
+        if not any(p["name"] == "Owner Example" for p in status.presence(server, ed)):
+            fail("the owner of a preview without a users file is not listed by their git name")
+        before = {k: dict(v) for k, v in server.presence.items()}
+        for entry in server.presence.values():
+            entry["seen"] -= status.PRESENCE_TTL + 1  # (all quiet for longer than the TTL)
+        aged = {k: dict(v) for k, v in server.presence.items()}
+        if status.presence(server, ed) or {k: dict(v) for k, v in server.presence.items()} != aged or len(aged) != len(before):
+            fail("reading the presence list changed the table, or listed pages that went quiet")
+        say(ed, tab="a1", open="sec.tex", line=2)
+        if [p["name"] for p in status.presence(server, tk)] != ["Eden Doyle"] or len(server.presence) != 1:
+            fail(f"pages that went quiet stay in the table after a POST: {server.presence}")
+        say(ed, tab="a1", leave=True)
+        if status.presence(server, tk) or server.presence:
+            fail("a page that left is still listed")
+        for i in range(status.PRESENCE_TABS):
+            if say(ed, tab=f"t{i}")[0] != 200:
+                fail(f"page {i + 1} of a user was not listed")
+        if say(ed, tab="extra")[0] != 429 or say(ed, tab="t0", open="sec.tex", line=4)[0] != 200 or say(tk, tab="b1")[0] != 200:
+            fail(f"a user past {status.PRESENCE_TABS} pages: another of theirs is listed, or one already listed or someone else is not")
+        if len(server.presence) != status.PRESENCE_TABS + 1:
+            fail(f"the presence table after a user's pages reached the cap: {len(server.presence)} entries")
+        saved = status.PRESENCE_LIMIT
+        try:
+            status.PRESENCE_LIMIT = len(server.presence)
+            if say(owner, tab="o2")[0] != 429 or say(tk, tab="b1", open="sec.tex", line=1)[0] != 200:
+                fail("a full presence table takes a new page, or refuses one already listed")
+        finally:
+            status.PRESENCE_LIMIT = saved
+    ok(f"presence: a page lists only a file the editor opens, its line clamped; it drops out when quiet (reading the list"
+       f" changes nothing) or as it leaves; at most {status.PRESENCE_TABS} pages per user, a capped list, nothing crowded out;"
+       f" names and opaque keys, no ids or roles")
 
 
 def connection_cap_checks():

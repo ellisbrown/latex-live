@@ -35,7 +35,9 @@ before it may:
   pre-submission checks and the build's error messages and log, and compares with
   earlier commits of the copy's branch (the diff, and the change highlights
   against the last commit or push); uses the Refs tab (the bibliography, with
-  online lookups only if you turn them on: `LATEX_LIVE_LOOKUPS`);
+  online lookups only if you turn them on: `LATEX_LIVE_LOOKUPS`); sees who else
+  has the paper open, by name, and which file and line each is on (the other
+  editors and the owner, who see the same of them);
 - **owner:** everything a preview of your own allows (the arXiv package
   too), except switching to another document: a shared instance serves one.
 
@@ -48,7 +50,8 @@ Viewers and commenters see the current PDF and what it shows, nothing more:
 - the figures without their labels and source lines, and not the list of
   figure files, which marks changed figures;
 - forward search only to the notes they see, and SyncTeX's lines without the
-  names of files the source pane doesn't open.
+  names of files the source pane doesn't open;
+- not who else has the paper open, and no one sees that they do.
 
 The earlier versions (the baselines and the diff) are for editors and the
 owner. The downloads with notes in the margin and as comments show every note

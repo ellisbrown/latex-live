@@ -1,14 +1,19 @@
 """GET /status/: everything the viewer polls for, and whether latex-live changed on disk since
-this process started."""
+this process started; and who has the paper open (POST /presence, and the list in an editor's status)."""
 
+import hashlib
 import os
+import re
+import secrets
 import time
 
 from . import config
+from .auth import owner_name
 from .baselines import base_status
 from .build import build_running, build_status
 from .document import layout, page_limit, uncounted_sections
 from .files import file_hash, job_file, mtime, pdf_path, read_json
+from .sources import editable_files
 from .synctex import PENDING, refs_start
 from .tools import image_problem
 
@@ -75,6 +80,61 @@ def status(server, pdf_name, push=False):
     if config.TIMING:  # (the viewer logs how long each new PDF took to reach the screen: this clock tells it when it was published)
         info["timing"] = {"now": time.time()}
     return info
+
+
+# Who has the paper open: each editor's (or the owner's) page says so with POST /presence when its file or line
+# changes, and every few seconds besides; a page that stops saying so drops out after PRESENCE_TTL seconds. Each
+# user has at most PRESENCE_TABS pages listed, and the list at most PRESENCE_LIMIT, so that no one crowds out the others.
+PRESENCE_TTL, PRESENCE_TABS, PRESENCE_LIMIT, PRESENCE_LINE = 30, 4, 256, 10_000_000
+PAGE_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+PRESENCE_SALT = secrets.token_bytes(16)  # (a new one each run: the keys mean nothing outside it)
+
+
+def presence_key(*parts):
+    """An opaque name for a user, or one of their pages, that tells them apart from the others without
+    saying who they are (their id stays with the server)."""
+    return hashlib.sha256(PRESENCE_SALT + "\0".join(parts).encode()).hexdigest()[:12]
+
+
+def presence_request(server, req, user):
+    """POST /presence: {tab, open, line} from a page (tab: its own name), the file open in its source pane
+    (only one of the files the editor opens: editable_files; else none) and the cursor's line in it; or
+    {tab, leave: true} as the page closes. Answers with the page's key in the list (tab), or 429 once the
+    user has PRESENCE_TABS pages listed (or the list is full) until one drops out."""
+    tab = req.get("tab")
+    if not isinstance(tab, str) or not PAGE_ID_RE.fullmatch(tab):
+        return 400, {"error": "expected tab: the page's name"}
+    uid, now = user["id"] or "owner", time.monotonic()
+    shown = req.get("open")
+    shown = shown if isinstance(shown, str) and shown in editable_files(server, fresh=False) else None
+    line = req.get("line")
+    line = min(max(line, 1), PRESENCE_LINE) if shown and type(line) is int else None
+    name = (user["name"] or owner_name(server))[:80]  # (as the users file gives it; the owner's, as coauthors see it)
+    key = (uid, tab)
+    with server.presence_lock:
+        table = server.presence
+        for gone in [k for k, entry in table.items() if now - entry["seen"] > PRESENCE_TTL]:
+            del table[gone]
+        if req.get("leave") is True:
+            table.pop(key, None)
+            return 200, {}
+        if key not in table and (sum(k[0] == uid for k in table) >= PRESENCE_TABS or len(table) >= PRESENCE_LIMIT):
+            return 429, {"error": f"at most {PRESENCE_TABS} pages of each user are listed"}
+        table[key] = {"uid": uid, "user": presence_key(uid), "tab": presence_key(uid, tab), "name": name, "file": shown,
+                      "line": line, "seen": now}
+        return 200, {"tab": table[key]["tab"]}
+
+
+def presence(server, user):
+    """Who has the paper open, for an editor's or the owner's status: per page listed in the last
+    PRESENCE_TTL seconds, the user's name and key (not their id or role), the page's key, the file open
+    in its source pane and the line, and whether it is the asker's (you). It only reads: a page that
+    dropped out leaves the table on the next POST /presence."""
+    now = time.monotonic()
+    with server.presence_lock:
+        listed = [entry for entry in server.presence.values() if now - entry["seen"] <= PRESENCE_TTL]
+    return sorted(({**{k: entry[k] for k in ("user", "tab", "name", "file", "line")}, "you": entry["uid"] == (user["id"] or "owner")}
+                   for entry in listed), key=lambda p: (p["name"], p["user"], p["tab"]))
 
 
 def server_files():

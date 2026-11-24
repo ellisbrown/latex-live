@@ -137,6 +137,15 @@ def live_checks(tmp):
         if paper in logs["raw"] or os.path.realpath(paper) in logs["raw"]:
             fail("the build's log shows the paper's folder, not paths relative to it")
         ok(f"the build's log answers through the hub, with the paper's files relative to it; the whole build took {took} ms")
+        get("/status/main.pdf?tab=page1&open=main.tex&line=4", token)  # (as the workspace branch's viewer asked: a GET writes nothing)
+        if get("/status/main.pdf", token).get("presence") != []:
+            fail("a GET of /status listed a page as having the paper open")
+        mine = post("/presence", token, body={"tab": "page1", "open": "main.tex", "line": 4}).get("tab")
+        listed = get("/status/main.pdf", token).get("presence")
+        if not listed or listed != [{"user": listed[0]["user"], "tab": mine, "name": listed[0]["name"], "file": "main.tex", "line": 4, "you": True}]:
+            fail(f"the owner's page, as listed in /status through the hub after POST /presence: {listed}")
+        post("/presence", token, body={"tab": "page1", "leave": True})
+        ok("POST /presence through the hub lists the owner's page in /status, with its file and line; a GET of /status writes nothing")
         with open(os.path.join(HERE, "VERSION")) as f:
             version = f.read().strip()
         reported = get("/status/main.pdf", token).get("latexLive")

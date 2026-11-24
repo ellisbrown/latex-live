@@ -138,5 +138,5 @@ function fitRow(bar, menu, more, { extra = [], watch = [] } = {}) {
   document.fonts?.ready.then(fit);
   return place;
 }
-export const placeItem = fitRow($("bar"), $("moreItems"), null, { extra: [$("compare")], watch: [$("status"), $("pages")] });
+export const placeItem = fitRow($("bar"), $("moreItems"), null, { extra: [$("compare")], watch: [$("status"), $("pages"), $("presence")] });
 fitRow($("pdfHead"), $("pdfMenu"), $("pdfMore"), { watch: [$("findCount")] });
