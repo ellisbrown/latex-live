@@ -177,6 +177,7 @@ function cardElement(v) {
   }
   const node = el("div", { className: "cm-agent-card" }, ...parts);
   node.addEventListener("keydown", (e) => { // (the editor ignores keys typed here)
+    if (paletteOpen()) return;
     if (e.key === "Escape") { e.preventDefault(); dismiss(); }
     else if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && v.kind === "result") { e.preventDefault(); accept(); }
     else if (e.key === "Enter" && e.target === box) { e.preventDefault(); again(box); }

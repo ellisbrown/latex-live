@@ -18,22 +18,26 @@ if r.get("protocol") != 1:  # (a later protocol: say so, as the answer)
     print(json.dumps({"error": "protocol %r is not one this plugin knows (1)" % r.get("protocol")}))
     sys.exit(3)
 print(json.dumps({k: r.get(k, "") for k in ("selection", "paragraph", "note")}, ensure_ascii=False))
-') || { printf '%s\n' "$message"; exit 0; }
+') || { status=$?; [ "$status" -eq 3 ] && printf '%s\n' "$message" && exit 0; exit "$status"; }
 
-# (claude's own error, if it fails, is the last line on stderr: latex-live shows it)
+# (${1+"$@"}: the arguments, also with none under set -u in old shells)
+status=0
 result=$(printf '%s' "$message" | claude --print --output-format json --tools "" --strict-mcp-config \
   --mcp-config '{"mcpServers":{}}' --setting-sources "" --disable-slash-commands --no-session-persistence \
-  --system-prompt "$SYSTEM" "$@")
+  --system-prompt "$SYSTEM" ${1+"$@"}) || status=$?
 
 printf '%s' "$result" | python3 -c '
 import json, sys
+status = int(sys.argv[1])
 try:
     result = json.load(sys.stdin)
-except ValueError:
-    sys.exit("claude did not print its JSON result")
-text = result.get("result") if isinstance(result, dict) else None
-if not isinstance(text, str) or result.get("is_error"):
-    print(json.dumps({"error": f"claude failed: {str(text)[:200]}"}))
+except ValueError:  # (claude failed before its result, e.g. a bad flag: its error is the last line on stderr)
+    sys.exit(status or "claude did not print its JSON result")
+result = result if isinstance(result, dict) else {}
+text = result.get("result")
+if not isinstance(text, str) or not text or result.get("is_error") or status:
+    why = text if isinstance(text, str) and text else str(result.get("subtype") or "no result")
+    print(json.dumps({"error": "claude failed: " + why[:200]}))
     sys.exit()
 start, end = text.find("{"), text.rfind("}")  # (in case the model wrapped its answer in a code fence)
 try:
@@ -45,4 +49,4 @@ if not isinstance(answer, dict) or not isinstance(answer.get("replacement"), str
 else:
     rationale = answer.get("rationale")
     print(json.dumps({"replacement": answer["replacement"], "rationale": rationale if isinstance(rationale, str) else ""}))
-'
+' "$status"
