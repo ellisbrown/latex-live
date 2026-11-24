@@ -582,7 +582,7 @@ def restore_request(server, req, user):
                         return updating()
                     write_source(real, raw.decode("utf-8"), text)
                     remember_write(server, user, written, "edit")
-                    wrote(server, user, written)
+                    wrote(server, user, written, file_version(data))
             else:
                 if len(server.added) >= ADDED_LIMIT:
                     return 409, {"error": f"{ADDED_LIMIT} files were added here already: remove some first"}

@@ -15,6 +15,7 @@ import { closeTab, ed, flushSource, openFile, reloadSource, showEditor, srcFiles
 import { startDiff } from "./compare.js";
 import { loadFiles } from "./files.js";
 import { addTab } from "./sidebar.js";
+import { wrote } from "./build.js";
 import { icon } from "./icons.js";
 
 const SOURCES = /\.(tex|bib|sty|cls)$/i; // (live.py's EDITABLE_EXTS: what a restore puts back)
@@ -27,7 +28,7 @@ panel.classList.add("history");
 // The history as live.py last listed it ({isGit, branch, dirty: [{status, path}], commits: [{sha, parent, author, time,
 // subject, files}]}), the entry open (a commit's sha, or "WORKTREE") and the file shown in it, and the diffs fetched
 // ("rev|path" -> {diff, truncated} or {error}; a commit's never change, the uncommitted changes' are fetched again).
-let data = null, open = null, shownFile = null, drawn = "", loadSeq = 0;
+let data = null, open = null, shownFile = null, drawn = "", loadSeq = 0, worktreeSeq = 0;
 const diffs = new Map();
 
 export async function loadHistory() {
@@ -41,8 +42,13 @@ export async function loadHistory() {
     return;
   }
   data = body;
+  worktreeSeq++; // (the uncommitted changes' diffs are fetched again, and one on its way is dropped)
   for (const key of [...diffs.keys()]) if (key.startsWith("WORKTREE|")) diffs.delete(key);
+  if (open === "WORKTREE" && !data.dirty.some((f) => f.path === shownFile)) {
+    [open, shownFile] = data.dirty.length ? ["WORKTREE", data.dirty[0].path] : [null, null];
+  }
   draw();
+  if (open === "WORKTREE" && shownFile) fetchDiff(open, shownFile);
 }
 
 function draw() {
@@ -97,7 +103,7 @@ function entry(c) {
   if (!worktree && me.can.restore && f && SOURCES.test(f.path) && (f.status !== "D" || c.parent)) {
     const before = f.status === "D", name = f.path.split("/").pop();
     const when = before ? `just before commit ${c.sha.slice(0, 7)}, which removed it` : `in commit ${c.sha.slice(0, 7)}`;
-    acts.append(el("button", { title: `Put ${f.path} back as it was ${when}`, onclick: () => restore(before ? c.parent : c.sha, f.path, when) },
+    acts.append(el("button", { title: `Put ${f.path} back as it was ${when}`, onclick: () => restore(before ? c.parent : c.sha, f.path, when, before) },
                    icon("restore", 12), el("span", { textContent: `Restore ${name}` })));
   }
   if (acts.childNodes.length) card.append(acts);
@@ -116,19 +122,22 @@ function showFile(rev, path) {
   fetchDiff(rev, path);
 }
 async function fetchDiff(rev, path) {
-  const key = `${rev}|${path}`;
-  if (diffs.has(key)) return;
+  const key = `${rev}|${path}`, seq = worktreeSeq;
+  if (diffs.has(key) && !diffs.get(key).error) return; // (one that failed is asked again)
   const r = await fetch(`history/diff?${new URLSearchParams({ rev, path })}`, { cache: "no-store" }).catch(() => null);
   const body = r ? await readBody(r) : {};
+  if (rev === "WORKTREE" && seq !== worktreeSeq) return;
   diffs.set(key, r?.ok && typeof body.diff === "string" ? body : { error: body.error || "The changes did not load." });
   if (diffs.size > 60) diffs.delete(diffs.keys().next().value); // (the oldest goes)
   draw();
 }
 
-// A file's diff, its lines colored: added, removed, and the hunks' headers (git's own header lines left out).
+// A file's diff, its lines colored: added, removed, and the hunks' headers (git's own header lines, before the first
+// hunk, left out).
 function diffView(got) {
   if (got.error) return el("div", { className: "hist-note", textContent: got.error });
-  const lines = got.diff.split("\n").filter((l) => l && !/^(diff --git |index |--- |\+\+\+ |(new|deleted) file mode |old mode |new mode )/.test(l));
+  let inHunk = false;
+  const lines = got.diff.split("\n").filter((l) => l && ((inHunk ||= l.startsWith("@@")) || l.startsWith("Binary files ")));
   const pre = el("pre", { className: "hist-diff" }, ...lines.map((l) => el("span", {
     className: l.startsWith("@@") ? "d-hunk" : l.startsWith("+") ? "d-add" : l.startsWith("-") ? "d-del" : "", textContent: l })));
   if (!lines.length) pre.textContent = "(no changes to show as text)";
@@ -137,10 +146,10 @@ function diffView(got) {
 
 // Restore: the file open in the source pane is saved first (should that fail, nothing is restored), and live.py writes
 // the text only if the file is still as that save left it; then it reloads in place. A file not open opens.
-async function restore(rev, path, when) {
+async function restore(rev, path, when, removed) {
   const wasOpen = ed?.path === path && !ed.gone;
   const unsaved = wasOpen && ed.dirty ? " Your edits not saved yet are saved first, so they are replaced too." : "";
-  const gone = srcFiles && !srcFiles.files.some((f) => f.path === path);
+  const gone = srcFiles ? !srcFiles.files.some((f) => f.path === path) : removed; // (the list not loaded yet: as the commit left it)
   const what = gone ? "It is not in the paper now, so it comes back under that name." : "This replaces its text as it is now.";
   if (!confirm(`Put ${path} back as it was ${when}? ${what}${unsaved}`)) return;
   if (wasOpen && !(await flushSource())) return setStatus(`${path} has edits that are not saved, so it was not restored`, "error");
@@ -149,6 +158,7 @@ async function restore(rev, path, when) {
   const r = await postJSON("history/restore", { rev, path, ...(version ? { version } : {}) }).catch(() => null);
   const done = r ? await readBody(r) : {};
   if (!r?.ok) return setStatus(`${path}: ${done.error || (r ? `refused (${r.status})` : "can't reach the preview server")}`, "error");
+  wrote(); // (a build comes: behind)
   setStatus(`Restored ${done.path} as it was ${when}`, "fresh");
   if (done.created) await loadFiles();
   if (ed?.path === done.path && ed.gone) await closeTab(done.path, { discard: true }); // (its tab said it was gone: it opens anew)
