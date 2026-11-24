@@ -6,7 +6,7 @@ import { $, file, isDiff, isPopout, setStatus } from "./page.js";
 import { postJSON, readBody } from "./net.js";
 import { canOpenFile, editable, editorAllowed, me, opensInBrowser, opensSources } from "./role.js";
 import { container, eventBus, pageFrame, pagesReady, shownVariant, viewer } from "./pdfview.js";
-import { askWindows, layoutMode, onWindowMessage } from "./layout.js";
+import { askWindows, layoutMode, onWindowMessage, tellWindows } from "./layout.js";
 import { flash, reveal } from "./navigation.js";
 import { cmView, ed, showEditor } from "./editor.js";
 
@@ -182,7 +182,7 @@ onWindowMessage("openSource", ({ file, line, column, anyway }) => {
   return true;
 });
 onWindowMessage("mainWindow", () => {
-  if (forMainWindow) askWindows(forMainWindow, 2000);
+  if (forMainWindow) tellWindows(forMainWindow);
   forMainWindow = null;
   return false;
 });
