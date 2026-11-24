@@ -38,14 +38,14 @@ MAIN = ("\\documentclass{article}\n\\begin{document}\nAs in \\cite{alpha} and \\
         "% \\cite{gamma} is a comment\n\\input{sec}\n\\bibliography{refs}\n\\end{document}\n")
 REFS = ("@string{conf = {Conf}}\n@article{alpha,\n  title = {{Alpha} Paper},\n  author = {Doe, Jane and Roe, Rick},\n"
         "  year = {2020},\n  journal = {J. Alpha}\n}\n\n@inproceedings{beta, title = \"Beta\", year = 2021, booktitle = {Proc. B}}\n"
-        "@misc{gamma,\n  title = {Gamma},\n  eprint = {2312.00752}\n}\n")
+        "@misc{gamma,\n  title = {Gamma},\n  eprint = {2312.00752}\n}\n@string{year = {1999}}\n")
 
 
 @contextlib.contextmanager
 def paper():
     with tempfile.TemporaryDirectory(prefix="latex-live-bib-") as root:
         put(os.path.join(root, "main.tex"), MAIN)
-        put(os.path.join(root, "sec.tex"), "\\nocite{beta}\n\\citet{alpha}\n")
+        put(os.path.join(root, "sec.tex"), "\\nocite{beta}\n\\citet{alpha}\nA line break\\\\% then \\cite{gamma} in a comment\n")
         put(os.path.join(root, "refs.bib"), REFS)
         put(os.path.join(root, "more", "other.bib"), "@book{Delta, title={Delta}}\n")
         yield root, scratch_server(root)
@@ -66,8 +66,11 @@ def index_checks():
         alpha = next(e for e in found["entries"] if e["key"] == "alpha")
         if (got != want or sorted(found["bibFiles"]) != ["more/other.bib", "refs.bib"] or found["lookups"] is not config.LOOKUPS
                 or (alpha["title"], alpha["author"], alpha["year"], alpha["venue"]) != ("Alpha Paper", "Doe, Jane and Roe, Rick", "2020", "J. Alpha")
-                or next(e for e in found["entries"] if e["key"] == "gamma")["arxiv"] != "2312.00752"):
+                or [(e["arxiv"], e["year"]) for e in found["entries"] if e["key"] == "gamma"] != [("2312.00752", "")]):
             fail(f"the bibliography's index: {got}, {found['bibFiles']}, {alpha}")
+        quoted = bib.parse_bib_entries('@misc{q, title = "A {"}quoted{"} B", year = 2000}')
+        if [(e["title"], e["year"]) for e in quoted] != [('A "quoted" B', "2000")]:
+            fail(f"a quoted field with a quote in braces: {quoted}")
         put(os.path.join(root, "sec.tex"), "\\cite{gamma}\n")
         os.utime(os.path.join(root, "sec.tex"), ns=(1, 1))  # (a new mtime as well as a new size)
         counts = {e["key"]: e["citeCount"] for e in bib.papers_index(server)["entries"]}
@@ -129,7 +132,7 @@ ATOM = """<?xml version="1.0" encoding="UTF-8"?>
       with $\\input{secret}$ 50% &amp; #1_x</title>
     <published>2023-12-01T18:01:34Z</published>
     <author><name>Albert Gu</name></author><author><name>Tri Dao}</name></author>
-    <arxiv:doi>10.1000/a{b}</arxiv:doi>
+    <arxiv:doi>10.1000/a^^5cinput^^7bx^^7d</arxiv:doi>
     <arxiv:primary_category term="cs.LG"/>
   </entry>
 </feed>"""
@@ -175,7 +178,8 @@ def metadata_checks():
     code, found = bib.lookup_request({"query": "@article{k1, title={T}, author={A}}"})
     if code != 200 or (found["key"], found["source"]) != ("k1", "bibtex"):
         fail(f"looking up pasted BibTeX: {code} {found}")
-    for query, status in (("@article{k1, title={T}", 400), ("hello", 400), ("", 400)):
+    for query, status in (("@article{k1, title={T}", 400), ("hello", 400), ("", 400), ("10.1000/a^^5cinput", 400),
+                          ("10.1000/a{b}", 400)):
         if bib.lookup_request({"query": query})[0] != status:
             fail(f"looking up {query!r}: {bib.lookup_request({'query': query})}, not {status}")
     ok("entries made from arXiv's and Crossref's answers are plain text on one line in BibTeX (no braces, backslashes,"
@@ -245,8 +249,9 @@ class StandIn(urllib.request.HTTPSHandler):
 def request_checks():
     """The lookups' requests (bib.fetch, through bib.OPENER with a stand-in for HTTPS): only https to the allowed hosts,
     with latex-live's version in the User-Agent; a redirect followed to an allowed host, refused to another host or to
-    http (bib.SafeRedirect, also on its own), at most 3 of them; an answer over NET_READ refused; a lookup too soon after
-    another to the same host, or past NET_SLOTS at once, refused at once (LookupBusy), the background check waiting."""
+    http (bib.SafeRedirect, also on its own), at most 3 of them; an answer over NET_READ refused; a lookup that
+    would wait more than NET_WAIT for its host's turn, or past NET_SLOTS at once, refused at once (LookupBusy), the
+    background check waiting."""
     from latexlive import bib, config
     saved = config.LOOKUPS, bib.OPENER, dict(bib.HOSTS), bib.NET_READ
     config.LOOKUPS, bib.OPENER = True, urllib.request.build_opener(bib.SafeRedirect, StandIn)
@@ -343,20 +348,22 @@ def request_checks():
         bib.HOSTS.update(saved[2])
         bib.net_next.clear()
     ok("lookups go over https to arXiv and Crossref only, redirects too (others refused, before any request), with the"
-       " version in the User-Agent; a large answer is refused; one too soon after another to a host, or past two at once,"
-       " is refused at once, while the background check waits its turn")
+       " version in the User-Agent; a large answer is refused; one that would wait over 3 s for its host's turn, or past two"
+       " at once, is refused at once, while the background check waits its turn")
 
 
 def verify_checks():
     """The check of the bibliography (bib.start_verify, run_verify, verify_status; Crossref from a stand-in for
     bib.fetch): keys twice (ignoring case), titles twice, entries never cited; for cited ones, Crossref's year for a
-    DOI, and a preprint's published version found by its title."""
+    DOI (or that it doesn't know the DOI), and a preprint's published version found by its title."""
     from latexlive import bib, config
     saved, fetch = config.LOOKUPS, bib.fetch
 
     def crossref(url, accept="application/json", background=False):
         if not background:
             fail(f"the check asked {url} as a lookup someone waits for, not in the background")
+        if "/works/10.1000%2Fmissing" in url:
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
         if "/works/10." in url:
             return json.dumps({"message": {"title": ["Alpha"], "issued": {"date-parts": [[2019]]}}}).encode()
         return json.dumps({"message": {"items": [{"title": ["Gamma"], "container-title": ["Journal of G"],
@@ -366,8 +373,8 @@ def verify_checks():
         with paper() as (root, server):
             put(os.path.join(root, "refs.bib"), REFS.replace("journal = {J. Alpha}", "journal = {J. Alpha}, doi = {10.1000/a}")
                 + "@misc{ALPHA, title={Another}}\n@misc{copy, title={Beta}}\n@misc{long1, title={A Title Long Enough To Count}}\n"
-                  "@misc{long2, title={A title long enough to count}}\n")
-            put(os.path.join(root, "sec.tex"), "\\cite{gamma}\n")
+                  "@misc{long2, title={A title long enough to count}}\n@misc{lost, title={Lost}, doi={10.1000/missing}}\n")
+            put(os.path.join(root, "sec.tex"), "\\cite{gamma,lost}\n")
             code, state = bib.start_verify(server)
             deadline = time.monotonic() + 10
             while bib.verify_status(server)["state"] == "running" and time.monotonic() < deadline:
@@ -376,10 +383,10 @@ def verify_checks():
         kinds = sorted((f["kind"], f["key"]) for f in done.get("findings", []))
         want = [("duplicate-key", "ALPHA"), ("duplicate-title", "long2"), ("published-version", "gamma"),
                 ("uncited", "ALPHA"), ("uncited", "Delta"), ("uncited", "copy"), ("uncited", "long1"), ("uncited", "long2"),
-                ("year-mismatch", "alpha")]
-        if code != 202 or done.get("state") != "done" or kinds != want or done.get("checked") != 3:
+                ("unknown-doi", "lost"), ("year-mismatch", "alpha")]
+        if code != 202 or done.get("state") != "done" or kinds != want or done.get("checked") != 4 or done.get("offline"):
             fail(f"the check of the bibliography: {code} {state}, then {done.get('state')} {kinds} (checked {done.get('checked')})")
     finally:
         config.LOOKUPS, bib.fetch = saved, fetch
     ok("the check of the bibliography finds keys and titles twice, entries never cited, a year Crossref disagrees with,"
-       " and a preprint published since")
+       " a DOI it doesn't know, and a preprint published since")

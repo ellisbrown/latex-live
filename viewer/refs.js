@@ -16,7 +16,7 @@ import { registerCommands } from "./palette.js";
 import { icon } from "./icons.js";
 
 let index = null; // (/papers/index: {entries, bibFiles, lookups})
-let verify = null, verifyTimer = 0; // (/bib/verify's last answer, and the poll while it runs)
+let verify = null, verifyTimer = 0, verifyMisses = 0; // (/bib/verify's last answer; the poll while it runs, and its misses)
 
 const panel = addTab("refs", { label: "Refs", icon: "refs", title: "The bibliography: citations, adding and checking entries",
                                refresh: () => loadRefs() });
@@ -172,29 +172,33 @@ checkBtn.onclick = async () => {
   const state = r ? await readBody(r) : { error: "can't reach the preview server" };
   if (!r?.ok) return setStatus(state.error || "The check did not start", "error");
   verify = state;
+  verifyMisses = 0;
   renderVerify();
   pollVerify();
 };
+// Its state every 1.2 s while it runs; after 5 polls in a row without an answer, the box says so and the poll stops.
 function pollVerify() {
   clearTimeout(verifyTimer);
   verifyTimer = setTimeout(async () => {
     const r = await fetch("bib/verify", { cache: "no-store" }).catch(() => null);
     const state = r?.ok ? await r.json().catch(() => null) : null;
-    if (state && verify) {
-      verify = state;
-      renderVerify();
-    }
-    if (verify?.state === "running") pollVerify();
+    if (!verify) return; // (closed meanwhile)
+    verifyMisses = state ? 0 : verifyMisses + 1;
+    if (state) verify = state;
+    else if (verifyMisses >= 5) verify = { state: "failed", error: "the preview stopped answering" };
+    renderVerify();
+    if (verify.state === "running") pollVerify();
   }, 1200);
 }
 function renderVerify() {
   verifyBox.hidden = !verify || verify.state === "idle";
   if (verifyBox.hidden) return;
-  const close = el("button", { title: "Close", onclick: () => { verify = null; renderVerify(); } }, icon("close", 12));
+  const close = el("button", { title: "Close (a check on its way goes on)", onclick: () => { verify = null; clearTimeout(verifyTimer); renderVerify(); } },
+                  icon("close", 12));
   if (verify.state !== "done") {
     verifyBox.replaceChildren(el("div", { className: "refs-row" }, el("span", {
       textContent: verify.state === "running" ? "Checking the bibliography against Crossref…" : `The check failed: ${verify.error || "no reason given"}` }),
-      ...(verify.state === "running" ? [] : [close])));
+      close));
     return;
   }
   const findings = verify.findings || [];

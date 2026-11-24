@@ -269,7 +269,7 @@ the arXiv package, which holds every source file, is the owner's.
   entry. **+** adds an entry: look up an arXiv ID or a DOI, or paste BibTeX,
   then change it if you like and add it to a `.bib` file (a key the paper has
   already is refused). **Check** (the shield) lists keys and titles that are there twice,
-  entries never cited, and, from Crossref, years that differ and preprints
+  entries never cited, and, from Crossref, years that differ, DOIs it doesn't know, and preprints
   published since. Looking up IDs and Check go online, to arXiv and Crossref
   (Check sends the cited entries' titles); a preview that doesn't allow that
   says so, and pasting BibTeX still works ([setup](setup.md#environment-variables)).
