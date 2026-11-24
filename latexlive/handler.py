@@ -15,7 +15,7 @@ from .build import on_main_thread, rebuild_doc, request_switch
 from .checks import cached_checks
 from .commits import commit_request
 from .document import floats, graphics, toc_outline
-from .editor import completions, file_request, files_listing, save_request, source_status
+from .editor import completions, file_request, files_listing, save_request, search_request, source_status
 from .export import start_export
 from .files import pdf_path
 from .git import commits
@@ -163,6 +163,8 @@ class Handler(BaseHandler):
             self.send_json(200, files_listing(self.server))
         elif path == "/completions":
             self.send_json(200, completions(self.server))
+        elif path == "/search":
+            self.send_json(*search_request(self.server, query))
         elif path == "/arxiv.tar.gz":  # (the package that POST /arxiv made)
             self.send_pdf(os.path.join(self.server.paper_root, config.BUILD, f"{self.server.default_pdf[:-4]}-arxiv.tar.gz"),
                           "application/gzip")

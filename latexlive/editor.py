@@ -1,6 +1,7 @@
 """The browser editor's file API: GET /files lists the sources it opens, GET /file reads one, and
 POST /file saves one, merged (git merge-file) with what was saved meanwhile since the version the edits
-started from; GET /completions lists what it completes in \\ref and \\cite.
+started from; GET /completions lists what it completes in \\ref, \\cite and \\includegraphics, and GET /search
+finds text in all of them.
 
 A file's version is a hash of its bytes; the editor works with \\n line ends, and a file that uses \\r\\n
 gets them back on save. Reads and saves go through read_editable and write_source under NOTE_LOCK, as notes
@@ -11,11 +12,12 @@ import re
 import subprocess
 import tempfile
 
+from . import config
 from .commits import commit_others, paused, remember_write, updating
 from .latex import brace_group
 from .sources import (
-    EDITABLE_SIZE, NOTE_LOCK, SourceChanged, cached_version, editable_files, editable_real, file_version, read_editable,
-    write_source, wrote)
+    EDITABLE_SIZE, NOTE_LOCK, SourceChanged, cached_version, editable_files, editable_real, file_version, project_assets,
+    read_editable, write_source, wrote)
 
 
 MERGE_LABELS = ("saved meanwhile", "base", "your edit")  # (git's conflict markers name the two sides)
@@ -39,11 +41,13 @@ COMPLETIONS_LIMIT = 5000
 
 
 def completions(server, cache={}):
-    """GET /completions: what the browser editor offers in \\ref and \\cite, from the files it opens (so nothing an
-    editor couldn't read there): {"labels": [{"label", "file", "line"}] from the \\label commands outside comments,
-    "keys": [{"key", "title"}] from the .bib files' entries}, at most COMPLETIONS_LIMIT of each. Each file is read
-    again only once it has changed."""
-    labels, keys = [], []
+    """GET /completions: what the browser editor offers in \\ref, \\cite and \\includegraphics, and shows when the
+    pointer rests on one, from the files it opens (so nothing an editor couldn't read there) and the paper's figures:
+    {"labels": [{"label", "file", "line"}] from the \\label commands outside comments, "labelContext": {label: the
+    line it is on (or the one above, for a \\label alone on its line)}, "keys": [{"key", "title", "file", "line"}] from
+    the .bib files' entries, "figures": [path] (project_assets)}, at most COMPLETIONS_LIMIT labels and keys. Each file
+    is read again only once it has changed."""
+    labels, keys, context = [], [], {}
     for rel, real in editable_files(server).items():
         if not rel.endswith((".tex", ".bib")) or len(labels) >= COMPLETIONS_LIMIT and len(keys) >= COMPLETIONS_LIMIT:
             continue
@@ -51,34 +55,48 @@ def completions(server, cache={}):
             st = os.stat(real)
             if cache.get(real, (None,))[0] != (st.st_mtime_ns, st.st_size):
                 text = read_editable(real).decode("utf-8", errors="replace")
-                cache[real] = (st.st_mtime_ns, st.st_size, bib_completions(text) if rel.endswith(".bib") else label_lines(text))
+                found = (bib_completions(text), {}) if rel.endswith(".bib") else label_lines(text, True)
+                cache[real] = ((st.st_mtime_ns, st.st_size), *found)
         except (OSError, SourceChanged):
             continue
-        found = cache[real][2]
+        found, around = cache[real][1:]
         if rel.endswith(".bib"):
-            keys += found[:COMPLETIONS_LIMIT - len(keys)]
+            keys += [{**key, "file": rel} for key in found[:COMPLETIONS_LIMIT - len(keys)]]
         else:
-            labels += [{"label": label, "file": rel, "line": line} for label, line in found[:COMPLETIONS_LIMIT - len(labels)]]
+            for label, line in found[:COMPLETIONS_LIMIT - len(labels)]:
+                labels.append({"label": label, "file": rel, "line": line})
+                if label in around:
+                    context.setdefault(label, around[label])
     if len(cache) > 256:
         cache.clear()
-    return {"labels": labels, "keys": keys}
+    return {"labels": labels, "labelContext": context, "keys": keys, "figures": [a["path"] for a in project_assets(server)]}
 
 
-def label_lines(text):
-    """[(label, line)] of the \\label commands outside comments in a .tex file's text."""
+def label_lines(text, with_context=False):
+    """[(label, line)] of the \\label commands outside comments in a .tex file's text; with_context, also {label: the
+    line it is on, or for a \\label alone on its line the line above it (a caption, a heading), at most 140
+    characters}."""
     found, line, at = [], 1, 0
-    text = re.sub(r"(?<!\\)%.*", "", text)
-    for m in LABEL_RE.finditer(text):
-        line, at = line + text.count("\n", at, m.start()), m.start()
+    bare = re.sub(r"(?<!\\)%.*", "", text)
+    for m in LABEL_RE.finditer(bare):
+        line, at = line + bare.count("\n", at, m.start()), m.start()
         found.append((m.group(1), line))
-    return found
+    if not with_context:
+        return found
+    lines, context = bare.split("\n"), {}
+    for label, n in found:
+        here = lines[n - 1].strip()
+        if here == f"\\label{{{label}}}" and n >= 2 and lines[n - 2].strip():
+            here = lines[n - 2].strip()
+        context.setdefault(label, " ".join(here.split())[:140])
+    return found, context
 
 
 def bib_completions(text):
-    """[{"key", "title"}] of a .bib file's entries, in one pass (a forgiving reading: the title as written, its braces
-    dropped, at most 120 characters)."""
+    """[{"key", "title", "line"}] of a .bib file's entries, in one pass (a forgiving reading: the title as written, its
+    braces dropped, at most 120 characters)."""
     entries = [m for m in BIB_ENTRY_RE.finditer(text) if m.group(1).lower() not in ("comment", "string", "preamble")]
-    found = []
+    found, line, at = [], 1, 0
     for m, after in zip(entries, [*entries[1:], None]):
         title = BIB_TITLE_RE.search(text, m.end(), after.start() if after else len(text))
         if title and title.group(1) == "{":
@@ -88,7 +106,9 @@ def bib_completions(text):
             value = text[title.end():end] if end >= 0 else ""
         else:
             value = ""
-        found.append({"key": m.group(2), "title": " ".join(value.replace("{", "").replace("}", "").split())[:120]})
+        line, at = line + text.count("\n", at, m.start()), m.start()
+        title = " ".join(value.replace("{", "").replace("}", "").split())[:120]
+        found.append({"key": m.group(2), "title": title, "line": line})
     return found
 
 
@@ -268,3 +288,34 @@ def merge_texts(current, base, new):
     if not 0 <= r.returncode <= 127:  # (git's count of conflicts stops at 127; it fails with 255)
         raise RuntimeError(r.stderr.decode(errors="replace").strip() or f"git merge-file failed ({r.returncode})")
     return r.returncode, r.stdout.decode("utf-8")
+
+
+SEARCH_LIMIT, SEARCH_QUERY = 200, 200  # (matches, and characters of a query)
+
+
+def search_request(server, query):
+    """GET /search?q=<text>&case=1&regex=1: the lines of the files the browser editor opens that hold q, the first
+    match of each, [{"file", "line", "col" (from 0), "len", "text" (the line, at most 200 characters)}], at most
+    SEARCH_LIMIT of them ("truncated" then). Case-insensitive unless case=1; q is a regular expression with regex=1,
+    except in shared mode, where it is always taken as written (a coauthor's pattern could take the server's time)."""
+    q = query.get("q", [""])[0]
+    if not q.strip() or len(q) > SEARCH_QUERY:
+        return 200, {"matches": [], "truncated": False}
+    regex = query.get("regex") == ["1"] and not config.SHARED
+    try:
+        pattern = re.compile(q if regex else re.escape(q), 0 if query.get("case") == ["1"] else re.I)
+    except re.error as e:
+        return 400, {"error": f"not a regular expression: {e}"}
+    matches = []
+    for rel, real in editable_files(server).items():
+        try:
+            text = read_editable(real).decode("utf-8", errors="replace")
+        except (OSError, SourceChanged):
+            continue
+        for n, line in enumerate(text.split("\n"), 1):
+            if (m := pattern.search(line)) and m.end() > m.start():
+                if len(matches) == SEARCH_LIMIT:
+                    return 200, {"matches": matches, "truncated": True}
+                matches.append({"file": rel, "line": n, "col": m.start(), "len": m.end() - m.start(),
+                                "text": line[:200].rstrip("\r")})
+    return 200, {"matches": matches, "truncated": False}

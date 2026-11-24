@@ -30,8 +30,8 @@ before it may:
   PDF comments;
 - **commenter:** also writes notes, as their own note macro and in plain text;
   edits and deletes only their own notes, and replies to and resolves anyone's;
-- **editor:** also edits the sources in the browser (notes too, as LaTeX),
-  rebuilds (the coauthors together at most every 20 seconds), sees the
+- **editor:** also edits the sources in the browser (notes too, as LaTeX) and
+  searches them (for the text as typed, never as a regular expression), rebuilds (the coauthors together at most every 20 seconds), sees the
   pre-submission checks and the build's error messages, and compares with
   earlier commits of the copy's branch (the diff, and the change highlights
   against the last commit or push);

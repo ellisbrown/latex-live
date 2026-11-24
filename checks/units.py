@@ -25,7 +25,7 @@ def unit_checks():
     """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
     for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
-                  code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, completion_checks, word_column_checks, venue_checks, diff_retry_checks,
+                  code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, completion_checks, assets_checks, search_checks, word_column_checks, venue_checks, diff_retry_checks,
                   arxiv_strip_checks, graphics_synctex_checks, turned_page_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks):
         check()
 
@@ -899,21 +899,91 @@ def arxiv_strip_checks():
 
 
 def completion_checks():
-    """What the source pane completes (editor.label_lines, bib_completions): labels outside comments with their lines,
-    and a .bib file's keys with their titles, braced or quoted, without @string and the like; 15,000 entries in well
-    under a second."""
+    """What the source pane completes (editor.label_lines, bib_completions): labels outside comments with their lines
+    and the line around them, and a .bib file's keys with their titles, braced or quoted, and lines, without @string
+    and the like; 15,000 entries in well under a second."""
     from latexlive import editor
-    labels = editor.label_lines("a\n% \\label{gone}\n\\label{one} % \\label{two}\nb\n\\label{three}\n")
+    labels, around = editor.label_lines("a\n% \\label{gone}\n\\label{one} % \\label{two}\n\\caption{A plot.}\n\\label{three}\n", True)
     keys = editor.bib_completions('@string{x="y"}\n@misc{a, title = "Quoted {T}itle", year=1}\n@book{ b ,\n author={Z}}\n'
                                   '@article(c, title={A {Nested} Title},\n)\n')
-    if labels != [("one", 3), ("three", 5)] or keys != [{"key": "a", "title": "Quoted Title"}, {"key": "b", "title": ""},
-                                                       {"key": "c", "title": "A Nested Title"}]:
-        fail(f"the source pane's completions: labels {labels}, keys {keys}")
+    if (labels != [("one", 3), ("three", 5)] or around != {"one": "\\label{one}", "three": "\\caption{A plot.}"}
+            or keys != [{"key": "a", "title": "Quoted Title", "line": 2}, {"key": "b", "title": "", "line": 3},
+                        {"key": "c", "title": "A Nested Title", "line": 5}]):
+        fail(f"the source pane's completions: labels {labels} {around}, keys {keys}")
     big = "".join(f"@article{{key{i},\n  title={{Title {i}}},\n  year={{2020}}\n}}\n" for i in range(15000))
     began = time.monotonic()
     if len(editor.bib_completions(big)) != 15000 or time.monotonic() - began > 1:
         fail(f"a .bib file of 15,000 entries took {time.monotonic() - began:.1f} s to read for completion")
     ok("the source pane completes labels outside comments and a .bib file's keys with their titles, quickly")
+
+
+def assets_checks():
+    """The paper's figures, which the source pane completes in \\includegraphics (sources.project_assets): images and
+    PDFs in the paper's folders, not in the paper root (a PDF there), build/, dot folders, or through a link out of the
+    paper; at most ASSETS_LIMIT, the walk stopping there; a list a few seconds old does until invalidate_assets."""
+    from latexlive import sources
+    with tempfile.TemporaryDirectory(prefix="latex-live-assets-") as root, tempfile.TemporaryDirectory() as elsewhere:
+        for rel in ("figures/plot.pdf", "figures/sub/photo.PNG", "logo.png", "main.pdf", "build/figures/x.png",
+                    ".hidden/y.png", "figures/.z.png", "figures/notes.txt", "a/b/c/d/deep.png", "a/b/c/d/e/deeper.png"):
+            put_bytes(os.path.join(root, rel), b"x")
+        put_bytes(os.path.join(elsewhere, "secret.png"), b"x")
+        os.symlink(elsewhere, os.path.join(root, "linked"))
+        os.symlink(os.path.join(elsewhere, "secret.png"), os.path.join(root, "figures", "out.png"))
+        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", assets=None)
+        found = [a["path"] for a in sources.project_assets(server)]
+        want = ["a/b/c/d/deep.png", "figures/plot.pdf", "figures/sub/photo.PNG", "logo.png"]
+        if found != want:
+            fail(f"the paper's figures: {found}, not {want}")
+        put_bytes(os.path.join(root, "figures", "new.png"), b"x")
+        if "figures/new.png" in [a["path"] for a in sources.project_assets(server)]:
+            fail("the paper's figures were looked for again within their few seconds")
+        sources.invalidate_assets(server)
+        if "figures/new.png" not in [a["path"] for a in sources.project_assets(server)]:
+            fail("invalidate_assets did not make the figures be looked for again")
+        for i in range(sources.ASSETS_LIMIT + 50):
+            put_bytes(os.path.join(root, "many", f"{i:03}.png"), b"x")
+        put_bytes(os.path.join(root, "past", "it.png"), b"x")  # (a folder after the one where the limit is reached)
+        walked, walk = [], os.walk
+        sources.os.walk = lambda *a, **k: (walked.append(step) or step for step in walk(*a, **k))
+        try:
+            sources.invalidate_assets(server)
+            many = sources.project_assets(server)
+        finally:
+            sources.os.walk = walk
+        if len(many) != sources.ASSETS_LIMIT or any(step[0].endswith(os.sep + "past") for step in walked):
+            fail(f"past ASSETS_LIMIT figures: {len(many)} listed, the walk went on to {[w[0] for w in walked][-3:]}")
+    ok("the source pane completes the paper's figures (not a root PDF, build/, dot folders or links out), at most"
+       f" {sources.ASSETS_LIMIT}, the walk stopping there; the list is kept a few seconds, or until invalidated")
+
+
+def search_checks():
+    """Search in the sources (editor.search_request): the first match of each line, case-insensitive unless asked,
+    as a regular expression only outside shared mode, at most SEARCH_LIMIT matches."""
+    from latexlive import config, editor
+    with tempfile.TemporaryDirectory(prefix="latex-live-search-") as root:
+        put(os.path.join(root, "main.tex"), "\\documentclass{article}\r\n\\begin{document}\r\nAlpha beta. alpha\r\n\\input{sec}\r\n\\end{document}\r\n")
+        put(os.path.join(root, "sec.tex"), "axb and a.b\n" + "line\n" * 300)
+        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", editable=None)
+        search = lambda **q: editor.search_request(server, {k: [v] for k, v in q.items()})
+        code, found = search(q="alpha")
+        if code != 200 or found["matches"] != [{"file": "main.tex", "line": 3, "col": 0, "len": 5, "text": "Alpha beta. alpha"}]:
+            fail(f"search for alpha: {code} {found}")
+        if search(q="alpha", case="1")[1]["matches"][0]["col"] != 12:
+            fail(f"a case-sensitive search: {search(q='alpha', case='1')}")
+        saved = config.SHARED
+        try:
+            for shared, want in ((False, ["a b", "axb"]), (True, ["a.b"])):
+                config.SHARED = shared
+                hits = [m["text"][m["col"]:m["col"] + m["len"]] for m in search(q="a.b", regex="1")[1]["matches"]]
+                if hits != want:
+                    fail(f"search for a.b as a regular expression ({'shared' if shared else 'not shared'}): {hits}")
+        finally:
+            config.SHARED = saved
+        code, found = search(q="line")
+        if len(found["matches"]) != editor.SEARCH_LIMIT or not found["truncated"] or search(q="(", regex="1")[0] != 400:
+            fail(f"search for a word on 300 lines: {len(found['matches'])} matches (truncated: {found['truncated']})")
+    ok("search in the sources finds each line's first match, case-insensitive unless asked, a regular expression only"
+       f" outside shared mode, at most {editor.SEARCH_LIMIT} matches")
 
 
 def connection_cap_checks():

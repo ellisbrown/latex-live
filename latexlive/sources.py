@@ -117,20 +117,80 @@ def editable_real(paper_root, rel):
     else None: an existing regular .tex, .bib, .sty or .cls file of at most 4 MB in the paper root,
     not in the build directory, in .git or in another folder whose name starts with a dot, and not a
     dot file; all of that also once symbolic links are resolved (a link to a file elsewhere is not)."""
+    return paper_file(paper_root, rel, EDITABLE_EXTS, EDITABLE_SIZE)
+
+
+def paper_file(paper_root, rel, exts, limit):
+    """The real path of rel, relative to the paper root, if it is an existing regular file there with one of exts, of
+    at most limit bytes, outside the build directory and dot folders and not a dot file, also once symbolic links are
+    resolved; else None."""
     if not isinstance(rel, str) or not rel or "\0" in rel or os.path.isabs(rel):
         return None
     root = os.path.realpath(paper_root)
     real = os.path.realpath(os.path.join(root, rel))
     for path in (os.path.normpath(rel), os.path.relpath(real, root)):
         parts = path.split(os.sep)
-        if (any(part.startswith(".") for part in parts) or os.path.splitext(path)[1].lower() not in EDITABLE_EXTS
+        if (any(part.startswith(".") for part in parts) or os.path.splitext(path)[1].lower() not in exts
                 or path == config.BUILD or path.startswith(os.path.join(config.BUILD, ""))):
             return None
     try:
         st = os.stat(real)
     except (OSError, ValueError):
         return None
-    return real if stat.S_ISREG(st.st_mode) and st.st_size <= EDITABLE_SIZE else None
+    return real if stat.S_ISREG(st.st_mode) and st.st_size <= limit else None
+
+
+# The figures and images in the paper (asset_real), which the editor completes in \includegraphics.
+ASSET_EXTS = (".png", ".jpg", ".jpeg", ".pdf", ".svg", ".eps", ".webp", ".gif")
+ASSET_SIZE = 10_000_000  # bytes
+ASSETS_LIMIT, ASSETS_DEPTH, ASSETS_TTL = 400, 4, 5  # (project_assets: how many, how deep, how long a list does, in s)
+
+
+def asset_real(paper_root, rel):
+    """The real path of rel, relative to the paper root, if it is a figure or image there (paper_file, with
+    ASSET_EXTS, at most ASSET_SIZE), else None. A .pdf in the paper root is a document or its build, never a figure."""
+    real = paper_file(paper_root, rel, ASSET_EXTS, ASSET_SIZE)
+    if real and real.lower().endswith(".pdf"):
+        if os.sep not in os.path.normpath(rel) or os.path.dirname(real) == os.path.realpath(paper_root):
+            return None
+    return real
+
+
+def project_assets(server):
+    """The paper's figures and images, [{"path", "size"}] by path: those the document's last build read, then the
+    others in the paper root and its folders, ASSETS_DEPTH deep, up to ASSETS_LIMIT in all. A list up to ASSETS_TTL
+    seconds old does (the editor asks for completions while typing); invalidate_assets forgets it."""
+    cached = getattr(server, "assets", None)
+    if cached and time.monotonic() - cached[0] < ASSETS_TTL and cached[1] == server.default_pdf:
+        return cached[2]
+    root = os.path.realpath(server.paper_root)
+    found = {}
+
+    def add(rel):
+        if rel not in found and len(found) < ASSETS_LIMIT and (real := asset_real(root, rel)):
+            with contextlib.suppress(OSError):
+                found[rel] = os.stat(real).st_size
+
+    for rel in project_inputs(root, fls_file(root, server.default_pdf)):
+        add(os.path.normpath(rel))
+    for folder, dirs, names in os.walk(root):  # (figures not in the document yet; os.walk follows no links to folders)
+        here = os.path.relpath(folder, root)
+        depth = 0 if here == "." else here.count(os.sep) + 1
+        dirs[:] = sorted(d for d in dirs if depth < ASSETS_DEPTH and not d.startswith(".")
+                         and os.path.normpath(os.path.join(here, d)) != config.BUILD)
+        for name in sorted(names):
+            if os.path.splitext(name)[1].lower() in ASSET_EXTS and not name.startswith("."):
+                add(name if here == "." else os.path.join(here, name))
+        if len(found) >= ASSETS_LIMIT:
+            break
+    assets = [{"path": rel, "size": size} for rel, size in sorted(found.items())]
+    server.assets = (time.monotonic(), server.default_pdf, assets)
+    return assets
+
+
+def invalidate_assets(server):
+    """Forget the list of figures (project_assets), e.g. once a file is added, renamed or removed."""
+    server.assets = None
 
 
 def editable_files(server, fresh=True):

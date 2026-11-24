@@ -461,8 +461,15 @@ def owner_checks(token, own, editor_log, paper):
        " viewer's style as CSS, the viewer's own revalidated on each load; /favicon.ico is answered")
 
     completions = hub_get("/completions", token)
-    if {"label": "sec:method", "file": "main.tex", "line": 13} not in completions.get("labels", []):
-        fail(f"/completions does not offer main.tex's label sec:method for \\ref: {completions}")
+    if ({"label": "sec:method", "file": "main.tex", "line": 13} not in completions.get("labels", [])
+            or completions.get("labelContext", {}).get("sec:method") != "\\section{Method}\\label{sec:method}"
+            or not isinstance(completions.get("figures"), list)):
+        fail(f"/completions does not offer main.tex's label sec:method for \\ref, with its line: {completions}")
+    found = hub_get("/search?q=section%7BMethod", token)
+    if [(m["file"], m["line"], m["col"]) for m in found.get("matches", [])] != [("main.tex", 13, 1)]:
+        fail(f"/search for section{{Method, through the hub: {found}")
+    ok("through the hub, /completions offers the labels with the line they are on and the figures, and /search finds text"
+       " in the sources")
     page, x, y = text_point(lambda path: hub_get(path, token), "main.tex", 9)
     spot = f"file=main.pdf&page={page}&x={x:.2f}&y={y:.2f}"
     line = hub_get(f"/synctex?{spot}&json=1", token)["line"]
