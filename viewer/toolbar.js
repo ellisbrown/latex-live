@@ -1,7 +1,7 @@
 // The top bar and the PDF's bar: their icons, the ⋯ menus with the controls that move into them when a bar runs out of
 // room, the look (the theme, the tint, inverting the PDF), the pop-out window, and the list of shortcuts.
 
-import { $, el, file, isDiff, isPopout, setStatus } from "./page.js";
+import { $, docFile, el, file, hubBase, isDiff, isPopout, setStatus } from "./page.js";
 import { postJSON } from "./net.js";
 import { canComment, editorAllowed, opensSources, openWhere } from "./role.js";
 import { icon } from "./icons.js";
@@ -34,11 +34,12 @@ $("pdfInvert").onclick = () => setPdfInvert(!pdfInvert);
 onThemeChange(showLook);
 showLook();
 
-// The pop-out window: the PDF alone, which follows this window's source (layout.js, links.js). One per document.
+// The pop-out window: the PDF alone, which follows this window's source (layout.js, links.js). One per document (of a
+// paper, at an address: the hub serves several papers, whose documents may share a name).
 $("popoutBtn").onclick = () => {
   const url = new URL(location.href);
   url.searchParams.set("mode", "pdf");
-  window.open(url, `latex-live-pdf:${file}`, "width=900,height=1100");
+  window.open(url, `latex-live-pdf:${location.host}${hubBase}${docFile}`, "width=900,height=1100");
 };
 $("popoutBtn").hidden = isPopout || isDiff;
 
@@ -53,7 +54,7 @@ function showMenu({ menu, button }, open) {
   menu.hidden = !open;
   button.classList.toggle("on", open);
 }
-export const showMore = (open) => showMenu(menus[0], open);
+export const showMore = (open) => (open ? showMenu(menus[0], true) : menus.forEach((m) => showMenu(m, false))); // (closing: both, e.g. on Esc)
 for (const m of menus) m.button.onclick = () => showMenu(m, m.menu.hidden);
 export function revealControl(node) { // (before focusing a control that may be in a menu)
   for (const m of menus) if (m.menu.contains(node)) showMenu(m, true);
@@ -119,7 +120,10 @@ function fitRow(bar, menu, more, { extra = [], watch = [] } = {}) {
       if (!overflows()) break;
       toMenu(item);
     }
-    if (more) more.hidden = !items.some((i) => i.parentElement === menu && !i.hidden); // (a menu only for the overflow)
+    if (more) { // (a menu only for the overflow, closed once that is gone)
+      more.hidden = !items.some((i) => i.parentElement === menu && !i.hidden);
+      if (more.hidden && !menu.hidden) { menu.hidden = true; more.classList.remove("on"); }
+    }
     bar.classList.remove("measuring");
   };
   new ResizeObserver(fit).observe(bar);

@@ -17,8 +17,11 @@ export function loadEditor({ save, edited }) {
     const look = new state.Compartment(), lookOf = (dark) => editorLook(EditorView, language, t, dark);
     const shown = new Set(), views = view.ViewPlugin.define((v) => (shown.add(v), { destroy: () => shown.delete(v) }));
     let shownLook = look.of(lookOf(currentTheme === "dark"));
+    let shownDark = currentTheme === "dark";
     onThemeChange(({ theme }) => {
-      const next = lookOf(theme === "dark"), was = shownLook;
+      if ((theme === "dark") === shownDark) return; // (a tint or the PDF's colors: the look's CSS variables follow)
+      shownDark = theme === "dark";
+      const next = lookOf(shownDark), was = shownLook;
       shownLook = look.of(next);
       cmExtensions = cmExtensions.map((x) => (x === was ? shownLook : x));
       for (const v of shown) v.dispatch({ effects: look.reconfigure(next) });
