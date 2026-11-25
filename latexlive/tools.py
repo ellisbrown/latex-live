@@ -10,6 +10,7 @@ import resource
 import shlex
 import shutil
 import subprocess
+import sys
 import threading
 import time
 
@@ -122,14 +123,22 @@ def pdf_tool(argv, timeout=60):
     """What a poppler tool (pdfinfo, pdffonts, pdfimages, pdftotext) prints about a PDF the build made, or
     "" without poppler, or once it has run for timeout seconds; at most OUTPUT_LIMIT bytes of it. In shared
     mode, where the paper's TeX made the PDF and poppler parses it on this machine, also with at most 1 GB of
-    memory and that much CPU time."""
+    memory (but on macOS, whose programs map more than that before they start) and that much CPU time, or less
+    where the hard limits are lower; a limit the system refuses is left out."""
+    wanted = [(resource.RLIMIT_CPU, int(timeout))] + ([] if sys.platform == "darwin" else [(resource.RLIMIT_AS, 1 << 30)])
+
     def limits():
-        resource.setrlimit(resource.RLIMIT_AS, (1 << 30, 1 << 30))
-        resource.setrlimit(resource.RLIMIT_CPU, (timeout, timeout))
+        for kind, value in wanted:
+            try:
+                hard = resource.getrlimit(kind)[1]
+                value = value if hard == resource.RLIM_INFINITY else min(value, hard)
+                resource.setrlimit(kind, (value, value))
+            except (ValueError, OSError):
+                pass
     try:
         code, out = run_tool(argv, None, timeout, kind="poppler", capture=config.OUTPUT_LIMIT, slot=contextlib.nullcontext(),
                              preexec_fn=limits if config.SHARED else None)
-    except OSError:
+    except (OSError, subprocess.SubprocessError):  # (no poppler; or the child failed before it ran it)
         return ""
     return out if code is not None else ""
 

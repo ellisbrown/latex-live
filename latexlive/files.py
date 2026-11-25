@@ -220,12 +220,16 @@ def project_inputs(paper_root, fls):
 
 
 def file_hash(path, cache={}):
+    """A short hash of a file's bytes, read again only when its stat changes (at most 1024 kept)."""
     st = os.stat(path)
     key = (path, st.st_mtime_ns, st.st_size)
-    if key not in cache:
+    if (found := cache.get(key)) is None:
         with open(path, "rb") as f:
-            cache[key] = hashlib.sha1(f.read()).hexdigest()[:16]
-    return cache[key]
+            found = hashlib.sha1(f.read()).hexdigest()[:16]
+        if len(cache) >= 1024:
+            cache.clear()
+        cache[key] = found
+    return found
 
 
 def read_output(paper_root, path, encoding=None):

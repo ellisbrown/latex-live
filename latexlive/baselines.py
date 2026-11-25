@@ -7,13 +7,12 @@ import re
 import shutil
 import stat
 import subprocess
-import sys
 import threading
 import time
 
 from . import config
 from .files import build_folder, copy_output, create_output, job_file, mtime, pdf_path, read_capped, too_big
-from .git import SHA_RE, commit_sha, git_text, pushed_commit
+from .git import POLL_TIMEOUT, SHA_RE, commit_sha, git_text, pushed_commit, ref_stamp
 from .tools import container_argv, failure, image_pulled, run_tool, tex_argv
 
 
@@ -192,7 +191,7 @@ def base_status(server, pdf_name, kind, build=True):
     once a viewer shows it). When the last push is HEAD, the push baseline reuses HEAD's PDFs
     (share_head_base). The commit is checked every few seconds. The versions appear once a
     build has finished; None outside git (or with nothing pushed), and for a document the server
-    is not building."""
+    is not building. git runs only when a ref may have moved (ref_stamp), or a minute has passed."""
     root = server.paper_root
     if pdf_name != server.default_pdf:
         return None
@@ -201,11 +200,14 @@ def base_status(server, pdf_name, kind, build=True):
     if (due or build and server.bases[kind].get("state") == "waiting") and lock.acquire(blocking=False):
         try:
             b = server.bases[kind]
+            stamp, known = (ref_stamp(server), server.base_stamps.get(kind)) if due else (None, None)
             if due:
                 server.base_checked[kind] = time.monotonic()
+                due = not known or known[0] != stamp or time.monotonic() - known[1] > 60
+            if due:
+                server.base_stamps[kind] = (stamp, time.monotonic())
                 if kind == "head":
-                    r = subprocess.run(["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True)
-                    sha, ref = r.stdout.strip() if r.returncode == 0 else None, None
+                    sha, ref = git_text(root, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], timeout=POLL_TIMEOUT), None
                 else:
                     sha, ref = pushed_commit(root)
                 if not sha:
@@ -291,7 +293,6 @@ def build_base(server, kind, sha, pdf_name):
     out = os.path.join(root, config.BUILD, kind, doc)
     src = os.path.join(out, "src")
     job = f"{doc}-{kind}"
-    sys.path.insert(0, config.HERE)
     import latex_report
 
     def tex(jobname, source):

@@ -393,6 +393,13 @@ def role_checks(sh):
             break
     else:
         fail(f"synctex for text from generated.inc (not editable) does not answer file: null: {found}")
+    # The same spot again, as the owner and then the viewer: inverse search keeps the lookup for the build, but what each
+    # role is told is decided per request (only the owner learns the file's name).
+    spot = (f"/synctex?file=main.pdf&page={box['page']}&x={box['x'] + box['w'] * share:.2f}"
+            f"&y={box['y'] + box['h'] / 2:.2f}&json=1")
+    owners, viewers = expect_dict(with_token(owner, spot), 200, "synctex as the owner"), expect_dict(via_proxy("vw", spot), 200, "synctex")
+    if "generated.inc" not in str(owners.get("reason")) or "generated.inc" in str(viewers) or viewers.get("file", 0) is not None:
+        fail(f"a kept inverse search tells each role what it may know: the owner {owners}, a viewer {viewers}")
     if editor_calls(sh["editor_log"]):
         fail(f"SyncTeX opened the editor on the owner's machine in shared mode: {editor_calls(sh['editor_log'])}")
 

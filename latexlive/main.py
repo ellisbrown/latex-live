@@ -24,6 +24,7 @@ from .navigation import open_in_editor
 from .shared_build import start_shared_build
 from .sources import load_added
 from .shared_watch import watch_build_size
+from .standby import stop_owner
 from .status import code_updated
 from .timing import start_timing
 from .tools import container_exec, image_pulled, stop_containers
@@ -57,6 +58,7 @@ def serve(paper_root, default_pdf, port, page_limit, hub_port=None):
     server.review_lock, server.arxiv_lock = threading.Lock(), threading.Lock()  # (build_review, make_package)
     server.export_lock, server.exported = threading.Lock(), {}  # (exact_export)
     server.bases, server.base_checked = {"head": {}, "push": {}}, {"head": 0, "push": 0}  # (base_status)
+    server.base_stamps = {}  # (base_status: each kind's ref_stamp when git last ran, and when)
     server.base_locks = {"head": threading.Lock(), "push": threading.Lock()}
     # The tex-exec prefix, as for latexmk (main sets it). In shared mode the confined image from the
     # start: a request (an export, a baseline) may come before main gets there, and must not run the host's TeX.
@@ -313,6 +315,8 @@ def main():
         pass
     finally:  # (also after an error: the pending edits are committed as theirs now, rather than in someone else's commit)
         server.stopping = True
+        if not config.SHARED:
+            stop_owner(server.paper_root, config.BUILD)  # (no pass starts a warm standby from now on)
         stop_latexmk(server)
         stop_doc_standbys(server)
         stop_containers()

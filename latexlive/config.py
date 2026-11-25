@@ -14,6 +14,8 @@ import urllib.parse
 
 # The checkout (live.py, latexmkrc, tex-exec, the viewer), whatever path latex-live runs through (a symbolic link too).
 HERE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+if HERE not in sys.path:  # (latex_report.py, which the downloads, the baselines, the checks and shared mode import)
+    sys.path.insert(0, HERE)
 TEXLIVE_IMAGE = "docker.io/minidocks/texlive:2024-full"
 IMAGE_MISSING = f"{TEXLIVE_IMAGE} is not pulled (to fix: podman pull {TEXLIVE_IMAGE})"
 # Build directory, relative to the paper root (--build-dir; LATEX_LIVE_BUILD for latexmkrc,
@@ -187,6 +189,19 @@ try:
 except re.error as e:  # (warn, not exit: forward.py imports this module too)
     print(f"=== latex-live: ignoring LATEX_LIVE_PROTECTED, not a regular expression ({e})", file=sys.stderr, flush=True)
     PROTECTED_RE = None
+
+
+# LATEX_LIVE_ANON_TERMS, a regular expression (alternatives separated by |), e.g. r"\bNYU\b|New York University":
+# affiliations and other terms that identify the authors, which the anonymity check looks for (checks). One that
+# is not a regular expression (or not one that works after other alternatives) is ignored, and the check says why.
+ANON_TERMS = os.environ.get("LATEX_LIVE_ANON_TERMS", "").strip()
+ANON_TERMS_PROBLEM = None
+try:
+    re.compile(f"x|(?:{ANON_TERMS})")  # (as the check uses it: after the authors' names)
+except re.error as e:  # (warn, not exit: forward.py imports this module too)
+    ANON_TERMS_PROBLEM = f"LATEX_LIVE_ANON_TERMS is not a regular expression ({e}); it is ignored"
+    print(f"=== latex-live: {ANON_TERMS_PROBLEM}", file=sys.stderr, flush=True)
+    ANON_TERMS = ""
 
 
 # LATEX_LIVE_AGENT_CMD: a plugin that the source pane asks to revise a selection (agent; docs/agent-plugins.md), a

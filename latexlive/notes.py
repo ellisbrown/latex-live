@@ -294,9 +294,23 @@ def margin_notes(paper_root, pdf_name):
                 continue
             found.append({"author": kinds[m.group(1)], "text": " ".join(tex_to_text(body, macros).split())[:600],
                           "file": os.path.relpath(path, paper_root), "line": line,
-                          "points": [list(p) for p in dict.fromkeys(where)], "side": side,
+                          "points": spread(dict.fromkeys(where), turns), "side": side,
                           "before": before, "after": after, **note_fields(text, m, end)})
     return found
+
+
+def spread(points, turns):
+    """What the viewer reads of a note's points (margin_notes; viewer/notes.js anchorNote): its pages, the lines it
+    spans on each (y on the page as shown, as the viewer turns it), the first point on each page, and the first and
+    last points. So, in order, the first point of each page and y as shown, and the last point: a few per line of
+    the paragraph rather than one per word and space."""
+    points, seen, kept = list(points), set(), []
+    for i, p in enumerate(points):
+        line = (p[0], shown_point(turns.get(p[0]), p[1], p[2])[1])
+        if line not in seen or i == len(points) - 1:
+            seen.add(line)
+            kept.append(list(p))
+    return kept
 
 
 NOTE_ESCAPES = {"\\": r"\textbackslash{}", "{": r"\{", "}": r"\}", "%": r"\%", "&": r"\&", "#": r"\#", "_": r"\_",

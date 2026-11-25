@@ -27,6 +27,12 @@ does).
    boxes in the file TeX opened last, shows the paper's folder as ./, reads only a long log's end, and parses a log
    once until it changes; a build is timed from its first pass. On turned pages (/Rotate 90 or
    270), SyncTeX's records of a rotated body go where it is drawn and back, and nothing changes without poppler.
+   The bibliography's SyncTeX lookups take one run per build, and merge while builds follow each other faster than
+   they end (one worker per variant, which ends with them); inverse search looks a spot up once per build; a build's
+   SyncTeX file is read once for all its lookups, and the caches that requests share answer each request while others
+   change them; the change baselines run git only once a ref may have moved; the margin notes send one point per line;
+   an invalid LATEX_LIVE_ANON_TERMS is named in the anonymity check; poppler runs where the system refuses one of its
+   limits; file hashes and the arXiv check's PDF text are bounded; live.py stops a notes-free pass before the standbys.
    Every server keeps to 64 connections at once, and takes a request's line and headers within 10 s however slowly
    they come (a body may take longer); in shared mode a coauthor has at most 32 requests in progress at once (the
    viewer's own files aside) and 2 that may start a program, the owner and others uncounted. Notes, replies and
@@ -199,7 +205,7 @@ Exits non-zero on the first failure.
 Its modules, from the bottom up (each imports only from those below it): base (where the checks run, and how they
 report: ok, fail, wait_for, in_thread), helpers (files, git, instances and requests to them, stand-ins, patched, the TeX
 Live image), papers (the scratch paper), access (who reaches the owner's preview: hosts, origins, sessions), browser
-(the viewer in headless Chromium, if Playwright is there), static (the checkout as it is), shared_units, bib_units, files_units, history_units and units (the server's parts without an instance), standby, early, clean_standby
+(the viewer in headless Chromium, if Playwright is there), static (the checkout as it is), shared_units, perf_units, bib_units, files_units, history_units and units (the server's parts without an instance), standby, early, clean_standby
 and landscape (the threads beside the instance checks: the warm standby, the early notes-free pass and its warm
 standby, turned pages), shared_helpers, shared_setup, shared_access, shared_sessions, shared_sandbox, shared_downloads,
 shared_notes, shared_editor, shared_rebuild, shared_commits, shared_files, shared_browser and shared (shared mode, two threads of its own), preview (the

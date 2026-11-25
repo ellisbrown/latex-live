@@ -1,8 +1,9 @@
 """The unit checks: the server's parts on their own, without an instance (made-up input, stand-ins for TeX), in the
 order unit_checks runs them: the review copy's layout and matching, shared mode's (shared_units), the downloads'
-bounds, failures and waits, the bibliography's SyncTeX lookups, tool timeouts, the warm standby's snapshot, the
-timing lines, the restart prompt, the static files the server sends, the bibliography (bib_units), the Files tab
-(files_units), the History tab (history_units) and the agent hook (agent_units)."""
+bounds, failures and waits, tool timeouts, the warm standby's snapshot, the
+timing lines, the restart prompt, the static files the server sends, what the status poll and the viewer ask for over
+and over (perf_units), the bibliography (bib_units), the Files tab (files_units), the History tab (history_units) and
+the agent hook (agent_units)."""
 
 import contextlib
 import glob
@@ -21,6 +22,7 @@ from .base import HERE, fail, ok, wait_for
 from .helpers import fake_server, git, git_out, patched, put, put_bytes, read_bytes, tex_stand_in
 from .static import link_modules
 from .shared_units import baseline_failure_checks, build_folder_checks, build_link_checks, confinement_checks, shared_build_checks, shown_notes_checks
+from .perf_units import perf_checks
 from .bib_units import bib_checks
 from .files_units import files_checks
 from .history_units import history_checks
@@ -30,10 +32,10 @@ from .agent_units import agent_checks
 def unit_checks():
     """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
     for check in (layout_checks, matching_checks, confinement_checks, build_link_checks, build_folder_checks, shared_build_checks, shown_notes_checks, bounds_checks, failed_export_checks,
-                  bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
+                  waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
                   code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, forward_script_checks, link_checks, completion_checks, assets_checks, search_checks, logs_checks, presence_checks, word_column_checks, venue_checks, diff_retry_checks,
                   arxiv_strip_checks, graphics_synctex_checks, turned_page_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks,
-                  header_deadline_checks, in_flight_checks, note_limit_checks, bib_checks, files_checks, history_checks, agent_checks):
+                  header_deadline_checks, in_flight_checks, note_limit_checks, perf_checks, bib_checks, files_checks, history_checks, agent_checks):
         check()
 
 
@@ -195,60 +197,6 @@ def bounds_checks():
                 fail(f"a SyncTeX file past its bound: {e}")
     ok("the downloads read TeX's logs, .aux, .bbl and SyncTeX files only up to a bound, past which they stop and say so;"
        " the probe's records are read from its log line by line; a log whose wrapping split a UTF-8 character reads")
-
-
-SYNCTEX_STUB = """#!/bin/sh
-# A stand-in for synctex view -i LINE:0:FILE -o PDF: a box for lines 1 and 7 of FILE, none for the others.
-echo "$3" >> "$(dirname "$0")/calls"
-line=${3%%:*}
-echo "This is SyncTeX command line utility, version 1.5"
-echo "SyncTeX result begin"
-case $line in
-  1) printf 'Output:%s\\nPage:3\\nx:1\\ny:2\\nh:10.5\\nv:200.0\\nW:50\\nH:12.0\\nd:3\\n' "$5" ;;
-  7) printf 'Output:%s\\nPage:5\\nx:1\\ny:2\\nh:72.0\\nv:400.5\\nW:50\\nH:10.0\\nd:3\\n' "$5" ;;
-esac
-echo "SyncTeX result end"
-"""
-
-
-def bib_span_checks():
-    """Where the bibliography starts and ends (bib_span, with a stand-in for synctex): its SyncTeX lookups run
-    batched (run_synctexes), each with the records it gets alone (run_synctex), on the same lines as before; without wait, bib_span
-    answers PENDING at once while it looks up in a thread, then what a lookup that waits gives."""
-    from latexlive import synctex
-    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
-    path = os.environ.get("PATH", "")
-    try:
-        os.makedirs(os.path.join(tmp, "bin"))
-        put(os.path.join(tmp, "bin", "synctex"), SYNCTEX_STUB)
-        os.chmod(os.path.join(tmp, "bin", "synctex"), 0o755)
-        os.environ["PATH"] = f"{os.path.join(tmp, 'bin')}{os.pathsep}{path}"
-        files = [os.path.join(tmp, name) for name in ("main.synctex.gz", "my refs.bbl", "main.pdf")]
-        put(files[0], "")
-        put(files[1], "x\n" * 9)  # (10 lines: 1, then 10 down to 3 are looked up)
-        runs = [("view", "-i", f"{line}:0:{files[1]}", "-o", files[2]) for line in (1, 2, 7)]
-        alone = [synctex.run_synctex(tmp, *args) for args in runs]
-        if synctex.run_synctexes(tmp, runs) != alone or [len(r) for r in alone] != [1, 0, 1] or alone[0][0].get("Page") != "3":
-            fail(f"SyncTeX lookups in one run differ from each alone: {synctex.run_synctexes(tmp, runs)} vs {alone}")
-        want = ({"page": 3, "x": 10.5, "y": 188.0}, {"page": 5, "x": 72.0, "y": 390.5})
-        os.remove(os.path.join(tmp, "bin", "calls"))
-        if synctex.bib_span(tmp, files, cache={}) != want:
-            fail(f"bib_span with the stand-in: {synctex.bib_span(tmp, files, cache={})}")
-        with open(os.path.join(tmp, "bin", "calls")) as f:
-            if f.read().splitlines() != [f"{n}:0:{files[1]}" for n in (1, *range(10, 2, -1))]:
-                fail("bib_span looks up other lines than the first and the last eight")
-        cache = {}
-        if synctex.bib_span(tmp, files, cache=cache, wait=False) is not synctex.PENDING:
-            fail("bib_span without wait does not answer PENDING while it looks up")
-        found = wait_for("bib_span's lookup in a thread", lambda: (lambda r: r if r is not synctex.PENDING else None)(
-            synctex.bib_span(tmp, files, cache=cache, wait=False)), timeout=20)
-        if found != want:
-            fail(f"bib_span without wait, once looked up: {found}")
-        ok("bib_span looks up the bibliography's extent in batched SyncTeX runs (each lookup as alone), and without wait answers"
-           " PENDING at once, then the result")
-    finally:
-        os.environ["PATH"] = path
-        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def failed_export_checks():

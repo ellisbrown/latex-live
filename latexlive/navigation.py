@@ -10,20 +10,21 @@ import time
 import unicodedata
 
 from . import config
-from .files import shown_synctexes
+from .files import shown_synctex, shown_synctexes
 from .notes import margin_notes, notes, shown_notes
 from .roles import at_least
 from .sources import editable_files
-from .synctex import bib_source, forward_target, inverse_search, synctex_input, to_int
+from .synctex import bib_source, forward_target, inverse_search, stamp, synctex_input, to_int
 from .tools import synctex_unavailable
 
 
-def shared_result(server, key, compute, miss_ttl=None):
+def shared_result(server, key, compute, miss_ttl=None, hit=bool):
     """compute()'s result for key, computed once: a request for the same key while it runs waits for it,
     and later ones reuse it (keys hold what the result depends on, e.g. the build's version). This keeps
     many identical requests, e.g. from several open viewers, to one container run. At most 512 kept.
-    With miss_ttl, an empty result (None: a lookup that found nothing, or failed for now, e.g. while the
-    image is missing or SyncTeX timed out) is reused for only that many seconds, then computed again."""
+    With miss_ttl, a result that hit() calls a miss (by default an empty one, None: a lookup that found nothing,
+    or failed for now, e.g. while the image is missing or SyncTeX timed out) is reused for only that many seconds,
+    then computed again."""
     with server.results_lock:
         entry = server.results.get(key)
         if entry is not None and entry.get("expires", float("inf")) < time.monotonic():
@@ -40,7 +41,7 @@ def shared_result(server, key, compute, miss_ttl=None):
         return compute()  # (the first one failed)
     try:
         entry["value"] = compute()
-        if miss_ttl is not None and not entry["value"]:
+        if miss_ttl is not None and not hit(entry["value"]):
             entry["expires"] = time.monotonic() + miss_ttl
     except BaseException:
         with server.results_lock:
@@ -269,7 +270,7 @@ def synctex_spot(server, query):
         page, x, y = int(query["page"][0]), float(query["x"][0]), float(query["y"][0])
     except (KeyError, ValueError):
         return 400, {"error": "expected file, page, x, y"}
-    found = synctex_input(server.paper_root, name, page, x, y, query.get("clean") == ["1"])
+    found = cached_input(server, name, page, x, y, query.get("clean") == ["1"])
     if isinstance(found[0], int):
         return found[0], {"error": found[1]}
     src, line = found
@@ -297,7 +298,7 @@ def synctex_spot(server, query):
     return 200, {"file": rel, "line": line, **({"column": column} if column is not None else {})}
 
 
-def synctex_edit(paper_root, query):
+def synctex_edit(server, query):
     """Inverse search: PDF position -> source file:line, opened in VS Code. Returns (status, text).
 
     query: file (published PDF name), page, and x, y in PDF points from the page's top-left;
@@ -308,11 +309,30 @@ def synctex_edit(paper_root, query):
         page, x, y = int(query["page"][0]), float(query["x"][0]), float(query["y"][0])
     except (KeyError, ValueError):
         return 400, "expected file, page, x, y"
-    found = inverse_search(paper_root, name, page, x, y, query.get("clean") == ["1"], bib=True)
+    paper_root = server.paper_root
+    found = inverse_search(paper_root, name, page, x, y, query.get("clean") == ["1"], bib=True,
+                           look_up=lambda *spot: cached_input(server, *spot))
     if isinstance(found[0], int):
         return found
     src, line = found
     return open_in_vscode(src, line, paper_root, word_column(src, line, clicked_word(query)) or 0)
+
+
+INVERSE_STEP = 0.5  # (points: inverse search's clicks are looked up at this grain, and each once per build)
+
+
+def cached_input(server, name, page, x, y, clean):
+    """synctex_input for a spot, once per build of the PDF and spot, rounded to INVERSE_STEP (each lookup starts a
+    SyncTeX run, often a container, and a viewer double-clicks the same words again): shared_result, keyed on the
+    build's SyncTeX file and its version. A lookup that found no source line is made again after 5 s (SyncTeX may have
+    timed out, or the image been missing)."""
+    if not name.endswith(".pdf") or os.path.basename(name) != name:
+        return 400, "bad file"
+    x, y = (round(c / INVERSE_STEP) * INVERSE_STEP for c in (x, y))
+    synctex_gz = shown_synctex(server.paper_root, name, clean)
+    key = ("inverse", synctex_gz, stamp(synctex_gz), page, x, y)
+    return shared_result(server, key, lambda: synctex_input(server.paper_root, name, page, x, y, clean),
+                         miss_ttl=5, hit=lambda found: not isinstance(found[0], int))
 
 
 def open_in_editor(pdf):
