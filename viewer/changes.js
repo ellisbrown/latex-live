@@ -1,7 +1,7 @@
 // The change highlights (Delta in the toolbar): the words and figures that changed since the previous build, the last
 // commit, or the last push.
 
-import { $, docFile, file, isDiff } from "./page.js";
+import { $, docFile, file, isDiff, setStatus } from "./page.js";
 import { diffWords } from "./diff.js";
 import { assets, docSeq, pageFrame, pdfjsLib, shownVariant } from "./pdfview.js";
 import { pageText } from "./pagetext.js";
@@ -68,14 +68,21 @@ let headInfo = null;       // status().head
 let pushInfo = null;       // status().push: null without a remote-tracking branch to compare with (or from an older server)
 export function setBaselines(head, push) { headInfo = head; pushInfo = push; }
 let prevBuildWords = null; // words of the build shown before this one (same variant)
-let figuresPromise = null; // {build, head, push}: changed figures of the shown PDF
+let figuresPromise = null, figuresOf = null; // {build, head, push}: changed figures of the shown PDF; its {next, variant}
 export let wordsPromise = null;   // words of the shown PDF
-// The document just shown (oldWords: those of the one before, when it was of the same variant): its words
-// and its changed figures, to compare.
+// The document just shown (oldWords: those of the one before, when it was of the same variant): its words, to
+// compare, and its changed figures, looked up only once the highlights are on (figures).
 export function trackDocument(next, variant, oldWords) {
   prevBuildWords = oldWords || null;
   wordsPromise = docWords(next);
-  figuresPromise = isDiff ? null : changedFigures(next, variant).catch((e) => { console.warn(e); return { build: [], head: [], push: [] }; });
+  if (!figuresPromise) graphicsHashes = null; // (the previous build's figures weren't looked at: no build to compare with)
+  figuresPromise = null;
+  figuresOf = isDiff ? null : { next, variant };
+}
+function figures() {
+  if (!figuresOf) return Promise.resolve({ build: [], head: [], push: [] });
+  return (figuresPromise ??= changedFigures(figuresOf.next, figuresOf.variant)
+    .catch((e) => { console.warn(e); return { build: [], head: [], push: [] }; }));
 }
 let changesKey = null, baseCache = null;
 function commitBase() {
@@ -107,7 +114,7 @@ export async function updateChanges() {
   if (key === changesKey) return;
   changesKey = key;
   try {
-    const [words, figs, base] = await Promise.all([wordsPromise, figuresPromise, commit ? baseWords(commit) : prevBuildWords]);
+    const [words, figs, base] = await Promise.all([wordsPromise, figures(), commit ? baseWords(commit) : prevBuildWords]);
     if (key === changesKey) showChanges(base, words, figs[commit ? commit.kind : "build"], commit?.kind);
   } catch (e) {
     console.warn(e);
@@ -137,6 +144,8 @@ export function toggleChanges() {
   changesOn = !changesOn;
   localStorage.setItem("latex-live:changesOn", changesOn ? "1" : "");
   $("changesBtn").classList.toggle("on", changesOn);
+  // (with no commit to compare with, as for a viewer or commenter of a shared preview, nothing shows until a rebuild)
+  if (changesOn && !isDiff && !headInfo && !prevBuildWords) setStatus("Change highlights on: they show what the next rebuild changes");
   updateChanges();
 }
 $("changesBtn").onclick = toggleChanges;

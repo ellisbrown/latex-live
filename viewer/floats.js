@@ -1,21 +1,28 @@
 // The sidebar's figures and tables.
 
-import { $, cleanFile, el, file } from "./page.js";
+import { $, cleanFile, el, file, panelError } from "./page.js";
+import { getJSON } from "./net.js";
 import { canOpenFile, opensAt } from "./role.js";
 import { doc, docSeq, pageFrame, pdfjsLib, shownVariant, viewer } from "./pdfview.js";
 import { reveal } from "./navigation.js";
 import { openSource } from "./links.js";
 
 // Figures and tables (live.py /floats), each cropped from its page as it scrolls into view; click one
-// to go there. The chips show only figures or only tables.
+// to go there. The chips show only figures or only tables. Where they are in the sources comes only for those who may
+// open them (not for viewers and commenters of a shared preview).
 let floatsKey = null, floatObserver = null, floatKind = localStorage.getItem("latex-live:floatKind") || "all";
 export async function renderFloats() {
   const key = `${docSeq}/${floatKind}`;
   if (floatsKey === key) return;
   floatsKey = key;
   const d = doc, panel = $("figures");
-  const list = await (await fetch(`floats/${encodeURIComponent(shownVariant === "clean" ? cleanFile : file)}`)).json();
+  const got = await getJSON(`floats/${encodeURIComponent(shownVariant === "clean" ? cleanFile : file)}`);
   if (d !== doc || floatsKey !== key) return;
+  if (!got.ok || !Array.isArray(got.body)) {
+    floatsKey = null; // (asked again on the next refresh, or with Try again)
+    return panel.replaceChildren(panelError(`The figures did not load: ${got.error || "no list in the answer"}`, () => renderFloats().catch((e) => console.warn(e))));
+  }
+  const list = got.body;
   floatObserver?.disconnect();
   floatObserver = new IntersectionObserver((seen) => {
     for (const e of seen) {
@@ -38,8 +45,8 @@ export async function renderFloats() {
   list.forEach((f, i) => {
     if (floatKind !== "all" && f.kind !== floatKind) return;
     const name = `${f.kind === "table" ? "Table" : "Figure"} ${f.num ?? "?"}`;
-    const where = opensAt(el("span", { className: "where", textContent: `${f.file.replace(/^.*\//, "")}:${f.line}` }), `${f.file}:${f.line}`);
-    where.onclick = (e) => { e.stopPropagation(); openSource(f.file, f.line); };
+    const where = f.file && opensAt(el("span", { className: "where", textContent: `${f.file.replace(/^.*\//, "")}:${f.line}` }), `${f.file}:${f.line}`);
+    if (where) where.onclick = (e) => { e.stopPropagation(); openSource(f.file, f.line); };
     const crop = el("div", { className: "crop" });
     const shownBox = () => { // (on the page as shown: a turned page's turned)
       const page = viewer.getPageView(f.page - 1)?.pdfPage;
@@ -48,7 +55,7 @@ export async function renderFloats() {
     const [x0, y0, x1, y1] = shownBox();
     crop.style.aspectRatio = `${x1 - x0 + 8} / ${y1 - y0 + 8}`;
     const card = el("div", { className: "float", title: `${name}: show in the PDF` },
-                    el("div", { className: "head" }, el("b", { textContent: name }), ...(canOpenFile(f.file) ? [where] : []),
+                    el("div", { className: "head" }, el("b", { textContent: name }), ...(where && canOpenFile(f.file) ? [where] : []),
                        el("span", { className: "pg", textContent: `p. ${f.label ?? f.page}` })),
                     crop, el("div", { className: "cap", textContent: f.caption }));
     card.dataset.i = i;

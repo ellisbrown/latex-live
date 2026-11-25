@@ -79,7 +79,9 @@ export function toggleLogs(open = $("logsDrawer").hidden) {
 function showLogs() {
   const body = $("logsBody");
   $("logsErrCount").textContent = logs?.errors.length || "";
-  $("logsWarnCount").textContent = logs?.warnings.length || "";
+  $("logsWarnCount").textContent = (logs && warningCount()) || ""; // (as the status bar counts them: boxes aside)
+  const boxes = logs ? logs.warnings.length - warningCount() : 0;
+  $("logsWarnCount").parentElement.title = boxes ? `The warnings, and ${boxes} box${boxes === 1 ? "" : "es"} too wide or too loose` : "The warnings";
   if (!logs) return body.replaceChildren(el("div", { className: "empty", textContent: "No build log yet." }));
   if (filter === "raw") {
     body.replaceChildren(el("pre", { className: "log-raw", textContent: `${logs.truncated ? "(the end of the log)\n" : ""}${logs.raw || "(the log is empty)"}` }));
@@ -126,6 +128,19 @@ registerCommands(() => (allowed() ? [{ title: "Build log and warnings", sub: "Bu
 // comes and as each file opens (the field's create), and moved with the edits made since.
 const fileMarks = () => (logs && ed ? [...logs.errors, ...logs.warnings].filter((d) => d.file === ed.path && d.line && d.severity !== "info") : []);
 let setMarks = null; // (the state effect that sets them: once CodeMirror has loaded)
+// Where in a line of text the reference or citation is that a warning says is undefined (LaTeX's, natbib's or
+// biblatex's wording): [from, to] of the \ref or \cite (any command named so, e.g. \cref, \citep) whose braces hold
+// its key; null for another warning, or a key not on that line.
+const UNDEFINED = /\b(reference|citation) [`']([^'`]+)' on page .* undefined/i;
+function namedSpan(text, d) {
+  const named = UNDEFINED.exec(d.msg || "");
+  if (!named) return null;
+  const kind = named[1].toLowerCase() === "reference" ? "ref" : "cite";
+  for (const m of text.matchAll(/\\[A-Za-z]*(ref|cite)[A-Za-z]*\*?(\[[^\]]*\])*\{([^}]*)\}/gi)) {
+    if (m[1].toLowerCase() === kind && m[3].split(",").some((key) => key.trim() === named[2])) return [m.index, m.index + m[0].length];
+  }
+  return null;
+}
 function showMarks() {
   if (setMarks && cmView) cmView.dispatch({ effects: setMarks.of(fileMarks()) });
 }
@@ -148,10 +163,15 @@ addEditorExtension(({ state, view }) => {
     for (const [number, diags] of [...lines].sort((a, b) => a[0] - b[0])) {
       const line = doc.line(number), severity = diags.some((d) => d.severity === "error") ? "error" : "warning";
       const start = line.from + Math.max(0, line.text.search(/\S/));
-      if (start < line.to) marks.push(view.Decoration.mark({ class: `cm-diag-${severity}` }).range(start, line.to));
+      const spans = diags.map((d) => namedSpan(line.text, d)); // (a reference's warning: its \ref or \cite alone)
+      if (severity === "warning" && spans.every(Boolean)) {
+        for (const [from, to] of spans) marks.push(view.Decoration.mark({ class: "cm-diag-warning" }).range(line.from + from, line.from + to));
+      } else if (start < line.to) {
+        marks.push(view.Decoration.mark({ class: `cm-diag-${severity}` }).range(start, line.to));
+      }
       dots.push(new Dot(severity, diags).range(line.from));
     }
-    return { marks: view.Decoration.set(marks), dots: state.RangeSet.of(dots) };
+    return { marks: view.Decoration.set(marks, true), dots: state.RangeSet.of(dots) };
   };
   const field = state.StateField.define({
     create: (st) => marksOf(st.doc, fileMarks()),

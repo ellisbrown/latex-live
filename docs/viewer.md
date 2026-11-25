@@ -105,8 +105,10 @@ notes runs again after it, and the view updates a little later.
 
 - **PDF to source:** double-click the PDF. The source line opens in VS Code
   (`code -g`, or `LATEX_LIVE_EDITOR`), or in the source pane while it is open
-  or when VS Code can't be reached, with the cursor on the word you
-  double-clicked when that word is in the line (else at the line's start).
+  or when VS Code can't be reached (the status line says why the first time;
+  the page then stops trying VS Code until it reloads), with the cursor on the
+  word you double-clicked when that word is in the line (else at the line's
+  start).
   An entry of the bibliography opens its entry in the `.bib` file.
 - **Source to PDF:** the forward-search key in VS Code (setup step 5), `python3
   forward.py FILE LINE`, or Show in PDF in the source pane scrolls the viewer
@@ -127,7 +129,10 @@ Notes are the paper's note macros: one-argument commands that go through
   paper as submitted, with each note in a margin bubble wired to a caret where
   it sits in the text. Hover a bubble to expand it; click it to open the source.
   In two columns, a bubble sits beside its column (left of the page for the left
-  column). Notes: on shows the live build, notes in the text.
+  column). Where the PDF is too narrow for that (beside the source, say), the
+  bubbles all go right of the page, and narrower still, only the carets show:
+  rest the pointer on one to read its note. Notes: on shows the live build,
+  notes in the text.
 - **Writing a note.** Pick who you are in Comment as… (in a shared preview,
   you comment as yourself), select text in the PDF, and press 💬 or `c`. Your
   note goes into the source right after the selected words, and the rebuild

@@ -23,7 +23,10 @@ const STRUCTURE = /^\s*(%|\\(begin|end|documentclass|usepackage|part|chapter|(su
 let setCard = null, cardField = null; // (the state effect that sets it, or null, and its field: once CodeMirror has loaded)
 let seq = 0, aborter = null; // (the latest request, and how to cancel it)
 const card = () => (cardField && cmView ? cmView.state.field(cardField, false) || null : null);
-const show = (value) => cmView?.dispatch({ effects: setCard.of(value) });
+const show = (value) => { // (and brought into view, as it opens below the text, which may run past the pane's bottom)
+  cmView?.dispatch({ effects: setCard.of(value) });
+  if (value) requestAnimationFrame(() => cmView?.dom.querySelector(".cm-agent-card")?.scrollIntoView({ block: "nearest" }));
+};
 const allowed = () => !!me.can.agent && editorShown() && !!cmView && !!ed && !ed.gone;
 
 addEditorExtension(({ state, view }) => {

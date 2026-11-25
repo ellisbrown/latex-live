@@ -7,15 +7,16 @@
 // The panel's controls (the search, the add box) are made once: a build or an added entry redraws only the list and the
 // check's findings, so whatever is being typed in them keeps its text and the focus.
 
-import { editorShown, el, isPopout, setStatus } from "./page.js";
-import { postJSON, readBody } from "./net.js";
+import { editorShown, el, isPopout, panelError, setStatus } from "./page.js";
+import { getJSON, sendJSON } from "./net.js";
 import { editorAllowed } from "./role.js";
 import { insertText, showEditor } from "./editor.js";
 import { addTab, showSide, showTab } from "./sidebar.js";
+import { wrote } from "./build.js";
 import { registerCommands } from "./palette.js";
 import { icon } from "./icons.js";
 
-let index = null; // (/papers/index: {entries, bibFiles, lookups})
+let index = null, loadError = ""; // (/papers/index: {entries, bibFiles, lookups}; why it last failed to load)
 let verify = null, verifyTimer = 0, verifyMisses = 0; // (/bib/verify's last answer; the poll while it runs, and its misses)
 
 const panel = addTab("refs", { label: "Refs", icon: "refs", title: "The bibliography: citations, adding and checking entries",
@@ -39,13 +40,14 @@ const list = el("div", { className: "refs-list" });
 panel.classList.add("refs");
 panel.append(el("div", { className: "refs-bar" }, search, sort, addBtn, checkBtn), addBox, verifyBox, list);
 
-// The list, and what depends on whether this preview goes online; again after each build and each added entry.
+// The list, and what depends on whether this preview goes online; again after each build and each added entry. When it
+// doesn't load, the list says why (over the one loaded before, if any).
 async function loadRefs() {
   if (!editorAllowed()) return;
-  const r = await fetch("papers/index", { cache: "no-store" }).catch(() => null);
-  const found = r?.ok ? await r.json().catch(() => null) : null;
-  if (!Array.isArray(found?.entries)) return;
-  index = found;
+  const got = await getJSON("papers/index");
+  loadError = got.ok && Array.isArray(got.body.entries) ? "" : `The bibliography did not load: ${got.error || "no entries in the answer"}`;
+  if (loadError) return renderList();
+  index = got.body;
   const n = document.querySelector("#tabs [data-tab=refs] .n");
   if (n) n.textContent = index.entries.length || "";
   showLookups();
@@ -73,7 +75,9 @@ function renderList() {
              : sort.value === "year" ? (a, b) => (parseInt(b.year, 10) || 0) - (parseInt(a.year, 10) || 0) || byKey(a, b)
              : (a, b) => (a.title || a.key).localeCompare(b.title || b.key));
   const cards = shown.slice(0, 300).map(card);
-  if (!cards.length) {
+  if (loadError) {
+    cards.unshift(panelError(loadError, () => loadRefs()));
+  } else if (!cards.length) {
     cards.push(el("div", { className: "empty", textContent: !index ? "Loading the bibliography…"
                                                            : index.bibFiles.length ? "No entry matches." : "This paper has no .bib file." }));
   } else if (shown.length > 300) {
@@ -102,8 +106,8 @@ function card(e) {
 function cite(key) {
   const text = `\\cite{${key}}`;
   if (editorShown() && insertText(text)) return;
-  navigator.clipboard?.writeText(text).then(() => setStatus(`Copied ${text}: open the source to paste it`),
-                                            () => setStatus(`Open the source to cite ${key}`));
+  (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject())
+    .then(() => setStatus(`Copied ${text}: open the source to paste it`), () => setStatus(`Open the source to cite ${key}`));
 }
 
 search.oninput = renderList;
@@ -138,12 +142,11 @@ async function lookUp() {
   if (!text) return;
   lookupBtn.disabled = true;
   addError.textContent = "";
-  const r = await postJSON("bib/lookup", { query: text }).catch(() => null);
-  const found = r ? await readBody(r) : { error: "can't reach the preview server" };
+  const got = await sendJSON("bib/lookup", { query: text }), found = got.body;
   lookupBtn.disabled = false;
-  if (!r?.ok) {
+  if (!got.ok) {
     if (found.lookupsOff && index) { index.lookups = false; showLookups(); }
-    addError.textContent = found.error || "The lookup failed.";
+    addError.textContent = got.error || "The lookup failed.";
     return;
   }
   preview.value = found.bibtex || "";
@@ -157,13 +160,13 @@ async function lookUp() {
 saveBtn.onclick = async () => {
   saveBtn.disabled = true;
   addError.textContent = "";
-  const r = await postJSON("bib/add", { bibtex: preview.value, file: target.value || null }).catch(() => null);
-  const done = r ? await readBody(r) : { error: "can't reach the preview server" };
+  const got = await sendJSON("bib/add", { bibtex: preview.value, file: target.value || null }), done = got.body;
   saveBtn.disabled = false;
-  if (!r?.ok) {
-    addError.textContent = done.error || "The entry was not added.";
+  if (!got.ok || !Array.isArray(done.keys)) {
+    addError.textContent = got.error || "The entry was not added.";
     return;
   }
+  wrote(); // (a build comes: a download waits for it)
   setStatus(`Added ${done.keys.join(", ")} to ${done.file}`, "fresh");
   resetAdd();
   showAdd(false);
@@ -172,10 +175,12 @@ saveBtn.onclick = async () => {
 
 // The check: it runs on the server (a minute at most), and its findings stay until closed.
 checkBtn.onclick = async () => {
-  const r = await postJSON("bib/verify", {}).catch(() => null);
-  const state = r ? await readBody(r) : { error: "can't reach the preview server" };
-  if (!r?.ok) return setStatus(state.error || "The check did not start", "error");
-  verify = state;
+  const got = await sendJSON("bib/verify", {});
+  if (!got.ok) {
+    verify = { state: "failed", error: `it did not start: ${got.error}` };
+    return renderVerify();
+  }
+  verify = got.body;
   verifyMisses = 0;
   renderVerify();
   pollVerify();
@@ -184,8 +189,7 @@ checkBtn.onclick = async () => {
 function pollVerify() {
   clearTimeout(verifyTimer);
   verifyTimer = setTimeout(async () => {
-    const r = await fetch("bib/verify", { cache: "no-store" }).catch(() => null);
-    const state = r?.ok ? await r.json().catch(() => null) : null;
+    const got = await getJSON("bib/verify"), state = got.ok ? got.body : null;
     if (!verify) return; // (closed meanwhile)
     verifyMisses = state ? 0 : verifyMisses + 1;
     if (state) verify = state;

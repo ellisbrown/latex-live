@@ -12,7 +12,7 @@ $("compare").onclick = async () => {
   if (!panel.hidden) return (panel.hidden = true);
   const r = ($("moreMenu").contains($("compare")) ? $("more") : $("compare")).getBoundingClientRect();
   showMore(false);
-  panel.style.left = `${Math.min(r.left, window.innerWidth - 450)}px`;
+  panel.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - Math.min(460, window.innerWidth - 24) - 12))}px`;
   panel.replaceChildren(el("div", { className: "head", textContent: "Loading commits…" }));
   panel.hidden = false;
   const { dirty, commits } = await (await fetch("commits")).json();
