@@ -9,11 +9,11 @@ import subprocess
 import sys
 import time
 
-from .base import SHARED_PORT, fail, ok, prints_token, redact, wait_for
-from .helpers import editor_calls, git, git_out, read_json_file, read_text, start, stop, texlive_image
+from .base import SHARED_PORT, fail, ok, redact, wait_for
+from .helpers import editor_calls, git, git_out, put, read_json_file, read_text, start, stop, texlive_image
 from .shared_helpers import (
-    commit_user, expect, expect_dict, header, instance_containers, recorded, save, send, settled, shared_status,
-    via_proxy, with_paragraph, with_token)
+    commit_user, expect, expect_dict, header, instance_containers, labelled_containers, quiet_log, recorded, save, send, settled,
+    shared_status, via_proxy, with_paragraph, with_token)
 
 
 def commit_checks(sh):
@@ -89,11 +89,12 @@ def shared_stop_checks(sh, sharing):
     wait_for("the shared copy to build the edits", built, timeout=120)
     ok("the shared copy builds with everyone's edits and notes")
 
-    for _ in range(2):  # (the second after the commit check's interval: a GET still builds nothing)
+    for again in (False, True):  # (the second after the server's 3 s between looks at HEAD: a GET still builds nothing)
+        if again:
+            time.sleep(3.5)
         head = (expect_dict(via_proxy("ed", "/status/main.pdf?base=head"), 200, "the status, asking for base=head") or {}).get("head")
         if not isinstance(head, dict) or head.get("state") != "waiting" or os.path.isdir(os.path.join(root, "build", "head")):
             fail(f"a GET of the status started the HEAD baseline's build (shared mode builds only on a POST): {head}")
-        time.sleep(3.5)
     asked = expect_dict(via_proxy("ed", "/baseline", "POST", {"kind": "head"}), 200, "the editor asking for the HEAD baseline")
     if asked.get("state") not in ("running", "done"):
         fail(f"POST baseline for the HEAD baseline: {asked}")
@@ -103,6 +104,17 @@ def shared_stop_checks(sh, sharing):
         fail(f"the HEAD baseline, asked for with POST baseline, did not build: {head}")
     ok("a GET of the status builds no baseline; an editor's POST baseline does")
 
+    # The instance's label (its config.INSTANCE), from a container of a pass that slow.tex keeps busy, for a container
+    # created with it and never started, which the stop must remove too.
+    slow = os.path.join(root, "slow.tex")
+    put(slow, "\\loop\\ifnum\\pdfelapsedtime<3932160 \\repeat\n")  # (a minute of each pass)
+    try:
+        expect(with_token(sh["token"], "/rebuild", "POST", {}), 202, "the owner rebuilding with slow.tex")
+        instance = wait_for("a pass that slow.tex keeps busy", lambda: next((label for _, label, kind in labelled_containers()
+                                                                             if label.startswith(f"{sh['proc'].pid}-") and kind == "main"), None),
+                            timeout=60, step=0.2)
+    finally:
+        os.remove(slow)
     tip = git_out(root, "rev-parse", "shared")
     current = expect_dict(via_proxy("ed", "/file?path=body.tex"), 200, "GET file body.tex")
     last = with_paragraph(current["text"], 11, "Paragraph eleven, saved just before the stop.")
@@ -110,10 +122,9 @@ def shared_stop_checks(sh, sharing):
     git(root, "-c", "core.hooksPath=/dev/null", "merge", "--no-ff", "--no-commit", "side")  # (before the save's quiet period ends)
     # A container as a podman client leaves it when it is stopped between creating the container and starting it (as
     # stopping the instance's process group may do to a pass's): created, never started. The stop removes it too.
-    if sh.get("instance"):
-        subprocess.run(["podman", "create", "--pull=never", "--entrypoint=", "--label", f"latex-live.instance={sh['instance']}",
-                        "--label", "latex-live.run=clean-0", "--label", "latex-live.kind=clean", texlive_image()[0], "true"],
-                       capture_output=True, timeout=60, check=True)
+    subprocess.run(["podman", "create", "--pull=never", "--entrypoint=", "--label", f"latex-live.instance={instance}",
+                    "--label", "latex-live.run=clean-0", "--label", "latex-live.kind=clean", texlive_image()[0], "true"],
+                   capture_output=True, timeout=60, check=True)
     stop(sh["proc"])
     sharing.remove(sh["proc"])
     if recorded(sh["state"]):
@@ -182,14 +193,3 @@ def shared_stop_checks(sh, sharing):
     ok("with an https public URL, cookies are Secure on its Host only"
        + ("; the identity header counts only from a peer with LATEX_LIVE_PROXY_UID" if linux else "")
        + "; stopped shared instances are no longer listed")
-
-
-def quiet_log(path, what):
-    """Check an instance's output, once it has stopped: no token (its log may be kept, and read by others), and
-    no traceback (an error the server did not expect)."""
-    with open(path, errors="replace") as f:
-        printed = f.read()
-    if prints_token(printed):
-        fail(f"{what} printed a token")
-    if "Traceback (most recent call last)" in printed:
-        fail(f"{what} printed a traceback:\n{printed[printed.index('Traceback (most recent call last)'):][:2000]}")

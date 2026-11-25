@@ -16,21 +16,12 @@ import urllib.request
 import urllib.response
 
 from .base import fail, ok
-from .helpers import put, read_text
+from .helpers import fake_server, patched, put, read_text
 
 
 def bib_checks():
     for check in (index_checks, add_checks, metadata_checks, lookups_off_checks, request_checks, verify_checks):
         check()
-
-
-def scratch_server(root):
-    """A stand-in for an instance on the paper in root, with what bib and the editor's save use."""
-    import collections
-    return types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", editable=None, autocommit=False,
-                                 versions=collections.OrderedDict(), versions_lock=threading.Lock(),
-                                 last_saves=collections.OrderedDict(), last_writer={}, bib_verify={},
-                                 bib_lock=threading.Lock())
 
 
 OWNER = {"id": "owner", "name": "Owner", "role": "owner", "macro": "", "via": "token"}
@@ -48,7 +39,7 @@ def paper():
         put(os.path.join(root, "sec.tex"), "\\nocite{beta}\n\\citet{alpha}\nA line break\\\\% then \\cite{gamma} in a comment\n")
         put(os.path.join(root, "refs.bib"), REFS)
         put(os.path.join(root, "more", "other.bib"), "@book{Delta, title={Delta}}\n")
-        yield root, scratch_server(root)
+        yield root, fake_server(root)
 
 
 def index_checks():
@@ -148,10 +139,10 @@ def metadata_checks():
     gone, TeX's special characters escaped; a DOI that is not one is left out; the key is letters and digits; an Atom
     feed with a DOCTYPE is refused. Pasted BibTeX reads without asking anyone (lookup_request)."""
     from latexlive import bib
-    fetch, answers = bib.fetch, []
-    bib.fetch = lambda url, accept="application/json", background=False: answers.append(url) or (
+    answers = []
+    stand_in = lambda url, accept="application/json", background=False: answers.append(url) or (
         ATOM.encode() if "arxiv" in url else json.dumps(CROSSREF).encode())
-    try:
+    with patched(bib, fetch=stand_in):
         arxiv = bib.lookup_arxiv("2312.00752")
         doi = bib.lookup_doi("10.1109/cvpr.2016.90")
         bib.fetch = lambda *a, **k: b'<!DOCTYPE x [<!ENTITY a "aaaa">]><feed/>'
@@ -164,8 +155,6 @@ def metadata_checks():
         unknown = bib.lookup_request({"query": "10.1000/unknown"})
         if unknown[0] != 404 or "doesn't know" not in unknown[1].get("error", ""):
             fail(f"looking up a DOI Crossref doesn't know: {unknown}")
-    finally:
-        bib.fetch = fetch
     for found in (arxiv, doi):
         text = found["bibtex"]
         if (not bib.balanced(text) or "\\input" in text or "\\par" in text or "<i>" in text or "&amp;" in text
@@ -197,24 +186,20 @@ def lookups_off_checks():
     import subprocess
     import sys
     from latexlive import bib, config
-    saved, opener, asked = config.LOOKUPS, bib.OPENER, []
-    bib.OPENER = types.SimpleNamespace(open=lambda *a, **k: asked.append(a) or fail("a lookup went out with lookups off"))
-    try:
-        config.LOOKUPS = False
-        with paper() as (root, server):
-            for query in ("2312.00752", "arXiv:2312.00752", "https://arxiv.org/abs/2312.00752v2", "10.1109/cvpr.2016.90",
-                          "https://doi.org/10.1109/cvpr.2016.90"):
-                code, answer = bib.lookup_request({"query": query})
-                if code != 403 or not answer.get("lookupsOff") or "off" not in answer.get("error", ""):
-                    fail(f"looking up {query} with lookups off: {code} {answer}")
-            code, answer = bib.start_verify(server)
-            if code != 403 or not answer.get("lookupsOff") or server.bib_verify:
-                fail(f"the check against Crossref with lookups off: {code} {answer}")
-            if (bib.papers_index(server)["lookups"] is not False or bib.lookup_request({"query": "@misc{k, title={T}}"})[0] != 200
-                    or bib.add_request(server, {"bibtex": "@misc{k, title={T}}"}, OWNER)[0] != 200):
-                fail("with lookups off, the index, pasted BibTeX or adding stopped working")
-    finally:
-        config.LOOKUPS, bib.OPENER = saved, opener
+    asked = []
+    opener = types.SimpleNamespace(open=lambda *a, **k: asked.append(a) or fail("a lookup went out with lookups off"))
+    with patched(config, LOOKUPS=False), patched(bib, OPENER=opener), paper() as (root, server):
+        for query in ("2312.00752", "arXiv:2312.00752", "https://arxiv.org/abs/2312.00752v2", "10.1109/cvpr.2016.90",
+                      "https://doi.org/10.1109/cvpr.2016.90"):
+            code, answer = bib.lookup_request({"query": query})
+            if code != 403 or not answer.get("lookupsOff") or "off" not in answer.get("error", ""):
+                fail(f"looking up {query} with lookups off: {code} {answer}")
+        code, answer = bib.start_verify(server)
+        if code != 403 or not answer.get("lookupsOff") or server.bib_verify:
+            fail(f"the check against Crossref with lookups off: {code} {answer}")
+        if (bib.papers_index(server)["lookups"] is not False or bib.lookup_request({"query": "@misc{k, title={T}}"})[0] != 200
+                or bib.add_request(server, {"bibtex": "@misc{k, title={T}}"}, OWNER)[0] != 200):
+            fail("with lookups off, the index, pasted BibTeX or adding stopped working")
     if asked:
         fail(f"requests went out with lookups off: {asked}")
     probe = "import sys; sys.path.insert(0, '.'); from latexlive import config; print(config.LOOKUPS)"
@@ -257,99 +242,94 @@ def request_checks():
     would wait more than NET_WAIT for its host's turn, or past NET_SLOTS at once, refused at once (LookupBusy), the
     background check waiting."""
     from latexlive import bib, config
-    saved = config.LOOKUPS, bib.OPENER, dict(bib.HOSTS), bib.NET_READ
-    config.LOOKUPS, bib.OPENER = True, urllib.request.build_opener(bib.SafeRedirect, StandIn)
-    bib.HOSTS.update({host: 0 for host in bib.HOSTS})
     a, b = "https://api.crossref.org/works/a", "https://api.crossref.org/works/b"
+    opener = urllib.request.build_opener(bib.SafeRedirect, StandIn)
     try:
-        bib.net_next.clear()
-        StandIn.pages = {a: (302, {"Location": b}, b""), b: (200, {}, b"found"),
-                         "https://api.crossref.org/works/evil": (302, {"Location": "https://evil.example/x"}, b""),
-                         "https://api.crossref.org/works/plain": (302, {"Location": "http://api.crossref.org/works/b"}, b""),
-                         "https://api.crossref.org/works/port": (302, {"Location": "https://api.crossref.org:8443/works/b"}, b""),
-                         **{f"https://api.crossref.org/works/hop{i}": (302, {"Location": f"https://api.crossref.org/works/hop{i + 1}"}, b"")
-                            for i in range(9)},
-                         "https://api.crossref.org/works/big": (200, {}, b"x" * 2000)}
-        StandIn.log = []
-        if bib.fetch(a) != b"found" or [url for url, _ in StandIn.log] != [a, b] or f"latex-live/{config.VERSION}" not in StandIn.log[0][1]:
-            fail(f"a lookup redirected within Crossref: {StandIn.log}")
-        for name in ("evil", "plain", "port", "hop0"):
+        with patched(config, LOOKUPS=True), patched(bib, OPENER=opener, HOSTS={host: 0 for host in bib.HOSTS}):
+            bib.net_next.clear()
+            StandIn.pages = {a: (302, {"Location": b}, b""), b: (200, {}, b"found"),
+                             "https://api.crossref.org/works/evil": (302, {"Location": "https://evil.example/x"}, b""),
+                             "https://api.crossref.org/works/plain": (302, {"Location": "http://api.crossref.org/works/b"}, b""),
+                             "https://api.crossref.org/works/port": (302, {"Location": "https://api.crossref.org:8443/works/b"}, b""),
+                             **{f"https://api.crossref.org/works/hop{i}": (302, {"Location": f"https://api.crossref.org/works/hop{i + 1}"}, b"")
+                                for i in range(9)},
+                             "https://api.crossref.org/works/big": (200, {}, b"x" * 2000)}
             StandIn.log = []
+            if bib.fetch(a) != b"found" or [url for url, _ in StandIn.log] != [a, b] or f"latex-live/{config.VERSION}" not in StandIn.log[0][1]:
+                fail(f"a lookup redirected within Crossref: {StandIn.log}")
+            for name in ("evil", "plain", "port", "hop0"):
+                StandIn.log = []
+                try:
+                    bib.fetch(f"https://api.crossref.org/works/{name}")
+                    fail(f"a lookup followed a redirect it should refuse ({name}): {StandIn.log}")
+                except urllib.error.URLError:
+                    pass
+                if any(not url.startswith("https://api.crossref.org/") for url, _ in StandIn.log) or len(StandIn.log) > 4:
+                    fail(f"a refused redirect ({name}) was requested anyway: {StandIn.log}")
+            handler, req = bib.SafeRedirect(), urllib.request.Request(a)
+            if handler.redirect_request(req, None, 302, "Found", {}, b).full_url != b:
+                fail("SafeRedirect refused a redirect to Crossref")
+            for where in ("https://evil.example/", "http://api.crossref.org/", "https://user@api.crossref.org/", "ftp://export.arxiv.org/"):
+                try:
+                    handler.redirect_request(req, None, 302, "Found", {}, where)
+                    fail(f"SafeRedirect allowed a redirect to {where}")
+                except urllib.error.URLError:
+                    pass
+            for url in ("http://api.crossref.org/works/a", "https://evil.example/", "https://api.crossref.org:444/works/a"):
+                try:
+                    bib.fetch(url)
+                    fail(f"a lookup requested {url}")
+                except ValueError:
+                    pass
             try:
-                bib.fetch(f"https://api.crossref.org/works/{name}")
-                fail(f"a lookup followed a redirect it should refuse ({name}): {StandIn.log}")
-            except urllib.error.URLError:
-                pass
-            if any(not url.startswith("https://api.crossref.org/") for url, _ in StandIn.log) or len(StandIn.log) > 4:
-                fail(f"a refused redirect ({name}) was requested anyway: {StandIn.log}")
-        handler, req = bib.SafeRedirect(), urllib.request.Request(a)
-        if handler.redirect_request(req, None, 302, "Found", {}, b).full_url != b:
-            fail("SafeRedirect refused a redirect to Crossref")
-        for where in ("https://evil.example/", "http://api.crossref.org/", "https://user@api.crossref.org/", "ftp://export.arxiv.org/"):
-            try:
-                handler.redirect_request(req, None, 302, "Found", {}, where)
-                fail(f"SafeRedirect allowed a redirect to {where}")
-            except urllib.error.URLError:
-                pass
-        for url in ("http://api.crossref.org/works/a", "https://evil.example/", "https://api.crossref.org:444/works/a"):
-            try:
-                bib.fetch(url)
-                fail(f"a lookup requested {url}")
+                with patched(bib, NET_READ=1000):
+                    bib.fetch("https://api.crossref.org/works/big")
+                fail("a lookup read an answer past NET_READ")
             except ValueError:
                 pass
-        bib.NET_READ = 1000
-        try:
-            bib.fetch("https://api.crossref.org/works/big")
-            fail("a lookup read an answer past NET_READ")
-        except ValueError:
-            pass
-        bib.NET_READ = saved[3]
 
-        bib.HOSTS["api.crossref.org"] = 10  # (the rate: one request to a host per 10 s here)
-        bib.net_next.clear()
-        StandIn.log = []
-        bib.fetch(b)
-        began = time.monotonic()
-        try:
+            bib.HOSTS["api.crossref.org"] = 10  # (the rate: one request to a host per 10 s here)
+            bib.net_next.clear()
+            StandIn.log = []
             bib.fetch(b)
-            fail("a second lookup to the same host right away went out")
-        except bib.LookupBusy:
-            pass
-        if time.monotonic() - began > 1 or len(StandIn.log) != 1:
-            fail(f"a lookup too soon after another was not refused at once: {StandIn.log}")
-        bib.HOSTS["api.crossref.org"] = 0.5
-        bib.net_next.clear()
-        bib.fetch(b)
-        began = time.monotonic()
-        bib.fetch(b, background=True)  # (the background check waits for its turn)
-        if not 0.4 < time.monotonic() - began < 3:
-            fail(f"the background check did not wait its turn: {time.monotonic() - began:.2f} s")
+            began = time.monotonic()
+            try:
+                bib.fetch(b)
+                fail("a second lookup to the same host right away went out")
+            except bib.LookupBusy:
+                pass
+            if time.monotonic() - began > 1 or len(StandIn.log) != 1:
+                fail(f"a lookup too soon after another was not refused at once: {StandIn.log}")
+            bib.HOSTS["api.crossref.org"] = 0.5
+            bib.net_next.clear()
+            bib.fetch(b)
+            began = time.monotonic()
+            bib.fetch(b, background=True)  # (the background check waits for its turn)
+            if not 0.4 < time.monotonic() - began < 3:
+                fail(f"the background check did not wait its turn: {time.monotonic() - began:.2f} s")
 
-        bib.HOSTS["api.crossref.org"] = 0  # (the cap: two at once)
-        bib.net_next.clear()
-        StandIn.gate, StandIn.log, results = threading.Event(), [], []
-        threads = [threading.Thread(target=lambda: results.append(bib.fetch(b))) for _ in range(2)]
-        for t in threads:
-            t.start()
-        deadline = time.monotonic() + 5
-        while len(StandIn.log) < 2 and time.monotonic() < deadline:
-            time.sleep(0.02)
-        try:
-            bib.fetch(b)
-            fail("a third lookup went out while two were on their way")
-        except bib.LookupBusy:
-            pass
-        StandIn.gate.set()
-        for t in threads:
-            t.join(10)
-        StandIn.gate = None
-        if results != [b"found", b"found"] or bib.fetch(b) != b"found":
-            fail(f"lookups after the two on their way ended: {results}")
+            bib.HOSTS["api.crossref.org"] = 0  # (the cap: two at once)
+            bib.net_next.clear()
+            StandIn.gate, StandIn.log, results = threading.Event(), [], []
+            threads = [threading.Thread(target=lambda: results.append(bib.fetch(b))) for _ in range(2)]
+            for t in threads:
+                t.start()
+            deadline = time.monotonic() + 5
+            while len(StandIn.log) < 2 and time.monotonic() < deadline:
+                time.sleep(0.02)
+            try:
+                bib.fetch(b)
+                fail("a third lookup went out while two were on their way")
+            except bib.LookupBusy:
+                pass
+            StandIn.gate.set()
+            for t in threads:
+                t.join(10)
+            StandIn.gate = None
+            if results != [b"found", b"found"] or bib.fetch(b) != b"found":
+                fail(f"lookups after the two on their way ended: {results}")
     finally:
         StandIn.gate = None
-        config.LOOKUPS, bib.OPENER, bib.NET_READ = saved[0], saved[1], saved[3]
-        bib.HOSTS.clear()
-        bib.HOSTS.update(saved[2])
         bib.net_next.clear()
     ok("lookups go over https to arXiv and Crossref only, redirects too (others refused, before any request), with the"
        " version in the User-Agent; a large answer is refused; one that would wait over 3 s for its host's turn, or past two"
@@ -361,7 +341,6 @@ def verify_checks():
     bib.fetch): keys twice (ignoring case), titles twice, entries never cited; for cited ones, Crossref's year for a
     DOI (or that it doesn't know the DOI), and a preprint's published version found by its title."""
     from latexlive import bib, config
-    saved, fetch = config.LOOKUPS, bib.fetch
 
     def crossref(url, accept="application/json", background=False):
         if not background:
@@ -372,8 +351,7 @@ def verify_checks():
             return json.dumps({"message": {"title": ["Alpha"], "issued": {"date-parts": [[2019]]}}}).encode()
         return json.dumps({"message": {"items": [{"title": ["Gamma"], "container-title": ["Journal of G"],
                                                   "issued": {"date-parts": [[2024]]}}]}}).encode()
-    try:
-        config.LOOKUPS, bib.fetch = True, crossref
+    with patched(config, LOOKUPS=True), patched(bib, fetch=crossref):
         with paper() as (root, server):
             put(os.path.join(root, "refs.bib"), REFS.replace("journal = {J. Alpha}", "journal = {J. Alpha}, doi = {10.1000/a}")
                 + "@misc{ALPHA, title={Another}}\n@misc{copy, title={Beta}}\n@misc{long1, title={A Title Long Enough To Count}}\n"
@@ -396,7 +374,5 @@ def verify_checks():
                              [{"title": ["Introduction"], "container-title": ["Some Journal"]}], lambda *a: found.append(a))
         if found:
             fail(f"a short title on Crossref was taken for a longer one: {found}")
-    finally:
-        config.LOOKUPS, bib.fetch = saved, fetch
     ok("the check of the bibliography finds keys and titles twice, entries never cited, a year Crossref disagrees with,"
        " a DOI it doesn't know, and a preprint published since")

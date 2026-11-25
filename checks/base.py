@@ -16,7 +16,7 @@ from latexlive.web import DualStackServer, ephemeral, ephemeral_ports, port_belo
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # (the checkout, which holds checks/)
 
-PORTS = 24  # (the block of ports the checks take, from PORT on)
+PORTS = 25  # (the block of ports the checks take, from PORT on)
 
 
 def free_ports(count):
@@ -68,6 +68,7 @@ STANDBY_PORT = PORT + 13  # the hub of the warm standby's checks (standby_run), 
 EARLY_PORT = PORT + 16  # the hub of the early notes-free pass's checks (early_run), with state of its own; its preview's follow
 CLEAN_PORT = PORT + 19  # the hub of the notes-free pass's warm standby's checks (clean_standby_run), likewise
 LANDSCAPE_PORT = PORT + 22  # the hub of the turned pages' checks (landscape_run), likewise
+REBUILD_PORT = PORT + 24  # the shared-mode instance of the rebuild checks (rebuild_run), beside the other one
 
 LOGS = []  # the instances' output, shown on failure
 # The shared-mode checks run in a thread of their own, beside the others (live_checks): output is printed whole,

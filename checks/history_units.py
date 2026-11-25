@@ -6,16 +6,16 @@ commits named only by their ids, and restoring a source: over the file the edito
 removed one made again and committed as its restorer's, never over another file, a coauthor only from commits the branch
 builds on; in a folder of the paper too."""
 
+import contextlib
+import io
 import json
 import os
 import shutil
 import tempfile
 import threading
-import types
 
 from .base import fail, ok
-from .helpers import git, git_out, put, read_text
-from .files_units import scratch_server
+from .helpers import fake_server, git, git_out, patched, put, read_text
 
 
 def history_checks():
@@ -150,11 +150,8 @@ def diff_checks(repo, root):
             fail(f"commit_diff shows {path} at {rev[:7]}")
     if history.commit_diff(root, elsewhere, any_rev=False)[0] != 404 or history.commit_diff(root, elsewhere)[0] != 200:
         fail("commit_diff of a commit HEAD doesn't build on: refused for a coauthor, shown for the owner")
-    saved, history.LOG_LIMIT = history.LOG_LIMIT, 12  # (a list cut short at its limit: what came is used)
-    try:
+    with patched(history, LOG_LIMIT=12):  # (a list cut short at its limit: what came is used)
         cut = history.changed_files(root, shas["second"], shas["remove gone.tex"])
-    finally:
-        history.LOG_LIMIT = saved
     if cut is None or len(cut) > 1:
         fail(f"changed_files cut short at its limit: {cut}")
     if history.commit_diff(root, "WORKTREE")[0] != 200:
@@ -169,12 +166,11 @@ def diff_checks(repo, root):
         fail("file_at_commit of main.tex (and of it, over a limit)")
     git(repo, "reset", "-q", "--hard", "HEAD^")
     from latexlive import baselines
-    saved, baselines.build_diff = baselines.build_diff, lambda server, sha: None  # (no latexdiff: what start_diff takes)
-    try:
-        def start(rev, any_rev=True):
-            server = types.SimpleNamespace(paper_root=root, diff={})
-            code, state = baselines.start_diff(server, rev, any_rev)
-            return code, state.get("rev"), state.get("sha")
+
+    def start(rev, any_rev=True):
+        code, state = baselines.start_diff(fake_server(root, diff={}), rev, any_rev)
+        return code, state.get("rev"), state.get("sha")
+    with patched(baselines, build_diff=lambda server, sha: None):  # (no latexdiff: what start_diff takes)
         with tempfile.TemporaryDirectory() as tmp:
             out = os.path.join(tmp, "written")
             for rev in (f"--output={out}", "-x", "HEAD~1", "main", "elsewhere", head[:6], f"{head}^", "", "HEAD^{commit}"):
@@ -186,8 +182,6 @@ def diff_checks(repo, root):
             fail("POST /diff: an unknown commit (404), one HEAD doesn't build on (403 for a coauthor, the owner's to compare)")
         if start("HEAD", any_rev=False) != (200, "HEAD", head[:9]) or start(head[:9], any_rev=False) != (200, head[:9], head[:9]):
             fail(f"POST /diff of HEAD and of a short id: {start('HEAD', any_rev=False)} {start(head[:9], any_rev=False)}")
-    finally:
-        baselines.build_diff = saved
     ok("a commit's diff: the paper's shown files only, first (whatever a dot file's size), a merge against its first parent;"
        " only ids name commits (also the latexdiff's, or HEAD); a coauthor sees only commits the branch builds on; a file read from a commit is a regular"
        " file shown")
@@ -197,7 +191,7 @@ def restore_checks(repo, root, state):
     """restore_request: over the file the editor opens, at the version given only; a removed file made again, listed, and
     committed as its restorer's; never over another file; sources only; a coauthor only from commits HEAD builds on."""
     from latexlive import commits, editor, git as history, sources
-    server = scratch_server(root, state)
+    server = fake_server(root, state)
     server.versions, server.versions_lock, server.last_saves = {}, threading.Lock(), {}
     os.makedirs(os.path.join(state, "added"), exist_ok=True)
     sources.load_added(server)
@@ -234,7 +228,8 @@ def restore_checks(repo, root, state):
     paths = server.pending["ed"]["paths"]
     if paths.get("gone.tex", ("",))[0] != "files" or paths.get("sec.tex", ("",))[0] != "edit":
         fail(f"the restores, remembered for their commit: {paths}")
-    commits.commit_files(server, ed, dict(paths))
+    with contextlib.redirect_stdout(io.StringIO()):  # (its "committed" line)
+        commits.commit_files(server, ed, dict(paths))
     if git_out(repo, "show", "-s", "--format=%an", "HEAD") != "Eden Doyle" or "paper/gone.tex" not in git_out(repo, "ls-files"):
         fail("a file restored after it was removed is not committed as its restorer's")
     want(editor.restore_request(server, {"rev": shas["merge the side"], "path": "gone.tex"}, ed), 200, "restoring it again (as it is)")

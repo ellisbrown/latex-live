@@ -8,24 +8,15 @@ import contextlib
 import io
 import os
 import tempfile
-import threading
 import types
 
 from .base import fail, ok
-from .helpers import git, git_out, put, put_bytes, read_text
+from .helpers import fake_server, git, git_out, patched, put, put_bytes, read_text
 
 
 def files_checks():
     for check in (name_checks, change_checks, request_checks, commit_checks, csp_checks):
         check()
-
-
-def scratch_server(root, state):
-    """A stand-in for an instance on the paper in root, with what the Files tab's requests use."""
-    return types.SimpleNamespace(paper_root=root, paper_id="paper-test", default_pdf="main.pdf", editable=None, assets=None,
-                                 added=set(), added_file=os.path.join(state, "added", "paper-test-main.json"), uploads={}, autocommit=False,
-                                 pending_file=os.path.join(state, "pending.json"),
-                                 last_writer={}, pending={}, pending_lock=threading.Lock(), write_seq=0)
 
 
 def name_checks():
@@ -148,57 +139,54 @@ def request_checks():
     from latexlive import config, editor, sources
     owner = {"id": "owner", "name": "Owner", "role": "owner", "macro": "", "email": None, "via": "token"}
     ed = {"id": "ed", "name": "Eden", "role": "editor", "macro": "ed", "email": None, "via": "proxy"}
-    saved = (config.SHARED, config.STATE, editor.paused, editor.UPLOAD_TOTAL, editor.UPLOAD_RATE, editor.ASSETS_LIMIT)
-    with tempfile.TemporaryDirectory(prefix="latex-live-requests-") as root, tempfile.TemporaryDirectory() as state:
+    limits = {"UPLOAD_TOTAL": editor.UPLOAD_TOTAL, "UPLOAD_RATE": editor.UPLOAD_RATE, "ASSETS_LIMIT": editor.ASSETS_LIMIT}  # (as they are)
+    with tempfile.TemporaryDirectory(prefix="latex-live-requests-") as root, tempfile.TemporaryDirectory() as state, \
+            patched(config, STATE=state, SHARED=config.SHARED), patched(editor, paused=lambda s: None, **limits):
         put(os.path.join(root, "main.tex"), "\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n")
         put_bytes(os.path.join(root, "figures", "old.png"), b"x" * 10)
         put_bytes(os.path.join(root, "other", "theirs.png"), b"x" * 10)
         put(os.path.join(root, "build", "main-live.fls"), f"PWD {root}\nINPUT {root}/figures/old.png\n")
-        server = scratch_server(root, state)
+        server = fake_server(root, state)
         b64 = lambda data: __import__("base64").b64encode(data).decode()
-        try:
-            editor.paused, config.STATE = (lambda s: None), state
-            want = lambda result, status, what: result[0] == status or fail(f"{what}: {result}, not {status}")
-            want(editor.upload_request(server, {"path": "sec.tex", "data": b64(b"x")}, ed), 400, "uploading a source")
-            want(editor.create_request(server, {"path": "sec/new.tex", "text": "New\n"}, ed), 200, "making sec/new.tex")
-            want(editor.create_request(server, {"path": "sec/new.tex"}, ed), 409, "making sec/new.tex again")
-            if "sec/new.tex" not in sources.editable_files(server):
-                fail("the editor does not open a source made in the Files tab (no \\input names it)")
-            for path in ("main.tex", "./main.tex"):
-                want(editor.rename_request(server, {"from": path, "to": "paper.tex"}, owner), 404, f"renaming {path}")
-                want(editor.delete_request(server, {"path": path}, owner), 404, f"removing {path}")
-            want(editor.rename_request(server, {"from": "figures/old.png", "to": "figures/old.tex"}, owner), 400, "a figure renamed to a source")
-            want(editor.upload_request(server, {"path": "figures/new.png", "data": "not base64!"}, ed), 400, "data that is not base64")
-            want(editor.upload_request(server, {"path": "figures/old.png", "data": b64(b"y")}, ed), 409, "an upload over a figure")
-            editor.UPLOAD_TOTAL = 25
-            want(editor.upload_request(server, {"path": "figures/big.png", "data": b64(b"y" * 6)}, ed), 413, "past the paper's bytes")
-            editor.UPLOAD_TOTAL, editor.ASSETS_LIMIT = 10 ** 9, 2
-            want(editor.upload_request(server, {"path": "figures/many.png", "data": b64(b"y")}, ed), 413, "past the paper's figures")
-            editor.ASSETS_LIMIT, editor.UPLOAD_RATE, config.SHARED = 400, 8, True
-            want(editor.upload_request(server, {"path": "figures/a.png", "data": b64(b"y" * 5)}, ed), 200, "a coauthor's first upload")
-            want(editor.upload_request(server, {"path": "figures/b.png", "data": b64(b"y" * 5)}, ed), 429, "past a coauthor's bytes a day")
-            want(editor.upload_request(server, {"path": "figures/c.png", "data": b64(b"y" * 5)}, owner), 200, "the owner, past that")
-            for user, want_paths in ((ed, ["figures/a.png", "figures/c.png", "figures/old.png"]),
-                                     (owner, ["figures/a.png", "figures/c.png", "figures/old.png", "other/theirs.png"])):
-                found = [a["path"] for a in editor.files_listing(server, user)["assets"]]
-                if found != want_paths:
-                    fail(f"in shared mode, the {user['role']}'s Files tab lists {found}, not {want_paths}")
-            want(editor.asset_request(server, {"path": ["other/theirs.png"]}, ed), 404, "a coauthor reading a figure the document doesn't use")
-            want(editor.delete_request(server, {"path": "other/theirs.png"}, ed), 404, "a coauthor removing a figure the document doesn't use")
-            if editor.asset_request(server, {"path": ["figures/old.png"]}, ed)[:2] != (200, "image/png"):
-                fail("GET asset of the document's figure, for a coauthor")
-            server.autocommit = True
-            want(editor.rename_request(server, {"from": "figures/a.png", "to": "figures/renamed.png"}, ed), 200, "renaming a figure")
-            want(editor.delete_request(server, {"path": "sec/new.tex"}, ed), 200, "removing sec/new.tex")
-            remembered = {rel: kind for rel, (kind, _) in server.pending["ed"]["paths"].items()}
-            if remembered != {"figures/a.png": "files", "figures/renamed.png": "files", "sec/new.tex": "files"}:
-                fail(f"the Files tab's changes are remembered for their commit as {remembered}")
-            restarted = scratch_server(root, state)
-            sources.load_added(restarted)
-            if restarted.added != {"figures/renamed.png", "figures/c.png"}:
-                fail(f"the files added, as a restart reads them back: {restarted.added}")
-        finally:
-            config.SHARED, config.STATE, editor.paused, editor.UPLOAD_TOTAL, editor.UPLOAD_RATE, editor.ASSETS_LIMIT = saved
+        want = lambda result, status, what: result[0] == status or fail(f"{what}: {result}, not {status}")
+        want(editor.upload_request(server, {"path": "sec.tex", "data": b64(b"x")}, ed), 400, "uploading a source")
+        want(editor.create_request(server, {"path": "sec/new.tex", "text": "New\n"}, ed), 200, "making sec/new.tex")
+        want(editor.create_request(server, {"path": "sec/new.tex"}, ed), 409, "making sec/new.tex again")
+        if "sec/new.tex" not in sources.editable_files(server):
+            fail("the editor does not open a source made in the Files tab (no \\input names it)")
+        for path in ("main.tex", "./main.tex"):
+            want(editor.rename_request(server, {"from": path, "to": "paper.tex"}, owner), 404, f"renaming {path}")
+            want(editor.delete_request(server, {"path": path}, owner), 404, f"removing {path}")
+        want(editor.rename_request(server, {"from": "figures/old.png", "to": "figures/old.tex"}, owner), 400, "a figure renamed to a source")
+        want(editor.upload_request(server, {"path": "figures/new.png", "data": "not base64!"}, ed), 400, "data that is not base64")
+        want(editor.upload_request(server, {"path": "figures/old.png", "data": b64(b"y")}, ed), 409, "an upload over a figure")
+        editor.UPLOAD_TOTAL = 25
+        want(editor.upload_request(server, {"path": "figures/big.png", "data": b64(b"y" * 6)}, ed), 413, "past the paper's bytes")
+        editor.UPLOAD_TOTAL, editor.ASSETS_LIMIT = 10 ** 9, 2
+        want(editor.upload_request(server, {"path": "figures/many.png", "data": b64(b"y")}, ed), 413, "past the paper's figures")
+        editor.ASSETS_LIMIT, editor.UPLOAD_RATE, config.SHARED = 400, 8, True
+        want(editor.upload_request(server, {"path": "figures/a.png", "data": b64(b"y" * 5)}, ed), 200, "a coauthor's first upload")
+        want(editor.upload_request(server, {"path": "figures/b.png", "data": b64(b"y" * 5)}, ed), 429, "past a coauthor's bytes a day")
+        want(editor.upload_request(server, {"path": "figures/c.png", "data": b64(b"y" * 5)}, owner), 200, "the owner, past that")
+        for user, want_paths in ((ed, ["figures/a.png", "figures/c.png", "figures/old.png"]),
+                                 (owner, ["figures/a.png", "figures/c.png", "figures/old.png", "other/theirs.png"])):
+            found = [a["path"] for a in editor.files_listing(server, user)["assets"]]
+            if found != want_paths:
+                fail(f"in shared mode, the {user['role']}'s Files tab lists {found}, not {want_paths}")
+        want(editor.asset_request(server, {"path": ["other/theirs.png"]}, ed), 404, "a coauthor reading a figure the document doesn't use")
+        want(editor.delete_request(server, {"path": "other/theirs.png"}, ed), 404, "a coauthor removing a figure the document doesn't use")
+        if editor.asset_request(server, {"path": ["figures/old.png"]}, ed)[:2] != (200, "image/png"):
+            fail("GET asset of the document's figure, for a coauthor")
+        server.autocommit = True
+        want(editor.rename_request(server, {"from": "figures/a.png", "to": "figures/renamed.png"}, ed), 200, "renaming a figure")
+        want(editor.delete_request(server, {"path": "sec/new.tex"}, ed), 200, "removing sec/new.tex")
+        remembered = {rel: kind for rel, (kind, _) in server.pending["ed"]["paths"].items()}
+        if remembered != {"figures/a.png": "files", "figures/renamed.png": "files", "sec/new.tex": "files"}:
+            fail(f"the Files tab's changes are remembered for their commit as {remembered}")
+        restarted = fake_server(root, state)
+        sources.load_added(restarted)
+        if restarted.added != {"figures/renamed.png", "figures/c.png"}:
+            fail(f"the files added, as a restart reads them back: {restarted.added}")
     ok("the Files tab's requests: a source made, never uploaded; the main file kept; the limits on uploads (a coauthor's"
        " bytes a day, not the owner's); a coauthor's figures are the document's; the files added listed and kept for a"
        " restart; every change remembered for its commit")
@@ -218,7 +206,7 @@ def commit_checks():
         put_bytes(os.path.join(root, "figures", "old.png"), b"old")
         git(root, "add", "-A")
         git(root, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "start")
-        server = scratch_server(root, state)
+        server = fake_server(root, state)
         server.autocommit = True
         user = {"id": "ed", "name": "Eden Doyle", "email": "eden@example.org", "role": "editor", "macro": "ed", "via": "proxy"}
         os.rename(os.path.join(root, "figures", "old.png"), os.path.join(root, "figures", "moved.png"))
@@ -232,18 +220,17 @@ def commit_checks():
         if paths["sec.tex"][0] != "files":
             fail(f"an edit of a file the Files tab made makes it an edit only: {paths['sec.tex']}")
         run = commits.subprocess.run  # (a commit that fails: the new files it added leave the index again)
-        commits.subprocess.run = lambda args, **kw: (types.SimpleNamespace(returncode=1, stdout="", stderr="refused")
-                                                     if "--only" in args else run(args, **kw))
+        refuse = lambda args, **kw: types.SimpleNamespace(returncode=1, stdout="", stderr="refused") if "--only" in args else run(args, **kw)
         try:
-            commits.commit_files(server, user, dict(paths))
+            with patched(commits.subprocess, run=refuse):
+                commits.commit_files(server, user, dict(paths))
             fail("commit_files did not say that git refused the commit")
         except RuntimeError:
             pass
-        finally:
-            commits.subprocess.run = run
         if git_out(root, "diff", "--cached", "--name-only"):
             fail(f"a failed commit left new files in the index: {git_out(root, 'diff', '--cached', '--name-only')}")
-        made = commits.commit_files(server, user, dict(paths))
+        with contextlib.redirect_stdout(io.StringIO()):  # (its "committed" line)
+            made = commits.commit_files(server, user, dict(paths))
         changes = sorted(git_out(root, "show", "--name-status", "--format=", "-M", "HEAD").splitlines())
         want = sorted(["A\tfigures/new.png", "A\tsec.tex", "R100\tfigures/old.png\tfigures/moved.png"])
         if not made or changes != want or git_out(root, "show", "-s", "--format=%an", "HEAD") != "Eden Doyle":

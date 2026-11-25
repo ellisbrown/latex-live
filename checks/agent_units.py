@@ -7,6 +7,7 @@ settings or other secrets) in an empty folder; the hook is off without a plugin 
 marked LATEX_LIVE_PROTECTED both ways (without running the plugin for a request), and runs one revision at a time;
 python3 -m latexlive.agent --test tries a plugin, the example's too."""
 
+import gc
 import json
 import os
 import re
@@ -16,9 +17,10 @@ import sys
 import tempfile
 import threading
 import time
+import warnings
 
 from .base import ENV, HERE, fail, ok, wait_for
-from .helpers import agent_example, put
+from .helpers import agent_example, patched, put, read_text
 
 PLUGINS = {
     "echo": "import json, sys\nr = json.load(sys.stdin)\nprint(json.dumps({'replacement': r['selection'].upper(),"
@@ -46,21 +48,16 @@ REQUEST = {"selection": "two  words", "paragraph": "Before. two  words. After.",
 
 def agent_checks():
     from latexlive import agent, config
-    saved = {name: getattr(config, name) for name in ("AGENT_CMD", "AGENT_ENV", "SHARED", "PROTECTED_RE")}
-    with tempfile.TemporaryDirectory(prefix="latex-live-agent-check-") as tmp:
+    settings = {"SHARED": False, "AGENT_ENV": [], "PROTECTED_RE": re.compile(r"\\eb\{human-written\}"),
+                "AGENT_CMD": config.AGENT_CMD}  # (as it is: request_checks sets it)
+    with tempfile.TemporaryDirectory(prefix="latex-live-agent-check-") as tmp, patched(config, **settings):
         for name, code in PLUGINS.items():
             put(os.path.join(tmp, f"{name}.py"), code)
         cmd = lambda name, *args: " ".join(shlex.quote(a) for a in (sys.executable, os.path.join(tmp, f"{name}.py"), *args))
-        try:
-            config.SHARED, config.AGENT_ENV = False, []
-            config.PROTECTED_RE = re.compile(r"\\eb\{human-written\}")
-            answer_checks(agent, cmd)
-            stop_checks(agent, cmd, tmp)
-            env_checks(agent, config, cmd)
-            request_checks(agent, config, cmd, tmp)
-        finally:
-            for name, value in saved.items():
-                setattr(config, name, value)
+        answer_checks(agent, cmd)
+        stop_checks(agent, cmd, tmp)
+        env_checks(agent, config, cmd)
+        request_checks(agent, config, cmd, tmp)
     test_checks()
 
 
@@ -112,20 +109,27 @@ def stop_checks(agent, cmd, tmp):
     started = time.monotonic()
     error, _ = agent.run_plugin(cmd("sleeper", tmp), REQUEST, timeout=3)  # (time to start and write its pids, if slow)
     took = time.monotonic() - started
-    pids = [int(p) for p in open(os.path.join(tmp, "pids")).read().split()]
+    pids = [int(p) for p in read_text(os.path.join(tmp, "pids")).split()]
     if error != "the plugin did not answer within 3 s" or took > 8:
         fail(f"a plugin past its timeout: {error!r} after {took:.1f} s")
     wait_for("the timed-out plugin and its child to be gone", lambda: all(gone(p) for p in pids), timeout=5)
     os.remove(os.path.join(tmp, "pids"))
     error, result = agent.run_plugin(cmd("leaves", tmp), REQUEST, timeout=20)
-    child = int(open(os.path.join(tmp, "pids")).read())
+    child = int(read_text(os.path.join(tmp, "pids")))
     if error or result["replacement"] != "x":
         fail(f"a plugin that answers and leaves a child running (on its stdout): {error!r} {result}")
     wait_for("the child a plugin left running to be gone", lambda: gone(child), timeout=5)
-    error, result = agent.run_plugin(cmd("escapes", tmp), REQUEST, timeout=20)  # (a child in a session of its own)
-    os.kill(int(open(os.path.join(tmp, "pids")).read()), 9)
+    with warnings.catch_warnings(record=True) as warned:  # (the reader that outlives run_plugin closes the pipe itself)
+        warnings.simplefilter("always", ResourceWarning)
+        threads = threading.active_count()
+        error, result = agent.run_plugin(cmd("escapes", tmp), REQUEST, timeout=20)  # (a child in a session of its own)
+        os.kill(int(read_text(os.path.join(tmp, "pids"))), 9)
+        wait_for("the readers of the plugin's output to finish", lambda: threading.active_count() <= threads, timeout=5)
+        gc.collect()
     if result is not None or error != "the plugin left a process running that holds its output open":
         fail(f"a plugin whose child left its process group, holding its stdout: {error!r} {result}")
+    if leaked := [str(w.message) for w in warned if issubclass(w.category, ResourceWarning)]:
+        fail(f"a plugin whose child left its process group leaves its pipes unclosed: {leaked}")
     started = time.monotonic()
     error, _ = agent.run_plugin(cmd("floods"), REQUEST, timeout=20)
     if error != f"the plugin printed more than {agent.OUTPUT_LIMIT >> 10} KB" or time.monotonic() - started > 5:
@@ -149,11 +153,10 @@ def env_checks(agent, config, cmd):
                "AGENT_CHECK_EXTRA": "yes"}
     before = {name: os.environ.get(name) for name in planted}
     os.environ.update(planted)
-    config.AGENT_ENV = ["AGENT_CHECK_EXTRA", "LATEX_LIVE_USERS"]
     try:
-        error, result = agent.run_plugin(cmd("env"), REQUEST, timeout=20)
+        with patched(config, AGENT_ENV=["AGENT_CHECK_EXTRA", "LATEX_LIVE_USERS"]):
+            error, result = agent.run_plugin(cmd("env"), REQUEST, timeout=20)
     finally:
-        config.AGENT_ENV = []
         for name, value in before.items():
             if value is None:
                 os.environ.pop(name, None)
@@ -219,13 +222,18 @@ def request_checks(agent, config, cmd, tmp):
 
 
 def test_checks():
-    """python3 -m latexlive.agent --test CMD: the example plugin passes, a broken one doesn't."""
+    """python3 -m latexlive.agent --test CMD: the example plugin passes, also given by a path relative to the current
+    folder (made absolute, with a note that LATEX_LIVE_AGENT_CMD needs absolute paths); a broken one doesn't."""
     tidy = agent_example()
     run = lambda command: subprocess.run([sys.executable, "-m", "latexlive.agent", "--test", command], cwd=HERE, env=ENV,
                                          capture_output=True, text=True, timeout=60)
     good, broken = run(tidy), run("/nonexistent/plugin")
-    if good.returncode or "valid" not in good.stdout or "We use a novel method" not in good.stdout:
+    relative = run(f"{shlex.quote(sys.executable)} {os.path.join('examples', 'agent-tidy.py')}")
+    if good.returncode or "valid" not in good.stdout or "We use a novel method" not in good.stdout or "note:" in good.stdout:
         fail(f"python3 -m latexlive.agent --test on the example plugin:\n{good.stdout}{good.stderr}")
+    if relative.returncode or "We use a novel method" not in relative.stdout or "absolute paths" not in relative.stdout:
+        fail(f"python3 -m latexlive.agent --test on the example plugin by a relative path:\n{relative.stdout}{relative.stderr}")
     if broken.returncode != 1 or "not valid" not in broken.stderr:
         fail(f"python3 -m latexlive.agent --test on a missing plugin: {broken.returncode}\n{broken.stdout}{broken.stderr}")
-    ok("python3 -m latexlive.agent --test passes the example plugin (examples/agent-tidy.py) and fails a missing one")
+    ok("python3 -m latexlive.agent --test passes the example plugin (examples/agent-tidy.py; by a relative path too, saying"
+       " that LATEX_LIVE_AGENT_CMD needs an absolute one) and fails a missing one")

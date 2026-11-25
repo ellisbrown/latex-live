@@ -1,6 +1,7 @@
 """Shared mode's builds (rebuild_stop_checks): a rebuild stops the run and its container, the status ignores files
 forged in build/, a removed or failed input rebuilds, saves in a row make one build, build/'s size limit, no dot
-entry in a container, a tool's deadline; and a forged lock file (lock_spoof_checks)."""
+entry in a container, a tool's deadline; and a forged lock file (lock_spoof_checks). They run on a shared-mode
+instance of their own (shared_setup.rebuild_setup), in a thread of their own (rebuild_run)."""
 
 import glob
 import json
@@ -14,10 +15,34 @@ import sys
 import threading
 import time
 
-from .base import DECOY_PORT, ENV, HERE, SHARED_PORT, fail, ok, prints_token, wait_for
-from .helpers import mtime_ns, put, put_bytes, read_bytes, read_text, texlive_image
-from .shared_helpers import expect, instance_containers, labelled_containers, settled, shared_status, with_token
+from .base import DECOY_PORT, ENV, HERE, fail, ok, prints_token, wait_for
+from .helpers import editor_calls, mtime_ns, patched, put, put_bytes, read_bytes, read_text, stop, texlive_image
+from .shared_helpers import expect, instance_containers, quiet_log, settled, shared_status, with_token
 from .shared_setup import BIBDATA_NAME
+
+
+def rebuild_run(sh, sharing):
+    """The rebuild checks, on their own instance once its first build has settled, then its stop: no container
+    left, and no token or traceback printed."""
+    pid = sh["proc"].pid
+
+    def built():
+        if sh["proc"].poll() is not None:
+            fail(f"the shared-mode instance of the rebuild checks exited (status {sh['proc'].returncode})")
+        if (shared_status(sh).get("build") or {}).get("ok") is False:
+            fail(f"the rebuild checks' shared copy does not build: {shared_status(sh)['build'].get('errors')}")
+        return (shared_status(sh).get("build") or {}).get("ok") and settled(sh)
+
+    wait_for("the rebuild checks' shared copy to build", built)
+    rebuild_stop_checks(sh)
+    stop(sh["proc"])
+    sharing.remove(sh["proc"])
+    if left := instance_containers(pid, every=True):
+        subprocess.run(["podman", "rm", "-f", "-t", "0", *left], capture_output=True, timeout=60)
+        fail(f"the stopped shared-mode instance of the rebuild checks left {len(left)} containers")
+    quiet_log(sh["log"], "the shared-mode instance of the rebuild checks")
+    if editor_calls(sh["host_tex_log"]):
+        fail(f"shared mode ran the host's TeX: {editor_calls(sh['host_tex_log'])}")
 
 
 def rebuild_stop_checks(sh):
@@ -25,20 +50,19 @@ def rebuild_stop_checks(sh):
     shared copy's people.tex reads it while it exists), not only the podman client; and the build's state comes
     from the server, not from files in build/, where the paper's TeX writes (a status, a .building marker and a
     record of what was published, all forged)."""
-    root, owner, pid = sh["root"], sh["token"], sh["proc"].pid
+    root, owner, pid, port = sh["root"], sh["token"], sh["proc"].pid, sh["port"]
     slow = os.path.join(root, "slow.tex")
+    wait_for("the shared copy's build to settle, no pass running", lambda: settled(sh) and not instance_containers(pid, "main"),
+             timeout=120, step=0.2)  # (so the rebuild's first pass is the first one seen: a pass that slow.tex keeps busy)
     put(slow, "\\loop\\ifnum\\pdfelapsedtime<3932160 \\repeat\n")  # (a minute of each pass)
     try:
-        expect(with_token(owner, "/rebuild", "POST", {}), 202, "the owner rebuilding")
-        wait_for("a container of the rebuild", lambda: instance_containers(pid, "main"), timeout=60, step=0.2)
-        time.sleep(3)  # (a pass without slow.tex is over by now)
-        busy = wait_for("a pass that slow.tex keeps busy", lambda: instance_containers(pid, "main"), timeout=30, step=0.2)
-        sh["instance"] = next((f[1] for f in labelled_containers() if f[0] in busy), None)  # (its config.INSTANCE: shared_stop_checks)
-        expect(with_token(owner, "/rebuild", "POST", {}), 202, "the owner rebuilding during that pass")
+        expect(with_token(owner, "/rebuild", "POST", {}, port=port), 202, "the owner rebuilding")
+        busy = wait_for("a pass that slow.tex keeps busy", lambda: instance_containers(pid, "main"), timeout=60, step=0.2)
+        expect(with_token(owner, "/rebuild", "POST", {}, port=port), 202, "the owner rebuilding during that pass")
         wait_for("the busy pass's container to be gone", lambda: not busy & instance_containers(pid), timeout=20, step=0.2)
     finally:
         os.remove(slow)
-    expect(with_token(owner, "/rebuild", "POST", {}), 202, "the owner rebuilding without slow.tex")
+    expect(with_token(owner, "/rebuild", "POST", {}, port=port), 202, "the owner rebuilding without slow.tex")
     wait_for("the shared copy's build to settle", lambda: settled(sh), timeout=120)
     ok("a rebuild stops the run in progress, and its container")
 
@@ -106,7 +130,7 @@ def rebuild_stop_checks(sh):
     ok("a failed bibtex runs again on the next run, though nothing it reads changed")
 
     with open(sh["log"], errors="replace") as f:
-        runs = len(re.findall(r"=== live-reload: (?:published|BUILD FAILED)", f.read()))
+        runs = len(re.findall(r"=== latex-live: (?:published|BUILD FAILED)", f.read()))
     began = time.monotonic()
     while time.monotonic() - began < 3:  # (saves in a row: one build, once they stop)
         os.utime(main)
@@ -114,14 +138,14 @@ def rebuild_stop_checks(sh):
     wait_for("the shared copy's build to settle", lambda: settled(sh) and (shared_status(sh).get("build") or {}).get("ok"),
              timeout=120)
     with open(sh["log"], errors="replace") as f:
-        made = len(re.findall(r"=== live-reload: (?:published|BUILD FAILED)", f.read())) - runs
+        made = len(re.findall(r"=== latex-live: (?:published|BUILD FAILED)", f.read())) - runs
     if not 1 <= made <= 2:
         fail(f"12 changes to main.tex within 3 s made {made} builds, not one (or two)")
     ok(f"changes in a row make one build once they stop ({made})")
 
     refer, later = os.path.join(root, "refer.tex"), os.path.join(root, "later.tex")
     put(refer, "\\input{later}\n")  # (a file that doesn't exist yet, as an edit that refers to a figure still to come)
-    expect(with_token(owner, "/rebuild", "POST", {}), 202, "the owner rebuilding with refer.tex")
+    expect(with_token(owner, "/rebuild", "POST", {}, port=port), 202, "the owner rebuilding with refer.tex")
     wait_for("a build that misses later.tex", lambda: (b := shared_status(sh).get("build") or {}).get("ok") is False
              and b.get("began", 0) >= mtime_ns(refer) and not shared_status(sh).get("building"), timeout=60, step=0.5)
     put(later, "% It came later.\n")
@@ -132,7 +156,7 @@ def rebuild_stop_checks(sh):
     finally:
         os.remove(refer)
         os.remove(later)
-    expect(with_token(owner, "/rebuild", "POST", {}), 202, "the owner rebuilding without refer.tex")
+    expect(with_token(owner, "/rebuild", "POST", {}, port=port), 202, "the owner rebuilding without refer.tex")
     wait_for("the shared copy's build to settle", lambda: settled(sh) and (shared_status(sh).get("build") or {}).get("ok"),
              timeout=120)
     ok("a file that a failed build missed builds the paper once it appears")
@@ -144,14 +168,14 @@ def rebuild_stop_checks(sh):
         "{\\count255=0 \\loop\\immediate\\write\\diskf{\\diskc}\\advance\\count255 by 1 \\ifnum\\count255<1000 \\repeat}"
         "\\immediate\\closeout\\diskf \\ifnum\\diskn<500 \\repeat\n")
     try:
-        expect(with_token(owner, "/rebuild", "POST", {}), 202, "the owner rebuilding with disk.tex")
+        expect(with_token(owner, "/rebuild", "POST", {}, port=port), 202, "the owner rebuilding with disk.tex")
         full = wait_for("a build stopped for filling build/", lambda: "LATEX_LIVE_BUILD_LIMIT" in json.dumps(
             (shared_status(sh).get("build") or {}).get("errors")) and shared_status(sh)["build"], timeout=120, step=0.5)
         wait_for("build/ emptied and the run's container gone", lambda: not glob.glob(os.path.join(root, "build", "junk*.txt"))
                  and not instance_containers(pid, "main"), timeout=10, step=0.5)
     finally:
         os.remove(os.path.join(root, "disk.tex"))
-    expect(with_token(owner, "/rebuild", "POST", {}), 202, "the owner rebuilding without disk.tex")
+    expect(with_token(owner, "/rebuild", "POST", {}, port=port), 202, "the owner rebuilding without disk.tex")
     wait_for("the shared copy's build to settle", lambda: settled(sh) and (shared_status(sh).get("build") or {}).get("ok"),
              timeout=120)
     ok(f"a build that fills build/ past LATEX_LIVE_BUILD_LIMIT is stopped, build/ emptied, and it says so"
@@ -166,7 +190,7 @@ def rebuild_stop_checks(sh):
     if not os.path.exists(lock) or os.stat(lock).st_ino != held:
         fail("emptying build/ removed the instance's own lock file")
     asked = time.time_ns()
-    expect(with_token(owner, "/rebuild", "POST", {}), 202, "the owner rebuilding after build/ was emptied")
+    expect(with_token(owner, "/rebuild", "POST", {}, port=port), 202, "the owner rebuilding after build/ was emptied")
     wait_for("the rebuild after build/ was emptied", lambda: (b := shared_status(sh).get("build") or {}).get("ok")
              and b.get("began", 0) >= asked and not shared_status(sh).get("building"), timeout=180, step=0.5)
     ok("a large file in build/ named like a lock file is removed with the rest when build/ is emptied; the instance's lock stays")
@@ -199,17 +223,13 @@ def rebuild_stop_checks(sh):
     ok("a shared-mode container sees no .git or other dot entry of the paper, at any depth (empty in their place)")
 
     from latexlive import config, tools
-    saved = config.SHARED, config.INSTANCE
-    config.SHARED, config.INSTANCE = True, f"{pid}-timeoutcheck"
-    try:
+    with patched(config, SHARED=True, INSTANCE=f"{pid}-timeoutcheck"):
         free = tools.SPAWNS._value
         code, _ = tools.run_tool([os.path.join(HERE, "tex-exec"), image, root, "sleep", "120"], root, timeout=8, kind="synctex",
                                 env={**ENV, "LATEX_LIVE_SANDBOX": "1", "LATEX_LIVE_REQUIRE_IMAGE": "1",
                                      "LATEX_LIVE_INSTANCE": config.INSTANCE})
         left = subprocess.run(["podman", "ps", "-q", "--filter", f"label=latex-live.instance={config.INSTANCE}"], capture_output=True,
                               text=True, timeout=60).stdout.split()
-    finally:
-        config.SHARED, config.INSTANCE = saved
     if code == 0 or left or tools.SPAWNS._value != free:  # (None: stopped by run_tool; else by podman's own, equal, deadline)
         fail(f"a tool that ran out of time: exit {code}, {len(left)} container(s) left, {tools.SPAWNS._value} of {free} slots free")
     ok("a tool that runs out of time has its container stopped before its slot is free again")
@@ -254,7 +274,7 @@ def lock_spoof_checks(sh):
             f.write(json.dumps({"port": DECOY_PORT, "pid": sh["proc"].pid}))
         try:
             again = subprocess.run([sys.executable, os.path.join(HERE, "live.py"), "main.tex", "--no-build", "--no-open", "--port",
-                                    str(SHARED_PORT)], cwd=sh["root"], env=sh["env"], capture_output=True, text=True, timeout=60)
+                                    str(sh["port"])], cwd=sh["root"], env=sh["env"], capture_output=True, text=True, timeout=60)
         finally:
             with open(path, "r+") as f:
                 f.truncate()

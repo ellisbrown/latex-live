@@ -4,7 +4,6 @@ bounds, failures and waits, the bibliography's SyncTeX lookups, tool timeouts, t
 timing lines, the restart prompt, the static files the server sends, the bibliography (bib_units), the Files tab
 (files_units), the History tab (history_units) and the agent hook (agent_units)."""
 
-import collections
 import contextlib
 import glob
 import gzip
@@ -17,10 +16,10 @@ import sys
 import tempfile
 import threading
 import time
-import types
 
 from .base import HERE, fail, ok, wait_for
-from .helpers import put, put_bytes, read_bytes, tex_stand_in
+from .helpers import fake_server, git, git_out, patched, put, put_bytes, read_bytes, tex_stand_in
+from .static import link_modules
 from .shared_units import baseline_failure_checks, build_link_checks, confinement_checks, shared_build_checks
 from .bib_units import bib_checks
 from .files_units import files_checks
@@ -32,7 +31,7 @@ def unit_checks():
     """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
     for check in (layout_checks, matching_checks, confinement_checks, build_link_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
-                  code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, completion_checks, assets_checks, search_checks, logs_checks, presence_checks, word_column_checks, venue_checks, diff_retry_checks,
+                  code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, forward_script_checks, link_checks, completion_checks, assets_checks, search_checks, logs_checks, presence_checks, word_column_checks, venue_checks, diff_retry_checks,
                   arxiv_strip_checks, graphics_synctex_checks, turned_page_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks,
                   header_deadline_checks, in_flight_checks, note_limit_checks, bib_checks, files_checks, history_checks, agent_checks):
         check()
@@ -79,9 +78,7 @@ def code_updated_checks():
                 script = os.path.join(HERE, f"{name}.py")
                 if os.path.isfile(script) and script not in watched:
                     fail(f"code_updated does not watch {name}.py, which {os.path.relpath(path, HERE)} imports")
-    saved, tmp = config.HERE, tempfile.mkdtemp(prefix="latex-live-check-")
-    try:
-        config.HERE = tmp
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp, patched(config, HERE=tmp):
         for name in ("live.py", "VERSION", "latexlive/a.py", "latexlive/b.py"):
             put(os.path.join(tmp, name), f"{name}\n")
         started = {}
@@ -105,9 +102,6 @@ def code_updated_checks():
         updated("removing it again", False)
         os.remove(b)
         updated("removing a module", True)
-    finally:
-        config.HERE = saved
-        shutil.rmtree(tmp)
     ok("a restart is asked for when a module of the server changes, is added or is removed")
 
 
@@ -116,9 +110,7 @@ def static_file_checks():
     files in pdfjs/, codemirror/ and viewer/, never a folder, a file elsewhere in the checkout, a path through
     .., or a link out of the file's folder (a link within it is followed)."""
     from latexlive import config, handler
-    saved, tmp = config.HERE, tempfile.mkdtemp(prefix="latex-live-check-")
-    try:
-        config.HERE = tmp
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp, patched(config, HERE=tmp):
         for name in ("viewer.html", "live.py", "viewer/main.js", "viewer/viewer.css", "pdfjs/build/pdf.min.mjs", "codemirror/view.js"):
             put(os.path.join(tmp, name), "x\n")
         os.symlink(os.path.join(tmp, "live.py"), os.path.join(tmp, "viewer", "out.js"))
@@ -131,9 +123,6 @@ def static_file_checks():
         wrong = [p for p in served if not handler.static_file(p)] + [p for p in refused if handler.static_file(p)]
         if wrong:
             fail(f"static_file is wrong about {wrong}")
-    finally:
-        config.HERE = saved
-        shutil.rmtree(tmp)
     ok("the server sends only the viewer's own files from the checkout, never through .. or a link out of their folder")
 
 
@@ -144,9 +133,7 @@ def bounds_checks():
     that says so, before they are read whole; within them, the probe's records are read as before, and so is a log
     whose wrapped lines split a UTF-8 character."""
     from latexlive import config, files, review, review_anchors, review_layout
-    saved, tmp = (config.OUTPUT_LIMIT, config.SYNCTEX_LIMIT), tempfile.mkdtemp(prefix="latex-live-check-")
-    try:
-        config.OUTPUT_LIMIT = config.SYNCTEX_LIMIT = 1 << 20
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp, patched(config, OUTPUT_LIMIT=1 << 20, SYNCTEX_LIMIT=1 << 20):
         root = os.path.join(tmp, "paper")
         out = os.path.join(root, "build", "review", "main")
         os.makedirs(out)
@@ -170,7 +157,7 @@ def bounds_checks():
 
         stand_in = os.path.join(tmp, "tex")
         os.makedirs(stand_in)
-        server = types.SimpleNamespace(paper_root=root, tex_exec=tex_stand_in(stand_in))
+        server = fake_server(root, tex_exec=tex_stand_in(stand_in))
         geo = review_layout.review_geometry({"W": 612, "H": 792, "columns": 1})
         notes = [{"id": 1, "macro": "eb", "body": "Check this", "call": "\\eb{Check this}"}]
         records = ("latex-live|pos|./body.tex|7|1|4000000|50000000|[EB: Check this]\n"
@@ -206,9 +193,6 @@ def bounds_checks():
         except RuntimeError as e:
             if "export.synctex.gz is over 1 MB uncompressed" not in str(e):
                 fail(f"a SyncTeX file past its bound: {e}")
-    finally:
-        config.OUTPUT_LIMIT, config.SYNCTEX_LIMIT = saved
-        shutil.rmtree(tmp, ignore_errors=True)
     ok("the downloads read TeX's logs, .aux, .bbl and SyncTeX files only up to a bound, past which they stop and say so;"
        " the probe's records are read from its log line by line; a log whose wrapping split a UTF-8 character reads")
 
@@ -282,8 +266,7 @@ def failed_export_checks():
         os.makedirs(stand_in)
         put(os.path.join(stand_in, "log"), "This is pdfTeX\n./main.tex:3: Undefined control sequence.\n")
         put(os.path.join(stand_in, "exit"), "1")
-        server = types.SimpleNamespace(paper_root=root, tex_exec=tex_stand_in(stand_in), export={}, exported={},
-                                       export_lock=threading.Lock(), download_lock=threading.Lock())
+        server = fake_server(root, tex_exec=tex_stand_in(stand_in))
 
         def runs(what, error="./main.tex:3: Undefined control sequence."):
             try:
@@ -311,13 +294,10 @@ def failed_export_checks():
                 f.write("timed out\n")
             return None, ""
 
-        saved, export.run_tool = export.run_tool, too_long
-        try:
+        with patched(export, run_tool=too_long):
             if (runs("an export that times out", "a pass took over 10 minutes"),
                     runs("it again", "a pass took over 10 minutes")) != (3, 3):
                 fail("an export that timed out was built again for the same build of the document")
-        finally:
-            export.run_tool = saved
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     ok("an export that failed or timed out fails again at once for the same build (no second build for the review"
@@ -338,8 +318,7 @@ def waiting_download_checks():
         put(status, "{}")
         put(building, "")
         os.utime(building, (time.time() + 5, time.time() + 5))  # (a run that started after the last one ended)
-        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", export={}, review={}, no_build=True,
-                                       download_lock=threading.Lock())
+        server = fake_server(root, no_build=True)
         if export.waiting_for_build(server, "main.pdf", {}) is not None:
             fail("with --no-build, the downloads wait for a build that a stopped one left marked as running")
         server.no_build = False
@@ -494,13 +473,9 @@ def source_swap_checks():
         put(os.path.join(outside, "ch.tex"), "secret\n")
         os.chmod(os.path.join(root, "sub", "ch.tex"), 0o640)
         real = sources.editable_real(root, os.path.join("sub", "ch.tex"))
-        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", versions=collections.OrderedDict(),
-                                       versions_lock=threading.Lock(), last_saves=collections.OrderedDict(), last_writer={},
-                                       autocommit=False, pending={}, pending_lock=threading.Lock(), git_name="Owner")
+        server = fake_server(root, git_name="Owner")
         listed = {"main.tex": sources.editable_real(root, "main.tex"), os.path.join("sub", "ch.tex"): real}
-        saved = editor.editable_files
-        editor.editable_files = lambda server, fresh=True: listed  # (as checked before the swap)
-        try:
+        with patched(editor, editable_files=lambda server, fresh=True: listed):  # (as checked before the swap)
             status, body = editor.file_request(server, {"path": [os.path.join("sub", "ch.tex")]})
             if status != 200 or body.get("text") != "chapter\n":
                 fail(f"the editor no longer reads a source: {status} {body}")
@@ -529,8 +504,6 @@ def source_swap_checks():
             except sources.SourceChanged:
                 endless = False
             final = editor.file_request(server, {"path": [os.path.join("sub", "ch.tex")]})
-        finally:
-            editor.editable_files = saved
         with open(os.path.join(outside, "ch.tex")) as f:
             if f.read() != "secret\n" or wrote_through or os.listdir(outside) != ["ch.tex"]:
                 fail("a save followed a folder swapped for a link out of the paper after the check")
@@ -548,19 +521,16 @@ def forward_cache_checks():
     have failed for now: a busy slot, the TeX Live image missing) is made again a few seconds later rather than kept
     for the build; requests for it meanwhile share it."""
     from latexlive import navigation
-    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
     calls, answers = [], [None, None]
-    saved = navigation.forward_target, navigation.synctex_unavailable
-    try:
+
+    def target(*args):
+        calls.append(args)
+        return answers.pop(0) if answers else ("main.pdf", {"page": 1, "x": 0, "y": 0, "w": 1, "h": 1})
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp, patched(navigation, forward_target=target,
+                                                                                  synctex_unavailable=lambda: None):
         root = os.path.join(tmp, "paper")
         put(os.path.join(root, "main.tex"), "text\n")
-        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", results={}, results_lock=threading.Lock())
-        navigation.synctex_unavailable = lambda: None
-
-        def target(*args):
-            calls.append(args)
-            return answers.pop(0) if answers else ("main.pdf", {"page": 1, "x": 0, "y": 0, "w": 1, "h": 1})
-        navigation.forward_target = target
+        server = fake_server(root)
         query = {"file": ["main.tex"], "line": ["1"]}
         first, again = navigation.forward_request(server, query), navigation.forward_request(server, query)
         for entry in server.results.values():  # (as if the few seconds had passed)
@@ -572,13 +542,48 @@ def forward_cache_checks():
         if any("expires" in entry for entry in server.results.values()):  # (a lookup that found the line is kept for the build)
             fail("forward search keeps what it found for only a few seconds")
         cached = navigation.forward_request(server, query)
-    finally:
-        navigation.forward_target, navigation.synctex_unavailable = saved
-        shutil.rmtree(tmp, ignore_errors=True)
     if first[0] != 404 or again[0] != 404 or later[0] != 404 or found[0] != 200 or cached[0] != 200 or len(calls) != 3:
         fail(f"forward search's misses are kept for the build, or not shared for a moment: {first[0]}, {again[0]}, {later[0]},"
              f" {found[0]}, {cached[0]} after {len(calls)} lookups")
     ok("forward search looks a line up again a few seconds after it found nothing, and keeps what it finds for the build")
+
+
+def link_checks():
+    """static's link of the viewer's modules (link_modules, with Node) finds what would blank the viewer, each in the
+    module that has it: a name imported that its module doesn't export, a module that doesn't parse, an import of no
+    file, a bare name the import map doesn't map; and it follows the import map's names (also a folder's, name/)."""
+    node = shutil.which("node")
+    if not node:
+        return print("skip: no node, so the check of the viewer's modules' link is not checked itself", flush=True)
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as root:
+        for name, text in {"lib/a.js": "export const a = 1;\n", "lib/deep/b.js": "export const b = 2;\n",
+                           "good.js": 'import { a } from "lib-a";\nimport { b } from "lib/deep/b.js";\nexport const c = a + b;\n',
+                           "missing.js": 'import { c } from "./good.js";\nimport { d } from "./lib/a.js";\n',
+                           "user.js": 'import "./missing.js";\n', "broken.js": "export const e = ;\n",
+                           "nofile.js": 'import "./gone.js";\n', "unmapped.js": 'import "elsewhere";\n'}.items():
+            put(os.path.join(root, name), text)
+        found = link_modules(node, root, {"lib-a": "./lib/a.js?v=1", "lib/": "./lib/"},
+                             ["good.js", "user.js", "missing.js", "broken.js", "nofile.js", "unmapped.js"])
+    want = ["missing.js: The requested module './lib/a.js' does not provide an export named 'd'", "broken.js does not parse",
+            "gone.js is not a file here", "unmapped.js imports elsewhere, which the import map does not map"]
+    if found["modules"] != 7 or len(found["problems"]) != len(want) or not all(
+            any(p.startswith(w) for p in found["problems"]) for w in want):
+        fail(f"the link of ES modules (link_modules) found {found}, not each of {want} once")
+    ok("the check of the viewer's modules' link finds a missing export, a syntax error, a missing file and an unmapped"
+       " name, each once, in the module that has it")
+
+
+def forward_script_checks():
+    """forward.py (the editor's "show line in PDF") says why when SyncTeX can't run (no synctex, and no podman to run
+    it in), rather than that the line is in no build."""
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as root:
+        put(os.path.join(root, "main.tex"), "text\n")
+        put_bytes(os.path.join(root, "build", "main-live.synctex.gz"), gzip.compress(b""))  # (a build to find the paper by)
+        r = subprocess.run([sys.executable, os.path.join(HERE, "forward.py"), "main.tex", "1"], cwd=root, capture_output=True,
+                           text=True, timeout=60, env={"PATH": os.path.join(root, "nothing"), "HOME": root})
+    if r.returncode != 1 or "no synctex" not in r.stderr:
+        fail(f"forward.py without synctex or podman: exit {r.returncode}, {r.stderr.strip()!r} (not why SyncTeX can't run)")
+    ok("forward.py says why SyncTeX can't run, rather than that the line is in no build")
 
 
 # Lines of a source file, and double-clicked words in them as the viewer sends them, with the column each lands on
@@ -614,34 +619,30 @@ def shown_synctex_checks():
     sys.path.insert(0, HERE)
     import latex_report
     from latexlive import files
-    saved = latex_report.BUILD
-    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
-        build = latex_report.BUILD = os.path.join(tmp, "build")
-        try:
-            own, kept, outside = (os.path.join(build, "main-live.synctex.gz"), os.path.join(build, "shown", "main-live.synctex.gz"),
-                                  os.path.join(tmp, "outside"))
-            put_bytes(own, b"first pass")
-            latex_report.keep_synctex(own)
-            if read_bytes(kept) != b"first pass":
-                fail(f"keep_synctex did not copy the SyncTeX file to build/shown/: {os.listdir(build)}")
-            os.remove(own)  # (as a failed pass does)
-            if files.shown_synctex(tmp, "main.pdf") != kept:
-                fail(f"after a failed pass, the lookups read {files.shown_synctex(tmp, 'main.pdf')}, not the copy kept")
-            put_bytes(outside, b"not the server's to write")
-            os.symlink(outside, os.path.join(build, "shown", ".main-live.synctex.gz.tmp"))
-            put_bytes(own, b"second pass")
-            latex_report.keep_synctex(own)
-            if read_bytes(outside) != b"not the server's to write" or read_bytes(kept) != b"second pass":
-                fail("keep_synctex wrote through a link in build/shown/, or kept no copy beside it")
-            os.mkfifo(os.path.join(build, "fifo-live.synctex.gz"))
-            copier = threading.Thread(target=latex_report.keep_synctex, args=(os.path.join(build, "fifo-live.synctex.gz"),),
-                                      daemon=True)
-            copier.start()
-            copier.join(5)
-            if copier.is_alive() or os.path.exists(os.path.join(build, "shown", "fifo-live.synctex.gz")):
-                fail("keep_synctex waits on a FIFO, or copies from it")
-        finally:
-            latex_report.BUILD = saved
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp, patched(latex_report, BUILD=os.path.join(tmp, "build")):
+        build = latex_report.BUILD
+        own, kept, outside = (os.path.join(build, "main-live.synctex.gz"), os.path.join(build, "shown", "main-live.synctex.gz"),
+                              os.path.join(tmp, "outside"))
+        put_bytes(own, b"first pass")
+        latex_report.keep_synctex(own)
+        if read_bytes(kept) != b"first pass":
+            fail(f"keep_synctex did not copy the SyncTeX file to build/shown/: {os.listdir(build)}")
+        os.remove(own)  # (as a failed pass does)
+        if files.shown_synctex(tmp, "main.pdf") != kept:
+            fail(f"after a failed pass, the lookups read {files.shown_synctex(tmp, 'main.pdf')}, not the copy kept")
+        put_bytes(outside, b"not the server's to write")
+        os.symlink(outside, os.path.join(build, "shown", ".main-live.synctex.gz.tmp"))
+        put_bytes(own, b"second pass")
+        latex_report.keep_synctex(own)
+        if read_bytes(outside) != b"not the server's to write" or read_bytes(kept) != b"second pass":
+            fail("keep_synctex wrote through a link in build/shown/, or kept no copy beside it")
+        os.mkfifo(os.path.join(build, "fifo-live.synctex.gz"))
+        copier = threading.Thread(target=latex_report.keep_synctex, args=(os.path.join(build, "fifo-live.synctex.gz"),),
+                                  daemon=True)
+        copier.start()
+        copier.join(5)
+        if copier.is_alive() or os.path.exists(os.path.join(build, "shown", "fifo-live.synctex.gz")):
+            fail("keep_synctex waits on a FIFO, or copies from it")
     ok("a publish keeps a copy of its SyncTeX file, which the lookups read after a failed pass; only from a regular file,"
        " never through a link")
 
@@ -740,45 +741,41 @@ def turned_page_checks():
     search), while the records outside it stay; the boxes and points of each line follow; without poppler, nothing
     changes; and where those pages are shown turned."""
     from latexlive import synctex
-    saved = synctex.pdf_tool
     info = "".join(f"Page    {n} size: 612 x 792 pts (letter)\nPage    {n} rot:  {r}\n" for n, r in ((1, 0), (2, 90), (3, 270), (4, 90)))
-    try:
-        with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
-            synctex_gz = os.path.join(tmp, "main-live.synctex.gz")
-            with gzip.open(synctex_gz, "wt") as f:
-                f.write(turned_synctex())
-            put_bytes(os.path.join(tmp, "main-live.pdf"), b"%PDF-1.5\n")  # (what pdfinfo reads: the stand-in)
-            synctex.pdf_tool = lambda argv, timeout=60: info if argv[0] == "pdfinfo" and argv[-1].endswith("main-live.pdf") else ""
-            turns = synctex.page_turns(synctex_gz)
-            angles = {page: [b[2] for b in t["blocks"]] for page, t in turns.items()}
-            if angles != {2: [90], 3: [270], 4: []}:
-                fail(f"the rotated blocks of turned pages: {angles} (want 90 on page 2, 270 on page 3, none on page 4)")
-            close = lambda a, b: len(a) == len(b) and all(abs(x - y) < 0.06 for p, q in zip(a, b) for x, y in zip(p, q))
-            spots = [synctex.on_page(turns.get(page), x, y) for page, x, y in (
-                (1, 150, 200), (2, 507.48, 472.75), (2, 1067.48, 572.75), (2, 306, 720), (3, 164, -75.2), (4, 150, 200))]
-            if not close(spots, [(150, 200), (277.48, 642.75), (377.48, 82.75), (306, 720), (334, 154.8), (150, 200)]):
-                fail(f"SyncTeX's records where they are drawn on turned pages: {spots}")
-            back = [synctex.as_recorded(turns.get(page), *xy) for page, xy in ((2, (277.48, 642.75)), (3, (334, 154.8)), (2, (306, 720)))]
-            if not close(back, [(507.48, 472.75), (164, -75.2), (306, 720)]):
-                fail(f"inverse search's points on turned pages, where SyncTeX records them: {back}")
-            boxes, points = synctex.synctex_boxes(synctex_gz), synctex.synctex_points(synctex_gz)
-            line = boxes.get(("/paper/main.tex", 6), [])
-            if not close(line, [(2, 270.48, 124.75, 279.48, 672.75), (3, 332.0, 124.8, 341.0, 672.8)]) or not close(
-                    points.get(("/paper/main.tex", 6), []), [(2, 277.48, 642.75), (3, 334.0, 154.8)]) or not close(
-                    points.get(("/paper/main.tex", 8), []), [(2, 306.0, 720.0), (3, 306.0, 720.0)]):
-                fail(f"a turned page's boxes and points where they are drawn: {line}, {points.get(('/paper/main.tex', 6))},"
-                     f" {points.get(('/paper/main.tex', 8))}")
-            shown = [synctex.shown_point(turns[page], 277.48, 642.75) + synctex.shown_size(turns[page]) for page in (2, 3)]
-            if not close(shown, [(149.25, 277.48, 792, 612), (642.75, 334.52, 792, 612)]):
-                fail(f"where a turned page's points are shown, and its size: {shown}")
-            synctex.pdf_tool = lambda argv, timeout=60: ""
-            for path in (synctex_gz, os.path.join(tmp, "main-live.pdf")):  # (a new build: looked up again)
-                os.utime(path, ns=(1, 1))
-            if synctex.page_turns(synctex_gz) or not close(synctex.synctex_points(synctex_gz).get(("/paper/main.tex", 6), []),
-                                                           [(2, 507.48, 472.75), (3, 164.0, -75.2)]):
-                fail("without poppler, SyncTeX's records should stay as recorded")
-    finally:
-        synctex.pdf_tool = saved
+    pdfinfo = lambda argv, timeout=60: info if argv[0] == "pdfinfo" and argv[-1].endswith("main-live.pdf") else ""  # (the stand-in)
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp, patched(synctex, pdf_tool=pdfinfo):
+        synctex_gz = os.path.join(tmp, "main-live.synctex.gz")
+        with gzip.open(synctex_gz, "wt") as f:
+            f.write(turned_synctex())
+        put_bytes(os.path.join(tmp, "main-live.pdf"), b"%PDF-1.5\n")  # (what pdfinfo reads: the stand-in)
+        turns = synctex.page_turns(synctex_gz)
+        angles = {page: [b[2] for b in t["blocks"]] for page, t in turns.items()}
+        if angles != {2: [90], 3: [270], 4: []}:
+            fail(f"the rotated blocks of turned pages: {angles} (want 90 on page 2, 270 on page 3, none on page 4)")
+        close = lambda a, b: len(a) == len(b) and all(abs(x - y) < 0.06 for p, q in zip(a, b) for x, y in zip(p, q))
+        spots = [synctex.on_page(turns.get(page), x, y) for page, x, y in (
+            (1, 150, 200), (2, 507.48, 472.75), (2, 1067.48, 572.75), (2, 306, 720), (3, 164, -75.2), (4, 150, 200))]
+        if not close(spots, [(150, 200), (277.48, 642.75), (377.48, 82.75), (306, 720), (334, 154.8), (150, 200)]):
+            fail(f"SyncTeX's records where they are drawn on turned pages: {spots}")
+        back = [synctex.as_recorded(turns.get(page), *xy) for page, xy in ((2, (277.48, 642.75)), (3, (334, 154.8)), (2, (306, 720)))]
+        if not close(back, [(507.48, 472.75), (164, -75.2), (306, 720)]):
+            fail(f"inverse search's points on turned pages, where SyncTeX records them: {back}")
+        boxes, points = synctex.synctex_boxes(synctex_gz), synctex.synctex_points(synctex_gz)
+        line = boxes.get(("/paper/main.tex", 6), [])
+        if not close(line, [(2, 270.48, 124.75, 279.48, 672.75), (3, 332.0, 124.8, 341.0, 672.8)]) or not close(
+                points.get(("/paper/main.tex", 6), []), [(2, 277.48, 642.75), (3, 334.0, 154.8)]) or not close(
+                points.get(("/paper/main.tex", 8), []), [(2, 306.0, 720.0), (3, 306.0, 720.0)]):
+            fail(f"a turned page's boxes and points where they are drawn: {line}, {points.get(('/paper/main.tex', 6))},"
+                 f" {points.get(('/paper/main.tex', 8))}")
+        shown = [synctex.shown_point(turns[page], 277.48, 642.75) + synctex.shown_size(turns[page]) for page in (2, 3)]
+        if not close(shown, [(149.25, 277.48, 792, 612), (642.75, 334.52, 792, 612)]):
+            fail(f"where a turned page's points are shown, and its size: {shown}")
+        synctex.pdf_tool = lambda argv, timeout=60: ""
+        for path in (synctex_gz, os.path.join(tmp, "main-live.pdf")):  # (a new build: looked up again)
+            os.utime(path, ns=(1, 1))
+        if synctex.page_turns(synctex_gz) or not close(synctex.synctex_points(synctex_gz).get(("/paper/main.tex", 6), []),
+                                                       [(2, 507.48, 472.75), (3, 164.0, -75.2)]):
+            fail("without poppler, SyncTeX's records should stay as recorded")
     ok("turned pages: pdflscape's rotated body (90 or -90 degrees) is found, its records go where they are drawn and"
        " back, the rest stays, nothing changes without poppler, and the pages are shown turned")
 
@@ -790,34 +787,32 @@ def diff_retry_checks():
     \\input each other in a loop, on either side, stop it before latexdiff runs (input_loop, which follows \\input,
     \\include and \\import as latexdiff does, and skips comments)."""
     from latexlive import baselines
-    saved = baselines.run_tool, baselines.image_pulled, baselines.container_argv
-    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
-    try:
+    calls, outcome, TIMEOUT = [], {}, 99  # (outcome: a pass's errors with each marks, -1 for no PDF, or TIMEOUT)
+
+    def run_tool(argv, cwd, **kwargs):  # (latexdiff writes a document; pdflatex makes a PDF of it, or not)
+        if argv[0] == "latexdiff":
+            calls.append("latexdiff plainer" if "--math-markup=off" in argv else "latexdiff full")
+            return 0, "\\documentclass{article}\\begin{document}x\\end{document}\n"
+        marks = next(c for c in reversed(calls) if c.startswith("latexdiff")).split()[1]
+        what = outcome[marks]
+        calls.append("pdflatex")
+        put(os.path.join(root, "build", "diff", "main-diff.log"), "! Undefined control sequence.\n" * max(0, int(what)))
+        if what >= 0:
+            put(os.path.join(root, "build", "diff", "main-diff.pdf"), f"%PDF-1.5 {marks}\n")
+        return (None if what == TIMEOUT else 0), ""
+    stand_ins = {"run_tool": run_tool, "image_pulled": lambda: True, "container_argv": lambda root: []}
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp, patched(baselines, **stand_ins):
         root = os.path.join(tmp, "paper")
         put(os.path.join(root, "main.tex"), "\\documentclass{article}\\begin{document}\\input{a}\\end{document}\n")
         put(os.path.join(root, "a.tex"), "% \\input{main}\nText.\n")
-        for args in (["init", "-q"], ["add", "-A"], ["-c", "user.name=check", "-c", "user.email=check@example.com", "commit", "-qm", "x"]):
-            subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
-        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
-        calls, outcome, TIMEOUT = [], {}, 99  # (outcome: a pass's errors with each marks, -1 for no PDF, or TIMEOUT)
-
-        def run_tool(argv, cwd, **kwargs):  # (latexdiff writes a document; pdflatex makes a PDF of it, or not)
-            if argv[0] == "latexdiff":
-                calls.append("latexdiff plainer" if "--math-markup=off" in argv else "latexdiff full")
-                return 0, "\\documentclass{article}\\begin{document}x\\end{document}\n"
-            marks = next(c for c in reversed(calls) if c.startswith("latexdiff")).split()[1]
-            what = outcome[marks]
-            calls.append("pdflatex")
-            put(os.path.join(root, "build", "diff", "main-diff.log"), "! Undefined control sequence.\n" * max(0, int(what)))
-            if what >= 0:
-                put(os.path.join(root, "build", "diff", "main-diff.pdf"), f"%PDF-1.5 {marks}\n")
-            return (None if what == TIMEOUT else 0), ""
-        baselines.run_tool, baselines.image_pulled, baselines.container_argv = run_tool, lambda: True, lambda root: []
+        for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "x"]):
+            git(root, *args)
+        sha = git_out(root, "rev-parse", "HEAD")
         results = []
         for full, plainer in ((0, 0), (-1, 0), (2, 0), (1, 2), (-1, -1), (TIMEOUT, 0), (2, TIMEOUT)):
             outcome.update(full=full, plainer=plainer)
             calls.clear()
-            server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", tex_exec="", diff={"rev": "HEAD"})
+            server = fake_server(root, diff={"rev": "HEAD"})
             baselines.build_diff(server, sha)
             published = os.path.join(root, "build", "main-diff.pdf")
             results.append((server.diff.get("state"), server.diff.get("plainer"), sum(c.startswith("latexdiff") for c in calls),
@@ -831,12 +826,9 @@ def diff_retry_checks():
         put(os.path.join(tmp, "subfile", "x.tex"), "\\subfile{sub/a}\n")
         put(os.path.join(tmp, "subfile", "sub", "x.tex"), "Text.\n")
         no_loop = baselines.input_loop(os.path.join(tmp, "subfile"), "main.tex")
-        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", tex_exec="", diff={"rev": "HEAD"})
+        server = fake_server(root, diff={"rev": "HEAD"})
         calls.clear()
         baselines.build_diff(server, sha)
-    finally:
-        baselines.run_tool, baselines.image_pulled, baselines.container_argv = saved
-        shutil.rmtree(tmp, ignore_errors=True)
     want = [("done", False, 1, "full"), ("done", True, 2, "plainer"), ("done", True, 2, "plainer"), ("done", False, 2, "full"),
             ("failed", None, 2, False), ("failed", None, 1, False), ("done", False, 2, "full")]
     if results != want:
@@ -858,7 +850,7 @@ def venue_checks():
         for style, limit in (("{iclr2027_conference}", None), ("[review]{acl}", None), ("[submission]{aaai2026}", None),
                              ("[review,year=2026,ID=1]{eccv}", None), ("{times}", None), ("[review]{acl}", 9)):
             put(os.path.join(tmp, "main.tex"), f"\\documentclass{{article}}\\usepackage{style}\n")
-            server = types.SimpleNamespace(paper_root=tmp, page_limit=limit)
+            server = fake_server(tmp, page_limit=limit)
             found.append((document.page_limit(server, "main.pdf"), document.uncounted_sections(server, "main.pdf")))
     if found != [(9, []), (8, ["limitations"]), (7, []), (14, []), (None, []), (9, ["limitations"])]:
         fail(f"page limits and sections left out by venue style: {found}")
@@ -937,7 +929,7 @@ def assets_checks():
         put_bytes(os.path.join(elsewhere, "secret.png"), b"x")
         os.symlink(elsewhere, os.path.join(root, "linked"))
         os.symlink(os.path.join(elsewhere, "secret.png"), os.path.join(root, "figures", "out.png"))
-        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", assets=None)
+        server = fake_server(root)
         found = [a["path"] for a in sources.project_assets(server)]
         want = ["a/b/c/d/deep.png", "figures/plot.pdf", "figures/sub/photo.PNG", "logo.png"]
         if found != want:
@@ -972,22 +964,18 @@ def search_checks():
     with tempfile.TemporaryDirectory(prefix="latex-live-search-") as root:
         put(os.path.join(root, "main.tex"), "\\documentclass{article}\r\n\\begin{document}\r\nAlpha beta. alpha\r\n\\input{sec}\r\n\\end{document}\r\n")
         put(os.path.join(root, "sec.tex"), "axb and a.b\n\U0001d6fc astral\n" + "word " * 80 + "needle\n" + "line\n" * 300)
-        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", editable=None)
+        server = fake_server(root)
         search = lambda **q: editor.search_request(server, {k: [v] for k, v in q.items()})
         code, found = search(q="alpha")
         if code != 200 or found["matches"] != [{"file": "main.tex", "line": 3, "col": 0, "len": 5, "text": "Alpha beta. alpha", "at": 0}]:
             fail(f"search for alpha: {code} {found}")
         if search(q="alpha", case="1")[1]["matches"][0]["col"] != 12:
             fail(f"a case-sensitive search: {search(q='alpha', case='1')}")
-        saved = config.SHARED
-        try:
-            for shared, want in ((False, ["a b", "axb"]), (True, ["a.b"])):
-                config.SHARED = shared
+        for shared, want in ((False, ["a b", "axb"]), (True, ["a.b"])):
+            with patched(config, SHARED=shared):
                 hits = [m["text"][m["at"]:m["at"] + m["len"]] for m in search(q="a.b", regex="1")[1]["matches"]]
-                if hits != want:
-                    fail(f"search for a.b as a regular expression ({'shared' if shared else 'not shared'}): {hits}")
-        finally:
-            config.SHARED = saved
+            if hits != want:
+                fail(f"search for a.b as a regular expression ({'shared' if shared else 'not shared'}): {hits}")
         if [(m["col"], m["at"], m["len"]) for m in search(q="astral")[1]["matches"]] != [(3, 3, 6)]:
             fail(f"search after a character outside the BMP (two UTF-16 units): {search(q='astral')}")
         far = search(q="needle")[1]["matches"]
@@ -1056,7 +1044,7 @@ def logs_checks():
             put(os.path.join(real, name), "x\n")
         put(os.path.join(tmp, "outside.tex"), "x\n")
         os.symlink(real, root)
-        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", shared={"status": None})
+        server = fake_server(root, shared={"status": None})
         log = os.path.join(real, config.BUILD, "main-live.log")
         put(log, LOG.format(root=root, real=real))
         put(os.path.join(real, config.BUILD, "main-live.status.json"),
@@ -1078,8 +1066,7 @@ def logs_checks():
         if (found["ok"], found["durationMs"], found["truncated"]) != (False, 1234, False):
             fail(f"the log's build: {found['ok']} {found['durationMs']} {found['truncated']}")
         parse, calls = logs.parse_log, []
-        logs.parse_log = lambda *a: (calls.append(1), parse(*a))[1]
-        try:
+        with patched(logs, parse_log=lambda *a: (calls.append(1), parse(*a))[1]):
             again = logs.build_logs(server, "main.pdf")
             if calls or again["warnings"] != found["warnings"]:
                 fail("the log is parsed again while it is unchanged")
@@ -1088,8 +1075,6 @@ def logs_checks():
             t0 = time.monotonic()
             big = logs.build_logs(server, "main.pdf")
             took = time.monotonic() - t0
-        finally:
-            logs.parse_log = parse
         if not calls or os.path.getsize(log) < 2 * logs.PARSE_LIMIT or not big["truncated"] or len(big["raw"]) > logs.RAW_TAIL:
             fail(f"a changed log is parsed again, and only its end: {len(calls)} parses, {os.path.getsize(log)} bytes,"
                  f" truncated {big['truncated']}, {len(big['raw'])} characters of it sent")
@@ -1100,16 +1085,12 @@ def logs_checks():
             fail("the end of a log whose last line is longer than what is sent is sent empty")
         sys.path.insert(0, HERE)
         import latex_report
-        saved = latex_report.BUILD
-        try:
-            latex_report.BUILD = os.path.join(real, config.BUILD)
+        with patched(latex_report, BUILD=os.path.join(real, config.BUILD)):
             began = os.path.join(latex_report.BUILD, "main-live.began")
             put(began, "run\n")
             os.utime(began, (time.time() - 3, time.time() - 3))
             took = latex_report.run_duration("main-live")
             again = latex_report.run_duration("main-live")
-        finally:
-            latex_report.BUILD = saved
         with open(os.path.join(HERE, "latexmkrc")) as f:
             first_pass = "[ -s $build/%R.began ] || echo run > $build/%R.began;" in f.read()
         if not (took and 3000 <= took < 6000) or again is not None or os.path.getsize(began) or not first_pass:
@@ -1130,8 +1111,7 @@ def presence_checks():
         put(os.path.join(root, "main.tex"), "\\documentclass{article}\\begin{document}\\input{sec}\\end{document}\n")
         put(os.path.join(root, "sec.tex"), "x\n")
         put(os.path.join(root, "notes.txt"), "x\n")
-        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", editable=None, git_name="Owner Example",
-                                       presence={}, presence_lock=threading.Lock())
+        server = fake_server(root, git_name="Owner Example")
         ed = {"id": "ed", "name": "Eden Doyle", "role": "editor"}
         tk = {"id": "tk", "name": "Toni Kay", "role": "editor"}
         owner = {"id": "owner", "name": None, "role": "owner"}
@@ -1168,12 +1148,8 @@ def presence_checks():
         say(ed, tab="a1", open="sec.tex", line=2)
         if [p["name"] for p in status.presence(server, tk)] != ["Eden Doyle"] or len(server.presence) != 1:
             fail(f"pages that went quiet stay in the table after a POST: {server.presence}")
-        files = status.editable_files
-        try:
-            status.editable_files = lambda *a, **k: fail("POST presence (leaving) looked up the editor's files")
+        with patched(status, editable_files=lambda *a, **k: fail("POST presence (leaving) looked up the editor's files")):
             say(ed, tab="a1", leave=True, open="sec.tex", line=3)
-        finally:
-            status.editable_files = files
         if status.presence(server, tk) or server.presence:
             fail("a page that left is still listed")
         for i in range(status.PRESENCE_TABS):
@@ -1186,15 +1162,11 @@ def presence_checks():
                  " or someone else is not")
         if len(server.presence) != status.PRESENCE_TABS + 1:
             fail(f"the presence table after a user's pages reached the cap: {len(server.presence)} entries")
-        saved = status.PRESENCE_LIMIT
-        try:
-            status.PRESENCE_LIMIT = len(server.presence)
+        with patched(status, PRESENCE_LIMIT=len(server.presence)):
             code, answer = say(owner, tab="o2")
             if code != 429 or "of each user" in answer.get("error", "") or say(tk, tab="b1", open="sec.tex", line=1)[0] != 200:
                 fail(f"a full presence table takes a new page, or says why not as if the user had too many ({code} {answer}),"
                      " or refuses one already listed")
-        finally:
-            status.PRESENCE_LIMIT = saved
     ok(f"presence: a page lists only a file the editor opens, its line clamped; it drops out when quiet (reading the list"
        f" changes nothing) or as it leaves; at most {status.PRESENCE_TABS} pages per user, a capped list, nothing crowded out;"
        f" names and opaque keys, no ids or roles")
@@ -1316,9 +1288,7 @@ def in_flight_checks():
     a request that ends, also with an error, frees its place."""
     from latexlive import config, handler
     viewer = {"id": "vw", "role": "viewer"}
-    saved = config.SHARED
-    try:
-        config.SHARED = True
+    with patched(config, SHARED=True):
         with contextlib.ExitStack() as held:
             spawns = [held.enter_context(handler.in_flight(viewer, "GET", "/synctex")) for _ in range(3)]
             if spawns != [True, True, False]:
@@ -1353,12 +1323,9 @@ def in_flight_checks():
             pass
         if handler.IN_FLIGHT:
             fail(f"requests that ended still hold places: {dict(handler.IN_FLIGHT)}")
-        config.SHARED = False
-        with contextlib.ExitStack() as held:
-            if not all(held.enter_context(handler.in_flight(viewer, "GET", "/synctex")) for _ in range(5)):
-                fail("requests were counted outside shared mode")
-    finally:
-        config.SHARED = saved
+    with patched(config, SHARED=False), contextlib.ExitStack() as held:
+        if not all(held.enter_context(handler.in_flight(viewer, "GET", "/synctex")) for _ in range(5)):
+            fail("requests were counted outside shared mode")
     ok(f"in shared mode, a coauthor has at most {handler.USER_REQUESTS} requests in progress (the viewer's own files aside)"
        f" and {handler.USER_SPAWNS} that may start a process; others and the owner are not counted, nor anyone outside shared"
        " mode")
@@ -1370,9 +1337,7 @@ def note_limit_checks():
     which the editor no longer opens (write_source refuses any such write); a file that isn't the paper's is named in
     the refusal as asked, never by where its link leads."""
     from latexlive import config, note_writer, sources
-    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
-    saved = config.SHARED
-    try:
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp, patched(config, SHARED=config.SHARED):
         root = os.path.join(tmp, "paper")
         main = os.path.join(root, "main.tex")
         put(main, "\\newcommand{\\eb}[1]{\\todotxt{\\textbf{EB:} #1}}\n\\begin{document}\nSome words here. \\eb{first note}\n"
@@ -1380,8 +1345,7 @@ def note_limit_checks():
         put(os.path.join(tmp, "outside", "secret.tex"), "x\n")
         os.symlink(os.path.join(tmp, "outside", "secret.tex"), os.path.join(root, "away.tex"))
         put(os.path.join(root, "build", "main-live.fls"), f"PWD {root}\nINPUT main.tex\nINPUT away.tex\n")
-        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", last_writer={}, autocommit=False, pending={},
-                                       pending_lock=threading.Lock(), git_name="Owner")
+        server = fake_server(root, git_name="Owner")
         owner = {"id": "owner", "name": None, "role": "owner", "macro": "", "via": "token"}
         note = {"pdf": "main.pdf", "source": "main.tex", "line": 3, "macro": "eb", "tex": "first note", "who": "eb"}
         before = read_bytes(main)
@@ -1413,8 +1377,5 @@ def note_limit_checks():
         result = note_writer.note_request(server, {**note, "action": "edit", "source": "away.tex", "line": 1, "text": "y"}, owner)
         if result[0] != 403 or "away.tex" not in result[1].get("error", "") or "secret" in str(result) or ".." in str(result):
             fail(f"a note in a link to a file outside the paper: {result} (want it named as asked)")
-    finally:
-        config.SHARED = saved
-        shutil.rmtree(tmp, ignore_errors=True)
     ok(f"notes, replies and reasons take at most {note_writer.NOTE_LIMIT} characters as written; no write takes a source past"
        " 4 MB; a refusal names a file as asked, not where its link leads")
