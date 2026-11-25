@@ -315,6 +315,9 @@ def shared_notes_free(server, job, doc):
             if seq != server.shared["clean_seq"]:  # (a newer run's pass came meanwhile)
                 return False
             build_folder(server.paper_root, "clean")
+            build_folder(server.paper_root, f"clean-{seq}")  # (after the pass's container: the files come from no link)
+            if not stat.S_ISREG(os.lstat(pdf).st_mode):
+                raise FileNotFoundError(pdf)
             for ext in (".synctex.gz", ".aux", ".bbl", ".log"):
                 with contextlib.suppress(OSError):
                     if stat.S_ISREG(os.lstat(src := os.path.join(out, f"{doc}-clean{ext}")).st_mode):  # (never a link)

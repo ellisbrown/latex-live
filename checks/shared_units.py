@@ -3,6 +3,7 @@ host's reads and copies of the build's files, which follow no link (build_link_c
 build's folders (build_folder_checks), the builder (shared_build_checks), what the host reads of the files the paper's
 TeX writes (shared_parsing_checks), and which notes viewers and commenters see (shown_notes_checks)."""
 
+import contextlib
 import gzip
 import hashlib
 import json
@@ -244,14 +245,16 @@ def build_folder_checks():
                 fail("with build/diff a link, the diff wrote no main-diff.tex in a folder of its own")
             stuck = os.path.join(build, "stuck")
             put(os.path.join(stuck, "x.tex"), "x\n")
-            os.chmod(stuck, 0o555)  # (a folder whose files can't be removed: not taken as emptied)
+            os.chmod(stuck, 0o555)  # (a folder whose files can't be removed: not taken as emptied; root removes them)
             try:
                 files.build_folder(root, "stuck", fresh=True)
-                fail("build_folder took a folder it could not empty as emptied")
+                if os.geteuid() != 0:
+                    fail("build_folder took a folder it could not empty as emptied")
             except OSError:
                 pass
             finally:
-                os.chmod(stuck, 0o755)
+                with contextlib.suppress(OSError):
+                    os.chmod(stuck, 0o755)
             for rel in ("..", os.path.join("diff", ".."), os.path.join("diff", "..", "..", "away"), ""):
                 try:
                     files.build_folder(root, rel)
