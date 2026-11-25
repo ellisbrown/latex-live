@@ -9,6 +9,7 @@ import contextlib
 import io
 import os
 import tempfile
+import time
 import types
 
 from .base import fail, ok
@@ -195,20 +196,20 @@ def request_checks():
 
 def source_budget_checks():
     """In shared mode, a coauthor's writes to the sources (a save, an entry added in the Refs tab, a file made, a restore)
-    count against editor.SOURCE_RATE bytes a day: the bytes that changed (changed_bytes), or with auto-commit the whole
-    file when it is not among their writes still to commit; past that, 429 with a message, nothing written; the owner's
+    count against commits.SOURCE_RATE bytes a day: the bytes that changed (changed_bytes), or with auto-commit the whole
+    file when it is not among their writes still to commit (a note too); past that, 429 with a message, nothing written; the owner's
     and anyone's outside shared mode are not counted, nor a save that changes nothing. A source added through the Files
     tab may not grow once the added sources pass ADDED_SOURCES_TOTAL (413, for everyone), but may shrink."""
-    from latexlive import bib, config, editor, sources
+    from latexlive import bib, commits, config, editor, note_writer, sources
     owner = {"id": "owner", "name": "Owner", "role": "owner", "macro": "", "email": None, "via": "token"}
     ed = {"id": "ed", "name": "Eden", "role": "editor", "macro": "ed", "email": None, "via": "proxy"}
     for old, new, want in (("abc", "abXc", 1), ("aaaa", "aaaaa", 1), ("", "xyz", 3), ("xyz", "", 0), ("abab", "ab", 0),
                            ("same", "same", 0), ("one two", "one three two", 6)):
-        if editor.changed_bytes(old.encode(), new.encode()) != want:
-            fail(f"changed_bytes({old!r}, {new!r}) is {editor.changed_bytes(old.encode(), new.encode())}, not {want}")
+        if commits.changed_bytes(old.encode(), new.encode()) != want:
+            fail(f"changed_bytes({old!r}, {new!r}) is {commits.changed_bytes(old.encode(), new.encode())}, not {want}")
     with tempfile.TemporaryDirectory(prefix="latex-live-budget-") as root, tempfile.TemporaryDirectory() as state, \
-            patched(config, STATE=state, SHARED=True), patched(editor, paused=lambda s: None, SOURCE_RATE=1000, ADDED_SOURCES_TOTAL=3000), \
-            patched(bib, paused=lambda s: None):
+            patched(config, STATE=state, SHARED=True), patched(editor, paused=lambda s: None), patched(commits, SOURCE_RATE=1000, ADDED_SOURCES_TOTAL=3000), \
+            patched(bib, paused=lambda s: None), patched(note_writer, paused=lambda s: None):
         main = os.path.join(root, "main.tex")
         put(main, "\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n")
         put(os.path.join(root, "refs.bib"), "@misc{a,\n  title = {A},\n}\n")
@@ -231,7 +232,7 @@ def source_budget_checks():
         big = text.replace("x\n", "z" * 1200 + "\n")
         refused = save(ed, big)
         if refused[0] != 429 or "a day" not in refused[1].get("error", "") or "z" * 10 in read_text(main):
-            fail(f"a coauthor's save past {editor.SOURCE_RATE} bytes in a day: {refused}")
+            fail(f"a coauthor's save past {commits.SOURCE_RATE} bytes in a day: {refused}")
         want(save(owner, big), 200, "the owner's save of as much")
         with patched(config, SHARED=False):
             want(save(ed, big.replace("z", "w")), 200, "a save of as much outside shared mode")
@@ -254,13 +255,23 @@ def source_budget_checks():
         want(editor.create_request(server, {"path": "one.tex", "text": "a" * 2000}, owner), 200, "making a source of 2000 bytes")
         refused = editor.create_request(server, {"path": "two.tex", "text": "b" * 1500}, owner)
         if refused[0] != 413 or "added" not in refused[1].get("error", "") or os.path.exists(os.path.join(root, "two.tex")):
-            fail(f"a new source past the added sources' {editor.ADDED_SOURCES_TOTAL} bytes: {refused}")
+            fail(f"a new source past the added sources' {commits.ADDED_SOURCES_TOTAL} bytes: {refused}")
         want(editor.create_request(server, {"path": "two.tex", "text": "b" * 900}, owner), 200, "a new source within them")
         want(save(owner, "a" * 2200, "one.tex"), 413, "an added source grown past the added sources' total")
         want(save(owner, "a" * 1000, "one.tex"), 200, "an added source shrunk")
-    ok(f"in shared mode, a coauthor writes at most {editor.SOURCE_RATE // 1_000_000} MB to the sources a day (saves, the Refs"
-       " tab, new files, restores; what changed, or with auto-commit what their commit stores), the owner and anyone outside"
-       f" shared mode without limit; the sources added hold at most {editor.ADDED_SOURCES_TOTAL // 1_000_000} MB")
+        put(main, "\\newcommand{\\ed}[1]{\\todotxt{#1}}\n\\begin{document}\nSome words. \\ed{first note}\n" + "%" * 900 + "\n\\end{document}\n")
+        put(os.path.join(root, "build", "main-live.fls"), f"PWD {root}\nINPUT main.tex\n")
+        server.autocommit, server.pending = True, {}
+        server.writes["ed"] = [(time.monotonic(), 500)]
+        note = {"action": "edit", "pdf": "main.pdf", "source": "main.tex", "line": 3, "macro": "ed", "tex": "first note", "text": "y"}
+        refused = note_writer.note_request(server, note, ed)
+        if refused[0] != 429 or "first note" not in read_text(main):
+            fail(f"a coauthor's note in a file not among their writes to commit, past what they may write today: {refused}")
+        server.writes["ed"] = []
+        want(note_writer.note_request(server, note, ed), 200, "a coauthor's note within their day")
+    ok(f"in shared mode, a coauthor writes at most {commits.SOURCE_RATE // 1_000_000} MB to the sources a day (saves, the Refs"
+       " tab, new files, restores, notes; what changed, or with auto-commit what their commit stores), the owner and anyone outside"
+       f" shared mode without limit; the sources added hold at most {commits.ADDED_SOURCES_TOTAL // 1_000_000} MB")
 
 
 def commit_checks():

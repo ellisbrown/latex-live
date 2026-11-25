@@ -9,7 +9,8 @@ while it is committed. They wait while git is busy (a merge, rebase or cherry-pi
 command holding the index). Who wrote what, not committed yet, is kept in the state folder too
 (save_pending), so that a restart, even after a crash, still commits it as theirs; edits found
 uncommitted at the start that no one's writes account for are committed then, as the owner's
-(UNATTRIBUTED), rather than in the next coauthor's commit of that file."""
+(UNATTRIBUTED), rather than in the next coauthor's commit of that file. What a coauthor writes to the sources in a
+day is bounded, as the commits store it (source_budget)."""
 
 import contextlib
 import json
@@ -25,7 +26,7 @@ from . import config
 from .auth import ROLES, USER_ID_RE, users_owner
 from .files import read_json
 from .git import git_busy, git_operation, git_read_env
-from .sources import NOTE_LOCK, changed_path, editable_files
+from .sources import EDITABLE_EXTS, NOTE_LOCK, changed_path, editable_files
 
 
 UNATTRIBUTED = "(unattributed)"  # (the pending entry of edits found uncommitted at the start; no user has this id: USER_ID_RE)
@@ -45,6 +46,69 @@ def remember_write(server, user, rel, kind):
         entry.update(user=user, due=time.monotonic() + config.COMMIT_IDLE)
         entry["paths"][rel] = (max(kind, old[0] if old else kind, key=KINDS.index), server.write_seq)
         save_pending(server)
+
+
+# What the server writes to the sources (an editor's save, an entry added in the Refs tab, a file made, a restore, a
+# note): in shared mode a coauthor's at most SOURCE_RATE bytes a day (SOURCE_WINDOW), counted as git stores them
+# (source_budget), and the sources added through the Files tab (server.added) at most ADDED_SOURCES_TOTAL bytes in all,
+# so that neither the copy nor its history grows without end (the commits run with gc.auto=0: each stores a file whole).
+SOURCE_RATE, SOURCE_WINDOW, ADDED_SOURCES_TOTAL = 100_000_000, 86400, 20_000_000  # (bytes, seconds, bytes)
+
+
+def source_budget(server, user, rel, old, new, adding=False):
+    """Whether user may write new (bytes) over old (b"" for a file made now: adding, as the Files tab adds it) at rel,
+    relative to the paper root: (None, what it costs their day, for charge) or (the refusal, 0). It costs, with
+    LATEX_LIVE_COMMIT, the whole of new when rel is not among their writes still to commit (their next commit stores
+    the file whole), else the bytes that changed (changed_bytes): typing costs a few bytes, writing a file anew its
+    size. Refused past SOURCE_RATE today (429, for a coauthor in shared mode), or when a source added through the
+    Files tab grows and the added sources would pass ADDED_SOURCES_TOTAL (413, for everyone). The caller holds NOTE_LOCK."""
+    added = adding or rel in server.added
+    if added and len(new) > len(old) and added_size(server, rel) + len(new) > ADDED_SOURCES_TOTAL:
+        return (413, {"error": f"the sources added here would pass {ADDED_SOURCES_TOTAL // 1_000_000} MB: remove some first"}), 0
+    if not config.SHARED or user["role"] == "owner":
+        return None, 0
+    with server.pending_lock:
+        pending = rel in server.pending.get(user["id"], {}).get("paths", {})
+    cost = len(new) if server.autocommit and not pending else changed_bytes(old, new)
+    now = time.monotonic()
+    writes = server.writes.setdefault(user["id"], [])
+    writes[:] = [(t, n) for t, n in writes if now - t < SOURCE_WINDOW]
+    if sum(n for _, n in writes) + cost > SOURCE_RATE:
+        return (429, {"error": f"you saved {SOURCE_RATE // 1_000_000} MB of changes to the sources today, the most a coauthor"
+                               " writes in a day; try again tomorrow"}), 0
+    return None, cost
+
+
+def charge(server, user, cost):
+    """Count a write that source_budget allowed against user's day."""
+    if cost:
+        server.writes.setdefault(user["id"], []).append((time.monotonic(), cost))
+
+
+def added_size(server, but):
+    """The bytes of the sources added through the Files tab (server.added) but the one at but."""
+    root = os.path.realpath(server.paper_root)
+    total = 0
+    for rel in server.added:
+        if rel != but and rel.lower().endswith(EDITABLE_EXTS):
+            try:
+                total += os.lstat(os.path.join(root, rel)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def changed_bytes(old, new):
+    """The bytes of new that are not in old: new but the start and the end the two share (each found by halving)."""
+    def shared(fits, most):
+        lo, hi = 0, most
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            lo, hi = (mid, hi) if fits(mid) else (lo, mid - 1)
+        return lo
+    start = shared(lambda n: old[:n] == new[:n], min(len(old), len(new)))
+    end = shared(lambda n: old[len(old) - n:] == new[len(new) - n:], min(len(old), len(new)) - start)
+    return len(new) - start - end
 
 
 def commit_others(server, user, rel):

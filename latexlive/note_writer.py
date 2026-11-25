@@ -11,7 +11,7 @@ import time
 import unicodedata
 
 from . import config
-from .commits import commit_others, paused, remember_write, updating
+from .commits import charge, commit_others, paused, remember_write, source_budget, updating
 from .files import fls_file, project_tex_files
 from .latex import blank_comments, brace_group, read_tex
 from .notes import escape_note, note_kinds
@@ -198,7 +198,9 @@ def note_request(server, req, user):
     LaTeX (latex) only as an editor, and only in the shared document; anyone who may comment may
     resolve anyone's note. While the shared copy can't take a write (a git merge in progress, or
     others' edits there can't be committed first), 503 (updating). A note's text, a reply's and a resolve's reason
-    take at most NOTE_LIMIT characters as written, and no note takes a file past EDITABLE_SIZE (413).
+    take at most NOTE_LIMIT characters as written, and no note takes a file past EDITABLE_SIZE (413); a coauthor's notes
+    count against what they write in a day (source_budget: with LATEX_LIVE_COMMIT, a file not among their writes still
+    to commit costs its size), past which 429.
     """
     root = server.paper_root
     try:
@@ -241,14 +243,21 @@ def note_request(server, req, user):
         if src not in files:
             return 403, {"error": f"{asked} is not one of the paper's .tex files"}
         with NOTE_LOCK:
-            if paused(server) or not commit_others(server, user, rel):  # (LATEX_LIVE_COMMIT: others' edits there are theirs)
+            if paused(server):
                 return updating()
             raw = read_source(src)
+            data = raw.encode("utf-8")  # (a note's own bytes are few, NOTE_LIMIT: what counts is a commit of the whole file)
+            refusal, cost = source_budget(server, user, rel, data, data)
+            if refusal:
+                return refusal
+            if not commit_others(server, user, rel):  # (LATEX_LIVE_COMMIT: others' edits there are theirs)
+                return updating()
             if action == "add":
                 result = add_note(src, rel, raw, line, macro, kinds[macro], req, list(kinds))
             else:
                 result = change_note(src, rel, raw, line, macro, action, req, kinds)
             if result[0] == 200:
+                charge(server, user, cost)
                 remember_write(server, user, rel, "notes")  # (to be committed as theirs: LATEX_LIVE_COMMIT)
                 wrote(server, user, rel)
         return result
