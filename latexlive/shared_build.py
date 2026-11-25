@@ -13,6 +13,7 @@ import hashlib
 import math
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -23,7 +24,7 @@ import traceback
 from . import config
 from .files import aux_tree, fls_file, pdf_path, project_tex_files, read_build, read_capped
 from .latex import RERUN_RE
-from .notes import SHOWN_TEX, note_records
+from .notes import note_records, shown_tex
 from .shared_watch import shared_deps, shared_inputs, shared_missing
 from .timing import note
 from .tools import LIVE_SPAWN, RUN_SEQ, SPAWNS, container_argv, image_pulled, stop_containers
@@ -175,8 +176,9 @@ def shared_run(server):
         server.shared["no_image"] = not image_pulled()
         if server.shared["no_image"]:
             raise RuntimeError(f"{config.IMAGE_MISSING}; until then nothing builds (never the host's TeX here)")
+        key = secrets.token_hex(8)  # (the notes' records: notes.shown_tex)
         tex = ["pdflatex", "-recorder", "-synctex=1", "-file-line-error", "-halt-on-error", "-interaction=batchmode",
-               f"-output-directory={config.BUILD}", f"-jobname={job}", f"{SHOWN_TEX}{LAYOUT_TEX}\\input{{{doc}}}"]
+               f"-output-directory={config.BUILD}", f"-jobname={job}", f"{shown_tex(key)}{LAYOUT_TEX}\\input{{{doc}}}"]
         ok = False
 
         def tool(name, state_key, state, argv, log_ext, **where):
@@ -190,6 +192,7 @@ def shared_run(server):
         for passes in range(1, 7):
             before = read_build(out(".aux"))
             note(server, "pass")
+            began_pass = time.time_ns()  # (what the pass read is older: notes.shown_notes)
             ok = shared_tool(server, tex)
             note(server, "pass-end")
             if server.shared["force"]:  # (a rebuild stopped it: shared_build starts again)
@@ -199,7 +202,7 @@ def shared_run(server):
             latex_report.keep_inputs(job)
             latex_report.keep_synctex(os.path.join(config.BUILD, f"{job}.synctex.gz"))
             log = read_build(out(".log"))
-            shared_publish(server, job, note_records(log))
+            shared_publish(server, job, note_records(log, key), began_pass)
             note(server, "published")
             aux, bcf = read_build(out(".aux")), read_build(out(".bcf"))
             auxes, ran = aux_tree(aux), False
@@ -260,11 +263,11 @@ def shared_run(server):
         note(server, "run-end")
 
 
-def shared_publish(server, job, records):
+def shared_publish(server, job, records, since):
     """Publish build/<job>.pdf as the shared document's PDF, in one step, and remember what was published
     (status's "overwritten" compares the PDF with it), with the notes its pass recorded typesetting (records:
-    notes.note_records), which viewers and commenters see (notes.shown_notes). Never through a symbolic link:
-    build/ is written in the containers."""
+    notes.note_records) and when the pass began (since: time.time_ns()), which say what viewers and commenters
+    see (notes.shown_notes). Never through a symbolic link: build/ is written in the containers."""
     dest = pdf_path(server.paper_root, server.default_pdf)
     try:
         fd = os.open(os.path.join(server.paper_root, config.BUILD, f"{job}.pdf"), os.O_RDONLY | os.O_NOFOLLOW)
@@ -276,7 +279,7 @@ def shared_publish(server, job, records):
     os.replace(tmp, dest)
     st = os.stat(dest)
     server.shared["published"] = {"mtime": st.st_mtime_ns, "size": st.st_size}
-    server.shared["shown"] = {"published": server.shared["published"], "records": records}
+    server.shared["shown"] = {"published": server.shared["published"], "records": records, "since": since}
 
 
 def shared_notes_free(server, job, doc):
