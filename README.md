@@ -38,7 +38,7 @@ On Linux, with Python 3.9+, latexmk, poppler-utils, git and rootless podman:
 
 ```bash
 git clone https://github.com/ellisbrown/latex-live ~/.local/share/latex-live
-podman pull docker.io/minidocks/texlive:2024-full    # about 4.6 GB, once
+podman pull docker.io/minidocks/texlive:2024-full    # once: 4.6 GB, about 8 GB on disk
 cd <paper> && python3 ~/.local/share/latex-live/live.py --no-open
 ```
 
@@ -72,9 +72,8 @@ tagged `v<VERSION>`; track `main` to follow development. It is used on Linux;
 macOS with MacTeX should work but has not been tried. Known limits:
 
 - Notes are the paper's note macros that go through `\todotxt`.
-- Page limits are built in for ICLR, NeurIPS, COLM, ICML, CVPR, ICCV, WACV,
-  ACL, AAAI and ECCV;
-  pass `--page-limit` for other venues.
+- Page limits are built in for [ten venues](docs/viewer.md#page-limit-and-space);
+  pass `--page-limit` for others.
 - The token is required even on a laptop, where only localhost reaches the port.
 
 Planned work is in the [issues](https://github.com/ellisbrown/latex-live/issues).

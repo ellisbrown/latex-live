@@ -49,7 +49,10 @@ Viewers and commenters see the current PDF and what it shows, nothing more:
 
 - the notes the PDF shows (not those in `\iffalse` or a switch that is off,
   nor any while `\todotxt` hides them, and none until the PDF has been
-  built since the instance started or the sources last changed);
+  built since the instance started or the sources last changed). This needs a
+  `\todotxt` of one argument made with `\newcommand`, `\def` or
+  `\DeclareRobustCommand`; with any other (one made with
+  `\NewDocumentCommand`, say), they see no notes at all;
 - whether the build failed and how many errors it had, not the messages, which
   quote the sources;
 - the figures without their labels and source lines, and not the list of
@@ -442,8 +445,8 @@ instance treats the paper and everything TeX writes as theirs.
   editor opens, and the figures its last build read or that were added through
   the Files tab (yours too, once the document includes them). Uploads are
   figures only, up to 10 MB each, 100 MB a day per coauthor, and 250 MB and
-  400 figures for the whole paper; the sources added there hold at most 20 MB
-  in all, and each coauthor writes at most 100 MB of changes to the sources a
+  400 figures for the whole paper (a MB is 1,000,000 bytes); the sources
+  added there hold at most 20 MB in all, and each coauthor writes at most 100 MB of changes to the sources a
   day (saves, notes, entries added in the Refs tab, new files, restores: a day of
   editing takes a small part of that), so the copy and its history stay
   bounded; nothing is written over a file that is there, into the build folder,
@@ -504,9 +507,9 @@ instance treats the paper and everything TeX writes as theirs.
   the titles and DOIs of up to 30 cited entries to api.crossref.org, so turn it
   on only for papers whose references may be seen there (not, say, unpublished
   work under blind review). The requests go over HTTPS to those two hosts only
-  (redirects too), at most two at once and a few per minute, each with a time
-  limit; what they answer goes into the `.bib` file as plain text. Without the
-  setting, the Refs tab still lists, counts and inserts citations and adds
+  (redirects too), at most two at once, one a second to Crossref and one every
+  three seconds to arXiv, each with a time limit; what they answer goes into
+  the `.bib` file as plain text. Without the setting, the Refs tab still lists, counts and inserts citations and adds
   pasted BibTeX.
 - **Agent plugins.** A shared instance never runs an [agent
   plugin](agent-plugins.md), whatever `LATEX_LIVE_AGENT_CMD` says, not even for

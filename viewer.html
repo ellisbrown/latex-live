@@ -1,23 +1,13 @@
 <!doctype html>
-<!-- latex-live PDF viewer: reloads the PDF in place whenever live.py reports a new version;
-     double-click jumps to the source line (SyncTeX: in VS Code, or in the editor beside the PDF
-     when that is open), and forward.py jumps here from a source line. Editors (and the owner) can
-     open the LaTeX beside the PDF (the Source | Split | PDF switch, CodeMirror from codemirror/): it saves by itself,
-     and live.py merges edits made at the same time; a tab per file, folding, completion and cards for references,
-     citations and figures, and the build's errors and warnings marked in the text and listed under it with the log. A palette (Cmd/Ctrl+K) goes to a file, a heading or a command, and searches the sources. The page is a workspace: a top bar, then the sidebar, the
-     source pane and the PDF side by side, in a light or dark theme; with mode=pdf, a pop-out window shows the PDF
-     alone, for a second screen, and follows the main window's source. In shared mode (LATEX_LIVE_USERS) everyone
-     sees what their role allows (live.py /me), and a welcome guide explains the basics.
-     Also: build-status banner, page-limit check (with and without the inline
-     notes), search, back/forward, hover previews of references, highlights of what changed in
-     the last build (text and regenerated figures), a "where to cut" overlay, a switch to the
-     notes-free build (with the notes as bubbles in a margin, wired to where they sit), and a
-     sidebar with the numbered outline (pages per section), page thumbnails, the notes, a
-     pre-submission check, and the figures and tables. Select text and press 💬 (or C) to write a note
-     of the author picked in the PDF's bar into the source; notes can be resolved (commented out with a
-     reason), others' notes replied to, your own edited, and the ones written here deleted again.
-     With file=<doc>-diff.pdf it shows a latexdiff built by live.py. Its style is in viewer/viewer.css,
-     and its script in viewer/: main.js, and the modules it imports, one for each part of the viewer. -->
+<!-- latex-live's viewer: the PDF, reloaded in place whenever live.py reports a new version, under a top bar, beside the
+     sidebar and, for editors and the owner, the source pane (CodeMirror, from codemirror/). Double-click jumps to the
+     source line (SyncTeX), and forward.py jumps here from one. The sidebar's tabs: Outline, Pages, Notes, Checks,
+     Figures, Refs, Files and History. Also: the build's status and errors, with its log under the source pane; notes
+     written, replied to and resolved from the PDF, and the notes-free view with margin bubbles; change highlights and
+     Compare (a latexdiff: file=<doc>-diff.pdf); the downloads; the page badge and space hints; the palette
+     (Cmd/Ctrl+K); who else has the paper open; the agent card; a pop-out PDF (mode=pdf); light and dark themes. In
+     shared mode, each person sees what their role allows (live.py /me). docs/viewer.md describes it all. Its style is
+     in viewer/viewer.css, and its script in viewer/: main.js, and the modules it imports, one for each part. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">

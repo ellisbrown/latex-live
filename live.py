@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """latex-live: LaTeX Workshop-style live preview without the extension.
 
-Usage (from a paper root):  live.py [<doc>[.tex] | PATH] [--port 44100] [--page-limit N] [--build-dir DIR] [--no-build] [--no-open] [--host-tex]
+Usage (from a paper root):  live.py [<doc>[.tex] | PATH] [--port 44100] [--page-limit N] [--build-dir DIR] [--no-build]
+                             [--no-open] [--host-tex] [--replace] [--version]
 
 This file only starts latex-live: the code is in latexlive/, next to it (its __init__ says what
 latex-live does). The VS Code tasks run this file by its path, also through a symbolic link to the
