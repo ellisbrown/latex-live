@@ -171,34 +171,40 @@ def synctex_pages(synctex_gz, wanted=None):
 
 def read_synctex(synctex_gz):
     """synctex_text's value, read now: up to SYNCTEX_LIMIT bytes in whole lines and RECORD_LIMIT lines, as
-    synctex_records reads them."""
-    f, parts, size = open_output(synctex_gz), [], 0
+    synctex_records reads them. A page at a time, so that the whole text is never in memory at once."""
+    f = open_output(synctex_gz)
     if f is None:
         return {}, []
+    inputs, pages, parts, page, head = {}, [], [], 0, ""
+    size = lines = 0
+    tail = ""  # (the start of a line that the next part ends)
     with f, gzip.open(f, "rt", errors="replace") as text:
-        while size <= config.SYNCTEX_LIMIT:
+        while True:
             try:
                 part = text.read(1 << 16)  # (a file cut off loses at most this much of what came before)
             except (OSError, EOFError, zlib.error):  # (not gzip, or cut off: what came before)
+                part = ""
+            done, joined = not part, tail + part
+            cut = len(joined) if done else joined.rfind("\n") + 1
+            body, tail = joined[:cut], joined[cut:]
+            if size + len(body) + len(tail) > config.SYNCTEX_LIMIT:  # (the whole lines within the limits; a longer line)
+                body, done = body[:body.rfind("\n", 0, config.SYNCTEX_LIMIT - size) + 1], True
+            if lines + body.count("\n") >= config.RECORD_LIMIT:
+                end = -1
+                for _ in range(config.RECORD_LIMIT - lines):
+                    end = body.find("\n", end + 1)
+                body, done = body[:end + 1], True
+            size, lines = size + len(body), lines + body.count("\n")
+            inputs.update((m[1], os.path.normpath(m[2] or "")) for m in INPUT_RE.finditer(body))
+            start = 0
+            for m in PAGE_START_RE.finditer(body):  # (a page's records start after its {page line)
+                parts.append(body[start:m.start()])
+                pages.append((page, head, zlib.compress("".join(parts).encode(), 1)))
+                parts, page, head, start = [], int(m[1]), m[0], m.end()
+            parts.append(body[start:])
+            if done:
                 break
-            if not part:
-                break
-            parts.append(part)
-            size += len(part)
-    text = "".join(parts)
-    if len(text) > config.SYNCTEX_LIMIT:
-        text = text[:text.rfind("\n", 0, config.SYNCTEX_LIMIT) + 1]
-    if text.count("\n") >= config.RECORD_LIMIT:
-        end = -1
-        for _ in range(config.RECORD_LIMIT):
-            end = text.find("\n", end + 1)
-        text = text[:end + 1]
-    inputs = {m[1]: os.path.normpath(m[2] or "") for m in INPUT_RE.finditer(text)}
-    pages, page, head, start = [], 0, "", 0
-    for m in PAGE_START_RE.finditer(text):  # (a page's records start after its {page line)
-        pages.append((page, head, zlib.compress(text[start:m.start()].encode(), 1)))
-        page, head, start = to_int(m[1], page), m[0], m.end()
-    pages.append((page, head, zlib.compress(text[start:].encode(), 1)))
+    pages.append((page, head, zlib.compress("".join(parts).encode(), 1)))
     return inputs, pages
 
 
