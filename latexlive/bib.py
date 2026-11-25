@@ -24,7 +24,7 @@ import xml.etree.ElementTree as ET
 from . import config
 from .commits import paused, updating
 from .editor import COMPLETIONS_LIMIT, TOO_BIG, editor_text, save_file
-from .latex import bib_entries, parsed_file
+from .latex import bib_entries, parsed_file, unbraced
 from .sources import NOTE_LOCK, SourceChanged, editable_files, file_version, read_editable, read_editable_text
 
 CITE_RE = re.compile(r"\\[a-zA-Z]*cite[a-zA-Z]*\*?(?:\[[^\]]*\]){0,2}\{([^{}]+)\}")
@@ -43,7 +43,7 @@ def parse_bib_entries(text, rel=""):
 
 def bib_summary(entry, rel):
     """The Refs panel's view of an entry (bib_entries') of the .bib file rel."""
-    fields = entry["fields"]
+    fields = {name: unbraced(value) for name, value in entry["fields"].items()}
     arxiv = fields.get("eprint", "")
     if not arxiv and (am := ARXIV_ID_RE.search(fields.get("url", ""))) and "arxiv" in fields.get("url", "").lower():
         arxiv = am.group(1)

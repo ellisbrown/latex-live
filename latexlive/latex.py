@@ -115,7 +115,7 @@ FIELD_RE = re.compile(r"\b([a-zA-Z][a-zA-Z0-9_-]*)\s*=\s*")
 
 
 def bib_entries(text):
-    """[{"key", "type" (in lower case), "line", "fields": {name in lower case: value (bib_fields)}}] of the entries in a
+    """[{"key", "type" (in lower case), "line", "fields": {name in lower case: value as written (bib_fields)}}] of the entries in a
     .bib file's text, not @string, @comment or @preamble; each entry's body runs to where the next one may begin."""
     found = list(BIB_ENTRY_RE.finditer(text))
     starts = sorted({m.start() for m in found} | {m.start(1) for m in ENTRY_START_RE.finditer(text)} | {len(text)})
@@ -130,7 +130,8 @@ def bib_entries(text):
 
 
 def bib_fields(body):
-    """{name in lower case: value, braces dropped and spaces collapsed} of the fields in one entry's body."""
+    """{name in lower case: value as written (its braces kept: unbraced drops them), spaces collapsed} of the fields
+    in one entry's body."""
     fields, i, n = {}, 0, len(body)
     while (m := FIELD_RE.search(body, i)) and m.end() < n:
         j = m.end()
@@ -147,8 +148,13 @@ def bib_fields(body):
             while k < n and body[k] not in ",}\r\n":
                 k += 1
             value, i = body[j:k].strip(), k + 1
-        fields.setdefault(m.group(1).lower(), " ".join(value.replace("{", "").replace("}", "").split()))
+        fields.setdefault(m.group(1).lower(), " ".join(value.split()))
     return fields
+
+
+def unbraced(value):
+    """A BibTeX field's value (bib_fields') with its braces dropped, as the Refs panel and the completions show it."""
+    return " ".join(value.replace("{", "").replace("}", "").split())
 
 
 def read_text(path):

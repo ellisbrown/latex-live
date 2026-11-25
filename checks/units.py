@@ -939,6 +939,9 @@ def completion_checks():
         put(os.path.join(root, "b.bib"), "@misc{other, title={Other}}\n@misc{later, title={Later}}\n")
         if latex.find_bib_entry(root, "later") != ("b.bib", 2):
             fail("find_bib_entry did not read a changed .bib file again")
+    raw = latex.bib_entries("@misc{e, title = {A \\emph{Great}  Paper}}")[0]["fields"]["title"]
+    if raw != "A \\emph{Great} Paper" or latex.unbraced(raw) != "A \\emphGreat Paper":  # (the checks strip commands from it)
+        fail(f"a field's value as written: {raw!r}")
     ok("the source pane completes labels outside comments and a .bib file's keys with their titles, quickly; SyncTeX"
        " finds an entry with the same reading")
 
