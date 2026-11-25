@@ -31,9 +31,9 @@ def git_dir(server):
 
 
 def ref_stamp(server):
-    """What changes when HEAD or a ref moves (a commit, a checkout, a push, a fetch, a gc): the stats of HEAD,
-    packed-refs and config, and of each folder of refs/ (git writes a ref by renaming a new file into its folder) and
-    reftable/; None outside a git checkout. A few stats, where asking git takes several commands (base_status)."""
+    """What changes when HEAD or a branch moves (a commit, a checkout, a push, a fetch, a gc): the stats of HEAD,
+    packed-refs and config, and of each folder of refs/heads/ and refs/remotes/ (git writes a ref by renaming a new file
+    into its folder) and reftable/; None outside a git checkout. A few stats, where asking git takes several commands (base_status)."""
     folder = git_dir(server)
     if not folder:
         return None
@@ -44,8 +44,11 @@ def ref_stamp(server):
         common = folder
     stamp = [stat_stamp(os.path.join(folder, "HEAD")), stat_stamp(os.path.join(common, "packed-refs")),
              stat_stamp(os.path.join(common, "config"))]
-    for top in dict.fromkeys((os.path.join(common, "refs"), os.path.join(folder, "refs"), os.path.join(common, "reftable"))):
-        for here, _, _ in os.walk(top):
+    tops = [os.path.join(git, *sub) for git in dict.fromkeys((common, folder))
+            for sub in (("refs", "heads"), ("refs", "remotes"), ("reftable",))]
+    for top in tops:  # (the branches and remote-tracking branches that HEAD and pushed_commit read)
+        for here, dirs, _ in os.walk(top):
+            dirs.sort()
             stamp.append((here, stat_stamp(here)))
             if len(stamp) > 1000:  # (enough to tell; the rest is caught by base_status's minute)
                 return tuple(stamp)

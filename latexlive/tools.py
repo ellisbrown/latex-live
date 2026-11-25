@@ -125,7 +125,7 @@ def pdf_tool(argv, timeout=60):
     mode, where the paper's TeX made the PDF and poppler parses it on this machine, also with at most 1 GB of
     memory (but on macOS, whose programs map more than that before they start) and that much CPU time, or less
     where the hard limits are lower; a limit the system refuses is left out."""
-    wanted = [(resource.RLIMIT_CPU, int(timeout))] + ([] if sys.platform == "darwin" else [(resource.RLIMIT_AS, 1 << 30)])
+    wanted = [(resource.RLIMIT_CPU, max(1, int(timeout)))] + ([] if sys.platform == "darwin" else [(resource.RLIMIT_AS, 1 << 30)])
 
     def limits():
         for kind, value in wanted:

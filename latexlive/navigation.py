@@ -1,6 +1,7 @@
 """Between the PDF and the sources, for the viewer: forward search for its lists (/forward),
 inverse search (/synctex), and opening a source line in the owner's editor (/open)."""
 
+import math
 import os
 import re
 import shutil
@@ -328,6 +329,8 @@ def cached_input(server, name, page, x, y, clean):
     timed out, or the image been missing)."""
     if not name.endswith(".pdf") or os.path.basename(name) != name:
         return 400, "bad file"
+    if not all(math.isfinite(c / INVERSE_STEP) for c in (x, y)):
+        return 400, "expected file, page, x, y"
     x, y = (round(c / INVERSE_STEP) * INVERSE_STEP for c in (x, y))
     synctex_gz = shown_synctex(server.paper_root, name, clean)
     key = ("inverse", synctex_gz, stamp(synctex_gz), page, x, y)

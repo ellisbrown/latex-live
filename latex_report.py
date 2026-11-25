@@ -303,7 +303,7 @@ def start_notes_free_build(root, doc):
         with open(os.path.join(out, "pid")) as f:
             pid = int(f.read())
         command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
-        if ("--notes-free" in command or "--early" in command) and doc in command:  # (an early pass kept: run_early)
+        if ("--notes-free" in command or "--early" in command) and doc in command.split():  # (an early pass kept: run_early)
             os.killpg(pid, signal.SIGTERM)
     except (OSError, ValueError):
         pass
@@ -446,13 +446,12 @@ def stop_notes_free(doc):
     gone, and the warm standby it ran from: live.py, before it stops the document's standbys (as it stops, switches
     documents, or rebuilds from scratch), so that the pass can't start one after them. Each pass runs in a session of
     its own, which neither stopping latexmk nor live.py's process group reaches. Run from the paper root."""
-    if not running_notes_free(doc):
-        return
-    with early_lock():
-        early = read_early()
-        if early and early.get("state") == "running" and running_notes_free(doc, early.get("pid")):
-            stop_early(early)  # (and puts build/clean/ back)
-            return
+    early = read_early()
+    if early and early.get("state") == "running" and running_notes_free(doc, early.get("pid")):
+        with early_lock():
+            early = read_early()
+            if early and early.get("state") == "running" and running_notes_free(doc, early.get("pid")):
+                stop_early(early)  # (and puts build/clean/ back)
     try:
         with open(os.path.join(BUILD, "clean", "pid")) as f:
             pid = int(f.read())
@@ -602,7 +601,7 @@ def running_notes_free(doc, pid=None):
         command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
     except (OSError, ValueError):
         return False
-    return ("--notes-free" in command or "--early" in command) and doc in command
+    return ("--notes-free" in command or "--early" in command) and doc in command.split()
 
 
 def keep_early(root, doc, drop=False):

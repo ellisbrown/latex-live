@@ -11,7 +11,7 @@ import threading
 import zlib
 
 from . import config
-from .files import clean_file, job_file, mtime, open_output, read_capped, shown_synctex, shown_synctexes
+from .files import clean_file, job_file, open_output, read_capped, shown_synctex, shown_synctexes
 from .latex import find_bib_entry
 from .tools import container_argv, pdf_tool, run_tool, synctex_unavailable
 
@@ -150,7 +150,7 @@ def kept_as(synctex_gz):
 
 SYNCTEX_TEXTS = Kept(4)  # (synctex_text: the live build's and the notes-free one's, of a document or two)
 INPUT_RE = re.compile(r"^Input:([^:\n]*)(?::(.*))?$", re.M)
-PAGE_START_RE = re.compile(r"^\{(.*)$", re.M)
+PAGE_START_RE = re.compile(r"^\{(\d+)$", re.M)  # (a page's first record: {page)
 
 
 def synctex_text(synctex_gz):
@@ -178,7 +178,7 @@ def read_synctex(synctex_gz):
     with f, gzip.open(f, "rt", errors="replace") as text:
         while size <= config.SYNCTEX_LIMIT:
             try:
-                part = text.read(1 << 20)
+                part = text.read(1 << 16)  # (a file cut off loses at most this much of what came before)
             except (OSError, EOFError, zlib.error):  # (not gzip, or cut off: what came before)
                 break
             if not part:
@@ -239,7 +239,7 @@ def bib_span(paper_root, files, cache=None):
             return known[1]
         span = look_up_bib(paper_root, files)
         if len(cache) >= 16:
-            cache.clear()
+            cache.pop(next(iter(cache)))
         cache[synctex_gz] = (version, span)
     return span
 
@@ -368,7 +368,7 @@ class Packed:
         return (int(self.data[i * width]), *self.data[i * width + 1:(i + 1) * width])
 
     def __eq__(self, other):
-        return list(self) == list(other)
+        return list(self) == list(other) if isinstance(other, (Packed, list)) else NotImplemented
 
     def __repr__(self):
         return repr(list(self))
@@ -436,8 +436,8 @@ ROTATIONS = Kept(16)
 
 def page_rotations(pdf):
     """{page: {"rotate", "W", "H"}} for the pages of a PDF that have a /Rotate (90, 180 or 270): it, and the page's size as
-    stored (points), from pdfinfo; {} without poppler. Cached per PDF and mtime."""
-    return ROTATIONS.get(pdf, mtime(pdf), lambda: read_rotations(pdf))
+    stored (points), from pdfinfo; {} without poppler. Cached per PDF and version."""
+    return ROTATIONS.get(pdf, stamp(pdf), lambda: read_rotations(pdf))
 
 
 def read_rotations(pdf):

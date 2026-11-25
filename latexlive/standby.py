@@ -712,6 +712,9 @@ def keep(folder):
             write_json(sb.path("done.json"), {"code": None, "error": True,
                                               "reason": f"the paper's folders hold more than {WATCH_LIMIT} files to watch"})
         return
+    if owner_stopping(info["build"], info["owner"]):  # (live.py began to stop since the pass started this keeper)
+        remove(folder)
+        return
     t0, days = time.time_ns(), today()
     linux = sys.platform.startswith("linux")  # (PR_SET_PDEATHSIG: TeX gets SIGTERM if the keeper dies)
     with open(sb.path("tex.out"), "wb") as out:
@@ -1296,8 +1299,20 @@ def stop_owner(paper_root, build):
     then on no pass of its starts a standby (owner_stopping), however long the pass runs on. A notes-free pass runs in a
     session of its own, and one may be starting as live.py stops."""
     folder = os.path.join(paper_root, build, "standby")
-    os.makedirs(folder, exist_ok=True)
-    put(os.path.join(folder, "stopping"), str(os.getpid()).encode())
+    try:
+        os.makedirs(folder, exist_ok=True)
+        put(os.path.join(folder, "stopping"), str(os.getpid()).encode())
+    except OSError:
+        pass
+
+
+def owner_starts(paper_root, build):
+    """Forget that an earlier live.py was stopping (stop_owner), as live.py starts: in a container, its pid may be that
+    one's."""
+    try:
+        os.remove(os.path.join(paper_root, build, "standby", "stopping"))
+    except OSError:
+        pass
 
 
 def stop_standbys(paper_root, build, job):
