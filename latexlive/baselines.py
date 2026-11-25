@@ -205,7 +205,6 @@ def base_status(server, pdf_name, kind, build=True):
                 server.base_checked[kind] = time.monotonic()
                 due = not known or known[0] != stamp or time.monotonic() - known[1] > 60
             if due:
-                server.base_stamps[kind] = (stamp, time.monotonic())
                 if kind == "head":
                     sha, ref = git_text(root, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], timeout=POLL_TIMEOUT), None
                 else:
@@ -214,6 +213,8 @@ def base_status(server, pdf_name, kind, build=True):
                     server.bases[kind] = b = {}
                 elif (sha, pdf_name) != (b.get("sha"), b.get("pdf")) and b.get("state") != "running":
                     server.bases[kind] = b = {"sha": sha, "ref": ref, "pdf": pdf_name, "state": "waiting", "msg": ""}
+                if not sha or (sha, pdf_name) == (b.get("sha"), b.get("pdf")):  # (not while a build of another commit runs)
+                    server.base_stamps[kind] = (stamp, time.monotonic())
             sha = b.get("sha")
             if b.get("state") == "waiting" and build and os.path.isfile(job_file(root, pdf_name, ".aux")):
                 head = server.bases["head"]

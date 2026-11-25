@@ -24,7 +24,7 @@ from .navigation import open_in_editor
 from .shared_build import start_shared_build
 from .sources import load_added
 from .shared_watch import watch_build_size
-from .standby import stop_owner
+from .standby import owner_starts, stop_owner
 from .status import code_updated
 from .timing import start_timing
 from .tools import container_exec, image_pulled, stop_containers
@@ -287,6 +287,7 @@ def main():
         print("=== latex-live: TeX Live 2024 (podman)" if image_pulled()
               else f"=== latex-live: {config.IMAGE_MISSING}; until then, the host's TeX runs", flush=True)
     if not config.SHARED:
+        owner_starts(server.paper_root, config.BUILD)
         stop_doc_standbys(server)  # (what an instance that was killed left)
         start_latexmk(server)
 

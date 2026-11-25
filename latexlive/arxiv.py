@@ -83,7 +83,7 @@ def package_files(path, limit=50e6):
 
 
 def pdf_strings(data, cache={}):
-    """A PDF's metadata (pdfinfo) and text (pdftotext), from its bytes; "" without poppler. The last 8 are kept."""
+    """A PDF's metadata (pdfinfo) and text (pdftotext), from its bytes; "" without poppler. At most 8 are kept."""
     key = hashlib.sha1(data).digest()
     if (found := cache.get(key)) is None:
         out = []

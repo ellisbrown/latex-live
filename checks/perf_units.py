@@ -43,11 +43,12 @@ WANT = ({"page": 3, "x": 10.5, "y": 188.0}, {"page": 5, "x": 72.0, "y": 390.5})
 
 
 class StubSyncTeX:
-    """A paper folder with a build whose SyncTeX lookups go to SYNCTEX_STUB (on PATH), counting the tool runs."""
+    """A paper folder (with a space in its path, which the batched runs must quote) with a build whose SyncTeX lookups
+    go to SYNCTEX_STUB (on PATH), counting the tool runs."""
 
     def __enter__(self):
         from latexlive import synctex
-        self.synctex, self.tmp, self.path, self.runs = synctex, tempfile.mkdtemp(prefix="latex-live-check-"), os.environ.get("PATH", ""), []
+        self.synctex, self.tmp, self.path, self.runs = synctex, tempfile.mkdtemp(prefix="latex-live check "), os.environ.get("PATH", ""), []
         self.bin = os.path.join(self.tmp, "bin")
         os.makedirs(self.bin)
         put(os.path.join(self.bin, "synctex"), SYNCTEX_STUB)
@@ -182,11 +183,12 @@ def inverse_cache_checks():
                 entry["expires"] = 0
         found = navigation.cached_input(server, "main.pdf", 3, 50, 50, False)
         bad = navigation.cached_input(server, "../main.pdf", 3, 50, 50, False)
+        nan = [navigation.cached_input(server, "main.pdf", 3, x, 50, False)[0] for x in (float("nan"), float("inf"), 1e308)]
         status, text = navigation.synctex_edit(server, {"file": ["main.pdf"], "page": ["2"], "x": ["100.1"], "y": ["200.2"]})
         if (len(calls) != 5 or miss != [(404, "no source location here")] * 2 or found != (os.path.join(root, "main.tex"), 3)
-                or bad[0] != 400 or other != first or "main.tex:3" not in text):
+                or bad[0] != 400 or other != first or "main.tex:3" not in text or nan != [400] * 3):
             fail(f"inverse search's cache: {len(calls)} lookups ({calls}), misses {miss}, then {found}, a bad name {bad},"
-                 f" the owner's form {status} {text}")
+                 f" the owner's form {status} {text}, spots that are no numbers {nan}")
     ok("inverse search looks a spot up once per build (half-point grain), again a few seconds after it found nothing,"
        " and refuses a bad PDF name without a lookup")
 
@@ -198,8 +200,8 @@ def make_synctex(pages=3):
         out += [f"{{{page}", "[1,1:4736286,4736286:30000000,40000000,0", f"(1,{page + 4}:4736286,9000000:20000000,655360,0",
                 f"x1,{page + 4}:4736286,9000000", f"g1,{page + 4}:5736286,9000000", f"k1,{page + 4}:6736286,9000000:65536",
                 ")"]
-        if page == 2:
-            out += ["Input:2:/paper/sec.tex", "(2,3:4736286,19000000:20000000,655360,0", "x2,3:4736286,19000000", ")"]
+        if page == 2:  # (an input read on the page, and a { line that starts no page)
+            out += ["Input:2:/paper/sec.tex", "{x", "(2,3:4736286,19000000:20000000,655360,0", "x2,3:4736286,19000000", ")"]
         out += ["]", f"}}{page}"]
     return "\n".join(out + ["Postamble:", "Count:30", "Post scriptum:"]) + "\n"
 
@@ -236,6 +238,9 @@ def synctex_text_checks():
                     boxes.setdefault((inputs.get(m[2]), int(m[3])), []).append((page, *(round(c, 1) for c in (x, y - h, x + w, y + d))))
                 elif record[0] in "gkx$" and (m := synctex.SYNCTEX_POINT_RE.match(record)):
                     points.setdefault((inputs.get(m[2]), int(m[3])), []).append((page, round(int(m[4]) * synctex.PT, 1), round(int(m[5]) * synctex.PT, 1)))
+            packed = next(iter(found.get("synctex_points", {}).values()), None)
+            if packed is None or packed == None or packed[-1] != list(packed)[-1] or packed[:1] != list(packed)[:1]:  # noqa: E711
+                fail(f"a source line's packed points don't read as their list: {packed!r}")
             if len(reads) != 1 or found.get("synctex_boxes") != boxes or found.get("synctex_points") != points or not boxes:
                 fail(f"the SyncTeX file's lookups read it {len(reads)} times at once, or find other boxes or points: {found}")
             kinds = [[n[0] for n in page_nodes] for _, page_nodes in nodes]
@@ -285,7 +290,7 @@ def cache_race_checks():
 def ref_stamp_checks():
     """The change baselines check git only when a ref may have moved (git.ref_stamp: a commit, a new branch, a push,
     a fetch, a gc, a checkout change it; nothing else does), or a minute has passed: base_status runs no git command
-    while the stamp stays the same."""
+    while the stamp stays the same, and a commit that came while a baseline was building is taken once it is done."""
     from latexlive import baselines, git as git_module
     with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
         subprocess.run(["git", "init", "-q", "--bare", os.path.join(tmp, "remote.git")], check=True)
@@ -324,8 +329,16 @@ def ref_stamp_checks():
             git(root, "commit", "-q", "--allow-empty", "-m", "third")
             server.base_checked["head"] = 0
             moved = baselines.base_status(server, "main.pdf", "head", build=False)
-        if idle != 1 or len(calls) != 2 or not first or moved["sha"] == first["sha"]:
-            fail(f"base_status ran git {idle} times while no ref moved, {len(calls)} in all, and reports {first} then {moved}")
+            server.bases["head"]["state"] = "running"  # (a build of that commit runs; a newer one comes meanwhile)
+            git(root, "commit", "-q", "--allow-empty", "-m", "fourth")
+            server.base_checked["head"] = 0
+            baselines.base_status(server, "main.pdf", "head", build=False)
+            server.bases["head"]["state"] = "done"
+            server.base_checked["head"] = 0
+            later = baselines.base_status(server, "main.pdf", "head", build=False)
+        if idle != 1 or len(calls) != 4 or not first or moved["sha"] == first["sha"] or later["sha"] == moved["sha"]:
+            fail(f"base_status ran git {idle} times while no ref moved, {len(calls)} in all, and reports {first}, {moved}, then"
+                 f" after a build that ran {later}")
     ok("the change baselines run git only once a ref may have moved (a commit, a branch, a push, a fetch, a gc, a"
        " checkout), not on every few seconds' check")
 
@@ -395,6 +408,8 @@ def bounded_cache_checks():
         for n in range(20):
             arxiv.pdf_strings(b"%PDF-1.5 " + str(n).encode())
         hashes, strings = len(files.file_hash.__defaults__[0]), len(arxiv.pdf_strings.__defaults__[0])
+        files.file_hash.__defaults__[0].clear()
+        arxiv.pdf_strings.__defaults__[0].clear()
     package = os.path.join(HERE, "latexlive")
     inserts = []
     for name in sorted(os.listdir(package)):
@@ -424,7 +439,13 @@ def stop_notes_free_checks():
             with open(f"/proc/{pid}/stat") as f:
                 return f.read().rsplit(")", 1)[1].split()[0] != "Z"
         except OSError:
-            return os.path.isdir("/proc") is False and subprocess.run(["kill", "-0", str(pid)]).returncode == 0
+            if os.path.isdir("/proc"):
+                return False
+            try:
+                os.kill(pid, 0)  # (elsewhere: a zombie counts, but its parent is gone, so it is soon reaped)
+                return True
+            except OSError:
+                return False
     passes = {doc: start(doc) for doc in ("docmainx", "docotherx")}
     cwd = os.getcwd()
     with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
