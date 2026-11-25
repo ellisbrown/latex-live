@@ -16,15 +16,15 @@ $("compare").onclick = async () => {
   panel.replaceChildren(el("div", { className: "head", textContent: "Loading commits…" }));
   panel.hidden = false;
   const { dirty, commits } = await (await fetch("commits")).json();
-  const row = (rev, date, text, title) => {
+  const row = (rev, date, text, title, sha = rev) => {
     const div = el("div", { className: "commit", title }, el("span", { className: "rev", textContent: rev }),
                    el("span", { className: "date", textContent: date }), el("span", { textContent: text }));
-    div.onclick = () => startDiff(rev);
+    div.onclick = () => startDiff(sha);
     return div;
   };
   panel.replaceChildren(el("div", { className: "head", textContent: "Show the changes since… (the paper as it is now, with what changed since that commit marked; in a new tab)" }),
     ...(dirty ? [row("HEAD", "", "uncommitted edits only", "the last commit vs. the working tree")] : []),
-    ...commits.map((c) => row(c.rev, c.date, `${c.subject} — ${c.author}`, `${c.rev} ${c.date} ${c.author}: ${c.subject}`)));
+    ...commits.map((c) => row(c.rev, c.date, `${c.subject} — ${c.author}`, `${c.rev} ${c.date} ${c.author}: ${c.subject}`, c.sha ?? c.rev)));
 };
 // Build the latexdiff against rev and show it in its own tab (also from the History tab).
 export async function startDiff(rev) {

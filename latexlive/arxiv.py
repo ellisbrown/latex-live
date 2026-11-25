@@ -19,7 +19,7 @@ import zipfile
 
 from . import config
 from .export import exact_export, waiting_for_build
-from .files import fls_file, mtime, open_output, pdf_path, project_inputs, project_tex_files, read_output
+from .files import copy_output, fls_file, mtime, open_output, pdf_path, project_inputs, project_tex_files, read_output
 from .latex import DOCCLASS_RE, RERUN_RE, brace_group, false_blocks, read_tex, root_docs, source_tree
 from .notes import note_kinds, note_use_re
 from .standby import DATE_RES
@@ -418,16 +418,6 @@ def build_arxiv(server, pdf, source):
     with server.download_lock:
         if server.arxiv.get("pdf") == pdf and server.arxiv.get("source") == source:
             server.arxiv = {**server.arxiv, **state}
-
-
-def copy_output(src, dst):
-    """Copy a file of the build's (open_output: in shared mode never through a link); whether there was one."""
-    f = open_output(src)
-    if f is None:
-        return False
-    with f, open(dst, "wb") as g:
-        shutil.copyfileobj(f, g)
-    return True
 
 
 def make_package(server, pdf, step):

@@ -10,27 +10,27 @@ import threading
 import time
 
 from . import config
-from .files import job_file, mtime, pdf_path, read_capped, too_big
-from .git import pushed_commit
+from .files import copy_output, create_output, job_file, mtime, pdf_path, read_capped, too_big
+from .git import SHA_RE, commit_sha, git_text, pushed_commit
 from .tools import container_argv, failure, image_pulled, run_tool, tex_argv
 
 
 def start_diff(server, rev, any_rev=True):
-    """POST /diff {rev} (and GET /diff?rev= without shared mode): build <doc>-diff.pdf, a latexdiff of
-    rev against the working tree, in the background. Without any_rev (a coauthor), only a commit that
-    HEAD builds on: other branches, tags and the stash may hold what isn't shared. (Its history is: the
-    shared copy is a branch of the paper's, and coauthors compare with any commit it builds on.)"""
-    if not re.fullmatch(r"[\w./^~-]{1,80}", rev) or rev.startswith("-"):
-        return 400, {"error": "bad rev"}
+    """POST /diff {rev}: build <doc>-diff.pdf, a latexdiff of rev (a commit's hexadecimal id, or HEAD: never anything git
+    would read as an option or a revision expression) against the working tree, in the background. Without any_rev (a
+    coauthor), only a commit that HEAD builds on: other branches, tags and the stash may hold what isn't shared. (Its
+    history is: the shared copy is a branch of the paper's, and coauthors compare with any commit it builds on.)"""
+    if rev != "HEAD" and not (isinstance(rev, str) and SHA_RE.fullmatch(rev)):
+        return 400, {"error": "bad rev (a commit's id, or HEAD)"}
     if server.diff.get("state") == "running":
         return 409, {"error": "a diff is already building"}
-    sha = subprocess.run(["git", "-C", server.paper_root, "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
-                         capture_output=True, text=True).stdout.strip()
+    root = server.paper_root
+    sha = git_text(root, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]) if rev == "HEAD" else commit_sha(root, rev)
     if not sha:
-        return 404, {"error": f"unknown revision {rev}"}
-    if not any_rev and subprocess.run(["git", "-C", server.paper_root, "merge-base", "--is-ancestor", sha, "HEAD"],
-                                      capture_output=True).returncode != 0:
+        return 404, {"error": f"unknown commit {rev}"}
+    if not any_rev and not commit_sha(root, sha, any_rev=False):
         return 403, {"error": f"{rev} is not a commit this version of the paper builds on"}
+    rev = rev if rev == "HEAD" else sha[:9]
     server.diff = {"rev": rev, "sha": sha[:9], "state": "running", "time": time.strftime("%H:%M:%S"), "msg": ""}
     threading.Thread(target=build_diff, args=(server, sha), daemon=True).start()
     return 200, server.diff
@@ -82,11 +82,10 @@ def build_diff(server, sha):
             raise RuntimeError("latexdiff failed")
         if len(text.encode()) > config.OUTPUT_LIMIT:
             raise RuntimeError(too_big("latexdiff's output", config.OUTPUT_LIMIT))
-        with open(os.path.join(out, f"{job}.tex"), "w") as fh:
-            fh.write(text)
+        with create_output(os.path.join(out, f"{job}.tex")) as fh:
+            fh.write(text.encode())
         for ext in (".aux", ".bbl", ".brf"):  # current references, so the diff needs no bibtex run
-            if os.path.exists(job_file(root, server.default_pdf, ext)):
-                shutil.copyfile(job_file(root, server.default_pdf, ext), os.path.join(out, job + ext))
+            copy_output(job_file(root, server.default_pdf, ext), os.path.join(out, job + ext))
         if os.path.exists(pdf):
             os.remove(pdf)
         tex = [*exec_, "pdflatex", "-interaction=nonstopmode", f"-output-directory={out}", f"-jobname={job}",
@@ -308,8 +307,7 @@ def build_base(server, kind, sha, pdf_name):
             raise RuntimeError(f"{doc}.tex is not in {sha[:9]}")
         link_missing(root, src, skip=(".git", config.BUILD.split(os.sep)[0]))  # (fonts are not looked up through TEXINPUTS)
         for ext in (".aux", ".bbl", ".brf"):  # (.brf: hyperref's back-references)
-            if os.path.exists(job_file(root, pdf_name, ext)):
-                shutil.copyfile(job_file(root, pdf_name, ext), os.path.join(out, job + ext))
+            copy_output(job_file(root, pdf_name, ext), os.path.join(out, job + ext))
         for _ in range(2):
             pdf = tex(job, doc)
         if not os.path.isfile(pdf):
@@ -317,8 +315,7 @@ def build_base(server, kind, sha, pdf_name):
         clean_pdf = None
         if os.path.isfile(pdf_path(root, f"{doc}-clean.pdf")):
             for ext in (".aux", ".bbl", ".brf", ".out", ".toc"):
-                if os.path.exists(os.path.join(out, job + ext)):
-                    shutil.copyfile(os.path.join(out, job + ext), os.path.join(out, f"{job}-clean{ext}"))
+                copy_output(os.path.join(out, job + ext), os.path.join(out, f"{job}-clean{ext}"))
             clean_pdf = tex(f"{job}-clean", f"{latex_report.NOTES_OFF}\\input{{{doc}}}")
             if latex_report.uses_lineno(os.path.join(out, f"{job}-clean.aux")):
                 clean_pdf = tex(f"{job}-clean", f"{latex_report.NOTES_OFF}\\input{{{doc}}}")

@@ -150,6 +150,37 @@ def overfull_boxes(log):
     return boxes
 
 
+def open_built(path, mode="rb"):
+    """A file the build wrote, open for reading (mode "rb", or "r" for text, bytes that don't decode replaced), or None
+    if there is none or it is not a regular file; never through a link (in shared mode, build/ is written in the
+    containers, and the copies made here are read by TeX there, or shown to coauthors)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return None
+    f = open(fd, mode, **({} if "b" in mode else {"errors": "replace"}))
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        f.close()
+        return None
+    return f
+
+
+def copy_built(src, dst):
+    """Copy a file the build wrote (open_built) to dst, a new file there (a link at dst is removed, not written through);
+    whether there was one."""
+    f = open_built(src)
+    if f is None:
+        return False
+    with f:
+        try:
+            os.unlink(dst)
+        except FileNotFoundError:
+            pass
+        with open(os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644), "wb") as g:
+            shutil.copyfileobj(f, g)
+    return True
+
+
 def keep_inputs(root):
     """Copy this successful pass's list of the files it read, build/<root>.fls, to build/<root>.fls.done,
     in one step. live.py lists the browser editor's files from that copy: pdflatex rewrites the .fls
@@ -157,8 +188,8 @@ def keep_inputs(root):
     of the last good pass, which matches the published PDF."""
     fls = os.path.join(BUILD, f"{root}.fls")
     try:
-        shutil.copyfile(fls, fls + ".done.tmp")
-        os.replace(fls + ".done.tmp", fls + ".done")
+        if copy_built(fls, fls + ".done.tmp"):
+            os.replace(fls + ".done.tmp", fls + ".done")
     except OSError:
         pass
 
@@ -280,8 +311,7 @@ def seed_notes_free(root, doc, out=None):
     out = out or os.path.join(BUILD, "clean")
     os.makedirs(out, exist_ok=True)
     for ext in SEED_EXTS:
-        if os.path.exists(os.path.join(BUILD, root + ext)):
-            shutil.copyfile(os.path.join(BUILD, root + ext), os.path.join(out, f"{doc}-clean{ext}"))
+        copy_built(os.path.join(BUILD, root + ext), os.path.join(out, f"{doc}-clean{ext}"))
 
 
 # The early notes-free pass. The notes-free pass needs the main build's .aux and the like (SEED_EXTS), which only
@@ -675,11 +705,11 @@ def notes_free_pass(root, doc, env=None, out=None, publish=None, decide=None):
         return {"ok": True, "time": stamp}
 
     def read(path):
-        try:
-            with open(path, errors="replace") as f:
-                return f.read(LOG_LIMIT)
-        except OSError:
+        f = open_built(path, "r")
+        if f is None:
             return ""
+        with f:
+            return f.read(LOG_LIMIT)
 
     log = read(os.path.join(out, f"{job}.log"))
     errors = []
@@ -816,11 +846,10 @@ def run_report(root, status, files=None):
     those files, where undefined keys are looked up (default: from the .fls, input_tex_files)."""
     doc = publish_dest(root)[0]
     stamp = time.strftime("%H:%M:%S")
-    try:
-        with open(os.path.join(BUILD, f"{root}.log"), errors="replace") as f:
+    log, f = "", open_built(os.path.join(BUILD, f"{root}.log"), "r")
+    if f is not None:
+        with f:
             log = f.read(LOG_LIMIT)
-    except OSError:
-        log = ""
 
     errors = []
     for line in log.splitlines():

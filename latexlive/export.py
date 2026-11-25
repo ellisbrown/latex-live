@@ -11,7 +11,7 @@ import time
 
 from . import config
 from .build import build_running
-from .files import aux_tree, job_file, mtime, pdf_path, read_output
+from .files import aux_tree, copy_output, job_file, mtime, pdf_path, read_output
 from .latex import RERUN_RE
 from .tools import failure, image_pulled, run_tool, tex_argv
 
@@ -118,8 +118,7 @@ def exact_export(server, pdf, keep=None):
                 shutil.rmtree(out, ignore_errors=True)
                 os.makedirs(out)
                 for ext in (".aux", ".bbl", ".brf", ".out", ".toc"):  # (a head start; bibtex and the passes correct them)
-                    if os.path.exists(job_file(root, pdf, ext)):
-                        shutil.copyfile(job_file(root, pdf, ext), os.path.join(out, job + ext))
+                    copy_output(job_file(root, pdf, ext), os.path.join(out, job + ext))
                 tex = ["pdflatex", "-interaction=batchmode", "-halt-on-error", "-file-line-error", "-synctex=1",
                        "-recorder", f"-output-directory={out}", f"-jobname={job}", f"{latex_report.NOTES_OFF}\\input{{{doc}}}"]
                 for passes in range(1, 7):

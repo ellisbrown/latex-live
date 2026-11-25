@@ -4,6 +4,7 @@ for a browser without access, and BaseHandler, which checks who is asking and se
 import html
 import http.cookies
 import http.server
+import io
 import json
 import os
 import re
@@ -39,11 +40,13 @@ def content_length(headers, limit):
 
 class DualStackServer(http.server.ThreadingHTTPServer):
     """Every server's (an instance's, the hub's): on every interface, IPv4 too, with at most CONNECTIONS connections
-    at once (each holds a thread until it ends or times out): past that, it drops new ones, which anything that
+    at once (each holds a thread until it ends or times out, sending its request line and headers within
+    BaseHandler.HEADER_DEADLINE seconds): past that, it drops new ones, which anything that
     reaches the port (a tunnel, a page in a browser) could otherwise open without end. A viewer takes a few at a
     time (a poll, a PDF, a module)."""
     address_family = socket.AF_INET6
     CONNECTIONS = 64
+    request_queue_size = 128  # (connections waiting to be taken: socketserver's 5 resets a burst where the system says so)
 
     def server_bind(self):
         self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)  # accept IPv4 too
@@ -125,6 +128,21 @@ def taken_port_advice(port):
             f" it for a while: choose a port below {first}" + (f", e.g. {instead}." if instead else "."))
 
 
+class HeaderDeadline(socket.SocketIO):
+    """A connection's reads, which while deadline (a time.monotonic() value) is set end there, however the bytes
+    trickle in: the socket's timeout bounds each read only, so a client sending a byte now and then would hold its
+    connection, and its slot (DualStackServer.CONNECTIONS), for ever."""
+    deadline, idle = None, None
+
+    def readinto(self, b):
+        if self.deadline is not None:
+            left = self.deadline - time.monotonic()
+            if left <= 0:  # (never settimeout(0), which would make the socket non-blocking)
+                raise socket.timeout("the request line and headers took too long")
+            self._sock.settimeout(min(left, self.idle))
+        return super().readinto(b)
+
+
 FRAME_ANCESTORS = "frame-ancestors 'self' vscode-webview: vscode-file:"  # (the owner's previews: VS Code's Simple Browser)
 
 
@@ -146,11 +164,43 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
     """What every request of an instance and of the hub goes through: who is asking (authorize), and
     sending the answer. Without a route of its own (Handler, HubHandler), it answers nothing."""
     timeout = 60  # (a client that stops sending mid-request frees its thread)
+    HEADER_DEADLINE = 10  # seconds for the request line and headers together, sent before anything is known of the client
     extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map, ".mjs": "text/javascript", ".js": "text/javascript",
                       ".css": "text/css"}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=config.HERE, **kwargs)
+
+    def setup(self):
+        """The connection, read through HeaderDeadline: the request line and headers must come within
+        HEADER_DEADLINE seconds (handle_one_request), the body and the answer only without a pause of timeout."""
+        super().setup()
+        self.rfile.close()
+        self.reader = HeaderDeadline(self.connection, "rb")
+        self.reader.idle = self.timeout
+        self.rfile = io.BufferedReader(self.reader)
+
+    def handle_one_request(self):
+        self.reader.deadline = time.monotonic() + self.HEADER_DEADLINE
+        try:
+            super().handle_one_request()
+        finally:
+            self.headers_read()
+
+    def parse_request(self):
+        try:
+            return super().parse_request()
+        finally:
+            self.headers_read()
+
+    def headers_read(self):
+        """Once the headers are in (or the request failed): reads and writes again only bounded by timeout."""
+        if self.reader.deadline is not None:
+            self.reader.deadline = None
+            try:
+                self.connection.settimeout(self.timeout)
+            except OSError:
+                pass
 
     def allowed_ports(self):
         """The ports that a loopback name in Host or Origin may have here (host_kinds): this server's own, and the

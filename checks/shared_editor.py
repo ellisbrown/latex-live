@@ -244,17 +244,20 @@ def editor_checks(sh):
     ok("during a merge in the shared copy, saves and notes are refused (503, to be tried again) and write nothing;"
        " after it, they go through")
 
-    expect(via_proxy("ed", "/diff", "POST", {"rev": "side"}), 403, "the editor comparing with a commit that HEAD does not build on")
-    expect(via_proxy("ed", "/diff", "POST", {"rev": "--output=x"}), (400, 403, 404), "the editor comparing with a bad revision")
-    expect(via_proxy("ed", "/diff", "POST", {"rev": "main"}), 200, "the editor comparing with a commit that HEAD builds on")
+    side, main = git_out(root, "rev-parse", "side"), git_out(root, "rev-parse", "main")
+    expect(via_proxy("ed", "/diff", "POST", {"rev": side}), 403, "the editor comparing with a commit that HEAD does not build on")
+    for rev in ("--output=x", "main", "HEAD~1"):  # (commits by their ids only, or HEAD)
+        expect(via_proxy("ed", "/diff", "POST", {"rev": rev}), 400, f"the editor comparing with {rev}")
+    expect(via_proxy("ed", "/diff", "POST", {"rev": main}), 200, "the editor comparing with a commit that HEAD builds on")
     diff = wait_for("the latexdiff build", lambda: (d := (expect_dict(via_proxy("ed", "/status/main-diff.pdf"), 200, "the diff's"
                                                                        " status").get("diff") or {})).get("state") in ("done", "failed")
                     and d, timeout=120, step=0.5)
     if diff.get("state") != "done":
         fail(f"the latexdiff build failed in the hardened image (the paper read-only): {diff}")
-    expect(with_token(owner, "/diff", "POST", {"rev": "side"}), (200, 409), "the owner comparing with any commit")
-    if not isinstance(expect_dict(via_proxy("ed", "/commits"), 200, "GET commits for the editor").get("commits"), list):
-        fail("GET commits for the editor has no commits list")
+    expect(with_token(owner, "/diff", "POST", {"rev": side}), (200, 409), "the owner comparing with any commit")
+    listed = expect_dict(via_proxy("ed", "/commits"), 200, "GET commits for the editor").get("commits")
+    if not isinstance(listed, list) or side in [c.get("sha") for c in listed]:
+        fail(f"GET commits for the editor: {str(listed)[:300]} (want a list without another branch's commits)")
     expect(via_proxy("ed", "/rebuild", "POST", {}), 202, "the editor rebuilding")
     expect(via_proxy("ed", "/rebuild", "POST", {}), 429, "the editor rebuilding again at once (at most every 20 s)")
     if editor_calls(sh["editor_log"]):

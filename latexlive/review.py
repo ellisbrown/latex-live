@@ -4,6 +4,7 @@ its spot in the text and wired to it. For coauthors who don't run latex-live. Be
 at their own size with each note as a PDF comment at its spot (annotated), to read and reply to in a PDF
 reader."""
 
+import errno
 import json
 import os
 import re
@@ -15,7 +16,7 @@ import time
 from . import config
 from .document import layout
 from .export import exact_export, links_in, waiting_for_build
-from .files import fls_file, job_file, mtime, pdf_path, project_tex_files, read_output, too_big
+from .files import copy_output, fls_file, job_file, mtime, pdf_path, project_tex_files, read_output, too_big
 from .latex import blank_comments, brace_group, false_blocks, project_macros, read_tex
 from .notes import NOTE_DEF_RE, escape_note, note_kinds, note_use_re
 from .review_anchors import BP, note_source, review_anchors, squeeze, synctex_pages
@@ -154,8 +155,10 @@ def build_review(server, pdf, source):
                 server.review = {**server.review, "step": text}
 
     def keep(export):  # the export's PDF and SyncTeX, and the inputs of its last pass, for the probe
-        shutil.copyfile(os.path.join(root, config.BUILD, f"{job}.pdf"), os.path.join(out, "export.pdf"))
-        shutil.copyfile(os.path.join(export, f"{job}.synctex.gz"), os.path.join(out, "export.synctex.gz"))
+        for src, name in ((os.path.join(root, config.BUILD, f"{job}.pdf"), "export.pdf"),
+                          (os.path.join(export, f"{job}.synctex.gz"), "export.synctex.gz")):
+            if not copy_output(src, os.path.join(out, name)):
+                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), src)
         shutil.copytree(os.path.join(export, "inputs"), out, dirs_exist_ok=True, ignore=links_in)
 
     with server.review_lock:  # (one at a time: they share build/review/<doc>/)

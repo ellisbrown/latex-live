@@ -27,6 +27,10 @@ class SourceChanged(Exception):
     """The source file changed between reading it and writing it back."""
 
 
+class SourceTooBig(Exception):
+    """A write would take a source past EDITABLE_SIZE, which the editor no longer opens."""
+
+
 def source_folder(real):
     """A descriptor of the folder of real, a source's real path (no link in it: os.path.realpath), opened
     one folder at a time from / without following a link (O_NOFOLLOW): what is read or written in it is
@@ -86,7 +90,11 @@ def write_source(path, old, new):
     """Write new over a source file, at its real path, in one step (latexmk never reads half of it),
     unless it no longer holds old: an editor saved it in the meantime. The file and the new one beside
     it are opened in its folder without following links (source_folder), so a link swapped in since
-    the file was checked is never followed (SourceChanged)."""
+    the file was checked is never followed (SourceChanged). Never past EDITABLE_SIZE bytes (SourceTooBig): the
+    editor, the saves and History's restore would no longer take the file."""
+    data = new.encode("utf-8")
+    if len(data) > EDITABLE_SIZE:
+        raise SourceTooBig()
     folder = source_folder(path)
     try:
         with open_source(path, folder) as f:
@@ -99,7 +107,7 @@ def write_source(path, old, new):
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
         try:
             with os.fdopen(fd, "wb") as f:
-                f.write(new.encode("utf-8"))
+                f.write(data)
                 os.fchmod(f.fileno(), mode)
             os.replace(tmp, name, src_dir_fd=folder, dst_dir_fd=folder)
         except BaseException:
@@ -206,6 +214,16 @@ def editable_files(server, fresh=True):
     cached = server.editable
     if not fresh and cached and time.monotonic() - cached[0] < 2 and cached[1] == server.default_pdf:
         return cached[2]
+    found = {}
+    for rel in document_sources(server):
+        if real := editable_real(server.paper_root, rel):
+            found[rel] = real
+    server.editable = (time.monotonic(), server.default_pdf, found)
+    return found
+
+
+def document_sources(server):
+    """The paths that editable_files looks at (relative to the paper root, normalized), the main file first."""
     root, doc = server.paper_root, server.default_pdf[:-4]
     main = f"{doc}.tex"
     names = [main, *project_inputs(root, fls_file(root, server.default_pdf))]
@@ -213,12 +231,19 @@ def editable_files(server, fresh=True):
               for p in glob.glob(os.path.join(glob.escape(root), pattern))]
     names += [os.path.relpath(os.path.normpath(p), root) for p in source_tree(root, doc)]
     names += [rel for rel in getattr(server, "added", ()) if rel.lower().endswith(EDITABLE_EXTS)]
-    found = {}
-    for rel in sorted({os.path.normpath(name) for name in names}, key=lambda rel: (rel != main, rel)):
-        if real := editable_real(root, rel):
-            found[rel] = real
-    server.editable = (time.monotonic(), server.default_pdf, found)
-    return found
+    return sorted({os.path.normpath(name) for name in names}, key=lambda rel: (rel != main, rel))
+
+
+def oversized_source(server, rel):
+    """The real path of rel if it is one of the document's sources (document_sources) that the editor doesn't open only
+    because it is past EDITABLE_SIZE (editable_real but for the size), else None: History's restore may put it back."""
+    if rel not in document_sources(server):
+        return None
+    real = paper_file(server.paper_root, rel, EDITABLE_EXTS, float("inf"))
+    try:
+        return real if real and os.path.getsize(real) > EDITABLE_SIZE else None
+    except OSError:
+        return None
 
 
 def file_version(data):

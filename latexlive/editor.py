@@ -25,7 +25,7 @@ from .latex import brace_group
 from .sources import (
     ADDED_LIMIT, ASSET_EXTS, ASSET_SIZE, ASSETS_LIMIT, EDITABLE_EXTS, EDITABLE_SIZE, NOTE_LOCK, SourceChanged, add_file,
     asset_real, cached_version, create_source, doc_assets, doc_figures, editable_files, editable_real, file_version, invalidate_assets, move_file,
-    new_path, open_source, project_assets, read_editable, remember_added, remove_file, write_source, wrote)
+    new_path, open_source, oversized_source, project_assets, read_editable, remember_added, remove_file, write_source, wrote)
 
 
 MERGE_LABELS = ("saved meanwhile", "base", "your edit")  # (git's conflict markers name the two sides)
@@ -547,10 +547,14 @@ def delete_request(server, req, user):
     return 200, {"path": norm}
 
 
+OVERSIZED_LIMIT = 16 * EDITABLE_SIZE  # (the most of a source past EDITABLE_SIZE that a restore reads to write over it)
+
+
 def restore_request(server, req, user):
     """POST /history/restore {rev, path, version?}: put a source back as commit rev (a hexadecimal id; for a coauthor, one
-    that HEAD builds on) left it, as user: written over the file the editor opens (only if it is still at version, when
-    given: else 409), or, if it is gone, made again (create_source: never over anything that is there, 409; then listed
+    that HEAD builds on) left it, as user: written over the file the editor opens, or a source of the document that grew
+    past what the editor opens (oversized_source; only if it is still at version, when given: else 409), or, if it is
+    gone, made again (create_source: never over anything that is there, 409; then listed
     and committed as a file the Files tab made). 200 {"path", "version", "created"}."""
     rev, rel, version = req.get("rev"), req.get("path"), req.get("version")
     if not isinstance(rev, str) or not isinstance(rel, str) or not isinstance(version, (str, type(None))):
@@ -570,10 +574,11 @@ def restore_request(server, req, user):
     with NOTE_LOCK:
         if paused(server):
             return updating()
-        real = editable_files(server).get(rel)
+        real = editable_files(server).get(rel) or oversized_source(server, rel)  # (a source past 4 MB: put back too)
         try:
             if real:
-                raw = read_editable(real)
+                with open_source(real, limit=OVERSIZED_LIMIT) as f:
+                    raw = f.read()
                 if version is not None and file_version(raw) != version:
                     return 409, {"error": f"{rel} changed meanwhile: look again before restoring it"}
                 written = os.path.relpath(real, os.path.realpath(server.paper_root))

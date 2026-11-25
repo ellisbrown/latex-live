@@ -1,6 +1,6 @@
-"""The unit checks of shared mode's parts, without an instance: the downloads' guards (confinement_checks),
-the builder (shared_build_checks), and what the host reads of the files the paper's TeX writes
-(shared_parsing_checks)."""
+"""The unit checks of shared mode's parts, without an instance: the downloads' guards (confinement_checks), the
+host's reads and copies of the build's files, which follow no link (build_link_checks), the builder
+(shared_build_checks), and what the host reads of the files the paper's TeX writes (shared_parsing_checks)."""
 
 import gzip
 import json
@@ -8,13 +8,14 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import types
 
 from .base import HERE, fail, ok
-from .helpers import put, read_text, tex_stand_in
+from .helpers import git, put, read_text, tex_stand_in
 
 
 def confinement_checks():
@@ -104,6 +105,87 @@ def confinement_checks():
     ok("in shared mode, the downloads built on request say plainly that the TeX Live image is missing, the review copy"
        " reads the last good build's own files (no dot files) and keeps no links for its probe, and failures name no"
        " folder of the server's")
+
+
+def build_link_checks():
+    """In shared mode, where TeX writes build/ in containers, the host follows no link there when it reads or copies a
+    file of the build's (a link to a file of the owner's elsewhere would put that file in a download, or before TeX in
+    the next run): the downloads' reads (read_output), the export's head start, the diff's and the baselines' copies of
+    the live build's .aux files, the copies the review copy and the arXiv package make (copy_output: never written
+    through a link either), the recorder file kept after a pass, the notes-free pass's seed and the build's log
+    (latex_report.py, which never follows one)."""
+    from latexlive import baselines, config, export, files
+    sys.path.insert(0, HERE)
+    import latex_report
+    saved = (config.SHARED, export.image_pulled, export.run_tool, baselines.image_pulled, baselines.run_tool)
+    tmp, cwd = tempfile.mkdtemp(prefix="latex-live-check-"), os.getcwd()
+    try:
+        config.SHARED = True
+        secret = os.path.join(tmp, "secret.txt")
+        put(secret, "THE OWNER'S SECRET\n! an error line from it\n")
+        root = os.path.join(tmp, "paper")
+        build = os.path.join(root, config.BUILD)
+        os.makedirs(build)
+        put(os.path.join(root, "main.tex"), "\\documentclass{article}\\begin{document}x\\end{document}\n")
+        put(os.path.join(root, "main.pdf"), "%PDF-1.5\n")
+        git(root, "init", "-q")
+        git(root, "add", "main.tex")
+        git(root, "commit", "-q", "-m", "one")
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+        for name in ("main-live.aux", "main-live.bbl", "main-live.fls", "main-live.log", "x.log"):
+            os.symlink(secret, os.path.join(build, name))
+        os.chdir(root)
+        leaks = []
+
+        def leaked(what, path):
+            try:
+                with open(path, errors="replace") as f:
+                    if "SECRET" in f.read():
+                        leaks.append(what)
+            except OSError:
+                pass
+
+        if "SECRET" in (files.read_output(root, os.path.join(build, "x.log")) or ""):
+            leaks.append("read_output")
+        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", tex_exec="", export={}, review={}, exported={},
+                                       export_lock=threading.Lock(), review_lock=threading.Lock(),
+                                       download_lock=threading.Lock(), diff={}, bases={"head": {"pdf": "main.pdf"}})
+        export.image_pulled = baselines.image_pulled = lambda: True
+        export.run_tool = lambda *args, **kwargs: (1, "")  # (a TeX run that fails: after the head start)
+        try:
+            export.exact_export(server, "main.pdf")
+        except RuntimeError:
+            pass
+        leaked("the export's head start", os.path.join(build, "export", "main", "main-export.aux"))
+        baselines.run_tool = lambda argv, cwd, **kwargs: (0, "\\documentclass{article}\\begin{document}y\\end{document}\n"
+                                                          if "latexdiff" in argv else "")
+        baselines.build_diff(server, sha)
+        leaked("the diff's copy", os.path.join(build, "diff", "main-diff.aux"))
+        baselines.build_base(server, "head", sha, "main.pdf")
+        leaked("the baseline's copy", os.path.join(build, "head", "main", "main-head.aux"))
+        latex_report.keep_inputs("main-live")
+        leaked("the recorder file kept", os.path.join(build, "main-live.fls.done"))
+        latex_report.seed_notes_free("main-live", "main", os.path.join(build, "clean-1"))
+        leaked("the notes-free pass's seed", os.path.join(build, "clean-1", "main-clean.aux"))
+        status = latex_report.run_report("main-live", "fail", [])[1]
+        if "SECRET" in json.dumps(status) or "an error line" in json.dumps(status):
+            leaks.append("the build's log, read for its errors")
+        target = os.path.join(tmp, "owners.txt")
+        put(target, "kept\n")
+        os.symlink(target, os.path.join(build, "planted.pdf"))
+        put(os.path.join(build, "real.pdf"), "%PDF copied\n")
+        if (files.copy_output(os.path.join(build, "main-live.aux"), os.path.join(build, "copy.aux"))
+                or not files.copy_output(os.path.join(build, "real.pdf"), os.path.join(build, "planted.pdf"))
+                or read_text(target) != "kept\n" or os.path.islink(os.path.join(build, "planted.pdf"))):
+            leaks.append("copy_output (from a link, or written through one)")
+        if leaks:
+            fail(f"in shared mode, the host followed a link in build/ to a file elsewhere: {', '.join(leaks)}")
+    finally:
+        os.chdir(cwd)
+        config.SHARED, export.image_pulled, export.run_tool, baselines.image_pulled, baselines.run_tool = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+    ok("in shared mode, the host's reads and copies of the build's files (the downloads, the diff, the baselines, the kept"
+       " recorder file, the notes-free pass's seed, the build's log) follow no link, and no copy is written through one")
 
 
 def shared_build_checks():
