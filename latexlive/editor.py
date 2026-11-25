@@ -29,6 +29,7 @@ from .sources import (
 
 
 MERGE_LABELS = ("saved meanwhile", "base", "your edit")  # (git's conflict markers name the two sides)
+TOO_BIG = "the editor saves files of up to 4 MB"
 
 
 def files_listing(server, user):
@@ -204,7 +205,8 @@ def save_request(server, req, user):
     both changed the same lines, with nothing written (the file's version and text, and git's merge
     with conflict markers; plus "by", the name of who saved the file as it is now, when that was
     through the server); or 409 {"stale": true, "version", "text"} without base's text: send it again
-    with base_text. While the shared copy can't take a write, 503 (updating)."""
+    with base_text. While the shared copy can't take a write, 503 (updating); past what user may write
+    (source_budget), 413 or 429, with nothing written."""
     rel, text, base, base_text, force, editor = (req.get(key) for key in ("path", "text", "base", "base_text", "force",
                                                                           "editor"))
     if not (isinstance(rel, str) and isinstance(text, str) and isinstance(base, (str, type(None)))
@@ -218,7 +220,7 @@ def save_request(server, req, user):
     try:
         text, base_text = (t if t is None else t.replace("\r\n", "\n") for t in (text, base_text))
         if len(text.encode("utf-8")) > EDITABLE_SIZE:
-            return 413, {"error": "the editor saves files of up to 4 MB"}
+            return 413, {"error": TOO_BIG}
         if base_text is not None:
             base_text.encode("utf-8")
     except UnicodeEncodeError:
@@ -275,12 +277,16 @@ def save_file(server, user, rel, real, sent, base, base_text, force, editor=None
     new = text.replace("\n", eol) if eol != "\n" else text
     encoded = new.encode("utf-8")
     if len(encoded) > EDITABLE_SIZE:
-        return 413, {"error": "the editor saves files of up to 4 MB"}
+        return 413, {"error": TOO_BIG}
     new_version = file_version(encoded)
     if new != raw:
+        refusal, cost = source_budget(server, user, written, data, encoded)
+        if refusal:
+            return refusal
         if not commit_others(server, user, written):  # (LATEX_LIVE_COMMIT: what others wrote there is theirs)
             return updating()
         write_source(real, raw, new)
+        charge(server, user, cost)
         remember_write(server, user, written, "edit")
         wrote(server, user, written, new_version)
     remember_version(server, rel, new_version, text)
@@ -379,6 +385,67 @@ def asset_request(server, query, user):
 UPLOAD_TOTAL, UPLOAD_RATE, UPLOAD_WINDOW = 250_000_000, 100_000_000, 86400  # (bytes, bytes, seconds)
 UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 
+# Sources written (an editor's save, an entry added in the Refs tab, a file made, a restore): in shared mode a
+# coauthor's at most SOURCE_RATE bytes a day (UPLOAD_WINDOW), counted as git stores them (source_budget), and the
+# sources added through the Files tab (server.added) at most ADDED_SOURCES_TOTAL bytes in all, for the same reason.
+SOURCE_RATE, ADDED_SOURCES_TOTAL = 100_000_000, 20_000_000  # (bytes)
+
+
+def source_budget(server, user, rel, old, new, adding=False):
+    """Whether user may write new (bytes) over old (b"" for a file made now: adding, as the Files tab adds it) at rel,
+    relative to the paper root: (None, what it costs their day, for charge) or (the refusal, 0). It costs, with
+    LATEX_LIVE_COMMIT, the whole of new when rel is not among their writes still to commit (their next commit stores
+    the file whole), else the bytes that changed (changed_bytes): typing costs a few bytes, writing a file anew its
+    size. Refused past SOURCE_RATE today (429, for a coauthor in shared mode), or when a source added through the
+    Files tab grows and the added sources would pass ADDED_SOURCES_TOTAL (413, for everyone). The caller holds NOTE_LOCK."""
+    added = adding or rel in server.added
+    if added and len(new) > len(old) and added_size(server, rel) + len(new) > ADDED_SOURCES_TOTAL:
+        return (413, {"error": f"the sources added here would pass {ADDED_SOURCES_TOTAL // 1_000_000} MB: remove some first"}), 0
+    if not config.SHARED or user["role"] == "owner":
+        return None, 0
+    with server.pending_lock:
+        pending = rel in server.pending.get(user["id"], {}).get("paths", {})
+    cost = len(new) if server.autocommit and not pending else changed_bytes(old, new)
+    now = time.monotonic()
+    writes = server.writes.setdefault(user["id"], [])
+    writes[:] = [(t, n) for t, n in writes if now - t < UPLOAD_WINDOW]
+    if sum(n for _, n in writes) + cost > SOURCE_RATE:
+        return (429, {"error": f"you saved {SOURCE_RATE // 1_000_000} MB of changes to the sources today, the most a coauthor"
+                               " writes in a day; try again tomorrow"}), 0
+    return None, cost
+
+
+def charge(server, user, cost):
+    """Count a write that source_budget allowed against user's day."""
+    if cost:
+        server.writes.setdefault(user["id"], []).append((time.monotonic(), cost))
+
+
+def added_size(server, but):
+    """The bytes of the sources added through the Files tab (server.added) but the one at but."""
+    root = os.path.realpath(server.paper_root)
+    total = 0
+    for rel in server.added:
+        if rel != but and rel.lower().endswith(EDITABLE_EXTS):
+            try:
+                total += os.lstat(os.path.join(root, rel)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def changed_bytes(old, new):
+    """The bytes of new that are not in old: new but the start and the end the two share (each found by halving)."""
+    def shared(fits, most):
+        lo, hi = 0, most
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            lo, hi = (mid, hi) if fits(mid) else (lo, mid - 1)
+        return lo
+    start = shared(lambda n: old[:n] == new[:n], min(len(old), len(new)))
+    end = shared(lambda n: old[len(old) - n:] == new[len(new) - n:], min(len(old), len(new)) - start)
+    return len(new) - start - end
+
 
 def files_changed(server, user, add=(), drop=()):
     """After a Files tab action for user (holding NOTE_LOCK): the files added are listed from now on, those dropped no
@@ -398,7 +465,7 @@ def files_changed(server, user, add=(), drop=()):
 
 def create_request(server, req, user):
     """POST /file/create {path, text?}: make a new source file (create_source: a .tex, .bib, .sty or .cls file, never
-    over one that is there: 409) holding text, as user. 200 {"path"}."""
+    over one that is there: 409) holding text, as user, within source_budget (413, 429). 200 {"path"}."""
     rel, text = req.get("path"), req.get("text", "")
     if not isinstance(rel, str) or not isinstance(text, str):
         return 400, {"error": "expected path (and maybe text)"}
@@ -409,9 +476,13 @@ def create_request(server, req, user):
             return 409, {"error": f"{ADDED_LIMIT} files were added here already: remove some first"}
         try:
             norm = new_path(server.paper_root, rel, EDITABLE_EXTS)
+            refusal, cost = source_budget(server, user, norm, b"", text.encode("utf-8"), adding=True)
+            if refusal:
+                return refusal
             if not commit_others(server, user, norm):  # (a removal of this name, someone else's, not committed yet)
                 return updating()
             create_source(server.paper_root, norm, text)
+            charge(server, user, cost)
         except ValueError as e:
             return 400, {"error": f"{rel.strip()}: {e}"}
         except FileExistsError:
@@ -555,7 +626,7 @@ def restore_request(server, req, user):
     that HEAD builds on) left it, as user: written over the file the editor opens, or a source of the document that grew
     past what the editor opens (oversized_source; only if it is still at version, when given: else 409), or, if it is
     gone, made again (create_source: never over anything that is there, 409; then listed
-    and committed as a file the Files tab made). 200 {"path", "version", "created"}."""
+    and committed as a file the Files tab made); within source_budget (413, 429). 200 {"path", "version", "created"}."""
     rev, rel, version = req.get("rev"), req.get("path"), req.get("version")
     if not isinstance(rev, str) or not isinstance(rel, str) or not isinstance(version, (str, type(None))):
         return 400, {"error": "expected rev and path (and maybe version)"}
@@ -583,18 +654,26 @@ def restore_request(server, req, user):
                     return 409, {"error": f"{rel} changed meanwhile: look again before restoring it"}
                 written = os.path.relpath(real, os.path.realpath(server.paper_root))
                 if raw != data:
+                    refusal, cost = source_budget(server, user, written, raw, data)
+                    if refusal:
+                        return refusal
                     if not commit_others(server, user, written):
                         return updating()
                     write_source(real, raw.decode("utf-8"), text)
+                    charge(server, user, cost)
                     remember_write(server, user, written, "edit")
                     wrote(server, user, written, file_version(data))
             else:
                 if len(server.added) >= ADDED_LIMIT:
                     return 409, {"error": f"{ADDED_LIMIT} files were added here already: remove some first"}
                 rel = new_path(server.paper_root, rel, EDITABLE_EXTS)
+                refusal, cost = source_budget(server, user, rel, b"", data, adding=True)
+                if refusal:
+                    return refusal
                 if not commit_others(server, user, rel):
                     return updating()
                 create_source(server.paper_root, rel, text)
+                charge(server, user, cost)
                 files_changed(server, user, add=[rel])
         except ValueError as e:
             return 400, {"error": f"{rel}: {e}"}

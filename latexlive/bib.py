@@ -24,7 +24,7 @@ import xml.etree.ElementTree as ET
 
 from . import config
 from .commits import paused, updating
-from .editor import BIB_ENTRY_RE, COMPLETIONS_LIMIT, editor_text, save_file
+from .editor import BIB_ENTRY_RE, COMPLETIONS_LIMIT, TOO_BIG, editor_text, save_file
 from .latex import brace_group
 from .sources import NOTE_LOCK, SourceChanged, editable_files, file_version, read_editable
 
@@ -149,7 +149,7 @@ def bib_order(rel):
 def add_request(server, req, user):
     """POST /bib/add {bibtex, file?}: append BibTeX entries to one of the paper's .bib files (file, else the first), as
     user (a principal), through the browser editor's save (save_file: LATEX_LIVE_COMMIT commits it as theirs, and the
-    file stays within the editor's 4 MB). Refused unless the text holds entries, its braces pair up, and none of its
+    file stays within the editor's 4 MB and the writes a coauthor makes in a day: source_budget). Refused unless the text holds entries, its braces pair up, and none of its
     keys is there twice or already in a .bib file of the paper (as BibTeX compares keys, ignoring case). 200 {"file",
     "keys"}."""
     bibtex, target = req.get("bibtex"), req.get("file")
@@ -192,7 +192,7 @@ def add_request(server, req, user):
             return 415, {"error": f"{target} is not UTF-8, so it can't be added to"}
         except OSError as e:
             return 500, {"error": f"could not write {target}: {e.strerror or e}"}
-        if status == 413:
+        if status == 413 and answer.get("error") == TOO_BIG:
             return 413, {"error": f"{target} would grow past the editor's 4 MB"}
         return (200, {"file": target, "keys": keys}) if status == 200 else (status, answer)
     return 409, {"error": f"{target} keeps changing on disk; try again"}

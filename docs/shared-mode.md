@@ -442,9 +442,12 @@ instance treats the paper and everything TeX writes as theirs.
   editor opens, and the figures its last build read or that were added through
   the Files tab (yours too, once the document includes them). Uploads are
   figures only, up to 10 MB each, 100 MB a day per coauthor, and 250 MB and
-  400 figures for the whole paper, so the copy and its history stay bounded;
-  nothing is written over a file that is there, into the build folder, or
-  through a link.
+  400 figures for the whole paper; the sources added there hold at most 20 MB
+  in all, and each coauthor writes at most 100 MB of changes to the sources a
+  day (saves, entries added in the Refs tab, new files, restores: a day of
+  editing takes a small part of that), so the copy and its history stay
+  bounded; nothing is written over a file that is there, into the build folder,
+  or through a link.
 - **No latexmk.** latexmk is a Perl program on the host that reads the files
   TeX writes, and it passes the bibliography names in the `.aux` to a shell, so
   a crafted name would run a command here. live.py itself watches the paper's

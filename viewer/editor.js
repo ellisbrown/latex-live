@@ -431,7 +431,7 @@ export async function saveSource({ keepalive = false } = {}) {
       res = await readBody(r);
     }
     const trouble = signInPage(r, res) || (r.ok && typeof res.version !== "string") ? "signin" : r.status === 503 && res.retry ? "updating"
-                  : unreachable(r, res) ? "unreachable" : r.status >= 500 ? "server" : null;
+                  : unreachable(r, res) ? "unreachable" : r.status >= 500 || (r.status === 429 && res.retry) ? "server" : null; // (429 with retry: too many requests at once)
     if (trouble) throw Object.assign(new Error(res.error || `save failed (${r.status})`), { trouble });
     if (r.status === 404 && (await stillListed(target.path))) throw Object.assign(new Error(res.error), { trouble: "server" }); // (not gone after all)
     backOnline();
@@ -509,9 +509,10 @@ function backOnline() {
   hideNotice("unsaved");
 }
 // A save that the server refused (sending it again as it is won't help): the label says why, and the
-// text stays, unsaved. Without access (403), or with the file gone from the paper (404), the notice
-// above the text also gives it to copy.
-const REFUSALS = { 403: "no access", 404: "file not in the paper", 413: "file too large", 415: "not UTF-8 text", 422: "couldn't merge", 409: "the file keeps changing" };
+// text stays, unsaved. Without access (403), past the day's writes (429), or with the file gone from the
+// paper (404), the notice above the text also gives it to copy.
+const REFUSALS = { 403: "no access", 404: "file not in the paper", 413: "too large", 415: "not UTF-8 text", 422: "couldn't merge", 409: "the file keeps changing",
+                   429: "daily limit reached" };
 function refuseSave(status, why) {
   ed.error = { short: REFUSALS[status] || "refused", why };
   setStatus(`${ed.path} not saved: ${why}`, "error");
@@ -521,6 +522,9 @@ function refuseSave(status, why) {
   } else if (status === 403) {
     showNotice("refused", `The preview refused to save ${ed.path} (${why}). This browser keeps your edits; copy them from below before you ` +
                           `leave, and ask ${ownerName()} if you should still have access:`, { copy: cmView.state.doc.toString() });
+  } else if (status === 429) { // (the most a coauthor writes in a day: live.py's source_budget)
+    showNotice("refused", `The preview refused to save ${ed.path}: ${why}. This browser keeps your edits; copy them from below to keep ` +
+                          "them elsewhere:", { copy: cmView.state.doc.toString() });
   }
 }
 function showGone(path, text, key = keptKey(path)) {
