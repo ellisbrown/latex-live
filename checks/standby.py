@@ -9,6 +9,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import time
 
 from .base import ENV, HERE, STANDBY_PORT, _quiet, fail, ok, wait_for
@@ -44,6 +45,21 @@ def standby_keepers(paper):
             if b"--keep" in argv and any(a.endswith(b"standby.py") for a in argv) and \
                     os.path.realpath(f"/proc/{pid}/cwd") == os.path.realpath(paper):
                 found.append(int(pid))
+        except OSError:
+            pass
+    return found
+
+
+def paper_processes(paper):
+    """(pid, command line, where it waits) of each process working in paper or a folder in it (on Linux, from /proc;
+    elsewhere none are found)."""
+    found, root = [], os.path.realpath(paper)
+    for pid in filter(str.isdigit, os.listdir("/proc") if os.path.isdir("/proc") else []):
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+            if cwd == root or cwd.startswith(root + os.sep):
+                with open(f"/proc/{pid}/cmdline", "rb") as f, open(f"/proc/{pid}/wchan") as g:
+                    found.append((int(pid), f.read().replace(b"\0", b" ").decode(errors="replace").strip(), g.read()))
         except OSError:
             pass
     return found
@@ -197,6 +213,9 @@ def standby_run(tmp):
             fail(f"the warm standbys left keepers, containers or folders behind: {left}")
         ok("no standby keeper, container or folder outlives live.py, killed (kill -9) or stopped")
 
+        if os.path.isdir("/proc"):
+            midpass_stop_check(paper, procs, extra, env, idle, body)
+
         before = passes()
         procs.append(start(paper, "main", *extra, env={**env, "LATEX_LIVE_STANDBY": "0"}, port=STANDBY_PORT))
         wait_for("the instance without standbys", lambda: _quiet(lambda: read_json_file(os.path.join(build, "main-live.lock"))["pid"]
@@ -208,6 +227,35 @@ def standby_run(tmp):
     finally:
         for proc in procs:
             stop(proc)
+
+
+def midpass_stop_check(paper, procs, extra, env, idle, body):
+    """Stopped in the middle of a pass (its process group, as check.py and a closing terminal stop it), the instance
+    leaves no process working in the paper. Each pass runs standby.py with live.py's own Python (LATEX_LIVE_PYTHON),
+    never through a python3 launcher from the PATH that starts the real one as its child: one such launcher, signalled
+    twice in a row (SIGCONT, SIGTERM), hung for good in its own signal handler, its interpreter gone."""
+    build = os.path.join(paper, "build")
+    procs.append(start(paper, "main", *extra, env=env, port=STANDBY_PORT))
+    lock = os.path.join(build, "main-live.lock")
+    wait_for("the instance to stop in the middle of a pass",
+             lambda: _quiet(lambda: read_json_file(lock)["pid"] == procs[-1].pid) and idle())
+    # (a body that takes TeX a second or so: the pass is still running when the instance is stopped)
+    write_text(paper, "body.tex", body + "\\count255=0 \\loop\\advance\\count255 by 1 \\ifnum\\count255<4000000 \\repeat\n")
+    passes = wait_for("a pass of the instance", lambda: [(pid, command) for pid, command, _ in paper_processes(paper)
+                                                         if re.search(r"standby\.py pdflatex ", command)], timeout=60, step=0.01)
+    python = os.path.realpath(sys.executable)  # (live.py's: check.py starts it with its own)
+    programs = [(pid, _quiet(lambda: os.path.realpath(os.readlink(f"/proc/{pid}/exe"))), command[:120]) for pid, command in passes]
+    others = [found for found in programs if found[1] not in (python, None)]
+    stop(procs[-1])
+    end = time.monotonic() + 30
+    while (left := paper_processes(paper)) and time.monotonic() < end:
+        time.sleep(0.2)
+    write_text(paper, "body.tex", body)
+    if others:
+        fail(f"a pass ran standby.py with another program than live.py's Python ({python}): {others}")
+    if left:
+        fail(f"stopped in the middle of a pass, the instance left processes working in the paper: {left}")
+    ok("stopped in the middle of a pass, the instance leaves no process behind; its passes run live.py's own Python")
 
 
 def timing_check(log, port, token):

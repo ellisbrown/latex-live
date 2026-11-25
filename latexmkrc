@@ -15,6 +15,12 @@ my $here = $ENV{LATEX_LIVE_HOME} || "$ENV{HOME}/.local/share/latex-live";
 
 my $exec = $ENV{LATEX_LIVE_EXEC} // '';
 my $build = $ENV{LATEX_LIVE_BUILD} || 'build';  # live.py --build-dir
+# The Python that runs latex-live's helpers: live.py's own (LATEX_LIVE_PYTHON), so that they run under the same
+# interpreter, never through a launcher on the PATH that starts the real one as its child (such a launcher, signalled
+# twice in a row as a stopped process group is, can hang forever in its own signal handler); python3 when run by hand.
+my $python = $ENV{LATEX_LIVE_PYTHON} || 'python3';
+(my $py = $python) =~ s/'/'\\''/g;
+$py = "'$py'";  # (quoted for the shell commands below)
 
 $pdf_mode = 1;
 # -halt-on-error: stop at the first error (fast failure, no cascade of follow-on errors).
@@ -32,8 +38,8 @@ $pre_tex_code = '\\def\\latexlivelayout{\\typeout{latex-live layout:'
 # With LATEX_LIVE_STANDBY_OWNER (live.py's pid; LATEX_LIVE_STANDBY=0 turns it off), each pass goes through
 # latexlive/standby.py, which runs it in a warm standby (a pdflatex that has read the preamble already)
 # when it can, else as before, with the same arguments and $exec (which it reads from the environment).
-my $pass = $ENV{LATEX_LIVE_STANDBY_OWNER} ? "python3 -I '$here/latexlive/standby.py'" : $exec;
-$pdflatex = "touch $build/%R.building; [ -s $build/%R.began ] || echo run > $build/%R.began; $pass pdflatex -synctex=1 -file-line-error -halt-on-error %O %P && python3 '$here/latex_report.py' --pass %R";
+my $pass = $ENV{LATEX_LIVE_STANDBY_OWNER} ? "$py -I '$here/latexlive/standby.py'" : $exec;
+$pdflatex = "touch $build/%R.building; [ -s $build/%R.began ] || echo run > $build/%R.began; $pass pdflatex -synctex=1 -file-line-error -halt-on-error %O %P && $py '$here/latex_report.py' --pass %R";
 # LATEX_LIVE_TIMING=1 (live.py; latexlive/timing.py): note when each run and pass begins, when a pass's command
 # returns and latexmk has read what it wrote, when the run ends, and when bibtex starts, in build/<job>.timing.
 # The hooks need latexmk 4.80 or later; with an older one, only the other processes' notes are there.
@@ -71,7 +77,7 @@ if ($ENV{LATEX_LIVE_DOC} && defined &add_hook) {
             POSIX::_exit(0) if fork();
             POSIX::setsid();
             open(STDIN, '<', '/dev/null'); open(STDOUT, '>', '/dev/null'); open(STDERR, '>', '/dev/null');
-            exec('python3', "$here/latex_report.py", '--early', $jobname, $doc, $seed, $began, $owner) or POSIX::_exit(1);
+            exec($python, "$here/latex_report.py", '--early', $jobname, $doc, $seed, $began, $owner) or POSIX::_exit(1);
         }
         waitpid($pid, 0) if $pid;
         return 0;
@@ -87,6 +93,6 @@ $silent = 1;        # keep the terminal readable; full log is in build/<doc>.log
 
 # Watch-mode hooks; latexmk expands %R to the root name. $warning_cmd fires
 # instead of $success_cmd when refs/citations are undefined.
-$success_cmd = "python3 '$here/latex_report.py' %R ok";
+$success_cmd = "$py '$here/latex_report.py' %R ok";
 $warning_cmd = $success_cmd;
-$failure_cmd = "python3 '$here/latex_report.py' %R fail";
+$failure_cmd = "$py '$here/latex_report.py' %R fail";
