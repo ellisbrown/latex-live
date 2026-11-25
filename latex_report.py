@@ -394,14 +394,37 @@ def changed_since(path, t0):
     return max(st.st_mtime_ns, st.st_ctime_ns) >= t0 - margin
 
 
+PROC = "/proc"  # (where Linux lists processes: group_alive)
+
+
 def group_alive(pgid):
+    """Whether process group pgid has a member that still runs. A zombie doesn't: a stopped pass's leader, whose parent
+    is gone, stays one where nothing reaps orphans (a container whose first process doesn't), and waiting for it would
+    only run out the time. Without /proc (macOS, where orphans are reaped), any member counts."""
+    if not isinstance(pgid, int) or pgid <= 0:
+        return False
     try:
         os.killpg(pgid, 0)
-        return True
     except PermissionError:
         return True
     except OSError:
         return False
+    if not os.path.isdir(PROC):
+        return True
+    leader = process_fields(pgid)  # (most often the leader still runs: one small read)
+    if leader and leader[2] == str(pgid) and leader[0] not in ("Z", "X", "x"):
+        return True
+    members = [f for f in map(process_fields, filter(str.isdigit, os.listdir(PROC))) if f and f[2] == str(pgid)]
+    return not members or any(f[0] not in ("Z", "X", "x") for f in members)  # (none seen: /proc hides them; can't tell)
+
+
+def process_fields(pid):
+    """The fields of /proc/<pid>/stat after the command's name (state, parent, process group, ...), or None."""
+    try:
+        with open(os.path.join(PROC, str(pid), "stat")) as f:
+            return f.read().rsplit(")", 1)[1].split()
+    except (OSError, IndexError):
+        return None
 
 
 def stop_early(early):

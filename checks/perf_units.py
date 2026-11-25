@@ -2,7 +2,7 @@
 SyncTeX and poppler): the bibliography's SyncTeX lookups, which merge while a build follows another; inverse search's
 cache; the SyncTeX file read once per build for every lookup; the caches that requests share; the change baselines'
 git calls, made only when a ref may have moved; the margin notes' points; LATEX_LIVE_ANON_TERMS; poppler's limits;
-and stopping the notes-free pass before the warm standbys."""
+stopping the notes-free pass before the warm standbys, and telling when its process group has ended."""
 
 import gzip
 import os
@@ -21,7 +21,7 @@ from .helpers import fake_server, git, patched, put, put_bytes
 def perf_checks():
     for check in (bib_span_checks, bib_merge_checks, inverse_cache_checks, synctex_text_checks, cache_race_checks,
                   ref_stamp_checks, margin_points_checks, anon_terms_checks, poppler_limit_checks, bounded_cache_checks,
-                  stop_notes_free_checks):
+                  stop_notes_free_checks, group_alive_checks):
         check()
 
 
@@ -472,3 +472,43 @@ def stop_notes_free_checks():
     if not other_runs or not stopped or took > 10:
         fail(f"stop_notes_free: another document's pass left running {other_runs}, this one's stopped {stopped} in {took:.1f} s")
     ok("live.py stops a document's notes-free pass (only that document's) before its warm standbys")
+
+
+def group_alive_checks():
+    """A process group counts as ended once its members are all zombies (latex_report.group_alive): a stopped notes-free
+    pass's leader, whose parent is gone, stays one where nothing reaps orphans, and live.py's stop waited out both of
+    its waits for it. A group with a member that runs counts until that member ends; without /proc, any member counts."""
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import latex_report
+
+    def state(pid):
+        return (latex_report.process_fields(pid) or ["gone"])[0]
+    if not os.path.isdir("/proc"):
+        return print("skip: no /proc, so a process group of zombies is not checked", flush=True)
+    # A group whose only member is a zombie: a session leader that has exited, which this process (its parent) doesn't reap yet.
+    zombie = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+    # A group whose leader is a zombie but another member runs: the leader starts a sleeper (pid on its output) and exits.
+    leader = subprocess.Popen([sys.executable, "-c", "import subprocess, sys; print(subprocess.Popen(['sleep', '60']).pid)"],
+                              start_new_session=True, stdout=subprocess.PIPE, text=True)
+    member = int(leader.stdout.readline())
+    running = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    try:
+        wait_for("the leaders to exit", lambda: state(zombie.pid) == "Z" and state(leader.pid) == "Z", timeout=10)
+        with patched(latex_report, PROC=os.path.join(HERE, "no-such-folder")):
+            fallback = latex_report.group_alive(zombie.pid)
+        found = [latex_report.group_alive(pid) for pid in (zombie.pid, leader.pid, running.pid, 0, -1)]
+        os.kill(member, signal.SIGKILL)  # (the sleeper this check started: its exact pid)
+        wait_for("the group's last running member to end", lambda: not latex_report.group_alive(leader.pid), timeout=10)
+    finally:
+        for proc in (running, zombie, leader):
+            proc.kill()
+            proc.wait()
+        try:
+            os.kill(member, signal.SIGKILL)
+        except OSError:
+            pass
+    if found != [False, True, True, False, False] or not fallback:
+        fail(f"group_alive: zombies only, a zombie leader with a running member, running, 0, -1: {found}; without /proc,"
+             f" zombies only: {fallback}")
+    ok("a process group of zombies counts as ended (live.py's stop doesn't wait for it), one with a running member doesn't")
