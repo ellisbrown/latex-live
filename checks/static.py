@@ -26,6 +26,9 @@ IMPORT_RES = (re.compile(r"""^\s*(?:import|export)\s[^;'"]*?\bfrom\s*["']([^"']+
 # says every view has its page.
 PAGE_SWAP = ["keepCanvasWrapper = false", "this.pdfDocument = pdfDocument;", "this._optionalContentConfigPromise = ",
              '"pagesloaded"', "case canvasWrapperNode:"]
+# What layout.js's gutters for the margin bubbles rely on: PDF.js fits the page width to the container's clientWidth,
+# and reckons which pages are in view (with the whole width) in its _getVisiblePages.
+GUTTERS = ["(this.container.clientWidth - hPadding)", "_getVisiblePages() {", "right = left + scrollEl.clientWidth;"]
 
 
 def python_files():
@@ -80,6 +83,10 @@ def static_checks():
     if missing:
         fail(f"the vendored pdf_viewer.mjs lacks what the viewer's in-place reload (pdfview.js swapDocument) uses: {missing}")
     ok("the vendored PDF.js viewer has what the in-place reload uses")
+    missing = [s for s in GUTTERS if s not in pdf_viewer]
+    if missing:
+        fail(f"the vendored pdf_viewer.mjs lacks what the margin bubbles' gutters (layout.js) rely on: {missing}")
+    ok("the vendored PDF.js viewer measures as the margin bubbles' gutters expect")
     with tempfile.TemporaryDirectory(prefix="latex-live-token-") as state:  # (instances starting at once)
         racers = [subprocess.Popen([sys.executable, "-c", "from latexlive.auth import load_token; print(load_token())"], cwd=HERE,
                                    env={**ENV, "LATEX_LIVE_STATE": state}, stdout=subprocess.PIPE, text=True)

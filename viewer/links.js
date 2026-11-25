@@ -2,7 +2,7 @@
 // PDF; opening a source line, in VS Code or in the source pane. A pop-out window (?mode=pdf) shows the source lines
 // that the main window shows in the PDF, and has the main window open those double-clicked in it.
 
-import { $, file, isDiff, isPopout, setStatus } from "./page.js";
+import { $, file, HOLD, isDiff, isPopout, setStatus } from "./page.js";
 import { postJSON, readBody } from "./net.js";
 import { canOpenFile, editable, editorAllowed, me, opensInBrowser, opensSources } from "./role.js";
 import { container, eventBus, pageFrame, pagesReady, shownVariant, viewer } from "./pdfview.js";
@@ -13,7 +13,10 @@ import { cmView, ed, showEditor } from "./editor.js";
 // SyncTeX inverse search: double-click a spot on a page to open its source line in VS Code, or in
 // the source pane beside the PDF when that is open (a collaborator who may edit, or an owner whose
 // preview has no VS Code to open: always there). For someone who can open neither, a double-click
-// just selects a word, as anywhere else (e.g. to comment on it).
+// just selects a word, as anywhere else (e.g. to comment on it). Once VS Code didn't open (e.g. latex-live doesn't
+// run in a VS Code terminal), this page stops asking for it: the lines go to the source pane, and the status line says
+// why once (hostFailed: why it didn't).
+let hostFailed = null;
 container.addEventListener("dblclick", async (e) => {
   const pageDiv = e.target.closest(".page");
   if (!pageDiv || e.target.closest(".ll-margin") || !opensSources()) return;
@@ -31,12 +34,14 @@ container.addEventListener("dblclick", async (e) => {
   try {
     let why = null; // (VS Code's failure to open, when the source pane opens instead)
     // (the server opens VS Code itself, as it always has; not for a pop-out, whose main window may have the pane open)
-    if (me.legacy || (!me.shared && me.can.openHost && !opensInBrowser() && !isPopout)) {
+    if (me.legacy || (!me.shared && me.can.openHost && !opensInBrowser() && !isPopout && hostFailed === null)) {
       const r = await fetch(`synctex?${q}`);
       const text = await r.text();
       // 409: found, but VS Code did not open (e.g. not run in a VS Code terminal); the pane, then
       if (r.status !== 409 || !editorAllowed()) return setStatus(r.ok ? `→ ${text}` : text, r.ok ? "fresh" : "error");
       why = text;
+    } else if (hostFailed !== null && !opensInBrowser() && !isPopout) {
+      why = hostFailed;
     }
     q.set("json", "1"); // (just where it is; the viewer opens it)
     const r = await fetch(`synctex?${q}`);
@@ -48,7 +53,9 @@ container.addEventListener("dblclick", async (e) => {
       return canOpenFile(found.file) && openSource(found.file, found.line, found.column);
     }
     if (!editable(found.file)) return setStatus(why, "error");
-    setStatus(`${found.file}:${found.line} is in the source pane (${why})`);
+    if (hostFailed === null) setStatus(`${found.file}:${found.line} is in the source pane (${why})`, "", HOLD);
+    else setStatus(`→ ${found.file}:${found.line}`, "fresh");
+    hostFailed = why;
     showEditor(true, { path: found.file, line: found.line, column: found.column });
   } catch (err) {
     setStatus(`${err.message || err}`, "error");
@@ -139,13 +146,15 @@ export async function openSource(file, line, column = 0) {
   }
   if (opensInBrowser() && editable(file)) return inPane(file, line, column);
   if (!me.can.openHost) return setStatus(`${file} can't be opened here`, "error");
+  if (hostFailed !== null && !isPopout && editorAllowed() && editable(file)) return inPane(file, line, column); // (said once)
   try {
     const r = me.legacy ? await fetch(`open?${new URLSearchParams({ file, line })}`)
                         : await postJSON("open", { file, line, ...(column ? { column } : {}) });
     if (r.ok) return;
     const why = (await readBody(r)).error; // e.g. latex-live is not running in a VS Code terminal
     if (!editorAllowed() || !editable(file)) return setStatus(why, "error");
-    setStatus(`${file}:${line} is in the source pane (VS Code did not open: ${why})`);
+    setStatus(`${file}:${line} is in the source pane (VS Code did not open: ${why})`, "", HOLD);
+    if (!isPopout) hostFailed = why;
     inPane(file, line, column);
   } catch (err) {
     setStatus(`${err.message || err}`, "error");

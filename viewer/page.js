@@ -34,15 +34,53 @@ document.title = isDiff ? `diff: ${docFile}` : file;
 export const building = new Set();
 
 // The live build's state on the status line (poll, load), unless a download that the server builds is in
-// progress: that has the line meanwhile (downloadBuilt), rather than the two taking turns.
+// progress: that has the line meanwhile (downloadBuilt), rather than the two taking turns. Nor does it replace a
+// message held on the line (an error, say): it shows once the hold ends.
+let held = null; // ({timer, live: the live state that came meanwhile}) while a message holds the line
 export function liveStatus(text, cls = "", title = text) {
+  if (held) return void (held.live = [text, cls, title]);
   if (building.size) return;
-  setStatus(text, cls);
+  showStatus(text, cls);
   $("status").title = title;
 }
-export function setStatus(text, cls = "") {
+// A message on the status line. An error stays there for a while (HOLD ms, longer for a long one; another message
+// may hold the line too), so that the next build's state doesn't replace it within a second; a click on it ends the
+// hold. Where the line cuts a held message short, a note under the top bar shows it whole meanwhile.
+export const HOLD = 8000;
+export function setStatus(text, cls = "", hold = cls === "error" ? HOLD : 0) {
+  if (held) { clearTimeout(held.timer); held = null; }
+  showStatus(text, cls);
+  if (!hold || !text) return;
+  const ms = hold + 40 * text.length;
+  held = { timer: setTimeout(release, ms), live: null };
+  const line = $("status");
+  if (line.scrollWidth > line.clientWidth + 1) showWhole(text, cls, line);
+}
+function showStatus(text, cls) {
   $("status").textContent = $("status").title = text; // (the title: the whole text when it is cut off)
   $("status").className = cls;
+  whole?.remove();
+  whole = null;
 }
+function release() {
+  const live = held?.live;
+  held = null;
+  whole?.remove();
+  whole = null;
+  if (live) liveStatus(...live);
+}
+let whole = null; // (the note with a held message whole)
+function showWhole(text, cls, line) {
+  const box = line.getBoundingClientRect();
+  whole = el("div", { className: `status-whole ${cls}`, role: "status", textContent: text, title: "Close", onclick: release });
+  whole.style.top = `${box.bottom + 6}px`;
+  whole.style.right = `${Math.max(8, innerWidth - box.right)}px`;
+  document.body.append(whole);
+}
+$("status").addEventListener("click", () => { if (held) release(); });
+
+// A panel's part that didn't load: why, and a button that asks again.
+export const panelError = (text, retry) => el("div", { className: "empty panel-error" }, el("div", { textContent: text }),
+                                              el("button", { textContent: "Try again", onclick: retry }));
 
 export const editorShown = () => !$("editorPane").hidden; // (the source pane: editor.js)

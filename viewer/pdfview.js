@@ -85,6 +85,7 @@ container.addEventListener("wheel", (e) => {
 }, { passive: false });
 
 export const assets = {
+  worker: new pdfjsLib.PDFWorker(), // (one for every document: each would otherwise start a worker of its own, and fetch it)
   // Absolute URLs: the worker would resolve relative ones against pdfjs/build/.
   cMapUrl: new URL("pdfjs/cmaps/", location.href).href,
   cMapPacked: true,

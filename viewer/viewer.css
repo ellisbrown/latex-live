@@ -281,6 +281,13 @@ body.pdf-invert .thumb canvas {
 #status.fresh { background: var(--ok-bg); color: var(--ok); border-color: var(--ok-border); }
 #status.busy { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-border); }
 #status.error { background: var(--err-bg); color: var(--err); border-color: var(--err-border); }
+/* A held message that the status line cuts short, whole, under it (page.js). */
+.status-whole {
+  position: fixed; z-index: 40; max-width: min(480px, calc(100vw - 16px)); padding: 7px 11px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg-surface); color: var(--ink-2); box-shadow: var(--shadow-pop);
+  font-size: 12px; line-height: 1.45; cursor: pointer;
+}
+.status-whole.error { background: var(--err-bg); color: var(--err); border-color: var(--err-border); }
 #texImage { color: var(--warn); font-size: 12px; font-weight: 500; cursor: help; }
 #updated { color: var(--accent-ink); font-size: 12px; font-weight: 500; cursor: help; }
 
@@ -329,6 +336,8 @@ body.pdf-invert .thumb canvas {
 
 .panel { flex: 1; min-height: 0; overflow: auto; padding: 6px 0; }
 .panel .empty { padding: 16px 14px; color: var(--ink-3); font-size: 12.5px; text-align: center; }
+.panel .panel-error { color: var(--err); display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.panel .panel-error button { font: inherit; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--ink); cursor: pointer; }
 
 /* The outline, the page thumbnails, the notes, the checks and the figures. */
 #outline ul { list-style: none; margin: 0; padding-left: 12px; }
@@ -815,12 +824,13 @@ body.resizing { cursor: col-resize; user-select: none; }
 .ll-bubble.left { left: auto; right: calc(100% + 16px); border-left: 1px solid var(--border); border-right: 3.5px solid; }
 .ll-bubble .text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
 .ll-bubble b { margin-right: 4px; font-weight: 700; }
-.ll-bubble.hot { z-index: 2; box-shadow: var(--shadow-pop); outline: 2px solid var(--accent); }
+.ll-bubble.hot { z-index: 3; box-shadow: var(--shadow-pop); outline: 2px solid var(--accent); }
 .ll-bubble.hot .text { -webkit-line-clamp: 30; }
 
 /* A note's tools (reply, resolve, edit, delete), the comment button by a selection, and the box to write a note in. */
 .tools { float: right; display: none; margin-left: 4px; gap: 1px; }
-.ll-bubble .tools { position: absolute; top: 3px; right: 4px; background: var(--bg-surface); border-radius: 4px; padding: 0 2px; } /* (no reflow on hover) */
+/* (on the bubble's top edge, not over its text; no reflow on hover) */
+.ll-bubble .tools { position: absolute; top: -13px; right: 6px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 5px; padding: 0 2px; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12); }
 .ll-bubble:hover .tools, .ll-bubble.hot .tools, .note:hover .tools { display: inline-flex; }
 .tools button { border: 0; background: transparent; color: var(--ink-2); cursor: pointer; padding: 1px 3px; font-size: 12px; border-radius: 3px; }
 .tools button:hover { background: var(--bg-hover); color: var(--ink); }
@@ -966,7 +976,7 @@ kbd {
 #banner .close { position: absolute; top: 6px; right: 8px; background: none; border: 0; color: var(--ink-3); cursor: pointer; }
 
 #comparePanel {
-  position: fixed; top: calc(var(--bar-h) + 4px); right: 12px; z-index: 36; width: 460px; max-height: 70vh; overflow: auto;
+  position: fixed; top: calc(var(--bar-h) + 4px); z-index: 36; width: min(460px, calc(100vw - 24px)); max-height: 70vh; overflow: auto;
   background: var(--bg-surface); color: var(--ink); border-radius: 10px; box-shadow: var(--shadow-pop);
 }
 #comparePanel .head { padding: 9px 12px; color: var(--ink-3); font-size: 12px; border-bottom: 1px solid var(--hairline); }

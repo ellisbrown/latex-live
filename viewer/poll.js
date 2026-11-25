@@ -129,15 +129,21 @@ async function load(name, version, variant, info, timed = () => {}) {
 // kept from before the preview restarted, say) would otherwise hold its request, and every later poll would
 // queue behind the few connections the browser opens to this port, which every viewer on it shares.
 let polling = false, pollFailed = false; // (the status line says why the last poll failed)
+const BUSY = "The preview is busy — retrying…";
 // While a new PDF is on its way (a build runs, the notes-free pass after it hasn't published yet, or where the
 // references start is being looked up), the owner's viewer polls every HURRY ms instead of the usual four times a
 // second, so that it shows the PDF as soon as it is published; coauthors' viewers keep their pace, as there may be
 // many. The notes-free pass is waited for at most HURRY_FOR ms after the build (it may have failed).
 const HURRY = 50, HURRY_FOR = 30000;
 let hurry = false, hurryTimer = null, versionAt = 0, lastVersion = null; // (one hurried poll pending at a time)
+// A tab in the background (or a minimized window) polls only every HIDDEN ms, and again as soon as it shows.
+const HIDDEN = 5000;
+let polledAt = 0;
+document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
 export async function poll() {
-  if (loading || polling) return;
+  if (loading || polling || (document.hidden && Date.now() - polledAt < HIDDEN)) return;
   polling = true;
+  polledAt = Date.now();
   hurry = false;
   const epoch = sourceEpoch;
   const asked = performance.now();
@@ -150,6 +156,7 @@ export async function poll() {
                           { cache: "no-store", signal: AbortSignal.timeout(10000) })
       .catch((e) => { throw ["TimeoutError", "AbortError"].includes(e.name) ? e : new Error(UNREACHABLE); });
     if (r.status === 403) throw new Error(ACCESS_ENDED);
+    if (r.status === 429) throw new Error(BUSY); // (too many of this person's requests at once: the next poll asks again)
     if (r.redirected || r.status === 401 || (r.ok && !/json/.test(r.headers.get("Content-Type") || ""))) throw new Error(SIGNED_OUT);
     if (!r.ok) {
       const body = await readBody(r);
@@ -161,7 +168,7 @@ export async function poll() {
     if (info.version !== lastVersion) [lastVersion, versionAt] = [info.version, Date.now()];
     const cleanBehind = !isDiff && view === "clean" && info.clean?.version && BigInt(info.clean.version) < BigInt(info.version || 0)
       && Date.now() - versionAt < HURRY_FOR;
-    hurry = !isCollaborator() && !!(info.building || cleanBehind || info.refsPending || info.clean?.refsPending);
+    hurry = !isCollaborator() && !document.hidden && !!(info.building || cleanBehind || info.refsPending || info.clean?.refsPending);
     if (pollFailed) setStatus(""); // (it answers again)
     pollFailed = false;
     sourceStatus(info.source, epoch);
@@ -225,7 +232,7 @@ export async function poll() {
     const message = ["TimeoutError", "AbortError"].includes(err.name) ? "no answer from the preview" : `${err.message || err}`;
     pollFailed = true;
     if (message === ACCESS_ENDED) showAccessEnded();
-    else setStatus([UNREACHABLE, SIGNED_OUT].includes(message) ? message : `${message} (retrying)`, "error");
+    else setStatus([UNREACHABLE, SIGNED_OUT, BUSY].includes(message) ? message : `${message} (retrying)`, "error");
   } finally {
     polling = loading = false;
     if (hurry && !hurryTimer) hurryTimer = setTimeout(() => { hurryTimer = null; poll(); }, HURRY);

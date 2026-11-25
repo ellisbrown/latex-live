@@ -8,8 +8,8 @@
 // save on its way, and merges edits typed meanwhile as a save would): no edit is dropped without the confirmation saying
 // so. The tab is drawn again only when what it shows changes, so that its scroll stays.
 
-import { editorShown, el, isDiff, isPopout, setStatus } from "./page.js";
-import { postJSON, readBody } from "./net.js";
+import { $, editorShown, el, HOLD, isDiff, isPopout, panelError, setStatus } from "./page.js";
+import { getJSON, sendJSON } from "./net.js";
 import { me } from "./role.js";
 import { closeTab, ed, flushSource, openFile, reloadSource, showEditor, srcFiles } from "./editor.js";
 import { startDiff } from "./compare.js";
@@ -34,11 +34,10 @@ const diffs = new Map();
 export async function loadHistory() {
   if (!allowed()) return;
   const seq = ++loadSeq;
-  const r = await fetch("history", { cache: "no-store" }).catch(() => null);
-  const body = r?.ok ? await r.json().catch(() => null) : null;
+  const got = await getJSON("history"), body = got.body;
   if (seq !== loadSeq) return;
-  if (!Array.isArray(body?.commits)) {
-    if (!data) panel.replaceChildren(el("div", { className: "empty", textContent: "The history did not load." }));
+  if (!got.ok || !Array.isArray(body.commits)) {
+    if (!data) panel.replaceChildren(panelError(`The history did not load: ${got.error || "no commits in the answer"}`, () => loadHistory()));
     return;
   }
   data = body;
@@ -60,7 +59,7 @@ function draw() {
   const scroll = panel.scrollTop;
   const top = el("div", { className: "hist-top" },
                  ...(data.branch ? [el("span", { className: "hist-branch", textContent: data.branch, title: "The branch checked out" })] : []),
-                 el("span", { textContent: `${data.commits.length}${data.commits.length >= 60 ? "+" : ""} commits` }),
+                 el("span", { textContent: `${data.commits.length}${data.commits.length >= 60 ? "+" : ""} commit${data.commits.length === 1 ? "" : "s"}` }),
                  el("button", { title: "Look again", ariaLabel: "Look again", onclick: () => loadHistory() }, icon("rebuild", 12)));
   const entries = [];
   if (data.dirty.length) entries.push(entry({ rev: "WORKTREE", subject: "Not committed yet", files: data.dirty }));
@@ -112,7 +111,10 @@ function entry(c) {
 
 function toggle(c) {
   if (open === c.rev) [open, shownFile] = [null, null];
-  else [open, shownFile] = [c.rev, c.files.find((f) => f.path === ed?.path)?.path || c.files[0]?.path || null];
+  else { // (the file open in the source pane, if the commit changed it; else its first source, as a figure shows no text)
+    const first = c.files.find((f) => f.path === ed?.path) || c.files.find((f) => SOURCES.test(f.path)) || c.files[0];
+    [open, shownFile] = [c.rev, first?.path || null];
+  }
   draw();
   if (shownFile) fetchDiff(open, shownFile);
 }
@@ -124,10 +126,9 @@ function showFile(rev, path) {
 async function fetchDiff(rev, path) {
   const key = `${rev}|${path}`, seq = worktreeSeq;
   if (diffs.has(key) && !diffs.get(key).error) return; // (one that failed is asked again)
-  const r = await fetch(`history/diff?${new URLSearchParams({ rev, path })}`, { cache: "no-store" }).catch(() => null);
-  const body = r ? await readBody(r) : {};
+  const got = await getJSON(`history/diff?${new URLSearchParams({ rev, path })}`), body = got.body;
   if (rev === "WORKTREE" && seq !== worktreeSeq) return;
-  diffs.set(key, r?.ok && typeof body.diff === "string" ? body : { error: body.error || "The changes did not load." });
+  diffs.set(key, got.ok && typeof body.diff === "string" ? body : { error: `The changes did not load: ${got.error || "no diff in the answer"}` });
   if (diffs.size > 60) diffs.delete(diffs.keys().next().value); // (the oldest goes)
   draw();
 }
@@ -155,15 +156,19 @@ async function restore(rev, path, when, removed) {
   if (wasOpen && !(await flushSource())) return setStatus(`${path} has edits that are not saved, so it was not restored`, "error");
   const version = ed?.path === path && !ed.gone && !ed.dirty ? ed.baseVersion : undefined;
   setStatus(`Restoring ${path}…`, "busy");
-  const r = await postJSON("history/restore", { rev, path, ...(version ? { version } : {}) }).catch(() => null);
-  const done = r ? await readBody(r) : {};
-  if (!r?.ok) return setStatus(`${path}: ${done.error || (r ? `refused (${r.status})` : "can't reach the preview server")}`, "error");
+  const got = await sendJSON("history/restore", { rev, path, ...(version ? { version } : {}) }), done = got.body;
+  if (!got.ok) return setStatus(`${path} was not restored: ${got.error}`, "error");
   wrote(); // (a build comes: behind)
-  setStatus(`Restored ${done.path} as it was ${when}`, "fresh");
   if (done.created) await loadFiles();
   if (ed?.path === done.path && ed.gone) await closeTab(done.path, { discard: true }); // (its tab said it was gone: it opens anew)
+  const sideWas = !$("side").hidden;
   if (ed?.path === done.path) await reloadSource();
   else if (editorShown()) await openFile(done.path);
   else await showEditor(true, { path: done.path });
+  if (sideWas && $("side").hidden) { // (the source pane took its room: said with the restore, which it would replace)
+    setStatus(`Restored ${done.path} as it was ${when}; the sidebar closed to make room for the source beside the PDF`, "fresh", HOLD);
+  } else {
+    setStatus(`Restored ${done.path} as it was ${when}`, "fresh");
+  }
   loadHistory();
 }

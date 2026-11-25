@@ -3,8 +3,8 @@
 // width" fits the page in what they leave), with the toggles remembered across sessions. And the channel between the
 // windows of a document: a pop-out window (?mode=pdf) shows the PDF alone, beside the main window with the source.
 
-import { $, docFile, editorShown, hubBase, isDiff, isPopout, setStatus } from "./page.js";
-import { container, refit } from "./pdfview.js";
+import { $, docFile, editorShown, HOLD, hubBase, isDiff, isPopout, setStatus } from "./page.js";
+import { container, refit, viewer } from "./pdfview.js";
 
 // Toggles remembered across sessions: the sidebar, say. A pop-out window leaves the main window's settings alone.
 function setToggle(name, on) {
@@ -35,6 +35,7 @@ export function setSide(on) {
   $("toggleSide").classList.toggle("on", on);
   setToggle("side", on);
   fitEditor(); // (the source beside the PDF leaves the PDF some room)
+  fitGutters();
   refit();
 }
 
@@ -53,23 +54,25 @@ export function setLayoutMode(mode, remember = true) {
   for (const m of ["pdf", "split", "source"]) document.body.classList.toggle(`layout-${m}`, m === mode);
   for (const b of $("layoutSwitch").querySelectorAll("button")) b.classList.toggle("on", b.dataset.mode === mode);
   fitEditor(besidePdf);
+  fitGutters();
   refit();
 }
 
 // The pane's width beside the PDF: as dragged last (else about half of what the sidebar leaves), but leaving the PDF
-// readable beside it: room for the margin bubbles' gutters as shown, and about 420 px for the page, which "Fit width"
-// then shows at half its size or more. Where opening the pane leaves it less than its least width, the sidebar makes
-// way (and the status line says so). Alone (Source), the pane takes the whole width.
+// readable beside it: room for the gutters the margin bubbles ask for, and about 420 px for the page, which "Fit width"
+// then shows at half its size or more. Where opening the pane leaves it less than its least width even without the
+// gutters (which fold where there is no room for them: fitGutters), the sidebar makes way, and the status line says so.
+// Alone (Source), the pane takes the whole width.
 let editorWidth = +localStorage.getItem("latex-live:editorWidth") || 0;
 const PDF_ROOM = 420, EDITOR_MIN = 300, FRAME = 18; // (FRAME: the workspace's padding and the source pane's grip)
 export function fitEditor(opening = false) {
   if (layoutMode === "source") return editorWidth;
-  const gutters = GUTTER * (+container.classList.contains("gutter") + +container.classList.contains("gutter-left"));
+  const gutters = GUTTER * (+wantGutter.right + +wantGutter.left); // (asked for, not shown: so no loop with fitGutters)
   const side = () => ($("side").hidden ? 0 : fitSide() + 6);
-  const room = () => innerWidth - FRAME - side() - gutters - PDF_ROOM;
-  if (opening && room() < EDITOR_MIN && !$("side").hidden) {
+  const room = (withGutters = true) => innerWidth - FRAME - side() - (withGutters ? gutters : 0) - PDF_ROOM;
+  if (opening && room(false) < EDITOR_MIN && !$("side").hidden) {
     setSide(false);
-    setStatus("closed the sidebar to make room for the source and the PDF");
+    setStatus("Closed the sidebar to make room for the source beside the PDF", "", HOLD);
   }
   const width = Math.round(Math.max(EDITOR_MIN, Math.min(room(), editorWidth || (innerWidth - side()) * 0.48)));
   document.documentElement.style.setProperty("--editor-w", `${width}px`);
@@ -104,21 +107,26 @@ grip($("sideGrip"), () => (dragFrom = $("side").offsetWidth), (dx) => {
   sideWidth = dragFrom + dx;
   fitSide();
   if (editorShown()) fitEditor();
+  fitGutters();
 }, () => {
   sideWidth = fitSide();
   if (!isPopout) localStorage.setItem("latex-live:sideWidth", sideWidth);
   if (editorShown()) fitEditor();
+  fitGutters();
 });
 grip($("editorGrip"), () => (dragFrom = $("editorPane").offsetWidth), (dx) => {
   editorWidth = dragFrom + dx;
   fitEditor();
+  fitGutters();
 }, () => {
   editorWidth = fitEditor();
   localStorage.setItem("latex-live:editorWidth", editorWidth);
+  fitGutters();
 });
 window.addEventListener("resize", () => {
   fitSide();
   if (editorShown()) fitEditor();
+  fitGutters();
   if (editorShown() || !$("side").hidden) refit(); // (after the panes' widths follow the window's)
 });
 
@@ -126,18 +134,44 @@ window.addEventListener("resize", () => {
 export const GUTTER = 250;
 
 // Fitting the page width leaves room for the gutters: PDF.js measures the container's clientWidth. Never less than a
-// narrow page, though: in a pane narrower than its gutters, a fit to nothing would be no zoom at all.
+// narrow page, though: in a pane narrower than its gutters, a fit to nothing would be no zoom at all. Which pages are
+// in view, PDF.js reckons with the whole width (else, with a gutter left of the page, none would seem to be).
 const clientWidthOf = Object.getOwnPropertyDescriptor(Element.prototype, "clientWidth").get;
+let wholeWidth = false;
 Object.defineProperty(container, "clientWidth", { get() {
+  if (wholeWidth) return clientWidthOf.call(this);
   const gutters = (this.classList.contains("gutter") ? GUTTER : 0) + (this.classList.contains("gutter-left") ? GUTTER : 0);
   return Math.max(120, clientWidthOf.call(this) - gutters);
 } });
+const visiblePages = viewer._getVisiblePages;
+viewer._getVisiblePages = function () {
+  wholeWidth = true;
+  try { return visiblePages.call(this); } finally { wholeWidth = false; }
+};
+
+// The gutters the notes ask for (setGutter: right of the page, and left of it for the notes of a left column), and
+// those shown (gutters): where the PDF's pane leaves the page less than GUTTER_ROOM beside them, a left column's notes
+// go to the right gutter too, and where there isn't room for that either, there are none, and the notes show only
+// their carets (notes.js redraws them: onGutters). Asked again whenever the pane's width may change.
+const GUTTER_ROOM = 360;
+let wantGutter = { right: false, left: false }, guttersChanged = () => {};
+export let gutters = { right: false, left: false };
+export const onGutters = (fn) => { guttersChanged = fn; };
 export function setGutter(on, left = false) {
-  if (container.classList.contains("gutter") === on && container.classList.contains("gutter-left") === left) return;
-  container.classList.toggle("gutter", on);
-  container.classList.toggle("gutter-left", left);
-  if (editorShown()) fitEditor(true); // (the source pane leaves the gutters room too; where it can't, the sidebar makes way)
+  wantGutter = { right: on, left };
+  if (editorShown()) fitEditor(); // (the source pane leaves the gutters room too, where it can)
+  fitGutters();
+}
+function fitGutters() {
+  const width = clientWidthOf.call(container), asked = +wantGutter.right + +wantGutter.left;
+  const room = (n) => width - n * GUTTER >= GUTTER_ROOM;
+  const next = asked && room(asked) ? { ...wantGutter } : asked && room(1) ? { right: true, left: false } : { right: false, left: false };
+  if (next.right === gutters.right && next.left === gutters.left) return;
+  gutters = next;
+  container.classList.toggle("gutter", next.right);
+  container.classList.toggle("gutter-left", next.left);
   refit();
+  guttersChanged();
 }
 
 // The windows showing this document (not those of another document, or of another paper under the hub) talk over a

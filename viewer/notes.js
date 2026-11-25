@@ -3,7 +3,7 @@
 import { $, cleanFile, el, file, hubBase, isDiff } from "./page.js";
 import { authors, canOpenFile, editorAllowed, opensAt, setWho, who } from "./role.js";
 import { doc, eventBus, pageFrame, shownVariant, viewer } from "./pdfview.js";
-import { GUTTER, setGutter } from "./layout.js";
+import { GUTTER, gutters, onGutters, setGutter } from "./layout.js";
 import { columnAt, columnMid, norm, textLines } from "./pagetext.js";
 import { openSource, showSource } from "./links.js";
 import { noteTools } from "./comments.js";
@@ -65,11 +65,14 @@ function renderNotes() {
 // two columns, a left-column note's in a gutter left of it), wired to a caret where it sits in the
 // text. live.py (/margin) gives, per note, where its source line landed (SyncTeX) and the typeset
 // words around it; those words, found in the page text, put the caret between two words. Hover a
-// bubble or caret to follow the wire; click to open the source.
+// bubble or caret to follow the wire; click to open the source. Where the PDF's pane is too narrow for the gutters
+// (layout.js), a left column's bubbles go right of the page, or the notes show only their carets (hover one to read
+// its note).
 export let marginOn = localStorage.getItem("latex-live:margin") !== "0";
 let marginAnchors = new Map(); // page -> [{note, x, top, left}] (points from the top-left of the page as shown, baseline)
 export function resetMargin() { marginAnchors = new Map(); } // (a new document: loadMargin anchors its notes)
 const leftOfPage = (a) => a.left; // a note in the left column
+const bubblesShown = () => gutters.right || gutters.left;
 
 // The gutters the notes need: right, and left too for notes in a left column.
 function fitGutters() {
@@ -80,9 +83,11 @@ export function showMarginButton() {
   const b = $("marginBtn");
   b.hidden = isDiff || shownVariant !== "clean";
   b.classList.toggle("on", marginOn);
-  b.title = marginOn ? "Showing the notes as bubbles in the margin; click to hide them"
-                     : "Show the notes as bubbles in the margin, wired to where they sit";
+  b.title = !marginOn ? "Show the notes as bubbles in the margin, wired to where they sit"
+          : bubblesShown() || !marginAnchors.size ? "Showing the notes as bubbles in the margin; click to hide them"
+          : "No room for the bubbles beside the page at this width: hover a note's caret to read it (click to hide them)";
 }
+onGutters(() => { showMarginButton(); drawAllMargins(); });
 $("marginBtn").onclick = () => {
   marginOn = !marginOn;
   localStorage.setItem("latex-live:margin", marginOn ? "1" : "0");
@@ -103,6 +108,7 @@ export async function loadMargin(d) {
   }
   marginAnchors = anchors;
   fitGutters();
+  showMarginButton();
   drawAllMargins();
 }
 
@@ -178,14 +184,14 @@ function drawMargin(pageNumber) {
     .filter((a) => !hiddenAuthors.has(a.note.author));
   if (!list.length) return;
   const cw = pageView.div.clientWidth, ch = pageView.div.clientHeight, s = cw / pageFrame(pageView.pdfPage).W;
-  const layer = el("div", { className: "ll-margin" });
+  const layer = el("div", { className: "ll-margin" }), bubbles = bubblesShown();
   const svg = document.createElementNS(SVG, "svg"); // (wires to a left gutter overflow it)
   svg.setAttribute("width", cw + GUTTER);
   svg.setAttribute("height", ch);
-  layer.append(svg);
+  if (bubbles) layer.append(svg);
   pageView.div.append(layer);
   const items = list.map((a) => {
-    const n = a.note, color = authorColor(n.author), left = leftOfPage(a);
+    const n = a.note, color = authorColor(n.author), left = leftOfPage(a) && gutters.left;
     const bubble = el("div", { className: `ll-bubble${left ? " left" : ""}`, title: `${n.file}:${n.line}` },
                       el("div", { className: "text" }, el("b", { textContent: n.author }), n.text || "(empty)"));
     if (canOpenFile(n.file)) opensAt(bubble, `${n.file}:${n.line}`);
@@ -199,7 +205,8 @@ function drawMargin(pageNumber) {
     const path = document.createElementNS(SVG, "path");
     path.setAttribute("stroke", color);
     svg.append(path);
-    layer.append(caret, bubble);
+    layer.append(caret);
+    if (bubbles) layer.append(bubble);
     const hot = (on) => { for (const e of [bubble, caret, path]) e.classList.toggle("hot", on); };
     for (const e of [bubble, caret]) {
       e.onmouseenter = () => hot(true);
@@ -208,6 +215,7 @@ function drawMargin(pageNumber) {
     }
     return { bubble, path, x, y, s, left };
   }).sort((a, b) => a.y - b.y || a.x - b.x);
+  if (!bubbles) return;
   // In each gutter, stack the bubbles in reading order, each as close to its line as the ones
   // above allow; pull them up from the page bottom if they run past it; then undo any overlap that left.
   for (const side of [items.filter((it) => !it.left), items.filter((it) => it.left)]) {

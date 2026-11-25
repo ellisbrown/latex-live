@@ -8,8 +8,8 @@
 // again only when what it shows changes (the list, the open file, a folder folded), so that whatever is being typed keeps
 // its text and the focus. A dot in a file's row for each other person who has it open (presence.js).
 
-import { editorShown, el, isPopout, setStatus } from "./page.js";
-import { postJSON, readBody } from "./net.js";
+import { editorShown, el, isPopout, panelError, setStatus } from "./page.js";
+import { getJSON, sendJSON } from "./net.js";
 import { editorAllowed } from "./role.js";
 import { assets as pdfAssets, pdfjsLib } from "./pdfview.js";
 import { closeTab, cmView, ed, flushSource, insertText, onFileOpen, openFile, setSrcFiles, showEditor, srcFiles } from "./editor.js";
@@ -38,16 +38,17 @@ panel.classList.add("files");
 panel.append(el("div", { className: "files-bar" }, filter, newBtn, uploadBtn, picker), form, tree);
 
 let folded = new Set(), preview = null, drawn = "", peers = {}; // (folders folded; the figure previewed; what the tree shows)
+let loadError = ""; // (why the list did not load, while none has)
 let action = null; // the form's: {kind: "new" | "upload" | "rename", path?, file?}
 
 // The list, again when the tab shows, after each build and each change made here, and every 10 s while it shows (a
-// coauthor's upload builds nothing); other parts of the viewer that change the paper's files call it too.
+// coauthor's upload builds nothing); other parts of the viewer that change the paper's files call it too. Until a list
+// has loaded, the tree says why it didn't; after, it keeps the last one.
 export async function loadFiles() {
   if (!editorAllowed()) return;
-  const r = await fetch("files", { cache: "no-store" }).catch(() => null);
-  const list = r?.ok ? await r.json().catch(() => null) : null;
-  if (!Array.isArray(list?.files)) return;
-  setSrcFiles(list);
+  const got = await getJSON("files");
+  loadError = got.ok && Array.isArray(got.body.files) ? "" : `The files did not load: ${got.error || "no list in the answer"}`;
+  if (!loadError) setSrcFiles(got.body);
   drawTree();
 }
 setInterval(() => { if (!panel.hidden && !document.hidden) loadFiles(); }, 10000);
@@ -68,7 +69,7 @@ function drawTree() {
   const q = filter.value.trim().toLowerCase();
   const files = srcFiles?.files || [], figures = srcFiles?.assets || [];
   const peersOf = (path) => (peers[path] || []).map((p) => [p.name, p.color]);
-  const key = JSON.stringify([q, files, figures, srcFiles?.main, ed?.path, [...folded], preview,
+  const key = JSON.stringify([q, loadError && !srcFiles, files, figures, srcFiles?.main, ed?.path, [...folded], preview,
                               [...files, ...figures].map((f) => peersOf(f.path))]);
   if (key === drawn) return;
   drawn = key;
@@ -90,7 +91,9 @@ function drawTree() {
       for (const f of shown.filter((f) => folderOf(f.path) === folder)) rows.push(...fileRow(f, figure, folder, peersOf(f.path)));
     }
   }
-  if (!rows.length) {
+  if (!rows.length && !srcFiles && loadError) {
+    rows.push(panelError(loadError, () => loadFiles()));
+  } else if (!rows.length) {
     rows.push(el("div", { className: "files-note empty", textContent: !srcFiles ? "Loading…" : q ? "No file matches." : "No files." }));
   }
   tree.replaceChildren(...rows);
@@ -130,9 +133,13 @@ function showPreview(path) {
   preview = preview === path ? null : path;
   drawTree();
 }
-async function includeFigure(path) {
-  if (!editorShown()) await showEditor(true, { focus: false });
-  if (!insertText(`\\includegraphics[width=\\linewidth]{${path}}`)) setStatus("Open a source file first, to type the figure in it", "error");
+// Its \includegraphics at the source pane's cursor; without a file open there, onto the clipboard (as Refs' Cite).
+function includeFigure(path) {
+  const text = `\\includegraphics[width=\\linewidth]{${path}}`;
+  if (editorShown() && insertText(text)) return;
+  (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject())
+    .then(() => setStatus(`Copied the \\includegraphics of ${path}: open the source to paste it`),
+          () => setStatus(`Open the source where ${path} goes, to type its \\includegraphics`, "error"));
 }
 
 // A figure's preview, for the tree and the source pane's card: the image itself (live.py's /asset, whose CSP runs
@@ -241,9 +248,8 @@ okBtn.onclick = async () => {
 // file's tab goes, and it opens under its new name if it was open; a removed one's goes, with its edits). Each returns
 // what went wrong, for the form, or nothing.
 async function send(path, body) {
-  const r = await postJSON(path, body).catch(() => null);
-  const done = r ? await readBody(r) : {};
-  return r?.ok ? [done, null] : [done, done.error || (r ? `refused (${r.status})` : "can't reach the preview server")];
+  const got = await sendJSON(path, body);
+  return [got.body, got.ok ? null : got.error];
 }
 async function createFile(name) {
   const [done, error] = await send("file/create", { path: name, text: "" });

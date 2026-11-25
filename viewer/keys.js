@@ -22,6 +22,8 @@ const IS_MAC = /^Mac|^iP/.test(navigator.platform);
 const APP_KEYS = [["k", false, () => openPalette("go")], ["f", true, () => editorAllowed() && !isPopout && openPalette("search")],
                   ["l", true, showLogsKey]]; // (in the source, Cmd/Ctrl+Shift+L with text selected selects its other matches)
 
+const typing = (node) => ["INPUT", "TEXTAREA", "SELECT"].includes(node.tagName) || !!node.isContentEditable;
+
 window.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;
   if (!$("welcome").hidden) { // (while the guide is open, only its own keys)
@@ -46,7 +48,7 @@ window.addEventListener("keydown", (e) => {
   else if (mod && e.key === "0") { e.preventDefault(); viewer.currentScaleValue = "page-width"; }
   else if (mod && e.key === "f") { e.preventDefault(); revealControl($("find")); $("find").focus(); $("find").select(); }
   else if (mod && e.key === "g") { e.preventDefault(); find(e.shiftKey); }
-  else if (e.target.tagName === "INPUT") return; // keep word-wise cursor keys in the text boxes
+  else if (typing(e.target)) return; // (keys typed in a text box or a menu are its own: word-wise cursor keys, BibTeX's d and e)
   else if ((e.altKey && e.key === "ArrowLeft") || (e.metaKey && e.key === "[")) { e.preventDefault(); travel(back, ahead); }
   else if ((e.altKey && e.key === "ArrowRight") || (e.metaKey && e.key === "]")) { e.preventDefault(); travel(ahead, back); }
   else if (e.key === "Escape") { hidePreview(); $("comparePanel").hidden = true; closeNotePop(); showMore(false); showKeys(false); showDownloads(false); }
