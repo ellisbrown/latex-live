@@ -406,10 +406,10 @@ instance treats the paper and everything TeX writes as theirs.
 - **Requests at once.** A connection must send its request line and headers
   within 10 seconds. Each coauthor may have 32 requests in progress at once
   (the viewer's own files aside), and 2 of those that may start a program
-  (SyncTeX lookups, forward search, a commit's diff, a note); past that, the
-  instance answers "too many requests" at once, so one coauthor's browser or
-  script can't hold the others' connections or the SyncTeX slots. Your own
-  requests are never refused this way.
+  (SyncTeX lookups, forward search, the commit lists and a commit's diff, a
+  note); past that, the instance answers "too many requests" at once, so one
+  coauthor's browser or script can't hold the others' connections or the
+  SyncTeX slots. Your own requests are never refused this way.
 - **The identity header counts only from the proxy.** Any program on this
   machine can connect to the port and send that header, so latex-live trusts
   it only as exactly one header, with the `Host` in `LATEX_LIVE_PROXY_HOST`,
