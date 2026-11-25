@@ -1,7 +1,8 @@
 """Running programs on the paper's files: TeX tools in the TeX Live image (confined in shared mode,
 through tex-exec), SyncTeX and poppler, each in a slot (SPAWNS) and under a deadline, and stopping a
-shared instance's containers."""
+shared instance's containers; and the bounded runner that these, git and the agent plugin share (run_bounded)."""
 
+import collections
 import contextlib
 import itertools
 import os
@@ -15,6 +16,7 @@ import threading
 import time
 
 from . import config
+from .files import redact_root
 
 
 def image_pulled():
@@ -31,8 +33,8 @@ def failure(server, e):
     if config.SHARED and isinstance(e, subprocess.TimeoutExpired):
         return f"a TeX run took more than {e.timeout / 60:g} minutes"
     text = str(e)
-    for folder, name in ((os.path.realpath(server.paper_root), "."), (server.paper_root, "."), (config.HERE, "latex-live")) if config.SHARED else ():
-        text = text.replace(folder + os.sep, "" if name == "." else name + os.sep).replace(folder, name)
+    if config.SHARED:
+        text = redact_root(text, server.paper_root).replace(config.HERE + os.sep, "latex-live" + os.sep).replace(config.HERE, "latex-live")
     return text[:300]
 
 
@@ -66,45 +68,114 @@ LIVE_SPAWN = threading.BoundedSemaphore(1)
 RUN_SEQ = itertools.count(1)  # (run_tool: each run's own container label)
 
 
-def run_tool(argv, cwd, timeout=600, kind="tool", env=None, capture=0, slot=None, preexec_fn=None, group=False):
+def run_tool(argv, cwd, timeout=600, kind="tool", env=None, capture=0, slot=None, preexec_fn=None, group=False,
+             started=None, stop_failed=False):
     """Run a tool (argv: with its container's prefix, tex-exec or podman, if any) in a slot (SPAWNS, or
     slot), with stdin and stderr closed and stdout discarded, or with capture, its first capture bytes
-    kept: (its exit status, or None once it ran past timeout seconds; its output). In shared mode its
+    kept (run_bounded): (its exit status, or None once it ran past timeout seconds; its output). In shared mode its
     container gets a label of its own (LATEX_LIVE_RUN) and the same deadline (LATEX_LIVE_TIMEOUT, which
-    tex-exec gives podman), and past the timeout it is removed before the slot is let go: stopping the
-    podman client alone would leave it running. With group, it runs in a process group of its own, all of
-    which is stopped past the timeout (a shell that runs tools in turn: stopping the shell would leave the
-    one it runs, and its hold on the output)."""
+    tex-exec gives podman), and past the timeout (with stop_failed, whenever it fails) it is removed before the slot is
+    let go: stopping the podman client alone would leave it running. With group, it runs in a process group of its own,
+    all of which is stopped past the timeout or once it exits (a shell that runs tools in turn: stopping the shell would
+    leave the one it runs, and its hold on the output). started, if given, is called with the process once it runs."""
     label = f"{kind}-{next(RUN_SEQ)}"
     env = {**(os.environ if env is None else env), "LATEX_LIVE_RUN": label, "LATEX_LIVE_TIMEOUT": str(int(timeout))}
-    out = bytearray()
     with slot or SPAWNS:
-        proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE if capture else subprocess.DEVNULL, preexec_fn=preexec_fn,
-                                start_new_session=group)
-        reader = None
-        if capture:
-            def read():  # (all of it is read, so that the tool never waits on a full pipe; the first capture bytes kept)
-                for chunk in iter(lambda: proc.stdout.read(1 << 16), b""):
-                    out.extend(chunk[:max(0, capture - len(out))])
-            reader = threading.Thread(target=read, daemon=True)
-            reader.start()
-        try:
-            code = proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            if group:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except OSError:
-                    pass
-            proc.kill()
-            proc.wait()
+        ran = run_bounded(argv, timeout, cwd=cwd, env=env, limit=capture or None, group=group, drain=10,
+                          preexec_fn=preexec_fn, started=started)
+        if ran.code is None or stop_failed and ran.code != 0:
             stop_containers(label)
-            code = None
-        if reader:
-            reader.join(10)
-            proc.stdout.close()
-    return code, out.decode("utf-8", errors="replace")
+    return ran.code, ran.out.decode("utf-8", errors="replace")
+
+
+Ran = collections.namedtuple("Ran", "code out err more open")
+
+
+def run_bounded(argv, timeout, cwd=None, env=None, data=None, limit=None, stop_at_limit=False, err_kept=0, group=False,
+                grace=0, drain=2, preexec_fn=None, started=None):
+    """Run argv for at most timeout seconds, with what it prints bounded: Ran(code: its exit status, or None once it ran
+    past timeout; out: the first limit bytes of its stdout, which is discarded with limit None; err: the last err_kept
+    bytes of its stderr, else it is closed; more: it printed more than limit bytes, and with stop_at_limit it was stopped
+    then; open: what it started still holds its stdout open). Its stdin is data, else closed. Each pipe has a thread of
+    its own, so that none fills while another waits. Past the timeout it is killed; with group, it runs in a process
+    group of its own, which gets SIGTERM past the timeout and, grace seconds later and in any case once it exits,
+    SIGKILL: nothing it started outlives it. The readers are waited for drain seconds at most (a child that left the
+    group may hold a pipe open; each reader closes its pipe itself). started, if given, is called with the process
+    once it runs. OSError if it doesn't start."""
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, preexec_fn=preexec_fn, start_new_session=group,
+                            stdin=subprocess.DEVNULL if data is None else subprocess.PIPE,
+                            stdout=subprocess.DEVNULL if limit is None else subprocess.PIPE,
+                            stderr=subprocess.PIPE if err_kept else subprocess.DEVNULL)
+    if started:
+        started(proc)
+    out, err, over = bytearray(), bytearray(), threading.Event()
+    state = {"lock": threading.Lock(), "finished": False}  # (finished: nothing may signal its group any more)
+
+    def stop():
+        if not group:
+            return proc.kill()
+        with state["lock"]:
+            if not state["finished"]:
+                kill_group(proc.pid, signal.SIGKILL)
+
+    def feed():
+        try:
+            proc.stdin.write(data)
+        except OSError:  # (it stopped reading: what it printed says why)
+            pass
+        finally:
+            with contextlib.suppress(OSError):
+                proc.stdin.close()
+
+    def read_out():
+        with proc.stdout:  # (closed by its reader, even when that ends only after this call: an escaped child held it)
+            while chunk := proc.stdout.read1(1 << 16):
+                room = max(0, limit - len(out))
+                out.extend(chunk[:room])
+                if len(chunk) > room:
+                    over.set()
+                    if stop_at_limit:
+                        return stop()
+
+    def read_err():
+        with proc.stderr:
+            while chunk := proc.stderr.read1(1 << 16):
+                err.extend(chunk)
+                del err[:-err_kept]
+
+    feeder, reader, err_reader = [threading.Thread(target=f, daemon=True) if wanted else None
+                                  for f, wanted in ((feed, data is not None), (read_out, limit is not None), (read_err, err_kept))]
+    for t in (feeder, reader, err_reader):
+        if t:
+            t.start()
+    timed_out = False
+    try:
+        proc.wait(timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        if not group:
+            proc.kill()
+        elif grace:
+            kill_group(proc.pid, signal.SIGTERM)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(grace)
+    finally:
+        if group:  # (what it left running, which may hold its pipes open; the group's id is free for another process only
+            with state["lock"]:  # once none of the group is left, and pids are handed out in turn, so this signals nothing else)
+                kill_group(proc.pid, signal.SIGKILL)
+                state["finished"] = True
+        proc.wait()
+        end = time.monotonic() + drain
+        for t in (reader, err_reader, feeder):  # (the readers first: a feed held up by an escaped child waits last)
+            if t:
+                t.join(max(0, end - time.monotonic()))
+    return Ran(None if timed_out else proc.returncode, bytes(out),
+               b"" if err_reader and err_reader.is_alive() else bytes(err), over.is_set(), bool(reader and reader.is_alive()))
+
+
+def kill_group(pid, sig):
+    with contextlib.suppress(ProcessLookupError, PermissionError):  # (gone already)
+        os.killpg(pid, sig)
 
 
 def tex_argv(server, *argv):

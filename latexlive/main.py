@@ -16,6 +16,7 @@ from .auth import load_token, load_users, secure_token_file, users
 from .build import retry_build, set_doc, start_latexmk, stop_doc_standbys, stop_latexmk
 from .commits import commit_at_exit, start_commits
 from .files import pdf_path
+from .git import git_user
 from .handler import Handler
 from .hub import hub_path, hub_port, hub_watch, replace_stuck_hub
 from .instances import instance_answers, instances, paper_id, record_port, runs_here, stop_instance, take_lock
@@ -47,7 +48,7 @@ def serve(paper_root, default_pdf, port, page_limit, hub_port=None):
                   else f"latex-live: no free port in {port}-{port + 9}.") + taken_port_advice(port))
     server.daemon_threads = True
     server.hub_port = hub_port
-    server.git_name = None  # (owner_name)
+    server.git_name = git_user(paper_root)  # (owner_name)
     server.paper_root = paper_root
     server.paper_id = paper_id(paper_root)  # (checked against the hub's requests: Handler.misdirected)
     server.default_pdf = default_pdf

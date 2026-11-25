@@ -271,3 +271,19 @@ def aux_tree(aux, folder=None):
             budget -= len(text)
             todo.append(text)
     return "\n".join(texts)
+
+
+def redactor(paper_root):
+    """A function that gives a text with the paper's folder (as given, and once links are resolved) as ".", so that
+    what the server shows (the build's log, the reason a build failed) names the paper's files relative to it, never the
+    server's folders."""
+    roots = sorted({os.path.abspath(paper_root), os.path.realpath(paper_root)} - {os.sep}, key=len, reverse=True)
+    if not roots:  # (a paper at /: nothing to hide)
+        return lambda text: text
+    pattern = re.compile("(?:" + "|".join(map(re.escape, roots)) + r")(/|(?![\w~-]|\.[\w~-]))")
+    return lambda text: pattern.sub(lambda m: "./" if m[1] else ".", text)
+
+
+def redact_root(text, paper_root):
+    """text with the paper's folder as "." (redactor)."""
+    return redactor(paper_root)(text)

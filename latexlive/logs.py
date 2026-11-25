@@ -6,12 +6,12 @@ import re
 import threading
 
 from .build import build_status
-from .files import job_file, open_output
+from .files import job_file, open_output, redact_root, redactor
 from .sources import editable_real
 
 PARSE_LIMIT = 4 << 20  # (the most of the log's end that is read: the paper decides how much TeX writes)
 RAW_TAIL = 64 << 10  # (the most of that sent as it is)
-MAX_DIAG = 250  # (errors, and warnings, each)
+MAX_DIAG = 250  # (errors, warnings, and boxes, each)
 RESOLVE_LIMIT = 2000  # (the most names of files one parse looks up: a paper reads far fewer)
 STACK_LIMIT = 1000  # (the deepest file stack kept: TeX's own is far shallower)
 PARSING = threading.Lock()  # (viewers ask together once a build ends: one parses, the others take its result)
@@ -49,7 +49,7 @@ def parse_log(text, paper_root):
     def current():  # (the paper's file that the log opened last and has not closed, if it is one)
         return resolve(next((name for name in reversed(stack) if name), "")) if stack else None
 
-    errors, warnings, seen = [], [], set()
+    errors, warnings, seen, boxes = [], [], set(), 0
     stack, deeper, skipping = [], 0, False  # (deeper: names opened past STACK_LIMIT, still to close)
     lines = text.splitlines()
     i = 0
@@ -69,7 +69,8 @@ def parse_log(text, paper_root):
             continue
         if box:
             skipping = True
-            if len(warnings) < MAX_DIAG:
+            if boxes < MAX_DIAG:
+                boxes += 1
                 add_warning(warnings, seen, "info" if box[1] == "Underfull" else "warning", box[1].lower(), current(),
                             int(box[4]), redact(f"{box[1]} \\{box[2]} ({box[3]})"))
             continue
@@ -105,21 +106,6 @@ def add_warning(warnings, seen, severity, kind, path, line, msg):
     if ("w", path, line, msg) not in seen:
         seen.add(("w", path, line, msg))
         warnings.append({"severity": severity, "kind": kind, "file": path, "line": line, "msg": msg})
-
-
-def redactor(paper_root):
-    """A function that gives a text with the paper's folder (as given, and once links are resolved) as ".", so that
-    the log shows the paper's files relative to it, never the server's folders."""
-    roots = sorted({os.path.abspath(paper_root), os.path.realpath(paper_root)} - {os.sep}, key=len, reverse=True)
-    if not roots:  # (a paper at /: nothing to hide)
-        return lambda text: text
-    pattern = re.compile("(?:" + "|".join(map(re.escape, roots)) + r")(/|(?![\w~-]|\.[\w~-]))")
-    return lambda text: pattern.sub(lambda m: "./" if m[1] else ".", text)
-
-
-def redact_root(text, paper_root):
-    """text with the paper's folder as "." (redactor)."""
-    return redactor(paper_root)(text)
 
 
 def read_log(server, path):

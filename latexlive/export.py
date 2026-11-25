@@ -3,7 +3,6 @@ once per build of the document, which the review copy builds on too."""
 
 import contextlib
 import os
-import re
 import shutil
 import subprocess
 import threading
@@ -12,7 +11,7 @@ import time
 from . import config
 from .build import build_running
 from .files import aux_tree, build_folder, copy_output, job_file, mtime, pdf_path, read_output
-from .latex import RERUN_RE
+from .latex import RERUN_RE, first_error
 from .tools import failure, image_pulled, run_tool, tex_argv
 
 
@@ -123,8 +122,7 @@ def exact_export(server, pdf, keep=None):
                     build_folder(root, os.path.join("export", doc))  # (again after each pass's container)
                     keep_inputs(out)
                     if not run(tex, root):
-                        first = next((l for l in log().splitlines() if l.startswith("! ") or re.match(r"^\S+:\d+: ", l)), "")
-                        raise RuntimeError(first or f"pdflatex failed; see {config.BUILD}/export/{doc}/{job}.log")
+                        raise RuntimeError(first_error(log()) or f"pdflatex failed; see {config.BUILD}/export/{doc}/{job}.log")
                     if passes == 1 and export_tools(run, root, out, job):  # (bibtex or biber, makeindex: then the passes again)
                         continue
                     settled = not RERUN_RE.search(log())

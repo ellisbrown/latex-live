@@ -12,12 +12,11 @@ uncommitted at the start that no one's writes account for are committed then, as
 (UNATTRIBUTED), rather than in the next coauthor's commit of that file. What a coauthor writes to the sources in a
 day is bounded, as the commits store it (source_budget)."""
 
-import contextlib
 import json
 import math
 import os
 import re
-import subprocess
+import shutil
 import threading
 import time
 import traceback
@@ -25,7 +24,7 @@ import traceback
 from . import config
 from .auth import ROLES, USER_ID_RE, users_owner
 from .files import read_json
-from .git import git_busy, git_operation, git_read_env
+from .git import git_busy, git_operation, git_text, git_user, run_git
 from .sources import EDITABLE_EXTS, NOTE_LOCK, changed_path, editable_files
 
 
@@ -234,13 +233,11 @@ def claim_leftovers(server):
     files = sorted({os.path.relpath(real, root) for real in editable_files(server).values()} - claimed)
     if not files:
         return
-    git = ["git", "-C", server.paper_root, "--literal-pathspecs"]
-    run = lambda args: subprocess.run(git + args, capture_output=True, encoding="utf-8", errors="surrogateescape",
-                                      env=git_read_env(), timeout=60)
-    r = run(["diff", "--name-only", "-z", "--relative", "HEAD", "--", *files])
-    if r.returncode:  # (no commit yet: nothing to compare with)
+    run = lambda args: run_git(server.paper_root, args, timeout=60)
+    r, listed = run(["diff", "--name-only", "-z", "--relative", "HEAD", "--", *files]), run(["ls-files", "-z", "--", *files])
+    if r.code != 0 or r.more or listed.code != 0 or listed.more:  # (no commit yet: nothing to compare with)
         return
-    changed, tracked = set(r.stdout.split("\0")), set(run(["ls-files", "-z", "--", *files]).stdout.split("\0"))
+    changed, tracked = set(r.text.split("\0")), set(listed.text.split("\0"))
     left = [rel for rel in files if rel in changed and rel in tracked]
     if not left:
         return
@@ -263,11 +260,9 @@ def start_commits(server):
     (claim_leftovers)."""
     if not config.COMMIT:
         return
-    try:
-        r = subprocess.run(["git", "-C", server.paper_root, "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True)
-    except OSError:
+    if not shutil.which("git"):
         return print("=== latex-live: git is not installed, so edits are not committed (LATEX_LIVE_COMMIT)", flush=True)
-    if r.stdout.strip() != "true":
+    if git_text(server.paper_root, ["rev-parse", "--is-inside-work-tree"], timeout=60) != "true":
         return print("=== latex-live: the paper is not in a git checkout, so edits are not committed (LATEX_LIVE_COMMIT)", flush=True)
     server.autocommit = True
     with NOTE_LOCK:
@@ -361,7 +356,7 @@ def commit_pending(server, ids=None, only=None):
         who = user["name"] or user["id"]
         try:
             done, failed = commit_files(server, user, paths), None
-        except (OSError, RuntimeError, subprocess.SubprocessError) as e:
+        except (OSError, RuntimeError) as e:
             done, failed = None, f"could not commit {who}'s edits: {e}"
         except Exception:  # (a bug: said once, with where; the others' commits go on)
             done, failed = None, f"could not commit {who}'s edits:\n{traceback.format_exc().rstrip()}"
@@ -402,28 +397,26 @@ def commit_files(server, user, paths):
     a new file is added to git first (unless git ignores it), and one gone is committed as removed. Returns {user,
     commit, subject, files}, or None if nothing is left; RuntimeError if git refuses."""
     root = server.paper_root
-    git = ["git", "-C", root, "--literal-pathspecs"]
-    run = lambda args, env: subprocess.run(git + args, capture_output=True, encoding="utf-8", errors="surrogateescape", env=env,
-                                           timeout=60)  # (NOTE_LOCK is held; file names as Python has them, even if not UTF-8)
-    env = {key: value for key, value in os.environ.items() if key != "GIT_OPTIONAL_LOCKS"}  # (a commit takes the index)
+    # (NOTE_LOCK is held; file names as Python has them, even if not UTF-8: GitRun.text; a commit takes the index: write)
+    run = lambda args, write=False: run_git(root, args, timeout=60, write=write)
     files = sorted(rel for rel in paths if os.path.isfile(os.path.join(root, rel))
                    or paths[rel][0] == "files" and not os.path.lexists(os.path.join(root, rel)))
     added = []  # (new files added to git for this commit: out of the index again unless it is made, to be added anew)
     try:
         if files:
-            tracked = set(run(["ls-files", "-z", "--", *files], git_read_env()).stdout.split("\0"))
+            tracked = set(listing(run(["ls-files", "-z", "--", *files])))
             new = [rel for rel in files if rel not in tracked and paths[rel][0] == "files"]  # (made by the Files tab)
             if new:
-                addable = set(run(["ls-files", "-z", "--others", "--exclude-standard", "--", *new], git_read_env()).stdout.split("\0"))
+                addable = set(listing(run(["ls-files", "-z", "--others", "--exclude-standard", "--", *new])))
                 new = [rel for rel in new if rel in addable and not os.path.islink(os.path.join(root, rel))]  # (not those git ignores)
                 if new:
-                    r = run(["add", "--", *new], env)
-                    if r.returncode:
-                        raise RuntimeError((r.stderr.strip() or f"git add failed ({r.returncode})").splitlines()[-1])
+                    r = run(["add", "--", *new], write=True)
+                    if r.code != 0:
+                        raise RuntimeError((r.err.strip() or f"git add failed ({r.code})").splitlines()[-1])
                     tracked.update(new)
                     added = new
-            r = run(["diff", "--name-only", "--no-renames", "-z", "--relative", "HEAD", "--", *files], git_read_env())
-            changed = set(r.stdout.split("\0")) if r.returncode == 0 else set(files)  # (no HEAD yet: all of them)
+            r = run(["diff", "--name-only", "--no-renames", "-z", "--relative", "HEAD", "--", *files])
+            changed = set(listing(r)) if r.code == 0 else set(files)  # (no HEAD yet: all of them)
             files = [rel for rel in files if rel in tracked and rel in changed]
         if not files:
             return None
@@ -438,17 +431,23 @@ def commit_files(server, user, paths):
             subject, trailer = f"{name}: {verb} {listed}", user["id"]
         r = run(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "gc.auto=0", "-c", f"user.name={owner}",
                  "-c", f"user.email={owner_email}", "commit", "--only", f"--author={name} <{email}>",
-                 "-m", f"{subject}\n\nLatex-Live-Shared: {trailer}", "--", *files], env)
-        if r.returncode:
-            raise RuntimeError((r.stderr.strip() or r.stdout.strip() or f"git commit failed ({r.returncode})").splitlines()[-1])
+                 "-m", f"{subject}\n\nLatex-Live-Shared: {trailer}", "--", *files], write=True)
+        if r.code != 0:
+            raise RuntimeError((r.err.strip() or r.text.strip() or f"git commit failed ({r.code})").splitlines()[-1])
         added = []  # (committed)
-        sha = run(["rev-parse", "--short", "HEAD"], git_read_env()).stdout.strip()
+        sha = run(["rev-parse", "--short", "HEAD"]).text.strip()
         print(f"=== latex-live: committed {sha}: {subject}", flush=True)
         return {"user": trailer, "commit": sha, "subject": subject, "files": files}
     finally:
         if added:
-            with contextlib.suppress(OSError, subprocess.SubprocessError):
-                run(["rm", "--cached", "-q", "--ignore-unmatch", "--", *added], env)
+            run(["rm", "--cached", "-q", "--ignore-unmatch", "--", *added], write=True)
+
+
+def listing(r):
+    """The names that git printed with -z (r: run_git's), or RuntimeError if it failed or printed too many."""
+    if r.code != 0 or r.more:
+        raise RuntimeError(f"git could not list the files: {(r.err.strip() or f'status {r.code}').splitlines()[-1]}")
+    return r.text.split("\0")
 
 
 def committer(server):
@@ -457,8 +456,7 @@ def committer(server):
     entry, found = users_owner() or {}, []
     for key in ("name", "email"):
         if not (value := entry.get(key)):
-            value = subprocess.run(["git", "-C", server.paper_root, "config", f"user.{key}"], capture_output=True, text=True,
-                                   timeout=60).stdout.strip()
+            value = git_user(server.paper_root, key)
             value = "" if re.search(r"[\x00-\x1f\x7f<>]", value) or len(value) > 200 else value
         found.append(value or "latex-live")
     return tuple(found)

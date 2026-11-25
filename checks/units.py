@@ -32,7 +32,7 @@ from .agent_units import agent_checks
 def unit_checks():
     """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
     for check in (layout_checks, matching_checks, confinement_checks, build_link_checks, build_folder_checks, shared_build_checks, shown_notes_checks, bounds_checks, failed_export_checks,
-                  waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
+                  waiting_download_checks, tool_timeout_checks, runner_checks, standby_snapshot_checks, timing_checks,
                   code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, forward_script_checks, link_checks, completion_checks, assets_checks, search_checks, logs_checks, presence_checks, word_column_checks, venue_checks, diff_retry_checks,
                   arxiv_strip_checks, graphics_synctex_checks, turned_page_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks,
                   header_deadline_checks, in_flight_checks, note_limit_checks, perf_checks, bib_checks, files_checks, history_checks, agent_checks):
@@ -370,6 +370,67 @@ def tool_timeout_checks():
     if code is not None or time.monotonic() - began > 5:
         fail(f"a shell's tool run past its timeout: exit {code} after {time.monotonic() - began:.1f} s (not stopped whole)")
     ok("a tool run in a process group of its own is stopped whole past its timeout")
+
+
+def runner_checks():
+    """The bounded runner that the tools, git and the agent hook share (latexlive.tools.run_bounded): what it keeps of
+    stdout (the first bytes, and whether there was more), stopped there or not; stdin fed and stderr's end kept; past its
+    timeout, None; with a process group of its own, nothing left running once it exits. Git through it (git.run_git):
+    paths literal unless asked, a reading command without optional locks, file names as they are, and git's user.name
+    (git_user); the first error of a TeX log (latex.first_error)."""
+    from latexlive import latex, tools
+    from latexlive.git import git_capped, git_user, run_git
+    ran = tools.run_bounded([sys.executable, "-c", "import sys; sys.stdout.write('x' * 300000)"], 20, limit=1000)
+    if (ran.code, len(ran.out), ran.more, ran.open) != (0, 1000, True, False):
+        fail(f"a run past its limit, read to its end: {ran.code} {len(ran.out)} {ran.more} {ran.open}")
+    began = time.monotonic()
+    ran = tools.run_bounded([sys.executable, "-c", "import sys\nwhile True: sys.stdout.write('y' * 4096)"], 20, limit=5000,
+                            stop_at_limit=True)
+    if ran.code in (0, None) or ran.out != b"y" * 5000 or not ran.more or time.monotonic() - began > 5:
+        fail(f"a run stopped at its limit: {ran.code} {len(ran.out)} {ran.more} after {time.monotonic() - began:.1f} s")
+    ran = tools.run_bounded([sys.executable, "-c", "import sys; sys.stdout.write(sys.stdin.read()[::-1]); sys.stderr.write('e' * 9000 + 'end')"],
+                            20, data=b"abc" * 30000, limit=1 << 20, err_kept=100)
+    if ran.code != 0 or ran.out != b"cba" * 30000 or ran.err != b"e" * 97 + b"end":
+        fail(f"a run fed its stdin, its stderr's end kept: {ran.code} {len(ran.out)} {ran.err[-10:]!r}")
+    began = time.monotonic()
+    if tools.run_bounded(["sleep", "30"], 0.5).code is not None or time.monotonic() - began > 5:
+        fail("a run past its timeout is not None, or not stopped")
+    ran = tools.run_bounded(["sh", "-c", "sleep 60 >/dev/null & echo $!"], 20, limit=100, group=True)
+    child = int(ran.out or b"0")
+
+    def gone():
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            return True
+        try:  # (a zombie its new parent has not reaped yet is gone too)
+            with open(f"/proc/{child}/stat") as f:
+                return f.read().rsplit(")", 1)[1].split()[0] == "Z"
+        except OSError:
+            return False
+    wait_for("what a run in a group of its own left to be gone", gone, timeout=5)
+    with tempfile.TemporaryDirectory(prefix="latex-live-git-check-") as root:
+        git(root, "init", "-q")
+        git(root, "config", "user.name", "Owner Example")
+        put(os.path.join(root, "a.tex"), "a\n")
+        put(os.path.join(root, "é.tex"), "e\n")
+        git(root, "add", ".")
+        listed = lambda *args, **kw: sorted(filter(None, run_git(root, ["ls-files", "-z", "--", *args], **kw).text.split("\0")))
+        if listed("*.tex") or listed(":(glob)*.tex", literal=False) != ["a.tex", "é.tex"]:
+            fail(f"git's paths: literal {listed('*.tex')}, with magic {listed(':(glob)*.tex', literal=False)}")
+        env = lambda write: run_git(root, ["-c", "alias.e=!env", "e"], write=write).text
+        if "GIT_OPTIONAL_LOCKS=0" not in env(False) or "GIT_OPTIONAL_LOCKS" in env(True):
+            fail("git that only reads takes optional locks, or git that writes doesn't")
+        if git_user(root) != "Owner Example":
+            fail(f"git's user.name: {git_user(root)!r}")
+        if git_capped(root, ["cat-file", "-p", "HEAD:nothing"], 100)[0] in (0, None):
+            fail("a git command that fails succeeds")
+    log = "This is pdfTeX\n(./main.tex\nLaTeX Warning: x\n./sec.tex:12: Undefined control sequence.\n! Emergency stop.\n"
+    if latex.first_error(log) != "./sec.tex:12: Undefined control sequence." or latex.first_error("! Missing $.\nx") != "! Missing $.":
+        fail(f"a TeX log's first error: {latex.first_error(log)!r}")
+    ok("the bounded runner keeps a run's first bytes (stopping it there when asked), feeds its stdin, keeps its stderr's"
+       " end, gives None past its timeout, and leaves nothing of a group running; git through it takes paths literally"
+       " unless asked, reads without optional locks, and names files as they are; a TeX log's first error")
 
 
 def standby_snapshot_checks():

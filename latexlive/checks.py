@@ -3,7 +3,6 @@ arXiv source, the bibliography, generated figures, placement, consistency, overf
 
 import os
 import re
-import subprocess
 import threading
 import time
 
@@ -11,8 +10,10 @@ from . import config
 from .arxiv import ago, arxiv_source
 from .build import build_status
 from .files import clean_file, fls_file, job_file, mtime, pdf_path, project_tex_files, read_capped, shown_synctex
+from .git import git_user
 from .latex import find_bib_entry, read_tex
 from .lints import bib_consistency, float_placement, lint, stale_outputs
+from .logs import read_log
 from .notes import notes
 from .synctex import bib_span
 from .tools import pdf_pages_text, pdf_tool
@@ -63,8 +64,7 @@ def checks(server, pdf_name):
         for path in project_tex_files(root, fls_file(root, pdf_name)):
             with open(path, errors="replace") as fh:
                 names |= {m.strip() for m in re.findall(r"\\todotxt.*%\s*([A-Z][a-z]+(?: [A-Z][a-z]+)+)\s*$", fh.read(), re.M)}
-        git_name = subprocess.run(["git", "-C", root, "config", "user.name"], capture_output=True, text=True).stdout.strip()
-        if git_name:
+        if git_name := git_user(root):
             names.add(git_name)
         anon_terms = config.ANON_TERMS  # (affiliations and other terms that identify the authors)
         ident = [r"\b%s\b" % re.escape(n) for n in sorted(names)] + ([f"(?:{anon_terms})"] if anon_terms else []) + [
@@ -191,16 +191,9 @@ def checks(server, pdf_name):
         f"{len(duplicates)} entr(ies) cited twice under different keys; {len(venues)} venue spelling(s) differ"
         if duplicates or venues else "no duplicate entries; each venue is written one way", duplicates + venues)
 
-    # Overfull boxes.
-    import latex_report
-    boxes = []
-    if (log := read_capped(job_file(root, pdf_name, ".log"), config.OUTPUT_LIMIT)) is not None:
-        cwd = os.getcwd()
-        os.chdir(root)  # overfull_boxes checks project paths relative to the paper root
-        try:
-            boxes = latex_report.overfull_boxes(log)
-        finally:
-            os.chdir(cwd)
+    # Overfull boxes, in the paper's own files (as the build's log shows them: logs.read_log).
+    boxes = [(w["file"], w["line"], w["msg"]) for w in read_log(server, job_file(root, pdf_name, ".log"))["warnings"]
+             if w["kind"] == "overfull" and w["file"] and w["msg"].startswith("Overfull \\hbox")]
     add("Overfull lines", "info" if boxes else "ok", f"{len(boxes)} line(s) stick into the margin" if boxes else "none",
         [{"text": m, "file": p, "line": n} for p, n, m in boxes])
     return results

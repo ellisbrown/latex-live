@@ -4,10 +4,10 @@ plain text, and the root documents and the files they \\input."""
 import glob
 import os
 import re
-import subprocess
 
 from . import config
 from .files import fls_inputs, in_paper
+from .git import git_text
 
 
 DOCCLASS_RE = re.compile(r"^[^%\n]*\\documentclass\b", re.M)
@@ -34,8 +34,8 @@ def paper_root_of(path):
     folder = os.path.dirname(os.path.abspath(path))
     while not os.path.isdir(folder):
         folder = os.path.dirname(folder)
-    r = subprocess.run(["git", "-C", folder, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
-    top = os.path.realpath(r.stdout.strip()) if r.returncode == 0 else None
+    top = git_text(folder, ["rev-parse", "--show-toplevel"])
+    top = os.path.realpath(top) if top else None
     for _ in range(100 if top else 4):
         if root_docs(folder):
             return folder
@@ -203,3 +203,8 @@ def false_blocks(text):
 
 
 RERUN_RE = re.compile(r"Rerun to get|may have changed\. Rerun|Please rerun|rerunfilecheck Warning")
+
+
+def first_error(log):
+    """The first error in a TeX log (a "! " line, or -file-line-error's file:line: one), or "" if there is none."""
+    return next((line for line in log.splitlines() if line.startswith("! ") or re.match(r"^\S+:\d+: ", line)), "")
