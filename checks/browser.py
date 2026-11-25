@@ -7,6 +7,7 @@ package or a Chromium for it, it says so
 and checks nothing (pip install playwright, then playwright install chromium; or LATEX_LIVE_CHECK_CHROMIUM, a
 Chromium's path). Only the checks use Playwright: latex-live itself needs nothing beyond Python's standard library."""
 
+import json
 import os
 
 from .base import fail, ok
@@ -81,11 +82,13 @@ def browser_checks(url, editor=True, answer=None, who="the viewer"):
                     errors.append(f"the sidebar's tabs take {len(set(tops))} rows")
                 if "files" in tabs:  # (a file's row opens from the keyboard)
                     page.click('#tabs [data-tab="files"]')
-                    row = page.wait_for_selector('.files-file[data-key^="s:"]:not(.on)', timeout=10_000)  # (a source: a figure previews)
+                    row = page.locator('.files-file[data-key^="s:"]:not(.on)').first  # (a source: a figure previews)
+                    row.wait_for(timeout=10_000)  # (a locator, found again should the list be redrawn meanwhile)
                     path = row.get_attribute("data-key")[2:]
-                    row.focus()
+                    page.focus(f'.files-file[data-key={json.dumps("s:" + path)}]')
                     page.keyboard.press("Enter")
-                    page.wait_for_function("p => document.querySelector('#editorTabs .tab.on')?.dataset.path === p", arg=path, timeout=10_000)
+                    # (not wait_for_function, which evaluates a string in the page: its policy refuses that)
+                    page.wait_for_selector(f"#editorTabs .tab.on[data-path={json.dumps(path)}]", timeout=10_000)
             page.wait_for_timeout(500)  # (for what the last click started)
         except Error as e:
             lines = str(e).strip().splitlines()
