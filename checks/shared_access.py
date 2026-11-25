@@ -20,20 +20,28 @@ from .shared_helpers import (
     with_token, write_users)
 
 
+# The routes whose role cases are in another module, for units' guard that every route has one: the downloads built on
+# request, which every role may start, and which shared_downloads checks as each role (here they would race its checks
+# that askers share one build).
+ROLE_CASES_ELSEWHERE = {"/export": "shared_downloads", "/review": "shared_downloads"}
+
 # What each role can do in shared mode (no one switches documents: a shared preview serves one; everyone may download
-# the paper without its notes), and commenting only with a note macro the paper defines (check_me).
+# the paper without its notes), and commenting only with a note macro the paper defines (check_me); signing out, for
+# those who came with a token, not through the proxy.
 ROLE_CAN = {"viewer": ("download",), "commenter": ("comment", "download"),
-            "editor": ("comment", "edit", "rebuild", "compare", "download", "history", "restore"),
-            "owner": ("comment", "edit", "rebuild", "compare", "openHost", "download", "history", "restore")}
+            "editor": ("comment", "edit", "rebuild", "compare", "download", "checks", "logs", "history", "restore"),
+            "owner": ("comment", "edit", "rebuild", "compare", "openHost", "download", "arxiv", "checks", "logs", "history",
+                      "restore")}
 
 
-def check_me(me, what, role, defined=True, **fields):
+def check_me(me, what, role, defined=True, via="token", **fields):
     """GET me's answer: shared mode, the owner's name, the role and its capabilities (ROLE_CAN; commenting,
-    but for the owner, only if the paper defines the user's note macro: defined, its macroDefined), and
-    the given fields."""
+    but for the owner, only if the paper defines the user's note macro: defined, its macroDefined; signing out
+    unless via the proxy), and the given fields."""
     want = {"role": role, "shared": True, "owner": "Owner Example", "macroDefined": defined, **fields}
     got = {key: me.get(key) for key in want}
-    can = {c: c in ROLE_CAN[role] and (c != "comment" or defined or role == "owner") for c in CAPS}
+    can = {c: (c in ROLE_CAN[role] and (c != "comment" or defined or role == "owner")) or (c == "signOut" and via != "proxy")
+           for c in CAPS}
     got_can = {c: (me.get("can") if isinstance(me.get("can"), dict) else {}).get(c) for c in CAPS}
     if got != want or got_can != can:
         fail(f"GET me for {what}: {got}, can {got_can}; not {want}, can {can}")
@@ -124,7 +132,7 @@ def identity_checks(sh):
     for uid in ("owner1", "ed", "cm", "vw"):  # (the paper defines note macros for all but the viewer)
         user = users[uid]
         check_me(expect_dict(via_proxy(uid, "/me"), 200, f"GET me for {uid}"), f"{uid} through the proxy", user["role"],
-                 defined=uid != "vw", id=uid, name=user["name"], macro=user["macro"])
+                 defined=uid != "vw", via="proxy", id=uid, name=user["name"], macro=user["macro"])
     for token, what, role, fields in ((tk, "the personal link", "editor",
                                        {"id": "tk", "name": "Toni Kay", "macro": "tk", "defined": False}),
                                       (owner, "the owner's token", "owner", {})):
@@ -293,6 +301,7 @@ def role_checks(sh):
     for result, who in ((with_token(owner, "/switch", "POST", {"doc": "appendix"}), "with the owner's token"),
                         (via_proxy("owner1", "/switch", "POST", {"doc": "appendix"}), "for the owner, through the proxy")):
         expect(result, 403, f"POST switch {who} (a shared preview serves one document)")
+    expect(via_proxy("vw", "/logout", "POST", {}), 200, "POST logout for a viewer (anyone signed in may sign out)")
     revise = {"selection": "two words", "paragraph": "Two words.", "note": "", "file": "body.tex", "line": 1}
     for method, body in (("POST", revise), ("GET", None)):  # (with LATEX_LIVE_AGENT_CMD set: shared mode never runs it)
         for result, who in [(via_proxy(uid, "/agent/revise", method, body), uid) for uid in ("vw", "cm", "ed", "owner1")] + \
