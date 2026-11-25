@@ -20,11 +20,11 @@ import time
 from . import config
 from .commits import charge, commit_others, paused, remember_write, source_budget, unpaid, updating
 from .git import commit_sha, file_at_commit, run_git
-from .latex import brace_group
+from .latex import bib_entries, parsed_file
 from .sources import (
     ADDED_LIMIT, ASSET_EXTS, ASSET_SIZE, ASSETS_LIMIT, EDITABLE_EXTS, EDITABLE_SIZE, NOTE_LOCK, SourceChanged, add_file,
     asset_real, cached_version, create_source, doc_assets, doc_figures, editable_files, editable_real, file_version, invalidate_assets, move_file,
-    new_path, open_source, oversized_source, project_assets, read_editable, remember_added, remove_file, write_source, wrote)
+    new_path, open_source, oversized_source, project_assets, read_editable, read_editable_text, remember_added, remove_file, write_source, wrote)
 
 
 MERGE_LABELS = ("saved meanwhile", "base", "your edit")  # (git's conflict markers name the two sides)
@@ -58,42 +58,38 @@ def user_asset(server, user, rel):
 
 
 LABEL_RE = re.compile(r"\\label\s*\{([^{}\n]{1,200})\}")
-BIB_ENTRY_RE = re.compile(r"@(\w+)\s*[{(]\s*([^,\s{}()]+)\s*,")
-BIB_TITLE_RE = re.compile(r"\btitle\s*=\s*([{\"])", re.I)
 COMPLETIONS_LIMIT = 5000
 
 
-def completions(server, user, *, cache={}):
+def completions(server, user):
     """GET /completions: what the browser editor offers in \\ref, \\cite and \\includegraphics, and shows when the
     pointer rests on one, from the files it opens (so nothing an editor couldn't read there) and the paper's figures:
     {"labels": [{"label", "file", "line"}] from the \\label commands outside comments, "labelContext": {label: the
     line it is on (or the one above, for a \\label alone on its line)}, "keys": [{"key", "title", "file", "line"}] from
     the .bib files' entries, "figures": [path] (listed_assets: those user's Files tab lists)}, at most COMPLETIONS_LIMIT
-    labels and keys. Each file is read again only once it has changed."""
+    labels and keys. Each file is read again only once it has changed (parsed_file, as the Refs panel reads them)."""
     labels, keys, context = [], [], {}
     for rel, real in editable_files(server).items():
         if not rel.endswith((".tex", ".bib")) or len(labels) >= COMPLETIONS_LIMIT and len(keys) >= COMPLETIONS_LIMIT:
             continue
         try:
-            st = os.stat(real)
-            entry = cache.get(real)
-            if not entry or entry[0] != (st.st_mtime_ns, st.st_size):
-                text = read_editable(real).decode("utf-8", errors="replace")
-                found = (bib_completions(text), {}) if rel.endswith(".bib") else label_lines(text, True)
-                entry = cache[real] = ((st.st_mtime_ns, st.st_size), *found)
+            if rel.endswith(".bib"):
+                entries = parsed_file(real, bib_entries, read_editable_text)[:max(0, COMPLETIONS_LIMIT - len(keys))]
+                keys += [{**key, "file": rel} for key in bib_completions(entries)]
+                continue
+            found, around = parsed_file(real, label_context, read_editable_text)
         except (OSError, SourceChanged):
             continue
-        found, around = entry[1:]
-        if rel.endswith(".bib"):
-            keys += [{**key, "file": rel} for key in found[:COMPLETIONS_LIMIT - len(keys)]]
-        else:
-            for label, line in found[:COMPLETIONS_LIMIT - len(labels)]:
-                labels.append({"label": label, "file": rel, "line": line})
-                if label in around:
-                    context.setdefault(label, around[label])
-    if len(cache) > 256:
-        cache.clear()
+        for label, line in found[:COMPLETIONS_LIMIT - len(labels)]:
+            labels.append({"label": label, "file": rel, "line": line})
+            if label in around:
+                context.setdefault(label, around[label])
     return {"labels": labels, "labelContext": context, "keys": keys, "figures": [a["path"] for a in listed_assets(server, user)]}
+
+
+def label_context(text):
+    """label_lines with their context (the completions' reading of a .tex file)."""
+    return label_lines(text, True)
 
 
 def label_lines(text, with_context=False):
@@ -116,24 +112,9 @@ def label_lines(text, with_context=False):
     return found, context
 
 
-def bib_completions(text):
-    """[{"key", "title", "line"}] of a .bib file's entries, in one pass (a forgiving reading: the title as written, its
-    braces dropped, at most 120 characters)."""
-    entries = [m for m in BIB_ENTRY_RE.finditer(text) if m.group(1).lower() not in ("comment", "string", "preamble")]
-    found, line, at = [], 1, 0
-    for m, after in zip(entries, [*entries[1:], None]):
-        title = BIB_TITLE_RE.search(text, m.end(), after.start() if after else len(text))
-        if title and title.group(1) == "{":
-            value = brace_group(text[title.start(1):title.start(1) + 2000], 0)[0]
-        elif title:
-            end = text.find('"', title.end(), title.end() + 2000)
-            value = text[title.end():end] if end >= 0 else ""
-        else:
-            value = ""
-        line, at = line + text.count("\n", at, m.start()), m.start()
-        title = " ".join(value.replace("{", "").replace("}", "").split())[:120]
-        found.append({"key": m.group(2), "title": title, "line": line})
-    return found
+def bib_completions(entries):
+    """[{"key", "title", "line"}] of a .bib file's entries (latex.bib_entries'), the title at most 120 characters."""
+    return [{"key": e["key"], "title": e["fields"].get("title", "")[:120], "line": e["line"]} for e in entries]
 
 
 def editor_text(raw):

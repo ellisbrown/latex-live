@@ -80,6 +80,11 @@ def read_editable(real):
         return f.read(EDITABLE_SIZE + 1)
 
 
+def read_editable_text(real):
+    """read_editable's bytes as text, bytes that don't decode replaced (what the completions and the Refs panel read)."""
+    return read_editable(real).decode("utf-8", errors="replace")
+
+
 def read_source(path):
     """A source file's exact text (line endings kept), from its real path (open_source)."""
     with open_source(path) as f:

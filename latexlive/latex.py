@@ -1,9 +1,11 @@
 """Reading the paper's LaTeX: balanced groups, comments, \\iffalse blocks, macro definitions, rough
 plain text, and the root documents and the files they \\input."""
 
+import bisect
 import glob
 import os
 import re
+import threading
 
 from . import config
 from .files import fls_inputs, in_paper
@@ -82,16 +84,15 @@ INPUT_RE = re.compile(r"\\(?:input|include|subfile)\s*\{([^{}]+)\}")
 
 
 def find_bib_entry(paper_root, key):
-    """(relative .bib path, line) of @type{key, in the paper's .bib files, or None."""
-    pat = re.compile(r"@\w+\s*\{\s*%s\s*," % re.escape(key))
+    """(relative .bib path, line) of the entry key in the paper's .bib files (those in the paper root and one folder
+    below, in order: bib_entries), or None."""
     for bib in sorted(glob.glob(os.path.join(paper_root, "*.bib")) + glob.glob(os.path.join(paper_root, "*", "*.bib"))):
         try:
-            with open(bib, errors="replace") as f:
-                for n, line in enumerate(f, 1):
-                    if pat.search(line):
-                        return os.path.relpath(bib, paper_root), n
+            entries = parsed_file(bib, bib_entries)
         except OSError:
-            pass
+            continue
+        if line := next((e["line"] for e in entries if e["key"] == key), None):
+            return os.path.relpath(bib, paper_root), line
     return None
 
 
@@ -104,6 +105,74 @@ def brace_group(text, i):
         if depth == 0:
             return text[i + 1:j], j + 1
     return "", len(text)
+
+
+# BibTeX, read forgivingly (bib_entries), the one reading that the Refs panel, the editor's completions, the checks and
+# SyncTeX's way back to a .bib entry share; parsed_file keeps each file's.
+BIB_ENTRY_RE = re.compile(r"@(\w+)\s*[{(]\s*([^,\s{}()]+)\s*,")
+ENTRY_START_RE = re.compile(r"(?m)^[ \t]*(@)[A-Za-z]+\s*[{(]")  # (where an @string, @comment or @preamble may begin too)
+FIELD_RE = re.compile(r"\b([a-zA-Z][a-zA-Z0-9_-]*)\s*=\s*")
+
+
+def bib_entries(text):
+    """[{"key", "type" (in lower case), "line", "fields": {name in lower case: value (bib_fields)}}] of the entries in a
+    .bib file's text, not @string, @comment or @preamble; each entry's body runs to where the next one may begin."""
+    found = list(BIB_ENTRY_RE.finditer(text))
+    starts = sorted({m.start() for m in found} | {m.start(1) for m in ENTRY_START_RE.finditer(text)} | {len(text)})
+    entries, line, at = [], 1, 0
+    for m in found:
+        if m.group(1).lower() in ("comment", "string", "preamble"):
+            continue
+        line, at = line + text.count("\n", at, m.start()), m.start()
+        entries.append({"key": m.group(2), "type": m.group(1).lower(), "line": line,
+                        "fields": bib_fields(text[m.end():starts[bisect.bisect_left(starts, m.end())]])})
+    return entries
+
+
+def bib_fields(body):
+    """{name in lower case: value, braces dropped and spaces collapsed} of the fields in one entry's body."""
+    fields, i, n = {}, 0, len(body)
+    while (m := FIELD_RE.search(body, i)) and m.end() < n:
+        j = m.end()
+        if body[j] == "{":
+            value, i = brace_group(body, j)
+        elif body[j] == '"':  # (it ends at a quote outside braces)
+            k, depth = j + 1, 0
+            while k < n and (body[k] != '"' or depth > 0):
+                depth += {"{": 1, "}": -1}.get(body[k], 0)
+                k += 1
+            value, i = body[j + 1:k], k + 1
+        else:
+            k = j
+            while k < n and body[k] not in ",}\r\n":
+                k += 1
+            value, i = body[j:k].strip(), k + 1
+        fields.setdefault(m.group(1).lower(), " ".join(value.replace("{", "").replace("}", "").split()))
+    return fields
+
+
+def read_text(path):
+    """A file's text, bytes that don't decode replaced (parsed_file's reader by default)."""
+    with open(path, errors="replace") as f:
+        return f.read()
+
+
+def parsed_file(path, parse, read=read_text, cache={}, lock=threading.Lock()):
+    """parse(read(path)), kept until the file's modification time or size changes (at most 256 kept). Each reader
+    keeps its own (the editor's reads only the files it opens, within its limits). OSError (and the reader's own
+    errors) as reading raises them."""
+    st = os.stat(path)
+    key, version = (path, parse, read), (st.st_mtime_ns, st.st_size)
+    with lock:
+        kept = cache.get(key)
+    if kept and kept[0] == version:
+        return kept[1]
+    value = parse(read(path))
+    with lock:
+        if len(cache) >= 256:
+            cache.clear()
+        cache[key] = (version, value)
+    return value
 
 
 def project_macros(paper_root, fls):
