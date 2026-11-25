@@ -45,6 +45,7 @@ def fake_server(root, state=None, **overrides):
     without one: what the requests read and keep, as an instance has them before any request (the document, empty
     caches and records, their locks, no autocommit), its records in the state folder state if given (the Files
     tab's added files, the pending writes), and overrides."""
+    from latexlive.synctex import Kept
     files = {"added_file": os.path.join(state, "added", "paper-test-main.json"),
              "pending_file": os.path.join(state, "pending.json")} if state else {}
     return types.SimpleNamespace(**{
@@ -52,8 +53,8 @@ def fake_server(root, state=None, **overrides):
         "assets": None, "added": set(), "uploads": {}, "writes": {}, "paid": {}, "autocommit": False, "pending": {}, "write_seq": 0,
         "pending_lock": threading.Lock(), "versions": collections.OrderedDict(), "versions_lock": threading.Lock(),
         "last_saves": collections.OrderedDict(), "last_writer": {}, "export": {}, "exported": {}, "review": {},
-        "export_lock": threading.Lock(), "review_lock": threading.Lock(), "download_lock": threading.Lock(), "results": {},
-        "results_lock": threading.Lock(), "presence": {}, "presence_lock": threading.Lock(), "bib_verify": {},
+        "export_lock": threading.Lock(), "review_lock": threading.Lock(), "download_lock": threading.Lock(), "results": Kept(512),
+        "presence": {}, "presence_lock": threading.Lock(), "bib_verify": {},
         "bib_lock": threading.Lock(), **files, **overrides})
 
 

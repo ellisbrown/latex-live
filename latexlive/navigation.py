@@ -6,7 +6,6 @@ import os
 import re
 import shutil
 import subprocess
-import threading
 import time
 import unicodedata
 
@@ -20,38 +19,12 @@ from .tools import synctex_unavailable
 
 
 def shared_result(server, key, compute, miss_ttl=None, hit=bool):
-    """compute()'s result for key, computed once: a request for the same key while it runs waits for it,
-    and later ones reuse it (keys hold what the result depends on, e.g. the build's version). This keeps
-    many identical requests, e.g. from several open viewers, to one container run. At most 512 kept.
-    With miss_ttl, a result that hit() calls a miss (by default an empty one, None: a lookup that found nothing,
-    or failed for now, e.g. while the image is missing or SyncTeX timed out) is reused for only that many seconds,
-    then computed again."""
-    with server.results_lock:
-        entry = server.results.get(key)
-        if entry is not None and entry.get("expires", float("inf")) < time.monotonic():
-            entry = None
-        mine = entry is None
-        if mine:
-            if len(server.results) >= 512:
-                server.results.clear()
-            entry = server.results[key] = {"done": threading.Event()}
-    if not mine:
-        entry["done"].wait()
-        if "value" in entry:
-            return entry["value"]
-        return compute()  # (the first one failed)
-    try:
-        entry["value"] = compute()
-        if miss_ttl is not None and not hit(entry["value"]):
-            entry["expires"] = time.monotonic() + miss_ttl
-    except BaseException:
-        with server.results_lock:
-            if server.results.get(key) is entry:
-                del server.results[key]
-        raise
-    finally:
-        entry["done"].set()
-    return entry["value"]
+    """compute()'s result for key, computed once (server.results, a synctex.Kept): a request for the same key while it
+    runs waits for it, and later ones reuse it (keys hold what the result depends on, e.g. the build's version). This
+    keeps many identical requests, e.g. from several open viewers, to one container run. With miss_ttl, a result that
+    hit() calls a miss (by default an empty one, None: a lookup that found nothing, or failed for now, e.g. while the
+    image is missing or SyncTeX timed out) is reused for only that many seconds, then computed again."""
+    return server.results.get(key, None, compute, miss_ttl, hit)
 
 
 def forward_request(server, query, user=None):

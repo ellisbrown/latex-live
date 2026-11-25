@@ -26,6 +26,7 @@ from .shared_build import start_shared_build
 from .sources import load_added
 from .shared_watch import watch_build_size
 from .standby import owner_starts, stop_owner
+from .synctex import Kept
 from .status import code_updated
 from .timing import start_timing
 from .tools import container_exec, image_pulled, stop_containers
@@ -80,7 +81,7 @@ def serve(paper_root, default_pdf, port, page_limit, hub_port=None):
     server.pending_lock = threading.Lock()
     server.pending_file = os.path.join(config.STATE, "pending", f"{server.paper_id}.json")  # (save_pending)
     server.git_dir = None  # (git_dir)
-    server.results, server.results_lock = {}, threading.Lock()  # (shared_result)
+    server.results = Kept(512)  # (shared_result)
     server.checks, server.checks_running, server.checks_lock = {}, {}, threading.Lock()  # (cached_checks)
     # shared_build's state: whether a run is on, its status and the notes-free pass's, what it published (and the
     # notes that PDF shows: shown), the tools' states (bib, biber, idx) and the rebuilds' generation (gen), the files

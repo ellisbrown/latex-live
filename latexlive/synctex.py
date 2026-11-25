@@ -3,11 +3,13 @@ search (a source line to a spot in the PDF; forward.py too) and inverse search (
 
 import array
 import gzip
+import math
 import os
 import re
 import shlex
 import shutil
 import threading
+import time
 import zlib
 
 from . import config
@@ -94,15 +96,17 @@ class Kept:
     one version (its stamp), so that a new build replaces the last one's rather than adding to it, and the requests that
     ask at once (as the viewer's do when a new PDF arrives) wait for one computation rather than each making its own.
     At most size keys, the oldest dropped first. Nothing is computed while the lock is held, so a computation may use
-    other Kept values, and a value is returned as computed, never read back after another request changed the table."""
+    other Kept values, and a value is returned as computed, never read back after another request changed the table.
+    With miss_ttl, a value that hit() calls a miss (by default an empty one: a lookup that found nothing, or failed for
+    now) is kept for only that many seconds, then computed again."""
 
     def __init__(self, size):
         self.size, self.lock, self.entries = size, threading.Lock(), {}
 
-    def get(self, key, stamp, compute):
+    def get(self, key, stamp, compute, miss_ttl=None, hit=bool):
         with self.lock:
             entry = self.entries.get(key)
-            mine = entry is None or entry["stamp"] != stamp
+            mine = entry is None or entry["stamp"] != stamp or entry.get("expires", math.inf) < time.monotonic()
             if mine:
                 self.entries.pop(key, None)
                 while len(self.entries) >= self.size:
@@ -115,6 +119,8 @@ class Kept:
             return compute()  # (the first one failed)
         try:
             entry["value"] = value = compute()
+            if miss_ttl is not None and not hit(value):
+                entry["expires"] = time.monotonic() + miss_ttl
         except BaseException:
             with self.lock:
                 if self.entries.get(key) is entry:

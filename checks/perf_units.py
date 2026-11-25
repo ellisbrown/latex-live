@@ -178,7 +178,7 @@ def inverse_cache_checks():
         navigation.cached_input(server, "main.pdf", 2, 100.1, 200.2, False)
         answers.append((404, "no source location here"))
         miss = [navigation.cached_input(server, "main.pdf", 3, 50, 50, False) for _ in range(2)]
-        for entry in server.results.values():  # (as if the few seconds had passed)
+        for entry in server.results.entries.values():  # (as if the few seconds had passed)
             if "expires" in entry:
                 entry["expires"] = 0
         found = navigation.cached_input(server, "main.pdf", 3, 50, 50, False)
