@@ -2,6 +2,7 @@
 Python 3.9, if there is one), the viewer's import map and modules are valid (and parse and link, with Node, if
 there is one: every name a module imports is one its module exports), every element that they look up by id is in viewer.html, instances starting at once agree on one token, and the docs keep up with the code (docs_checks)."""
 
+import ast
 import glob
 import json
 import os
@@ -125,24 +126,30 @@ def docs_checks():
 
 
 def module_map_problems(package, heading, contributing=None):
-    """What is wrong with CONTRIBUTING.md's map of package under heading (its first table) and the list in the package's
-    __init__: a module missing, one that isn't there, or one listed after a module that imports it."""
+    """What is wrong with CONTRIBUTING.md's map of package under heading (the modules named in its table's second
+    column, but not in parentheses) and the list in the package's __init__ (after "from the bottom up"): a module
+    missing, a name that is no module, or a module listed after one that it imports."""
     text = contributing if contributing is not None else read_text(os.path.join(HERE, "CONTRIBUTING.md"))
     modules = {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(HERE, package, "*.py"))} - {"__init__"}
-    if heading not in text:
-        return [f"CONTRIBUTING.md has no {heading!r}"]
-    part = text[text.index(heading):]
-    table = part[:part.find("\n\n", part.find("|---"))]
-    order = list(dict.fromkeys(name for name in re.findall(r"`([a-z_]+)`", table) if name in modules))
-    init = re.split(r"from the bottom up[^:]*:", read_text(os.path.join(HERE, package, "__init__.py")), maxsplit=1, flags=re.I)[-1]
-    listed = list(dict.fromkeys(name for name in re.findall(r"\b[a-z_]+\b", init) if name in modules))
+    table = re.search(r"^\|.*(?:\n\|.*)*", text.split(heading, 1)[1], re.M) if heading in text else None  # (its first table)
+    rows = re.findall(r"^\|[^|\n]*\|([^|\n]*)\|", table.group(0) if table else "", re.M)
+    order = list(dict.fromkeys(re.findall(r"`([^`]+)`", re.sub(r"\([^()]*\)", "", "".join(rows)))))
+    if not order:
+        return [f"CONTRIBUTING.md has no table of modules under {heading!r}"]
+    parts = re.split(r"from the bottom up[^:]*:", read_text(os.path.join(HERE, package, "__init__.py")), maxsplit=1, flags=re.I)
+    listed = re.split(r"[\s,]+", parts[1].split(".", 1)[0].strip()) if len(parts) == 2 else []
     problems = [f"CONTRIBUTING.md's map of {package}/ lacks {sorted(modules - set(order))}"] if modules - set(order) else []
+    problems += [f"CONTRIBUTING.md's map of {package}/ names {sorted(set(order) - modules)}, which are no modules"] \
+        if set(order) - modules else []
     if listed != order:
         problems.append(f"{package}/__init__.py lists its modules otherwise than CONTRIBUTING.md: {listed}, not {order}")
     for i, name in enumerate(order):
-        code = read_text(os.path.join(HERE, package, f"{name}.py"))
-        deps = set(re.findall(r"^\s*from \.([a-z_]+)(?:\.[a-z_.]+)? import", code, re.M))
-        deps |= {d.strip() for group in re.findall(r"^\s*from \. import \(?([a-z_, ]+)", code, re.M) for d in group.split(",")}
+        if name not in modules:
+            continue
+        deps = set()
+        for node in ast.walk(ast.parse(read_text(os.path.join(HERE, package, f"{name}.py")))):
+            if isinstance(node, ast.ImportFrom) and node.level == 1:
+                deps |= {node.module.split(".")[0]} if node.module else {a.name for a in node.names}
         later = sorted(d for d in deps if d in order[i + 1:])
         if later:
             problems.append(f"{package}/{name}.py imports {later}, listed after it in CONTRIBUTING.md")
@@ -156,7 +163,7 @@ SETTINGS_CODE = ["live.py", "latex_report.py", "forward.py", "latexmkrc", "tex-e
 def settings_problems(docs=None, contributing=None):
     """What is wrong with the docs of the LATEX_LIVE_* settings: a name in the code (SETTINGS_CODE), or one that checks/
     reads from the environment (LATEX_LIVE_CHECK_*), in neither docs/ nor CONTRIBUTING.md's "Settings that only
-    latex-live sets", or one named there that nothing uses."""
+    latex-live sets"; one named in either that nothing uses; or one in both."""
     name_re = re.compile(r"\bLATEX_LIVE_[A-Z0-9_]*[A-Z0-9]\b")
     used = {n for pattern in SETTINGS_CODE for path in glob.glob(os.path.join(HERE, pattern)) for n in name_re.findall(read_text(path))}
     used |= {n for path in glob.glob(os.path.join(HERE, "checks", "*.py"))
@@ -164,12 +171,13 @@ def settings_problems(docs=None, contributing=None):
     if docs is None:
         docs = "".join(read_text(path) for path in glob.glob(os.path.join(HERE, "docs", "*.md")))
     text = contributing if contributing is not None else read_text(os.path.join(HERE, "CONTRIBUTING.md"))
-    section = text.split("### Settings that only latex-live sets", 1)[-1].split("\n### ", 1)[0] if "### Settings that only" in text else ""
-    internal = set(name_re.findall(section))
-    problems = [f"{name} is in neither docs/ nor CONTRIBUTING.md's internal settings" for name in sorted(used)
-                if name not in docs and name not in internal]
-    problems += [f"CONTRIBUTING.md's internal settings name {name}, which no code uses" for name in sorted(internal - used)]
-    problems += [f"{name} is in CONTRIBUTING.md's internal settings, but docs/ document it for users" for name in sorted(internal & set(name_re.findall(docs)))]
+    heading = "### Settings that only latex-live sets"
+    internal = set(name_re.findall(re.split(r"\n#{2,3} ", text.split(heading, 1)[1], maxsplit=1)[0])) if heading in text else set()
+    documented = set(name_re.findall(docs))
+    problems = [f"{name} is in neither docs/ nor CONTRIBUTING.md's internal settings" for name in sorted(used - documented - internal)]
+    problems += [f"{name} is in docs/ or CONTRIBUTING.md's internal settings, but no code uses it"
+                 for name in sorted((internal | documented) - used)]
+    problems += [f"{name} is in CONTRIBUTING.md's internal settings, but docs/ document it for users" for name in sorted(internal & documented)]
     return problems
 
 

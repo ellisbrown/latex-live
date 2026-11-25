@@ -473,12 +473,17 @@ def handler_routes():
             for op, right in zip(node.ops, node.comparators):
                 if isinstance(op, ast.Eq) and isinstance(right, ast.Constant):
                     routes.add(("GET", right.value))
-                elif isinstance(op, ast.In) and isinstance(right, (ast.Tuple, ast.Set)):
+                elif isinstance(op, ast.In) and isinstance(right, (ast.Tuple, ast.Set, ast.List)):
                     routes.update(("GET", e.value) for e in right.elts if isinstance(e, ast.Constant))
         elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "startswith"
-              and isinstance(node.func.value, ast.Name) and node.func.value.id == "path"
-              and any(isinstance(a, ast.Name) and a.id == "READ_PATHS" for a in node.args)):
-            routes.update(("GET", prefix) for prefix in roles.READ_PATHS)
+              and isinstance(node.func.value, ast.Name) and node.func.value.id == "path" and node.args):
+            arg = node.args[0]
+            if isinstance(arg, ast.Name) and arg.id == "READ_PATHS":
+                routes.update(("GET", prefix) for prefix in roles.READ_PATHS)
+            elif isinstance(arg, ast.Constant):
+                routes.add(("GET", arg.value))
+            elif isinstance(arg, ast.Tuple):
+                routes.update(("GET", e.value) for e in arg.elts if isinstance(e, ast.Constant))
     return routes
 
 
@@ -486,21 +491,18 @@ def role_cases_missing(routes, text, elsewhere):
     """The routes (method, path) that the shared-mode checks' text has no request for: a request path literal (a prefix
     of READ_PATHS followed by a PDF's name), POST when the method sits next to it ("POST", "/x" or "/x", "POST", or a
     method variable after it, as in a loop over methods), else GET; or a route that elsewhere names another module for, in which it must appear."""
-    missing = []
-    for method, path in sorted(routes):
-        if path in elsewhere:
-            if not re.search(r"""["']%s["'?]""" % re.escape(path), read_text(os.path.join(HERE, "checks", f"{elsewhere[path]}.py"))):
-                missing.append((method, path))
-            continue
+    def has_case(method, path, text):
         literal = r"""f?["']%s(?:["'?]|[\w.-]*\.pdf["'?])""" % re.escape(path)
-        found = False
         for m in re.finditer(literal, text):
             is_post = bool(re.search(r"""["']POST["'],\s*$""", text[max(0, m.start() - 12):m.start()])
                            or re.compile(r"""[^\n)]*?["'],\s*(?:["']POST["']|method\b)""").match(text, m.end() - 1))
-            found = found or is_post == (method == "POST")
-        if not found:
-            missing.append((method, path))
-    return missing
+            if is_post == (method == "POST"):
+                return True
+        return False
+
+    return [(method, path) for method, path in sorted(routes)
+            if not has_case(method, path, read_text(os.path.join(HERE, "checks", f"{elsewhere[(method, path)]}.py"))
+                            if (method, path) in elsewhere else text)]
 
 
 def guard_checks():
@@ -514,12 +516,14 @@ def guard_checks():
     if len([r for r in routes if r[0] == "GET"]) < 20 or len(routes) < 40:
         fail(f"the routes found in handler.py look too few ({len(routes)}): has handler_routes lost track of them?")
     text = read_text(os.path.join(HERE, "checks", "shared_access.py"))  # (read, not imported: it is above this module)
-    elsewhere = ast.literal_eval(re.search(r"^ROLE_CASES_ELSEWHERE = (\{.*\})$", text, re.M).group(1))
+    elsewhere = ast.literal_eval(re.search(r"^ROLE_CASES_ELSEWHERE = (\{.*\})$", text, re.M).group(1))  # {(method, path): module}
     missing = role_cases_missing(routes, text, elsewhere)
     if missing:
         fail(f"routes without a role case in checks/shared_access.py (add one per role that may and may not ask): {missing}")
-    if role_cases_missing({("GET", "/no-such-route"), ("POST", "/me")}, text, {}) != [("GET", "/no-such-route"), ("POST", "/me")]:
-        fail("the role-case guard doesn't notice a route without a role case (or a GET's case taken for a POST's)")
+    planted = {("GET", "/no-such-route"), ("POST", "/me"), ("GET", "/rebuild")}
+    if role_cases_missing(planted, text, {}) != sorted(planted):
+        fail("the role-case guard doesn't notice a route without a role case (or takes a GET's case for a POST's, or a"
+             " POST's for a GET's)")
     with tempfile.TemporaryDirectory(prefix="latex-live-caps-") as root:
         owner = {"id": "owner", "name": "", "macro": "", "role": "owner", "via": "token"}
         can = handler.me(fake_server(root, git_name="Owner"), owner)["can"]
