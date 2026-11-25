@@ -416,7 +416,7 @@ def commit_files(server, user, paths):
                     tracked.update(new)
                     added = new
             r = run(["diff", "--name-only", "--no-renames", "-z", "--relative", "HEAD", "--", *files])
-            changed = set(listing(r)) if r.code == 0 else set(files)  # (no HEAD yet: all of them)
+            changed = set(listing(r)) if r.code in (0, None) or r.more else set(files)  # (no HEAD yet: all of them)
             files = [rel for rel in files if rel in tracked and rel in changed]
         if not files:
             return None

@@ -112,11 +112,9 @@ def run_bounded(argv, timeout, cwd=None, env=None, data=None, limit=None, stop_a
     state = {"lock": threading.Lock(), "finished": False}  # (finished: nothing may signal its group any more)
 
     def stop():
-        if not group:
-            return proc.kill()
         with state["lock"]:
             if not state["finished"]:
-                kill_group(proc.pid, signal.SIGKILL)
+                kill_group(proc.pid, signal.SIGKILL) if group else proc.kill()
 
     def feed():
         try:
@@ -160,10 +158,10 @@ def run_bounded(argv, timeout, cwd=None, env=None, data=None, limit=None, stop_a
             with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.wait(grace)
     finally:
-        if group:  # (what it left running, which may hold its pipes open; the group's id is free for another process only
-            with state["lock"]:  # once none of the group is left, and pids are handed out in turn, so this signals nothing else)
-                kill_group(proc.pid, signal.SIGKILL)
-                state["finished"] = True
+        with state["lock"]:  # (what it left running, which may hold its pipes open; the group's id is free for another
+            if group:        # process only once none of the group is left, and pids are handed out in turn, so this
+                kill_group(proc.pid, signal.SIGKILL)  # signals nothing else; after this, stop() signals nothing)
+            state["finished"] = True
         proc.wait()
         end = time.monotonic() + drain
         for t in (reader, err_reader, feeder):  # (the readers first: a feed held up by an escaped child waits last)

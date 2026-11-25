@@ -51,12 +51,13 @@ def extract_tex(root, sha, folder):
     with tempfile.TemporaryDirectory(prefix="latex-live-archive-") as tmp:
         tar = os.path.join(tmp, "tex.tar")
         r = run_git(root, ["archive", "--format=tar", "-o", tar, sha, "--", *tex_pathspec()], timeout=60, literal=False)
-        if r.code != 0:
-            why = (r.err.strip() or f"status {r.code}").splitlines()[-1]
+        if r.code != 0:  # (the messages name the temporary folder as ., never where it is)
+            why = (r.err.strip() or f"status {r.code}").splitlines()[-1].replace(tmp, ".")
             raise RuntimeError(f"{sha[:9]} has no .tex file here" if "did not match" in why else f"git archive failed: {why}")
-        r = subprocess.run(["tar", "-x", "-f", tar, "-C", folder], capture_output=True, text=True, timeout=60)
+        r = subprocess.run(["tar", "-x", "-f", "tex.tar", "-C", folder], cwd=tmp, capture_output=True, text=True, timeout=60)
         if r.returncode:
-            raise RuntimeError(f"tar could not unpack {sha[:9]}'s .tex files: {(r.stderr.strip() or str(r.returncode)).splitlines()[-1]}")
+            why = (r.stderr.strip() or str(r.returncode)).splitlines()[-1].replace(tmp, ".")
+            raise RuntimeError(f"tar could not unpack {sha[:9]}'s .tex files: {why}")
 
 
 # latexdiff's marks, and the plainer ones a second try takes when the document with the first doesn't build (marks in

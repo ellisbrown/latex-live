@@ -1110,9 +1110,14 @@ def logs_checks():
             first_pass = "[ -s $build/%R.began ] || echo run > $build/%R.began;" in f.read()
         if not (took and 3000 <= took < 6000) or again is not None or os.path.getsize(began) or not first_pass:
             fail(f"a run's time, from its first pass on: {took} ms, then {again}; latexmkrc marks the first pass: {first_pass}")
-    ok("the build's log: errors only in the paper's source files, warnings and boxes in the file they are in, the paper's"
-       " folder as ./, only the end of a long log read, and a log parsed once until it changes; a build is timed from its"
-       " first pass")
+        many = "(./main.tex\n" + "".join(f"LaTeX Warning: Reference `r{n}' undefined on input line {n}.\n" for n in range(300))
+        many += "Overfull \\hbox (9.0pt too wide) in paragraph at lines 3--4\n[] x\n\n)\n"
+        _, warned = logs.parse_log(many, root)  # (as the checks' Overfull lines read it: boxes counted apart)
+        if not any(w["kind"] == "overfull" and w["file"] == "main.tex" and w["line"] == 4 for w in warned):
+            fail("an overfull box after 300 other warnings is not in the log's warnings")
+    ok("the build's log: errors only in the paper's source files, warnings and boxes in the file they are in (each"
+       " counted apart), the paper's folder as ./, only the end of a long log read, and a log parsed once until it"
+       " changes; a build is timed from its first pass")
 
 
 def presence_checks():
