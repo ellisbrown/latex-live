@@ -74,7 +74,8 @@ export function fitEditor(opening = false) {
     setSide(false);
     setStatus("Closed the sidebar to make room for the source beside the PDF", "", HOLD);
   }
-  const width = Math.round(Math.max(EDITOR_MIN, Math.min(room(), editorWidth || (innerWidth - side()) * 0.48)));
+  // (a width dragged to may take the gutters' room: they fold then)
+  const width = Math.round(Math.max(EDITOR_MIN, Math.min(room(!editorWidth), editorWidth || (innerWidth - side()) * 0.48)));
   document.documentElement.style.setProperty("--editor-w", `${width}px`);
   return width;
 }

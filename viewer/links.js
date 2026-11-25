@@ -53,10 +53,10 @@ container.addEventListener("dblclick", async (e) => {
       return canOpenFile(found.file) && openSource(found.file, found.line, found.column);
     }
     if (!editable(found.file)) return setStatus(why, "error");
-    if (hostFailed === null) setStatus(`${found.file}:${found.line} is in the source pane (${why})`, "", HOLD);
-    else setStatus(`→ ${found.file}:${found.line}`, "fresh");
+    const first = hostFailed === null;
     hostFailed = why;
-    showEditor(true, { path: found.file, line: found.line, column: found.column });
+    paneSaying(() => showEditor(true, { path: found.file, line: found.line, column: found.column }),
+               first ? `${found.file}:${found.line} is in the source pane (${why})` : `→ ${found.file}:${found.line}`, first);
   } catch (err) {
     setStatus(`${err.message || err}`, "error");
   }
@@ -153,12 +153,19 @@ export async function openSource(file, line, column = 0) {
     if (r.ok) return;
     const why = (await readBody(r)).error; // e.g. latex-live is not running in a VS Code terminal
     if (!editorAllowed() || !editable(file)) return setStatus(why, "error");
-    setStatus(`${file}:${line} is in the source pane (VS Code did not open: ${why})`, "", HOLD);
     if (!isPopout) hostFailed = why;
-    inPane(file, line, column);
+    paneSaying(() => inPane(file, line, column), `${file}:${line} is in the source pane (VS Code did not open: ${why})`, true);
   } catch (err) {
     setStatus(`${err.message || err}`, "error");
   }
+}
+// Open the source pane (open: which may close the sidebar to make room, saying so), then say what (held: the reason VS
+// Code didn't open, said once), with the sidebar's closing if it did.
+function paneSaying(open, text, held) {
+  const sideWas = !$("side").hidden;
+  open(); // (the pane's layout changes at once; the file opens after)
+  const closed = sideWas && $("side").hidden ? "; the sidebar closed to make room for it" : "";
+  setStatus(`${text}${closed}`, held || closed ? "" : "fresh", held || closed ? HOLD : 0);
 }
 // The source pane at a line; for a pop-out window, a main window's, opened for it if needs be (or a new main window,
 // which takes the line once it is there: "mainWindow").
