@@ -6,7 +6,7 @@ import re
 import threading
 
 from .build import build_status
-from .files import job_file, open_output, redact_root, redactor
+from .files import job_file, open_output, redact_root, redactor, within
 from .sources import editable_real
 
 PARSE_LIMIT = 4 << 20  # (the most of the log's end that is read: the paper decides how much TeX writes)
@@ -41,7 +41,7 @@ def parse_log(text, paper_root):
             return None
         rel = name.strip('"')
         if os.path.isabs(rel):
-            rel = next((rel[len(base) + 1:] for base in bases if rel.startswith(base + os.sep)), None)
+            rel = next((os.path.relpath(rel, base) for base in bases if within(rel, base)), None)
         rel = os.path.normpath(rel) if rel else None
         found[name] = rel if rel and editable_real(root, rel) else None
         return found[name]

@@ -12,7 +12,7 @@ import threading
 import time
 
 from . import config
-from .files import build_folder, copy_output, create_output, job_file, mtime, pdf_path, read_capped, too_big
+from .files import build_folder, copy_output, create_output, job_file, mtime, pdf_path, read_capped, too_big, within
 from .git import POLL_TIMEOUT, SHA_RE, commit_sha, git_text, pushed_commit, ref_stamp, run_git
 from .latex import first_error
 from .tools import container_argv, failure, image_pulled, run_tool, tex_argv
@@ -173,7 +173,7 @@ def input_loop(folder, doc):
     def name(base, written):
         written = written.strip()
         path = os.path.normpath(os.path.join(base, written if re.search(r"\.\w{3,4}$", written) else written + ".tex"))
-        return path if path.startswith(os.path.join(folder, "")) and os.path.isfile(path) else None
+        return path if within(path, folder) and os.path.isfile(path) else None
 
     done = set()  # (files read to the end without a loop, each with the folder its names resolve in: no loop from them)
 

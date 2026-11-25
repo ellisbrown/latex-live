@@ -170,11 +170,33 @@ def child_aux(folder, name):
     """The .aux file that \\@input{name} in an .aux in folder names, if it is in folder or below it (not
     an absolute path, nor .. out of it, nor through a link: the paper's TeX writes the name), else None."""
     path = os.path.normpath(os.path.join(folder, name))
-    if os.path.isabs(name) or not path.startswith(os.path.join(os.path.normpath(folder), "")):
+    if os.path.isabs(name) or not within(path, os.path.normpath(folder)):
         return None
     if os.path.realpath(path) != os.path.join(os.path.realpath(folder), os.path.relpath(path, folder)):  # (a link on the way)
         return None
     return path
+
+
+# Where a path is. Every check that a path is in a folder goes through within; a path relative to the paper root that
+# may name a file of the paper's (no .., no dot part, not in build/) through plain_rel; an absolute path of one of the
+# paper's own files through in_paper. (sources builds the editor's and the Files tab's checks on these: paper_file,
+# new_path, own_file, changed_path; git the History tab's: shown_path.)
+def within(path, folder):
+    """Whether path is below folder (not folder itself): both absolute, and alike, normalized or with links resolved
+    (os.path.realpath), as the caller has them."""
+    return path != folder and path.startswith(os.path.join(folder, ""))
+
+
+def plain_rel(rel):
+    """rel normalized, if it is a path relative to the paper root (a string, not empty, without NUL, not absolute) that
+    stays in it (no .. out of it), names no dot file or folder (.git, .env), and is not in the build directory
+    (in_build: in any case); else None. Says nothing of links: callers check the resolved path too."""
+    if not isinstance(rel, str) or not rel or "\0" in rel or os.path.isabs(rel):
+        return None
+    norm = os.path.normpath(rel)
+    if any(part.startswith(".") for part in norm.split(os.sep)) or in_build(norm):  # (".", ".." too)
+        return None
+    return norm
 
 
 def in_build(rel):
@@ -186,20 +208,18 @@ def in_build(rel):
 
 def in_paper(paper_root, path):
     """Whether path (absolute, normalized) is one of the paper's own files: in the paper root, and not in
-    the build directory, whose files the build generates. (The .fls a build writes can name any path.)
+    the build directory (in any case: in_build), whose files the build generates. (The .fls a build writes can name any path.)
     In shared mode, also once symbolic links are resolved: coauthors write notes into these files, so a
     link to a file elsewhere is not one (the owner's own previews keep such links, as they always did);
     and not a dot file or a file in a dot folder, which TeX doesn't read there (openin_any=p), however a
     file list that the paper's TeX forged names it."""
-    if not path.startswith(os.path.join(paper_root, "")) or path.startswith(os.path.join(paper_root, config.BUILD, "")):
+    if not within(path, paper_root) or in_build(os.path.relpath(path, paper_root)):
         return False
     if not config.SHARED:
         return True
     real, root = os.path.realpath(path), os.path.realpath(paper_root)
-    dotted = any(part.startswith(".") for rel in (os.path.relpath(path, paper_root), os.path.relpath(real, root))
-                 for part in rel.split(os.sep))
-    return (real.startswith(os.path.join(root, "")) and not real.startswith(os.path.join(os.path.realpath(os.path.join(root, config.BUILD)), ""))
-            and not dotted)
+    return (within(real, root) and not within(real, os.path.realpath(os.path.join(root, config.BUILD)))
+            and all(plain_rel(rel) for rel in (os.path.relpath(path, paper_root), os.path.relpath(real, root))))
 
 
 def project_tex_files(paper_root, fls):
