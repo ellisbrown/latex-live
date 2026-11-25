@@ -3,7 +3,7 @@ order unit_checks runs them: the review copy's layout and matching, shared mode'
 bounds, failures and waits, tool timeouts, the warm standby's snapshot, the
 timing lines, the restart prompt, the static files the server sends, what the status poll and the viewer ask for over
 and over (perf_units), the bibliography (bib_units), the Files tab (files_units), the History tab (history_units) and
-the agent hook (agent_units)."""
+the agent hook (agent_units); and the guards that every route has a role case and CAPS is complete (guard_checks)."""
 
 import contextlib
 import glob
@@ -20,7 +20,7 @@ import threading
 import time
 
 from .base import HERE, fail, ok, wait_for
-from .helpers import fake_server, git, git_out, patched, put, put_bytes, read_bytes, tex_stand_in
+from .helpers import fake_server, git, git_out, patched, put, put_bytes, read_bytes, read_text, tex_stand_in
 from .static import link_modules
 from .shared_units import baseline_failure_checks, build_folder_checks, build_link_checks, confinement_checks, shared_build_checks, shown_notes_checks
 from .perf_units import perf_checks
@@ -33,7 +33,7 @@ from .agent_units import agent_checks
 def unit_checks():
     """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
     for check in (layout_checks, matching_checks, confinement_checks, build_link_checks, build_folder_checks, shared_build_checks, shown_notes_checks, bounds_checks, failed_export_checks,
-                  waiting_download_checks, tool_timeout_checks, runner_checks, settings_checks, open_request_checks, standby_snapshot_checks, timing_checks,
+                  waiting_download_checks, tool_timeout_checks, runner_checks, settings_checks, guard_checks, open_request_checks, standby_snapshot_checks, timing_checks,
                   code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, forward_script_checks, link_checks, completion_checks, assets_checks, search_checks, logs_checks, presence_checks, word_column_checks, venue_checks, diff_retry_checks,
                   arxiv_strip_checks, graphics_synctex_checks, turned_page_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks,
                   header_deadline_checks, in_flight_checks, note_limit_checks, perf_checks, bib_checks, files_checks, history_checks, agent_checks):
@@ -458,6 +458,76 @@ def settings_checks():
         fail(f"a process's command line (standby.command_line): {standby.command_line(os.getpid())!r}")
     ok("an on/off setting is 1 or 0 (unset: its default; else its default, with a warning), and the build's environment"
        " drops an inherited LATEX_LIVE_EXEC; a process's command line read one way")
+
+
+def handler_routes():
+    """The requests that handler.Handler answers, as {(method, path)}: the GET routes that its get() compares the path
+    with (path == "/x", path in ("/x", ...), path.startswith(READ_PATHS)), and the actions (handler.POSTS)."""
+    import ast
+    import inspect
+    import textwrap
+    from latexlive import handler, roles
+    routes = {("POST", path) for path in handler.POSTS}
+    for node in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(handler.Handler.get)))):
+        if isinstance(node, ast.Compare) and isinstance(node.left, ast.Name) and node.left.id == "path":
+            for op, right in zip(node.ops, node.comparators):
+                if isinstance(op, ast.Eq) and isinstance(right, ast.Constant):
+                    routes.add(("GET", right.value))
+                elif isinstance(op, ast.In) and isinstance(right, (ast.Tuple, ast.Set)):
+                    routes.update(("GET", e.value) for e in right.elts if isinstance(e, ast.Constant))
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "startswith"
+              and isinstance(node.func.value, ast.Name) and node.func.value.id == "path"
+              and any(isinstance(a, ast.Name) and a.id == "READ_PATHS" for a in node.args)):
+            routes.update(("GET", prefix) for prefix in roles.READ_PATHS)
+    return routes
+
+
+def role_cases_missing(routes, text, elsewhere):
+    """The routes (method, path) that the shared-mode checks' text has no request for: a request path literal (a prefix
+    of READ_PATHS followed by a PDF's name), POST when the method sits next to it ("POST", "/x" or "/x", "POST", or a
+    method variable after it, as in a loop over methods), else GET; or a route that elsewhere names another module for, in which it must appear."""
+    missing = []
+    for method, path in sorted(routes):
+        if path in elsewhere:
+            if not re.search(r"""["']%s["'?]""" % re.escape(path), read_text(os.path.join(HERE, "checks", f"{elsewhere[path]}.py"))):
+                missing.append((method, path))
+            continue
+        literal = r"""f?["']%s(?:["'?]|[\w.-]*\.pdf["'?])""" % re.escape(path)
+        found = False
+        for m in re.finditer(literal, text):
+            is_post = bool(re.search(r"""["']POST["'],\s*$""", text[max(0, m.start() - 12):m.start()])
+                           or re.compile(r"""[^\n)]*?["'],\s*(?:["']POST["']|method\b)""").match(text, m.end() - 1))
+            found = found or is_post == (method == "POST")
+        if not found:
+            missing.append((method, path))
+    return missing
+
+
+def guard_checks():
+    """Guards that keep the checks and the docs complete: every route of the handler (every GET it answers, every
+    action in handler.POSTS) has a role case in checks/shared_access.py (or in the module its ROLE_CASES_ELSEWHERE
+    names), and CAPS (helpers) is every capability that GET me reports."""
+    import ast
+    from latexlive import handler
+    from .helpers import CAPS
+    routes = handler_routes()
+    if len([r for r in routes if r[0] == "GET"]) < 20 or len(routes) < 40:
+        fail(f"the routes found in handler.py look too few ({len(routes)}): has handler_routes lost track of them?")
+    text = read_text(os.path.join(HERE, "checks", "shared_access.py"))  # (read, not imported: it is above this module)
+    elsewhere = ast.literal_eval(re.search(r"^ROLE_CASES_ELSEWHERE = (\{.*\})$", text, re.M).group(1))
+    missing = role_cases_missing(routes, text, elsewhere)
+    if missing:
+        fail(f"routes without a role case in checks/shared_access.py (add one per role that may and may not ask): {missing}")
+    if role_cases_missing({("GET", "/no-such-route"), ("POST", "/me")}, text, {}) != [("GET", "/no-such-route"), ("POST", "/me")]:
+        fail("the role-case guard doesn't notice a route without a role case (or a GET's case taken for a POST's)")
+    with tempfile.TemporaryDirectory(prefix="latex-live-caps-") as root:
+        owner = {"id": "owner", "name": "", "macro": "", "role": "owner", "via": "token"}
+        can = handler.me(fake_server(root, git_name="Owner"), owner)["can"]
+    if set(can) != set(CAPS) or len(CAPS) != len(set(CAPS)):
+        fail(f"CAPS in checks/helpers.py is not what GET me reports: missing {sorted(set(can) - set(CAPS))}, extra"
+             f" {sorted(set(CAPS) - set(can))}")
+    ok(f"every route of the handler ({len(routes)}) has a role case in the shared-mode checks, and CAPS is every"
+       f" capability GET me reports ({len(CAPS)})")
 
 
 def open_request_checks():

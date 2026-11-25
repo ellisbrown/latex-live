@@ -1,6 +1,6 @@
 """The checks of the checkout as it is, before anything runs: the Python compiles without warnings (and with
 Python 3.9, if there is one), the viewer's import map and modules are valid (and parse and link, with Node, if
-there is one: every name a module imports is one its module exports), every element that they look up by id is in viewer.html, and instances starting at once agree on one token."""
+there is one: every name a module imports is one its module exports), every element that they look up by id is in viewer.html, instances starting at once agree on one token, and the docs keep up with the code (docs_checks)."""
 
 import glob
 import json
@@ -100,6 +100,77 @@ def static_checks():
         if len(tokens) != 1 or "" in tokens:
             fail(f"instances starting at once got {len(tokens)} different tokens{' (one empty)' if '' in tokens else ''}")
     ok("instances starting at once agree on one token, never an empty one")
+    docs_checks()
+
+
+def docs_checks():
+    """The docs keep up with the code: CONTRIBUTING.md's maps of latexlive/ and checks/, and the module lists in their
+    __init__, name every module, in an order where each imports only from those before it; every LATEX_LIVE_* setting
+    that the code reads is in the user docs (docs/) or in CONTRIBUTING.md's list of the internal ones, which names
+    nothing the code no longer uses."""
+    problems = []
+    for package, heading in (("latexlive", "### The server (`latexlive/`)"), ("checks", "### The checks (`checks/`)")):
+        problems += module_map_problems(package, heading)
+    problems += settings_problems()
+    contributing = read_text(os.path.join(HERE, "CONTRIBUTING.md"))
+    if not any("LATEX_LIVE_USERS" in p for p in settings_problems(docs="", contributing=contributing)) \
+            or not any("LATEX_LIVE_RUN" in p for p in settings_problems(contributing="")) \
+            or not any("lacks ['hub']" in p for p in module_map_problems("latexlive", "### The server (`latexlive/`)",
+                                                                       contributing.replace("| `hub` |", "| hub |"))):
+        problems.append("the docs' guards miss a setting or a module left out (settings_problems, module_map_problems)")
+    if problems:
+        fail("the docs don't match the code:\n" + "\n".join(problems))
+    ok("CONTRIBUTING.md maps every module of latexlive/ and checks/ (bottom up, as each package's __init__ lists them), and"
+       " every LATEX_LIVE_* setting is documented (docs/, or CONTRIBUTING.md's internal ones)")
+
+
+def module_map_problems(package, heading, contributing=None):
+    """What is wrong with CONTRIBUTING.md's map of package under heading (its first table) and the list in the package's
+    __init__: a module missing, one that isn't there, or one listed after a module that imports it."""
+    text = contributing if contributing is not None else read_text(os.path.join(HERE, "CONTRIBUTING.md"))
+    modules = {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(HERE, package, "*.py"))} - {"__init__"}
+    if heading not in text:
+        return [f"CONTRIBUTING.md has no {heading!r}"]
+    part = text[text.index(heading):]
+    table = part[:part.find("\n\n", part.find("|---"))]
+    order = list(dict.fromkeys(name for name in re.findall(r"`([a-z_]+)`", table) if name in modules))
+    init = re.split(r"from the bottom up[^:]*:", read_text(os.path.join(HERE, package, "__init__.py")), maxsplit=1, flags=re.I)[-1]
+    listed = list(dict.fromkeys(name for name in re.findall(r"\b[a-z_]+\b", init) if name in modules))
+    problems = [f"CONTRIBUTING.md's map of {package}/ lacks {sorted(modules - set(order))}"] if modules - set(order) else []
+    if listed != order:
+        problems.append(f"{package}/__init__.py lists its modules otherwise than CONTRIBUTING.md: {listed}, not {order}")
+    for i, name in enumerate(order):
+        code = read_text(os.path.join(HERE, package, f"{name}.py"))
+        deps = set(re.findall(r"^\s*from \.([a-z_]+)(?:\.[a-z_.]+)? import", code, re.M))
+        deps |= {d.strip() for group in re.findall(r"^\s*from \. import \(?([a-z_, ]+)", code, re.M) for d in group.split(",")}
+        later = sorted(d for d in deps if d in order[i + 1:])
+        if later:
+            problems.append(f"{package}/{name}.py imports {later}, listed after it in CONTRIBUTING.md")
+    return problems
+
+
+# The files whose LATEX_LIVE_* names settings_problems looks up in the docs: what runs latex-live (not the checks).
+SETTINGS_CODE = ["live.py", "latex_report.py", "forward.py", "latexmkrc", "tex-exec", "latexlive/*.py"]
+
+
+def settings_problems(docs=None, contributing=None):
+    """What is wrong with the docs of the LATEX_LIVE_* settings: a name in the code (SETTINGS_CODE), or one that checks/
+    reads from the environment (LATEX_LIVE_CHECK_*), in neither docs/ nor CONTRIBUTING.md's "Settings that only
+    latex-live sets", or one named there that nothing uses."""
+    name_re = re.compile(r"\bLATEX_LIVE_[A-Z0-9_]*[A-Z0-9]\b")
+    used = {n for pattern in SETTINGS_CODE for path in glob.glob(os.path.join(HERE, pattern)) for n in name_re.findall(read_text(path))}
+    used |= {n for path in glob.glob(os.path.join(HERE, "checks", "*.py"))
+             for n in re.findall(r"""environ(?:\.get\(|\[)\s*["'](LATEX_LIVE_CHECK_[A-Z0-9_]+)""", read_text(path))}
+    if docs is None:
+        docs = "".join(read_text(path) for path in glob.glob(os.path.join(HERE, "docs", "*.md")))
+    text = contributing if contributing is not None else read_text(os.path.join(HERE, "CONTRIBUTING.md"))
+    section = text.split("### Settings that only latex-live sets", 1)[-1].split("\n### ", 1)[0] if "### Settings that only" in text else ""
+    internal = set(name_re.findall(section))
+    problems = [f"{name} is in neither docs/ nor CONTRIBUTING.md's internal settings" for name in sorted(used)
+                if name not in docs and name not in internal]
+    problems += [f"CONTRIBUTING.md's internal settings name {name}, which no code uses" for name in sorted(internal - used)]
+    problems += [f"{name} is in CONTRIBUTING.md's internal settings, but docs/ document it for users" for name in sorted(internal & set(name_re.findall(docs)))]
+    return problems
 
 
 def viewer_scripts(page):
