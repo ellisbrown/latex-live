@@ -12,7 +12,6 @@ import json
 import os
 import shutil
 import tempfile
-import threading
 
 from .base import fail, ok
 from .helpers import fake_server, git, git_out, patched, put, read_text
@@ -192,7 +191,6 @@ def restore_checks(repo, root, state):
     committed as its restorer's; never over another file; sources only; a coauthor only from commits HEAD builds on."""
     from latexlive import commits, editor, git as history, sources
     server = fake_server(root, state)
-    server.versions, server.versions_lock, server.last_saves = {}, threading.Lock(), {}
     os.makedirs(os.path.join(state, "added"), exist_ok=True)
     sources.load_added(server)
     owner = {"id": "owner", "name": "Owner Example", "role": "owner", "macro": "", "via": "token"}

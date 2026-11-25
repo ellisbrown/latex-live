@@ -551,7 +551,8 @@ def forward_cache_checks():
 def link_checks():
     """static's link of the viewer's modules (link_modules, with Node) finds what would blank the viewer, each in the
     module that has it: a name imported that its module doesn't export, a module that doesn't parse, an import of no
-    file, a bare name the import map doesn't map; and it follows the import map's names (also a folder's, name/)."""
+    file, a bare name the import map doesn't map, a name re-exported that its module doesn't export; and it follows the
+    import map's names (also a folder's, name/), links a cycle across folders, and runs nothing (a module that throws)."""
     node = shutil.which("node")
     if not node:
         return print("skip: no node, so the check of the viewer's modules' link is not checked itself", flush=True)
@@ -560,17 +561,22 @@ def link_checks():
                            "good.js": 'import { a } from "lib-a";\nimport { b } from "lib/deep/b.js";\nexport const c = a + b;\n',
                            "missing.js": 'import { c } from "./good.js";\nimport { d } from "./lib/a.js";\n',
                            "user.js": 'import "./missing.js";\n', "broken.js": "export const e = ;\n",
-                           "nofile.js": 'import "./gone.js";\n', "unmapped.js": 'import "elsewhere";\n'}.items():
+                           "nofile.js": 'import "./gone.js";\n', "unmapped.js": 'import "elsewhere";\n',
+                           "lib/cycle.js": 'import { a } from "./a.js";\nimport { other } from "../other/cycle.js";\nexport const lib = a;\n',
+                           "other/cycle.js": 'import { lib } from "../lib/cycle.js";\nimport { b } from "./b.js";\nexport const other = b;\n',
+                           "other/b.js": 'export * from "../lib/deep/b.js";\nthrow new Error("run");\n',
+                           "reexport.js": 'export { b, nope } from "./lib/deep/b.js";\n'}.items():
             put(os.path.join(root, name), text)
         found = link_modules(node, root, {"lib-a": "./lib/a.js?v=1", "lib/": "./lib/"},
-                             ["good.js", "user.js", "missing.js", "broken.js", "nofile.js", "unmapped.js"])
+                             ["good.js", "user.js", "missing.js", "broken.js", "nofile.js", "unmapped.js", "other/cycle.js", "reexport.js"])
     want = ["missing.js: The requested module './lib/a.js' does not provide an export named 'd'", "broken.js does not parse",
-            "gone.js is not a file here", "unmapped.js imports elsewhere, which the import map does not map"]
-    if found["modules"] != 7 or len(found["problems"]) != len(want) or not all(
+            "gone.js is not a file here", "unmapped.js imports elsewhere, which the import map does not map",
+            "reexport.js: The requested module './lib/deep/b.js' does not provide an export named 'nope'"]
+    if found["modules"] != 11 or len(found["problems"]) != len(want) or not all(
             any(p.startswith(w) for p in found["problems"]) for w in want):
         fail(f"the link of ES modules (link_modules) found {found}, not each of {want} once")
-    ok("the check of the viewer's modules' link finds a missing export, a syntax error, a missing file and an unmapped"
-       " name, each once, in the module that has it")
+    ok("the check of the viewer's modules' link finds a missing export (also re-exported), a syntax error, a missing file"
+       " and an unmapped name, each once, in the module that has it; it links a cycle, and runs nothing")
 
 
 def forward_script_checks():

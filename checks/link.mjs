@@ -68,7 +68,7 @@ async function link(file, code) {
   }
   if (ok && module.status === "unlinked") {
     try {
-      await module.link((spec) => load(resolve(spec, file)));
+      await module.link((spec, from) => load(resolve(spec, path.resolve(root, from.identifier)))); // (from: a cycle links as one)
     } catch (e) {
       problems.push(`${rel(file)}: ${e.message}`);
       ok = false;

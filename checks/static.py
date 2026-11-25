@@ -163,7 +163,11 @@ def viewer_roots(code, imports):
     roots = [name for name in code if name != "viewer.html"]
     for name, text in code.items():
         for spec in sorted(imported(text)):
-            target = imports.get(spec) if spec in imports else os.path.join(os.path.dirname(name), spec)
+            if spec in bare_imports(text):
+                prefix = max((k for k in imports if k.endswith("/") and spec.startswith(k)), key=len, default=None)
+                target = imports[spec] if spec in imports else prefix and imports[prefix] + spec[len(prefix):]
+            else:
+                target = None if re.match(r"[A-Za-z][A-Za-z0-9+.-]*:|/", spec) else os.path.join(os.path.dirname(name), spec)
             if target:
                 roots.append(os.path.relpath(os.path.normpath(os.path.join(HERE, urllib.parse.urlsplit(target).path)), HERE))
     return list(dict.fromkeys(roots))
