@@ -9,7 +9,6 @@ with LATEX_LIVE_LOOKUPS (config.LOOKUPS): over HTTPS to export.arxiv.org and api
 at most two at once (NET_SLOTS), spaced per host (HOSTS), each under a deadline and read up to NET_READ bytes. What
 they answer goes into BibTeX as plain text only (bib_text): it can't end a field or run a command."""
 
-import bisect
 import collections
 import html
 import json
@@ -24,63 +23,35 @@ import xml.etree.ElementTree as ET
 
 from . import config
 from .commits import paused, updating
-from .editor import BIB_ENTRY_RE, COMPLETIONS_LIMIT, TOO_BIG, editor_text, save_file
-from .latex import brace_group
-from .sources import NOTE_LOCK, SourceChanged, editable_files, file_version, read_editable
+from .editor import COMPLETIONS_LIMIT, TOO_BIG, editor_text, save_file
+from .latex import bib_entries, parsed_file
+from .sources import NOTE_LOCK, SourceChanged, editable_files, file_version, read_editable, read_editable_text
 
-FIELD_RE = re.compile(r"\b([a-zA-Z][a-zA-Z0-9_-]*)\s*=\s*")
 CITE_RE = re.compile(r"\\[a-zA-Z]*cite[a-zA-Z]*\*?(?:\[[^\]]*\]){0,2}\{([^{}]+)\}")
 ARXIV_ID_RE = re.compile(r"(?:(?:https?://)?(?:www\.)?arxiv\.org/(?:abs|pdf|html)/|arXiv:)?"
                          r"(\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[A-Z]{2})?/\d{7}(?:v\d+)?)(?:\.pdf)?", re.I)
 # (a DOI as Crossref recommends matching them, which takes nearly all: nothing that can end a field or begin a command)
 DOI_RE = re.compile(r"(?:(?:https?://)?(?:dx\.)?doi\.org/|doi:\s*)?(10\.\d{4,9}/[-._;()/:A-Z0-9]{1,200})", re.I)
-ENTRY_START_RE = re.compile(r"(?m)^[ \t]*(@)[A-Za-z]+\s*[{(]")  # (where an @string, @comment or @preamble may begin too)
 ADD_LIMIT = 50_000  # (characters of BibTeX added at once)
 
 
 def parse_bib_entries(text, rel=""):
     """[{"key", "entryType", "title", "author", "year", "venue", "doi", "arxiv", "url", "file", "line"}] of the entries
-    in a .bib file's text (not @string, @comment or @preamble): a forgiving reading, each field as written with its
-    braces dropped, cut short."""
-    found = list(BIB_ENTRY_RE.finditer(text))
-    starts = sorted({m.start() for m in found} | {m.start(1) for m in ENTRY_START_RE.finditer(text)} | {len(text)})
-    entries, line, at = [], 1, 0
-    for m in found:
-        if m.group(1).lower() in ("comment", "string", "preamble"):
-            continue
-        line, at = line + text.count("\n", at, m.start()), m.start()
-        fields = bib_fields(text[m.end():starts[bisect.bisect_left(starts, m.end())]])
-        arxiv = fields.get("eprint", "")
-        if not arxiv and (am := ARXIV_ID_RE.search(fields.get("url", ""))) and "arxiv" in fields.get("url", "").lower():
-            arxiv = am.group(1)
-        entries.append({"key": m.group(2), "entryType": m.group(1).lower(), "title": fields.get("title", "")[:240],
-                        "author": fields.get("author", "")[:240], "year": fields.get("year", "")[:16],
-                        "venue": (fields.get("booktitle") or fields.get("journal") or fields.get("publisher") or "")[:160],
-                        "doi": fields.get("doi", "")[:120], "arxiv": arxiv[:40], "url": fields.get("url", "")[:240],
-                        "file": rel, "line": line})
-    return entries
+    in a .bib file's text (bib_entries), each field as written with its braces dropped, cut short."""
+    return [bib_summary(e, rel) for e in bib_entries(text)]
 
 
-def bib_fields(body):
-    """{name in lower case: value, braces dropped and spaces collapsed} of the fields in one entry's body."""
-    fields, i, n = {}, 0, len(body)
-    while (m := FIELD_RE.search(body, i)) and m.end() < n:
-        j = m.end()
-        if body[j] == "{":
-            value, i = brace_group(body, j)
-        elif body[j] == '"':  # (it ends at a quote outside braces)
-            k, depth = j + 1, 0
-            while k < n and (body[k] != '"' or depth > 0):
-                depth += {"{": 1, "}": -1}.get(body[k], 0)
-                k += 1
-            value, i = body[j + 1:k], k + 1
-        else:
-            k = j
-            while k < n and body[k] not in ",}\r\n":
-                k += 1
-            value, i = body[j:k].strip(), k + 1
-        fields.setdefault(m.group(1).lower(), " ".join(value.replace("{", "").replace("}", "").split()))
-    return fields
+def bib_summary(entry, rel):
+    """The Refs panel's view of an entry (bib_entries') of the .bib file rel."""
+    fields = entry["fields"]
+    arxiv = fields.get("eprint", "")
+    if not arxiv and (am := ARXIV_ID_RE.search(fields.get("url", ""))) and "arxiv" in fields.get("url", "").lower():
+        arxiv = am.group(1)
+    return {"key": entry["key"], "entryType": entry["type"], "title": fields.get("title", "")[:240],
+            "author": fields.get("author", "")[:240], "year": fields.get("year", "")[:16],
+            "venue": (fields.get("booktitle") or fields.get("journal") or fields.get("publisher") or "")[:160],
+            "doi": fields.get("doi", "")[:120], "arxiv": arxiv[:40], "url": fields.get("url", "")[:240],
+            "file": rel, "line": entry["line"]}
 
 
 def balanced(text):
@@ -93,25 +64,21 @@ def balanced(text):
     return depth == 0
 
 
-def bib_sources(server, cache={}):
+def bib_sources(server):
     """{rel: (kind, found)} for the paper's .bib files (kind "bib", found its entries: parse_bib_entries) and .tex
-    files (kind "tex", found [(key, line)] of their citations outside comments), each read again only once it changed."""
+    files (kind "tex", found [(key, line)] of their citations outside comments), each read again only once it changed
+    (parsed_file, as the editor's completions read them)."""
     out = {}
     for rel, real in editable_files(server).items():
         if not rel.endswith((".bib", ".tex")):
             continue
         try:
-            st = os.stat(real)
-            entry = cache.get(real)
-            if not entry or entry[0] != (st.st_mtime_ns, st.st_size, rel):
-                text = read_editable(real).decode("utf-8", errors="replace")
-                entry = cache[real] = ((st.st_mtime_ns, st.st_size, rel),
-                                       parse_bib_entries(text, rel) if rel.endswith(".bib") else citations(text))
+            if rel.endswith(".bib"):
+                out[rel] = ("bib", [bib_summary(e, rel) for e in parsed_file(real, bib_entries, read_editable_text)])
+            else:
+                out[rel] = ("tex", parsed_file(real, citations, read_editable_text))
         except (OSError, SourceChanged):
             continue
-        out[rel] = ("bib" if rel.endswith(".bib") else "tex", entry[1])
-    if len(cache) > 256:
-        cache.clear()
     return out
 
 

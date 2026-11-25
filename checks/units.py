@@ -917,19 +917,30 @@ def completion_checks():
     """What the source pane completes (editor.label_lines, bib_completions): labels outside comments with their lines
     and the line around them, and a .bib file's keys with their titles, braced or quoted, and lines, without @string
     and the like; 15,000 entries in well under a second."""
-    from latexlive import editor
+    from latexlive import editor, latex
     labels, around = editor.label_lines("a\n% \\label{gone}\n\\label{one} % \\label{two}\n\\caption{A plot.}\n\\label{three}\n", True)
-    keys = editor.bib_completions('@string{x="y"}\n@misc{a, title = "Quoted {T}itle", year=1}\n@book{ b ,\n author={Z}}\n'
-                                  '@article(c, title={A {Nested} Title},\n)\n')
+    keys = editor.bib_completions(latex.bib_entries('@string{x="y"}\n@misc{a, title = "Quoted {T}itle", year=1}\n@book{ b ,\n'
+                                                    ' author={Z}}\n@article(c, title={A {Nested} Title},\n)\n'))
     if (labels != [("one", 3), ("three", 5)] or around != {"one": "\\label{one}", "three": "\\caption{A plot.}"}
             or keys != [{"key": "a", "title": "Quoted Title", "line": 2}, {"key": "b", "title": "", "line": 3},
                         {"key": "c", "title": "A Nested Title", "line": 5}]):
         fail(f"the source pane's completions: labels {labels} {around}, keys {keys}")
     big = "".join(f"@article{{key{i},\n  title={{Title {i}}},\n  year={{2020}}\n}}\n" for i in range(15000))
     began = time.monotonic()
-    if len(editor.bib_completions(big)) != 15000 or time.monotonic() - began > 1:
+    if len(editor.bib_completions(latex.bib_entries(big))) != 15000 or time.monotonic() - began > 1:
         fail(f"a .bib file of 15,000 entries took {time.monotonic() - began:.1f} s to read for completion")
-    ok("the source pane completes labels outside comments and a .bib file's keys with their titles, quickly")
+    with tempfile.TemporaryDirectory(prefix="latex-live-bib-check-") as root:  # (the same reading, for SyncTeX and the checks)
+        put(os.path.join(root, "refs", "refs.bib"), "@string{s = {x}}\n@misc{\n  first,\n title={One}}\n@book{second, title={Two}}\n")
+        put(os.path.join(root, "b.bib"), "@misc{other, title={Other}}\n")
+        if latex.find_bib_entry(root, "second") != (os.path.join("refs", "refs.bib"), 5) or latex.find_bib_entry(root, "first") != (
+                os.path.join("refs", "refs.bib"), 2) or latex.find_bib_entry(root, "s") or latex.find_bib_entry(root, "nothing"):
+            fail(f"find_bib_entry: {latex.find_bib_entry(root, 'second')} {latex.find_bib_entry(root, 'first')}")
+        time.sleep(0.01)
+        put(os.path.join(root, "b.bib"), "@misc{other, title={Other}}\n@misc{later, title={Later}}\n")
+        if latex.find_bib_entry(root, "later") != ("b.bib", 2):
+            fail("find_bib_entry did not read a changed .bib file again")
+    ok("the source pane completes labels outside comments and a .bib file's keys with their titles, quickly; SyncTeX"
+       " finds an entry with the same reading")
 
 
 def assets_checks():
