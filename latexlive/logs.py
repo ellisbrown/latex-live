@@ -67,12 +67,13 @@ def parse_log(text, paper_root):
                 seen.add(("e", path, error[2], msg))
                 errors.append({"severity": "error", "kind": "error", "file": path, "line": int(error[2]), "msg": msg})
             continue
-        if box:
+        if box:  # (counted apart from the other warnings: boxes)
             skipping = True
             if boxes < MAX_DIAG:
-                boxes += 1
+                before = len(warnings)
                 add_warning(warnings, seen, "info" if box[1] == "Underfull" else "warning", box[1].lower(), current(),
                             int(box[4]), redact(f"{box[1]} \\{box[2]} ({box[3]})"))
+                boxes += len(warnings) - before
             continue
         if warning:
             parts = [f"{warning[1]}: {warning[2].strip()}"]
@@ -81,7 +82,7 @@ def parse_log(text, paper_root):
                 end += 1
             parts += [later.split(")", 1)[1].strip() for later in lines[i:end]]
             i = end
-            if len(warnings) < MAX_DIAG:
+            if len(warnings) - boxes < MAX_DIAG:
                 msg = redact(" ".join(parts[:6]))
                 at = INPUT_LINE_RE.search(msg)
                 add_warning(warnings, seen, "warning", "warning", current(), int(at[1]) if at else None, msg)
