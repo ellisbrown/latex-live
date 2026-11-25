@@ -26,7 +26,7 @@ follow [shared-mode.md](shared-mode.md).
 
 ```bash
 python3 --version             # 3.9 or newer; standard library only
-latexmk -v | sed -n 2p         # latexmk and perl on the host
+latexmk -v | head -2          # latexmk and perl on the host
 pdftotext -v 2>&1 | head -1    # poppler-utils: pdftotext, pdfinfo, pdffonts, pdfimages
 podman --version               # Linux: rootless podman runs the TeX tools
 pdflatex --version | head -1   # macOS: TeX on the host instead
@@ -45,7 +45,7 @@ git --version
 
 ```bash
 git clone https://github.com/ellisbrown/latex-live ~/.local/share/latex-live
-podman pull docker.io/minidocks/texlive:2024-full    # Linux: about 4.6 GB, once
+podman pull docker.io/minidocks/texlive:2024-full    # Linux, once: a 4.6 GB download, about 8 GB on disk
 ```
 
 The path `~/.local/share/latex-live` matches the task file in step 4. Any
@@ -96,6 +96,10 @@ curl -s "http://127.0.0.1:$PORT/status/<doc>.pdf?t=$TOKEN" | python3 -m json.too
 
 Then stop it with Ctrl+C, or `kill` the `live.py` process if you started it in
 the background.
+
+The build goes into `build/`, and the PDF to `<doc>.pdf` beside the source.
+Keep both out of git, e.g. `printf 'build/\n<doc>.pdf\n' >> .git/info/exclude`
+(or add them to the paper's `.gitignore`).
 
 ## 4. Add the VS Code tasks
 
@@ -250,7 +254,8 @@ page. To stay on a release, check out its tag, e.g.
   comparing) count only from the viewer's own page under one of those names,
   so another site can't make your browser act. Forward a port to the same port
   number on your laptop (as the settings in step 5 do); for another one, add
-  it, e.g. `LATEX_LIVE_ALLOWED_HOSTS=localhost:8100`.
+  it, e.g. `LATEX_LIVE_ALLOWED_HOSTS=localhost:8100`. The pages run only
+  latex-live's own scripts, and only VS Code's Simple Browser may frame them.
 - **The state folder** is `~/.config/latex-live` (`$XDG_CONFIG_HOME/latex-live`
   if that is set, or `$LATEX_LIVE_STATE`). It holds the token, the `port` file,
   the hub's lock and the list of running instances, shared by every checkout of
@@ -259,7 +264,7 @@ page. To stay on a release, check out its tag, e.g.
 ## Options
 
 ```
-live.py [doc | PATH] [--port N] [--page-limit N] [--build-dir DIR] [--no-build] [--no-open] [--host-tex] [--replace]
+live.py [doc | PATH] [--port N] [--page-limit N] [--build-dir DIR] [--no-build] [--no-open] [--host-tex] [--replace] [--version]
 ```
 
 - **`doc`:** a root `.tex` file, with or without the extension. Without one,
@@ -267,9 +272,9 @@ live.py [doc | PATH] [--port N] [--page-limit N] [--build-dir DIR] [--no-build] 
   last one it built. Given a path instead, e.g. the editor's current file, it
   runs in that file's paper and builds the file if it is a root one.
 - **`--page-limit N`:** the main-text page limit for the page badge. Without
-  it, the limit comes from the venue style: ICLR, NeurIPS and COLM 9 pages;
-  ICML, CVPR, ICCV, WACV and ACL (long papers) 8; AAAI 7; ECCV 14. Pass it for
-  other venues and for a camera-ready extra page.
+  it, the limit comes from the venue style
+  ([the venues](viewer.md#page-limit-and-space)). Pass it for other venues and
+  for a camera-ready extra page.
 - **`--replace`:** one instance runs per document. Another one for the same
   document prints the running viewer's URL and exits; `--replace` stops the
   running one and takes over. An instance that no longer answers is replaced
@@ -286,7 +291,10 @@ live.py [doc | PATH] [--port N] [--page-limit N] [--build-dir DIR] [--no-build] 
 ## Environment variables
 
 Set these in the VS Code task's `options.env` (step 4). Those for shared mode
-are in [shared-mode.md](shared-mode.md#settings).
+are in [shared-mode.md](shared-mode.md#settings). An on/off setting takes `1`
+or `0`; another value is taken as its default, with a warning (a shared
+instance refuses to start with one in `LATEX_LIVE_COMMIT` or
+`LATEX_LIVE_LOOKUPS`).
 
 - `LATEX_LIVE_ANON_TERMS`: a regular expression of affiliations and other
   terms that identify the authors, for the anonymity check, e.g.
@@ -399,4 +407,4 @@ missing.
 | Every `localhost:44100/p/...` viewer hangs | The preview serving the hub is paused (Ctrl+Z in its terminal: run `fg` there) or stuck. Starting a preview of another document (or with `--replace`) replaces a stuck one after about 10 s. |
 | `no free port in 44101-44110` | Too many previews: stop old ones (`pgrep -af latex-live/live.py`). |
 | Viewer shows an old PDF with a red banner | The last build failed and the previous PDF was kept. Click the error to open it. |
-| `=== latex-live: not using the warm standby for this pass: ...` (or `no warm standby ...`) | Nothing to fix: that pass ran normally, as without the standby, and the line says why. Typical reasons are a change to the preamble or to a file it reads (the standby is then rebuilt and checked) and a new file in the paper. Set `LATEX_LIVE_STANDBY=0` to turn the standby off. |
+| `=== latex-live: this pass ran without the warm standby: ...` (or `no warm standby ...`) | Nothing to fix: that pass ran normally, as without the standby, and the line says why. Typical reasons are a change to the preamble or to a file it reads (the standby is then rebuilt and checked) and a new file in the paper, such as the first build's `<doc>.pdf`. Set `LATEX_LIVE_STANDBY=0` to turn the standby off. |

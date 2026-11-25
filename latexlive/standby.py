@@ -926,7 +926,7 @@ def before_release(p, sb, record):
         return "the date has changed since it started"
     name = new_name(sb.keeper["snapshot"], p.out, p.job)
     if name:
-        return f"{name} appeared after it started"
+        return f"{name} appeared after the standby started"
     for path, st in record["inputs"] if record else []:
         if stamp(path) != st or changed_since(st, t0):
             return f"its preamble's {path} changed"
@@ -1123,7 +1123,7 @@ def take(p, records, key, sb, lines, line):
             records.last("standby")
             return code
     sb.stop()
-    records.say_once(f"doubt:{key}:{why}", f"not using the warm standby for this pass: {why}")
+    records.say_once(f"doubt:{key}:{why}", f"this pass ran without the warm standby: {why}")
     records.last("normal", why)
     return None
 

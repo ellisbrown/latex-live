@@ -123,7 +123,12 @@ notes runs again after it, and the view updates a little later.
 ## Notes
 
 Notes are the paper's note macros: one-argument commands that go through
-`\todotxt`, such as `\newcommand{\ch}[1]{\todotxt{[CH: #1]}}`.
+`\todotxt`, which the paper defines too, e.g. in its preamble:
+
+```latex
+\newcommand{\todotxt}[1]{\textcolor{red}{#1}}   % (with xcolor)
+\newcommand{\ch}[1]{\todotxt{[CH: #1]}}
+```
 
 - **Notes-free view.** Notes: off (the default) shows the notes-free build, the
   paper as submitted, with each note in a margin bubble wired to a caret where
@@ -304,7 +309,8 @@ Where the tabs don't fit with their names, they show their icons alone.
   file renames, moves or goes from the buttons on its row. Nothing is ever
   written over a file that is there, a rename keeps a source a source and a
   figure a figure, and the main file stays. Names hold letters, digits, `-`,
-  `_`, `+` and dots, at most four folders deep.
+  `_`, `+` and dots (but `-`, `+` and `.` can't start one), at most four
+  folders deep.
 - **History** (editors): the commits that changed the paper's folder, newest
   first, under the changes not committed yet (dot files and the build folder
   left out). Click one to see the files it changed and what changed in each.
