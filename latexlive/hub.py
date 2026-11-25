@@ -21,7 +21,7 @@ import urllib.request
 from . import config
 from .auth import load_token
 from .instances import instances, is_live_instance, stop_instance
-from .web import BaseHandler, DualStackServer, POST_LIMIT, POST_LIMITS, content_length, taken_port_advice
+from .web import BaseHandler, DualStackServer, POST_LIMIT, POST_LIMITS, content_length, frame_policy, taken_port_advice
 
 
 def papers_page(server, host):
@@ -153,6 +153,7 @@ class HubHandler(BaseHandler):
         else:
             return self.send_json(502, {"error": f"no preview of {doc}.tex in {id_} answers"})
         self.send_response(resp.status)
+        self.csp_override = frame_policy()  # (the preview's own policy comes with its answer: the hub's adds no other)
         for key, value in resp.getheaders():
             if key.lower() in ("set-cookie", "connection", "transfer-encoding", "server", "date"):
                 continue

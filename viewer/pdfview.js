@@ -3,7 +3,6 @@
 
 import * as pdfjsLib from "../pdfjs/build/pdf.min.mjs";
 import { $, file, hubBase } from "./page.js";
-import { me } from "./role.js";
 
 globalThis.pdfjsLib = pdfjsLib; // pdf_viewer.mjs reads the library from the global
 export { pdfjsLib }; // (and so do the modules that open or render PDFs of their own)
@@ -90,7 +89,7 @@ export const assets = {
   cMapUrl: new URL("pdfjs/cmaps/", location.href).href,
   cMapPacked: true,
   standardFontDataUrl: new URL("pdfjs/standard_fonts/", location.href).href,
-  get isEvalSupported() { return !me.shared; }, // (in shared mode, no code compiled from a PDF that coauthors' TeX made)
+  isEvalSupported: false, // (no code compiled from a PDF: the page's policy allows none, live.py's web.page_policy)
 };
 // Where things are on a page. The server and PDF.js measure a page as the PDF stores it, before its /Rotate: the
 // server in points from its top-left (SyncTeX's frame), PDF.js in its user space (y up). A page with a /Rotate, such

@@ -3,8 +3,10 @@ GET me per role (identity_checks); every endpoint per role (and who has the pape
 tab: history_checks), non-owners pinned to the document, the Origin rules for POSTs, POST body limits, the viewer's
 security headers, and SyncTeX as JSON (role_checks). Extend role_checks with each new endpoint."""
 
+import base64
 import concurrent.futures
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -243,13 +245,23 @@ def role_checks(sh):
         expect(via_proxy(uid, "/check/main.pdf"), 403, f"GET check for {sh['users'][uid]['role']} {uid}")
     expect(via_proxy("ed", "/check/main.pdf"), 200, "GET check for the editor")
     page = via_proxy("vw", "/viewer.html?file=main.pdf")
+    import_map = re.search(rb'<script type="importmap">(.*?)</script>', page[2], re.S).group(1)
+    hashed = f"'sha256-{base64.b64encode(hashlib.sha256(import_map).digest()).decode()}'"
     for name, want in (("X-Content-Type-Options", "nosniff"), ("X-Frame-Options", "DENY"), ("Referrer-Policy", "no-referrer"),
-                       ("Content-Security-Policy", "frame-ancestors 'none'")):
+                       ("Content-Security-Policy", "frame-ancestors 'none'"),
+                       ("Content-Security-Policy", f"script-src 'self' 'wasm-unsafe-eval' {hashed};"),
+                       ("Content-Security-Policy", "object-src 'none'"), ("Content-Security-Policy", "base-uri 'none'")):
         if want not in (header(page, name) or ""):
             fail(f"the shared viewer's page is sent without {name}: {want} (it has {header(page, name)!r})")
+    if page[2] != read_bytes(os.path.join(HERE, "viewer.html")) or re.search(rb"<[^>]*\son[a-z]+\s*=", page[2]):
+        fail("the shared viewer's page is not viewer.html as it is, or has an inline event handler, which its policy refuses")
+    for path in ("/pdf/main.pdf", "/status/main.pdf", "/nope"):
+        policy = header(via_proxy("vw", path), "Content-Security-Policy") or ""
+        if "frame-ancestors 'none'" not in policy or "unsafe-inline" in policy or ("script-src" in policy) == (path == "/pdf/main.pdf"):
+            fail(f"GET {path} in shared mode has the policy {policy!r} (a PDF only frame-ancestors: Chrome's viewer of it is a plugin)")
     ok("a viewer reads everything about the shared document but the checks (editors only); the viewer's and the editor's"
-       " modules are served, nothing else; /favicon.ico is answered; the viewer's page can't be framed or sniffed, and sends no"
-       " referrer")
+       " modules are served, nothing else; /favicon.ico is answered; the viewer's page can't be framed or sniffed, sends no"
+       " referrer, and runs only the server's own scripts and its import map (by its hash), a PDF framed by no one")
 
     for path in ("/status/appendix.pdf", "/notes/appendix.pdf", "/outline/appendix.pdf", "/authors/appendix.pdf", "/graphics/appendix.pdf",
                  "/margin/appendix.pdf", "/floats/appendix.pdf", "/check/appendix.pdf", "/pdf/reviews.pdf", "/pdf/appendix.pdf",

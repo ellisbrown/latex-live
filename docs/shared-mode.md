@@ -403,7 +403,8 @@ instance treats the paper and everything TeX writes as theirs.
 
 - **This machine only.** It drops connections from other machines without
   answering, and serves exactly `--port`, never the hub of your own previews.
-  Its pages can't be framed by another site.
+  Its pages can't be framed by another site, and run only latex-live's own
+  scripts.
 - **Requests at once.** A connection must send its request line and headers
   within 10 seconds. Each coauthor may have 32 requests in progress at once
   (the viewer's own files aside), and 2 of those that may start a program

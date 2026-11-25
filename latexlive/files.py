@@ -89,6 +89,7 @@ def build_folder(paper_root, rel, fresh=False):
     parts = [part for part in os.path.normpath(rel).split(os.sep) if part]
     if not parts or any(part in (".", "..") for part in parts):
         raise ValueError(f"not a folder in the build folder: {rel}")
+    os.makedirs(base, exist_ok=True)  # (the build folder itself is the owner's: in shared mode, the containers' mount)
     fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY)
     try:
         for i, part in enumerate(parts):

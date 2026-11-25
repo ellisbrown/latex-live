@@ -36,7 +36,7 @@ from .review import start_review
 from .roles import READ_PATHS, STATIC_DIRS, allowed, at_least, least_role, shared_pdfs, viewer_status
 from .shared_build import shared_rebuild_request
 from .status import presence, presence_request, status
-from .web import BaseHandler, POST_LIMIT, POST_LIMITS, content_length, json_query
+from .web import BaseHandler, POST_LIMIT, POST_LIMITS, content_length, json_query, page_policy
 
 
 def me(server, user):
@@ -267,10 +267,27 @@ class Handler(BaseHandler):
         elif path == "/favicon.ico":  # (no icon; nothing to refuse either: browsers ask on every page)
             self.send_response(204)
             self.end_headers()
+        elif path == "/viewer.html":
+            self.send_viewer()
         elif static_file(path):
             super().do_GET()
         else:
             self.send_error(404)
+
+    def send_viewer(self):
+        """The viewer's page, read from the checkout for each request (a change shows on reload), with the policy that
+        lets its inline import map run (page_policy: its hash, from the very bytes sent)."""
+        try:
+            with open(os.path.join(config.HERE, "viewer.html"), "rb") as f:
+                body = f.read()
+        except OSError:
+            return self.send_error(404)
+        self.send_response(200)
+        self.csp_override = page_policy(body)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()  # (with Cache-Control: no-cache, as for the viewer's modules)
+        self.write_body(body)
 
     def do_POST(self):
         """Actions (POST /note, /file, the Files tab's /file/create, /file/upload, /file/rename and /file/delete, the History
