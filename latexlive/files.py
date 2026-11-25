@@ -182,8 +182,8 @@ def child_aux(folder, name):
 # paper's own files through in_paper. (sources builds the editor's and the Files tab's checks on these: paper_file,
 # new_path, own_file, changed_path; git the History tab's: shown_path.)
 def within(path, folder):
-    """Whether path is below folder (not folder itself): both absolute, and alike, normalized or with links resolved
-    (os.path.realpath), as the caller has them."""
+    """Whether path is below folder (not folder itself): both absolute (or both relative to the same folder, but never
+    "."), and alike, normalized or with links resolved (os.path.realpath), as the caller has them."""
     return path != folder and path.startswith(os.path.join(folder, ""))
 
 

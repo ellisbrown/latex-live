@@ -15,7 +15,7 @@ import time
 from . import config
 from .commits import charge, commit_others, paused, remember_write, source_budget, updating
 from .git import run_git
-from .latex import bib_entries, parsed_file
+from .latex import bib_entries, parsed_file, unbraced
 from .sources import (
     ASSET_SIZE, EDITABLE_SIZE, NOTE_LOCK, SourceChanged, asset_real, cached_version, doc_assets, doc_figures, editable_files,
     editable_real, file_version, project_assets, read_editable, read_editable_text, write_source, wrote)
@@ -108,7 +108,7 @@ def label_lines(text, with_context=False):
 
 def bib_completions(entries):
     """[{"key", "title", "line"}] of a .bib file's entries (latex.bib_entries'), the title at most 120 characters."""
-    return [{"key": e["key"], "title": e["fields"].get("title", "")[:120], "line": e["line"]} for e in entries]
+    return [{"key": e["key"], "title": unbraced(e["fields"].get("title", ""))[:120], "line": e["line"]} for e in entries]
 
 
 def editor_text(raw):

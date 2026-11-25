@@ -237,7 +237,7 @@ class Handler(BaseHandler):
             self.send_json(200, completions(self.server, self.principal))
         elif path == "/search":
             self.send_json(*search_request(self.server, query))
-        elif path in ("/bib/index", "/papers/index"):  # (/papers/index: its name before 0.4.33)
+        elif path in ("/bib/index", "/papers/index"):  # (/papers/index: its name before 0.4.34)
             self.send_json(200, bib_index(self.server))
         elif path == "/bib/verify":
             self.send_json(200, verify_status(self.server))
