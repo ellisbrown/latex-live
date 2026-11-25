@@ -18,7 +18,10 @@ describes what it does and indexes the user docs in [docs/](docs/):
   run only some of its parts: `python3 check.py units`, say (the parts are
   modules of `checks/`). GitHub runs its `static` and `units` parts on every
   push and pull request (`.github/workflows/check.yml`); they need neither TeX
-  nor podman, so they don't replace the full run.
+  nor podman, so they don't replace the full run. With Playwright
+  (`pip install playwright`, then `playwright install chromium`, or
+  `LATEX_LIVE_CHECK_CHROMIUM` set to a Chromium), `preview` also checks the
+  viewer in headless Chromium; without it, it says so and skips that.
 - Merge with a rebase (`gh pr merge <n> --rebase`), which keeps the history
   linear. Then delete the branch, after checking that no open pull request is
   based on it.
@@ -94,7 +97,7 @@ then shows "restart to update".
   with each new endpoint.
 - **Test on scratch papers** in a temporary directory, as `check.py` does.
   Never edit a real paper's sources, and never commit a build of one.
-  The shared-mode checks run in a thread of their own, beside the others
+  The shared-mode checks run in threads of their own, beside the others
   (`checks/shared.py`), and so do the warm standbys' and the early
   notes-free pass's: give each side its own instances, and wait for a
   condition (`wait_for`) rather than for a fixed time where you can. A new

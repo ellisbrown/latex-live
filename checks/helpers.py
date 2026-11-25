@@ -1,7 +1,10 @@
 """What the checks share: files written as an editor would (put), read and git; starting and stopping instances of
-live.py and requests to them through the hub; stand-ins for TeX and the editor; whether podman has the TeX Live
-image; and finding a point in the PDF that SyncTeX maps back to a source line."""
+live.py and requests to them through the hub; stand-ins for an instance (fake_server), TeX and the editor, and
+patching a module for a while (patched); whether podman has the TeX Live image; and finding a point in the PDF that
+SyncTeX maps back to a source line."""
 
+import collections
+import contextlib
 import http.client
 import json
 import os
@@ -12,6 +15,8 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
+import types
 import urllib.parse
 
 from .base import ENV, HERE, LOGS, PORT, START_LOCK, TOKEN, fail, hub
@@ -33,6 +38,37 @@ def put_bytes(path, data):
     with open(path + ".check-new", "wb") as f:
         f.write(data)
     os.replace(path + ".check-new", path)
+
+
+def fake_server(root, state=None, **overrides):
+    """A stand-in for an instance on the paper in root (main.make_server's), for checks of the server's parts
+    without one: what the requests read and keep, as an instance has them before any request (the document, empty
+    caches and records, their locks, no autocommit), its records in the state folder state if given (the Files
+    tab's added files, the pending writes), and overrides."""
+    files = {"added_file": os.path.join(state, "added", "paper-test-main.json"),
+             "pending_file": os.path.join(state, "pending.json")} if state else {}
+    return types.SimpleNamespace(**{
+        "paper_root": root, "paper_id": "paper-test", "default_pdf": "main.pdf", "tex_exec": "", "editable": None,
+        "assets": None, "added": set(), "uploads": {}, "autocommit": False, "pending": {}, "write_seq": 0,
+        "pending_lock": threading.Lock(), "versions": collections.OrderedDict(), "versions_lock": threading.Lock(),
+        "last_saves": collections.OrderedDict(), "last_writer": {}, "export": {}, "exported": {}, "review": {},
+        "export_lock": threading.Lock(), "review_lock": threading.Lock(), "download_lock": threading.Lock(), "results": {},
+        "results_lock": threading.Lock(), "presence": {}, "presence_lock": threading.Lock(), "bib_verify": {},
+        "bib_lock": threading.Lock(), **files, **overrides})
+
+
+@contextlib.contextmanager
+def patched(target, **values):
+    """Set target's attributes (a module's functions or settings, say) to values for the with block, and back
+    after it, however it ends. Each must exist already, so a misspelt one fails rather than patches nothing."""
+    saved = {name: getattr(target, name) for name in values}
+    for name, value in values.items():
+        setattr(target, name, value)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(target, name, value)
 
 
 def tex_stand_in(tmp):

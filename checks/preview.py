@@ -1,6 +1,6 @@
 """The instance checks (live_checks): a live.py instance on the scratch paper, behind the hub, with the threads that
 run beside it (the warm standbys, the early notes-free pass, shared mode); the hub, the endpoints, SyncTeX, the
-baselines, a rebuild, the downloads (review_checks, arxiv_checks), the owner's own preview (owner_checks), switching documents
+baselines, the viewer in a browser (browser_checks, if Playwright is there), a rebuild, the downloads (review_checks, arxiv_checks), the owner's own preview (owner_checks), switching documents
 (switch_checks), a second document, a second instance, --replace, and instances and hubs that no longer answer."""
 
 import base64
@@ -24,6 +24,7 @@ from latexlive.navigation import source_words  # (check.py puts the checkout on 
 
 from .access import BRIDGE, EXTRA, access_checks
 from .base import ENV, HERE, PORT, TOKEN, _quiet, fail, hub, in_thread, ok, wait_for
+from .browser import browser_checks
 from .clean_standby import clean_standby_run
 from .early import early_run
 from .helpers import (
@@ -91,7 +92,7 @@ def live_checks(tmp):
         if request(f"{hub['base']}main/status/main.pdf", cookie=token)[0] != 200:
             fail("the hub refuses its cookie")
         ok("the hub needs the token (or its cookie)")
-        shared = shared_checks(sh, sharing, own, token) if sh else None  # (beside the rest, which doesn't touch its instance)
+        shared = shared_checks(sh, sharing, own, token) if sh else []  # (beside the rest, which doesn't touch their instances)
         wrong = http.client.HTTPConnection("127.0.0.1", own, timeout=10)  # (as from a hub that looked up a stale port)
         wrong.request("GET", "/docs", headers={"Cookie": f"latex_live={token}", "X-Latex-Live-Paper": "other-000000"})
         if wrong.getresponse().status != 421:
@@ -197,6 +198,7 @@ def live_checks(tmp):
         if clean != head_clean:
             fail("the notes-free HEAD baseline's line numbers differ from the live notes-free build's")
         ok("the notes-free baseline's line numbers match the live notes-free build's")
+        browser_checks(f"http://127.0.0.1:{PORT}{hub['base']}main/?t={token}")  # (after the checks that the page's requests would disturb)
         before = get("/status/main.pdf", token)
         status, _, data = request(f"{hub['base']}main/rebuild", method="POST", body={}, cookie=token)
         if status != 202:
@@ -324,11 +326,7 @@ def live_checks(tmp):
         # (another instance may have taken the hub while the new one still starts: an instance stopped before it has
         # started latexmk exits without removing itself from the list, so let it build first)
         wait_for("extra.pdf through the hub", lambda: _quiet(lambda: get("/status/extra.pdf", token, "extra")["version"]))
-        if shared:
-            shared.join()
-            if shared.failed:
-                sys.exit(1)
-        for thread in (standby, early, clean_standby, landscape):
+        for thread in (*shared, standby, early, clean_standby, landscape):
             thread.join()
             if thread.failed:
                 sys.exit(1)

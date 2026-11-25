@@ -5,8 +5,8 @@ does).
    map is valid JSON, comes before its module code, and maps every bare module name that the viewer
    (viewer/) and the vendored editor (codemirror/) import to a file here, and every module that the
    viewer imports by path is a file here; every element that the viewer's modules look up by id ($)
-   is in viewer.html; the viewer's modules parse (with Node, if there is one); instances starting at
-   once agree on one token, never an empty one.
+   is in viewer.html; the viewer's modules parse and link (with Node, if there is one: every name a module
+   imports, the module it names exports); instances starting at once agree on one token, never an empty one.
    The review copy's layout keeps notes in order, apart, and on their pages, and continues the ones
    that don't fit after the paper; its matching tells apart two authors' notes with the same text.
    In shared mode, the downloads built on request say plainly that the TeX Live image is missing, the
@@ -52,7 +52,7 @@ does).
 2. A scratch paper in a temporary directory (two columns, lineno line numbers, inline notes, a git
    repository with a pushed commit and a local one) gets a live.py instance, with the hub on port
    44180, or below the ports that outgoing connections take where 44180 is among them (Linux: 28180), or the first
-   free block of 24 ports above (LATEX_LIVE_CHECK_PORT sets it), state of its own
+   free block of 25 ports above (LATEX_LIVE_CHECK_PORT sets it), state of its own
    (not the user's) and none of the user's LATEX_LIVE_* settings (but a LATEX_LIVE_HOST and
    LATEX_LIVE_ALLOWED_HOSTS of its own):
    - the build publishes main.pdf, and the notes-free pass main-clean.pdf;
@@ -60,6 +60,8 @@ does).
      endpoint (POST /rebuild, the build's log, which says how long the build took, POST /presence, which a
      GET of /status never does, and the History tab's); the hub and the previews refuse HEAD and bad or oversized POST
      bodies; SyncTeX finds a source line; /instances lists the instance;
+   - in headless Chromium (with Playwright, if it is there), the viewer loads the PDF and opens every sidebar tab, the
+     palette and the source pane without a page or console error;
    - /me reports the owner with every capability; the viewer's and the editor's modules and the
      viewer's style are served (as JavaScript, and CSS), the viewer's revalidated; SyncTeX answers
      as JSON without opening the editor, while POST /open and plain /synctex still open it (a
@@ -190,11 +192,11 @@ does).
 Exits non-zero on the first failure.
 
 Its modules, from the bottom up (each imports only from those below it): base (where the checks run, and how they
-report: ok, fail, wait_for, in_thread), helpers (files, git, instances and requests to them, stand-ins, the TeX Live
-image), papers (the scratch paper), access (who reaches the owner's preview: hosts, origins, sessions), static (the
-checkout as it is), shared_units, bib_units, files_units, history_units and units (the server's parts without an instance), standby, early, clean_standby
+report: ok, fail, wait_for, in_thread), helpers (files, git, instances and requests to them, stand-ins, patched, the TeX
+Live image), papers (the scratch paper), access (who reaches the owner's preview: hosts, origins, sessions), browser
+(the viewer in headless Chromium, if Playwright is there), static (the checkout as it is), shared_units, bib_units, files_units, history_units and units (the server's parts without an instance), standby, early, clean_standby
 and landscape (the threads beside the instance checks: the warm standby, the early notes-free pass and its warm
 standby, turned pages), shared_helpers, shared_setup, shared_access, shared_sessions, shared_sandbox, shared_downloads,
-shared_notes, shared_editor, shared_rebuild, shared_commits, shared_files and shared (shared mode, the other thread), preview (the
+shared_notes, shared_editor, shared_rebuild, shared_commits, shared_files and shared (shared mode, two threads of its own), preview (the
 instance checks, which start the threads), and main.
 """

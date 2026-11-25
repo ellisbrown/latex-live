@@ -1,7 +1,7 @@
 """What shared mode's checks share: requests to the shared instance's own port (send), as the trusted proxy
 forwards them for a user (via_proxy) or with a token's cookie (with_token), and what their answers must be
 (expect); the shared copy's status and whether its build has settled; notes, saves and their auto-commits as
-each user; the users file; and the containers that tex-exec labelled for an instance."""
+each user; the users file; the containers that tex-exec labelled for an instance; and what an instance printed."""
 
 import http.client
 import json
@@ -10,7 +10,7 @@ import re
 import subprocess
 import time
 
-from .base import SECRETS, SHARED_PORT, _quiet, fail, wait_for
+from .base import SECRETS, SHARED_PORT, _quiet, fail, prints_token, wait_for
 from .helpers import git_out, mtime_ns
 
 
@@ -78,10 +78,10 @@ def via_proxy(user, path, method="GET", body=None, origin=PUBLIC, headers=()):
     return result
 
 
-def with_token(token, path, method="GET", body=None, host=None, origin=None):
+def with_token(token, path, method="GET", body=None, host=None, origin=None, port=SHARED_PORT):
     """A request with a token's cookie, on a loopback Host (127.0.0.1:port) unless host says otherwise."""
     sent = ([("Host", host)] if host else []) + [("Cookie", f"latex_live={token}")] + ([("Origin", origin)] if origin else [])
-    return send(method, path, sent, body)
+    return send(method, path, sent, body, port=port)
 
 
 def expect(result, status, what):
@@ -116,7 +116,7 @@ def as_editor(path):
 
 def shared_status(sh):
     """The shared document's status, as its owner gets it (GET status), or {} while there is no answer."""
-    r = send("GET", "/status/main.pdf", [("Cookie", f"latex_live={sh['token']}")], quiet=True)
+    r = send("GET", "/status/main.pdf", [("Cookie", f"latex_live={sh['token']}")], port=sh.get("port", SHARED_PORT), quiet=True)
     return _quiet(lambda: json.loads(r[2])) or {} if r and r[0] == 200 else {}
 
 
@@ -206,3 +206,14 @@ def labelled_containers(every=False):
                         '{{.ID}} {{index .Labels "latex-live.instance"}} {{index .Labels "latex-live.kind"}}'],
                        capture_output=True, text=True, timeout=60)
     return [f for f in (line.split() for line in r.stdout.splitlines()) if len(f) == 3]
+
+
+def quiet_log(path, what):
+    """Check an instance's output, once it has stopped: no token (its log may be kept, and read by others), and
+    no traceback (an error the server did not expect)."""
+    with open(path, errors="replace") as f:
+        printed = f.read()
+    if prints_token(printed):
+        fail(f"{what} printed a token")
+    if "Traceback (most recent call last)" in printed:
+        fail(f"{what} printed a traceback:\n{printed[printed.index('Traceback (most recent call last)'):][:2000]}")

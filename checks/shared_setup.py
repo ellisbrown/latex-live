@@ -1,7 +1,7 @@
 """Shared mode's setup and start: the copy of the scratch paper that it serves (make_shared_paper) and the users
 of its users file; the checks that need no instance (tex-exec's confinement, the refusals: --host-tex, the default
-state folder, the identity header without LATEX_LIVE_PROXY_UID); the instance (shared_setup); and the checks of
-its build and start (shared_start_checks)."""
+state folder, the identity header without LATEX_LIVE_PROXY_UID); the instance (shared_setup), and a second one for
+the rebuild checks (rebuild_setup); and the checks of its build and start (shared_start_checks)."""
 
 import ipaddress
 import os
@@ -12,7 +12,7 @@ import socket
 import subprocess
 import sys
 
-from .base import ENV, HERE, SECRETS, SHARED_PORT, fail, ok, prints_token, wait_for
+from .base import ENV, HERE, REBUILD_PORT, SECRETS, SHARED_PORT, fail, ok, prints_token, wait_for
 from .helpers import agent_example, editor_stub, git, git_out, make_state, put, read_json_file, start, stop, texlive_image, write_text
 from .shared_helpers import (
     PROXY_HOST, PUBLIC, commit_user, expect, expect_dict, recorded, send, shared_status, with_token, write_users)
@@ -96,15 +96,34 @@ def shared_setup(tmp, sharing):
     sh["proc"] = start(sh["root"], env=sh["env"], port=SHARED_PORT)
     sharing.append(sh["proc"])
     sh["log"] = sh["proc"].log
+    sh["rebuild"] = rebuild_setup(sh, sharing)
     return sh
 
 
-def make_shared_paper(tmp, state):
-    """The copy of the scratch paper that shared mode serves: a clone of its remote on branch "shared", with
+def rebuild_setup(sh, sharing):
+    """A second shared-mode instance, as the first but on a copy, a users file and a state folder of its own and
+    REBUILD_PORT, for the rebuild checks (rebuild_run), which take long: they run in a thread of their own, beside the
+    other shared-mode checks. It builds from the start, beside the first; sharing holds it, to be stopped. Returns
+    what those checks need, as shared_setup does."""
+    tmp, state = sh["tmp"], os.path.join(sh["tmp"], "rebuild-state")
+    rb = {"tmp": tmp, "state": state, "token": make_state(state), "users": sh["users"], "users_file": os.path.join(tmp, "rebuild-users.json"),
+          "host_tex_log": sh["host_tex_log"], "port": REBUILD_PORT}
+    SECRETS.append(rb["token"])
+    rb["root"] = make_shared_paper(tmp, state, "shared-rebuild")
+    rb["env"] = {**sh["env"], "LATEX_LIVE_STATE": state, "LATEX_LIVE_USERS": rb["users_file"]}
+    write_users(rb)
+    rb["proc"] = start(rb["root"], env=rb["env"], port=REBUILD_PORT)
+    sharing.append(rb["proc"])
+    rb["log"] = rb["proc"].log
+    return rb
+
+
+def make_shared_paper(tmp, state, name="shared"):
+    """The copy of the scratch paper that shared mode serves (tmp/name): a clone of its remote on branch "shared", with
     the files that the editor checks need (committed there), a branch that HEAD does not build on ("side"),
     git settings and hooks that the server's commits must override, files that the server must never list,
     serve, write or commit, latexmkrc files that latexmk must not read, and a change only the test makes."""
-    root = os.path.join(tmp, "shared")
+    root = os.path.join(tmp, name)
     subprocess.run(["git", "clone", "-q", "-b", "main", os.path.join(tmp, "remote.git"), root], check=True, capture_output=True)
     git(root, "checkout", "-q", "-b", "side")
     write_text(root, "side.tex", "A commit that the shared branch does not build on.\n")

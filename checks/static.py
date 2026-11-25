@@ -1,6 +1,6 @@
 """The checks of the checkout as it is, before anything runs: the Python compiles without warnings (and with
-Python 3.9, if there is one), the viewer's import map and modules are valid (and parse, with Node, if there is
-one), every element that they look up by id is in viewer.html, and instances starting at once agree on one token."""
+Python 3.9, if there is one), the viewer's import map and modules are valid (and parse and link, with Node, if
+there is one: every name a module imports is one its module exports), every element that they look up by id is in viewer.html, and instances starting at once agree on one token."""
 
 import glob
 import json
@@ -13,7 +13,7 @@ import tempfile
 import urllib.parse
 
 from .base import ENV, HERE, fail, ok
-from .helpers import put, read_text
+from .helpers import read_text
 
 
 IMPORT_RES = (re.compile(r"""^\s*(?:import|export)\s[^;'"]*?\bfrom\s*["']([^"']+)["']""", re.M),
@@ -36,24 +36,31 @@ def python_files():
             *sorted(os.path.relpath(p, HERE) for p in glob.glob(os.path.join(HERE, "checks", "*.py")))]
 
 
+# Compiles each file given (by path) and prints what doesn't compile, for one Python process to check them all.
+COMPILE = ("import sys\n"
+           "for path in sys.argv[1:]:\n"
+           "    try:\n"
+           "        with open(path, 'rb') as f:\n"  # (bytes: compile honours an encoding declaration, whatever the locale)
+           "            compile(f.read(), path, 'exec')\n"
+           "    except (SyntaxError, ValueError, Warning) as e:\n"
+           "        print(f'{path}: {type(e).__name__}: {e}')\n")
+
+
 def static_checks():
-    for name in python_files():
-        r = subprocess.run([sys.executable, "-W", "error", "-m", "py_compile", os.path.join(HERE, name)],
-                           capture_output=True, text=True)
-        if r.returncode:
-            fail(f"{name} does not compile:\n{r.stderr}")
+    paths = python_files()
+    r = subprocess.run([sys.executable, "-W", "error", "-c", COMPILE, *paths], cwd=HERE, capture_output=True, text=True)
+    if r.returncode or r.stdout:
+        fail(f"the Python does not compile:\n{r.stdout}{r.stderr}")
     ok("the Python compiles")
     oldest = shutil.which("python3.9")  # (the oldest supported, as macOS ships)
-    for name in python_files() if oldest else ():
-        r = subprocess.run([oldest, "-c", "import sys; compile(open(sys.argv[1]).read(), sys.argv[1], 'exec')",
-                            os.path.join(HERE, name)], capture_output=True, text=True)
-        if r.returncode:
-            fail(f"{name} does not compile with Python 3.9:\n{r.stderr}")
     if oldest:
+        r = subprocess.run([oldest, "-c", COMPILE, *paths], cwd=HERE, capture_output=True, text=True)
+        if r.returncode or r.stdout:
+            fail(f"the Python does not compile with Python 3.9:\n{r.stdout}{r.stderr}")
         ok("it compiles with Python 3.9 too")
     with open(os.path.join(HERE, "viewer.html")) as f:
         page = f.read()
-    code = viewer_scripts(page)
+    code, imports = viewer_scripts(page)
     ids = set(re.findall(r'\bid="([^"]+)"', page))
     missing = sorted({f"{name}: {m.group(1)}" for name, text in code.items() for m in re.finditer(r'\$\("([^"]+)"\)', text)
                       if m.group(1) not in ids})
@@ -62,16 +69,12 @@ def static_checks():
     ok(f"every element that the viewer's modules look up by id is in viewer.html ({len(ids)} ids)")
     node = shutil.which("node")
     if not node:
-        print("skip: no node, so whether the viewer's script parses is not checked", flush=True)
+        print("skip: no node, so whether the viewer's modules parse and link is not checked", flush=True)
     else:
-        with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
-            for name, text in code.items():  # (each as a .mjs file: Node parses it as a module then)
-                path = os.path.join(tmp, name.replace("/", "-") + ".mjs")
-                put(path, text)
-                r = subprocess.run([node, "--check", path], capture_output=True, text=True)
-                if r.returncode:
-                    fail(f"the viewer's {name} does not parse:\n{r.stderr}")
-        ok(f"the viewer's script parses ({len(code)} module{'s' if len(code) > 1 else ''})")
+        linked = link_modules(node, HERE, imports, viewer_roots(code, imports), code.get("viewer.html"))
+        if linked["problems"]:
+            fail("the viewer's modules do not parse or link (the viewer would stay blank):\n" + "\n".join(linked["problems"]))
+        ok(f"the viewer's modules parse and link ({len(code)} of the viewer's, {linked['modules']} with the editor's and PDF.js's)")
     pdf_viewer = read_text(os.path.join(HERE, "pdfjs", "web", "pdf_viewer.mjs"))
     missing = [s for s in PAGE_SWAP if s not in pdf_viewer]
     if missing:
@@ -140,7 +143,7 @@ def viewer_scripts(page):
                 fail(f"the viewer's {name} imports {spec}, not a file here given relative to it")
     ok(f"the viewer's import map maps every module that the viewer and its editor import ({len(imports)} names); the"
        " viewer's own imports are files here")
-    return code
+    return code, imports
 
 
 def imported(code):
@@ -151,3 +154,28 @@ def imported(code):
 def bare_imports(code):
     """The bare module names (not ./, ../ or / paths, nor URLs) that JavaScript code imports."""
     return {n for n in imported(code) if not n.startswith((".", "/")) and not re.match(r"[A-Za-z][A-Za-z0-9+.-]*:", n)}
+
+
+def viewer_roots(code, imports):
+    """The modules to link from (paths relative to the checkout): the viewer's own, and every module that they
+    import, by path or by a name in the import map, statically or with import("..."), which linking alone would
+    not reach (as the browser editor's modules, which the viewer loads on demand)."""
+    roots = [name for name in code if name != "viewer.html"]
+    for name, text in code.items():
+        for spec in sorted(imported(text)):
+            target = imports.get(spec) if spec in imports else os.path.join(os.path.dirname(name), spec)
+            if target:
+                roots.append(os.path.relpath(os.path.normpath(os.path.join(HERE, urllib.parse.urlsplit(target).path)), HERE))
+    return list(dict.fromkeys(roots))
+
+
+def link_modules(node, root, imports, roots, inline=None):
+    """{modules, problems} from linking ES modules under root with Node (link.mjs), without running them: what
+    doesn't parse, an import of no file, a name imported that its module doesn't export."""
+    r = subprocess.run([node, "--experimental-vm-modules", "--no-warnings", os.path.join(HERE, "checks", "link.mjs")],
+                       input=json.dumps({"root": root, "imports": imports, "roots": roots, "inline": inline}), capture_output=True,
+                       text=True, timeout=120)
+    try:
+        return json.loads(r.stdout)
+    except ValueError:
+        fail(f"node could not link the viewer's modules (exit {r.returncode}):\n{r.stdout}{r.stderr}")

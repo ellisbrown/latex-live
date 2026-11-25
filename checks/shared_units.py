@@ -6,16 +6,13 @@ import gzip
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
-import types
 
 from .base import HERE, fail, ok
-from .helpers import git, put, read_text, tex_stand_in
+from .helpers import fake_server, git, git_out, patched, put, read_text, tex_stand_in
 
 
 def confinement_checks():
@@ -27,15 +24,12 @@ def confinement_checks():
     probe leave out symbolic links; a failure names no folder of the server's (the paper's, latex-live's), nor the
     command line of a TeX run that took too long. Outside shared mode, links count as before, and so do failures."""
     from latexlive import config, export, review
-    saved, tmp = (config.SHARED, export.image_pulled, review.image_pulled), tempfile.mkdtemp(prefix="latex-live-check-")
-    try:
-        config.SHARED, export.image_pulled, review.image_pulled = True, lambda: False, lambda: False
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp, patched(config, SHARED=True), \
+            patched(export, image_pulled=lambda: False), patched(review, image_pulled=lambda: False):
         root = os.path.join(tmp, "paper")
         build = os.path.join(root, config.BUILD)
         os.makedirs(build)
-        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", tex_exec="false", export={}, review={},
-                                       exported={}, export_lock=threading.Lock(), review_lock=threading.Lock(),
-                                       download_lock=threading.Lock())
+        server = fake_server(root, tex_exec="false")
         try:
             export.exact_export(server, "main.pdf")
             fail("with the TeX Live image missing, the export in shared mode went ahead")
@@ -99,9 +93,6 @@ def confinement_checks():
         if (sorted(os.listdir(os.path.join(out, "inputs"))) != ["main-export.aux", "main-export.bbl"]
                 or "in a file outside the paper" not in found):
             fail("outside shared mode, the review copy no longer follows links as it did")
-    finally:
-        config.SHARED, export.image_pulled, review.image_pulled = saved
-        shutil.rmtree(tmp, ignore_errors=True)
     ok("in shared mode, the downloads built on request say plainly that the TeX Live image is missing, the review copy"
        " reads the last good build's own files (no dot files) and keeps no links for its probe, and failures name no"
        " folder of the server's")
@@ -117,73 +108,67 @@ def build_link_checks():
     from latexlive import baselines, config, export, files
     sys.path.insert(0, HERE)
     import latex_report
-    saved = (config.SHARED, export.image_pulled, export.run_tool, baselines.image_pulled, baselines.run_tool)
-    tmp, cwd = tempfile.mkdtemp(prefix="latex-live-check-"), os.getcwd()
-    try:
-        config.SHARED = True
-        secret = os.path.join(tmp, "secret.txt")
-        put(secret, "THE OWNER'S SECRET\n! an error line from it\n")
-        root = os.path.join(tmp, "paper")
-        build = os.path.join(root, config.BUILD)
-        os.makedirs(build)
-        put(os.path.join(root, "main.tex"), "\\documentclass{article}\\begin{document}x\\end{document}\n")
-        put(os.path.join(root, "main.pdf"), "%PDF-1.5\n")
-        git(root, "init", "-q")
-        git(root, "add", "main.tex")
-        git(root, "commit", "-q", "-m", "one")
-        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
-        for name in ("main-live.aux", "main-live.bbl", "main-live.fls", "main-live.log", "x.log"):
-            os.symlink(secret, os.path.join(build, name))
-        os.chdir(root)
-        leaks = []
-
-        def leaked(what, path):
-            try:
-                with open(path, errors="replace") as f:
-                    if "SECRET" in f.read():
-                        leaks.append(what)
-            except OSError:
-                pass
-
-        if "SECRET" in (files.read_output(root, os.path.join(build, "x.log")) or ""):
-            leaks.append("read_output")
-        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", tex_exec="", export={}, review={}, exported={},
-                                       export_lock=threading.Lock(), review_lock=threading.Lock(),
-                                       download_lock=threading.Lock(), diff={}, bases={"head": {"pdf": "main.pdf"}})
-        export.image_pulled = baselines.image_pulled = lambda: True
-        export.run_tool = lambda *args, **kwargs: (1, "")  # (a TeX run that fails: after the head start)
+    latexdiff = lambda argv, cwd, **kwargs: (0, "\\documentclass{article}\\begin{document}y\\end{document}\n" if "latexdiff" in argv else "")
+    cwd = os.getcwd()
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp, patched(config, SHARED=True), \
+            patched(export, image_pulled=lambda: True, run_tool=lambda *args, **kwargs: (1, "")), \
+            patched(baselines, image_pulled=lambda: True, run_tool=latexdiff):  # (export: a TeX run that fails, after the head start)
         try:
-            export.exact_export(server, "main.pdf")
-        except RuntimeError:
-            pass
-        leaked("the export's head start", os.path.join(build, "export", "main", "main-export.aux"))
-        baselines.run_tool = lambda argv, cwd, **kwargs: (0, "\\documentclass{article}\\begin{document}y\\end{document}\n"
-                                                          if "latexdiff" in argv else "")
-        baselines.build_diff(server, sha)
-        leaked("the diff's copy", os.path.join(build, "diff", "main-diff.aux"))
-        baselines.build_base(server, "head", sha, "main.pdf")
-        leaked("the baseline's copy", os.path.join(build, "head", "main", "main-head.aux"))
-        latex_report.keep_inputs("main-live")
-        leaked("the recorder file kept", os.path.join(build, "main-live.fls.done"))
-        latex_report.seed_notes_free("main-live", "main", os.path.join(build, "clean-1"))
-        leaked("the notes-free pass's seed", os.path.join(build, "clean-1", "main-clean.aux"))
-        status = latex_report.run_report("main-live", "fail", [])[1]
-        if "SECRET" in json.dumps(status) or "an error line" in json.dumps(status):
-            leaks.append("the build's log, read for its errors")
-        target = os.path.join(tmp, "owners.txt")
-        put(target, "kept\n")
-        os.symlink(target, os.path.join(build, "planted.pdf"))
-        put(os.path.join(build, "real.pdf"), "%PDF copied\n")
-        if (files.copy_output(os.path.join(build, "main-live.aux"), os.path.join(build, "copy.aux"))
-                or not files.copy_output(os.path.join(build, "real.pdf"), os.path.join(build, "planted.pdf"))
-                or read_text(target) != "kept\n" or os.path.islink(os.path.join(build, "planted.pdf"))):
-            leaks.append("copy_output (from a link, or written through one)")
-        if leaks:
-            fail(f"in shared mode, the host followed a link in build/ to a file elsewhere: {', '.join(leaks)}")
-    finally:
-        os.chdir(cwd)
-        config.SHARED, export.image_pulled, export.run_tool, baselines.image_pulled, baselines.run_tool = saved
-        shutil.rmtree(tmp, ignore_errors=True)
+            secret = os.path.join(tmp, "secret.txt")
+            put(secret, "THE OWNER'S SECRET\n! an error line from it\n")
+            root = os.path.join(tmp, "paper")
+            build = os.path.join(root, config.BUILD)
+            os.makedirs(build)
+            put(os.path.join(root, "main.tex"), "\\documentclass{article}\\begin{document}x\\end{document}\n")
+            put(os.path.join(root, "main.pdf"), "%PDF-1.5\n")
+            git(root, "init", "-q")
+            git(root, "add", "main.tex")
+            git(root, "commit", "-q", "-m", "one")
+            sha = git_out(root, "rev-parse", "HEAD")
+            for name in ("main-live.aux", "main-live.bbl", "main-live.fls", "main-live.log", "x.log"):
+                os.symlink(secret, os.path.join(build, name))
+            os.chdir(root)
+            leaks = []
+
+            def leaked(what, path):
+                try:
+                    with open(path, errors="replace") as f:
+                        if "SECRET" in f.read():
+                            leaks.append(what)
+                except OSError:
+                    pass
+
+            if "SECRET" in (files.read_output(root, os.path.join(build, "x.log")) or ""):
+                leaks.append("read_output")
+            server = fake_server(root, diff={}, bases={"head": {"pdf": "main.pdf"}})
+            try:
+                export.exact_export(server, "main.pdf")
+            except RuntimeError:
+                pass
+            leaked("the export's head start", os.path.join(build, "export", "main", "main-export.aux"))
+            baselines.build_diff(server, sha)
+            leaked("the diff's copy", os.path.join(build, "diff", "main-diff.aux"))
+            baselines.build_base(server, "head", sha, "main.pdf")
+            leaked("the baseline's copy", os.path.join(build, "head", "main", "main-head.aux"))
+            latex_report.keep_inputs("main-live")
+            leaked("the recorder file kept", os.path.join(build, "main-live.fls.done"))
+            latex_report.seed_notes_free("main-live", "main", os.path.join(build, "clean-1"))
+            leaked("the notes-free pass's seed", os.path.join(build, "clean-1", "main-clean.aux"))
+            status = latex_report.run_report("main-live", "fail", [])[1]
+            if "SECRET" in json.dumps(status) or "an error line" in json.dumps(status):
+                leaks.append("the build's log, read for its errors")
+            target = os.path.join(tmp, "owners.txt")
+            put(target, "kept\n")
+            os.symlink(target, os.path.join(build, "planted.pdf"))
+            put(os.path.join(build, "real.pdf"), "%PDF copied\n")
+            if (files.copy_output(os.path.join(build, "main-live.aux"), os.path.join(build, "copy.aux"))
+                    or not files.copy_output(os.path.join(build, "real.pdf"), os.path.join(build, "planted.pdf"))
+                    or read_text(target) != "kept\n" or os.path.islink(os.path.join(build, "planted.pdf"))):
+                leaks.append("copy_output (from a link, or written through one)")
+            if leaks:
+                fail(f"in shared mode, the host followed a link in build/ to a file elsewhere: {', '.join(leaks)}")
+        finally:
+            os.chdir(cwd)
     ok("in shared mode, the host's reads and copies of the build's files (the downloads, the diff, the baselines, the kept"
        " recorder file, the notes-free pass's seed, the build's log) follow no link, and no copy is written through one")
 
@@ -198,7 +183,7 @@ def shared_build_checks():
     if code != shared_build.LAYOUT_TEX:
         fail(f"shared_build.LAYOUT_TEX is not latexmkrc's $pre_tex_code:\n{shared_build.LAYOUT_TEX}\n{code}")
     with tempfile.TemporaryDirectory(prefix="latex-live-check-") as root:
-        server = types.SimpleNamespace(paper_root=root)
+        server = fake_server(root)
         bcf = '<bcf:datasource type="file" datatype="bibtex" glob="false">refs.bib</bcf:datasource>'
         put(os.path.join(root, "refs.bib"), "@misc{a}\n")
         before = shared_build.biber_state(server, bcf)
@@ -231,71 +216,67 @@ def shared_parsing_checks():
     .aux and .bcf name, at any depth and even before they exist, are what bibtex's and biber's states depend on and
     what the builder watches."""
     from latexlive import config, document, files, shared_build, shared_watch, synctex
-    saved = (config.SHARED, config.SYNCTEX_LIMIT, config.RECORD_LIMIT)
-    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
     cwd = os.getcwd()
-    try:
-        config.SHARED = True
-        root = os.path.join(tmp, "paper")
-        build = os.path.join(root, config.BUILD)
-        os.makedirs(build)
-        os.chdir(root)
-        secret = os.path.join(tmp, "other.aux")
-        put(secret, "\\citation{secretkey}\n\\@writefile{toc}{\\contentsline {section}{\\numberline {1}Secret heading}{1}}\n")
-        os.symlink(secret, os.path.join(build, "link.aux"))
-        put(os.path.join(build, "main-live.aux"), f"\\relax\n\\@input{{{secret}}}\n\\@input{{../../other.aux}}\n\\@input{{link.aux}}\n"
-            "\\@input{chapter.aux}\n")
-        put(os.path.join(build, "chapter.aux"), "\\citation{chapterkey}\n")
-        tree = files.aux_tree(read_text(os.path.join(build, "main-live.aux")))
-        heads = document.written_contents(os.path.join(build, "main-live.aux"), "toc")
-        if "secretkey" in tree or "chapterkey" not in tree or "Secret heading" in json.dumps(heads):
-            fail(f"an .aux's \\@input of an absolute path, of .. or through a link was read: {tree!r} {heads!r}")
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp, patched(config, SHARED=True):
+        try:
+            root = os.path.join(tmp, "paper")
+            build = os.path.join(root, config.BUILD)
+            os.makedirs(build)
+            os.chdir(root)
+            secret = os.path.join(tmp, "other.aux")
+            put(secret, "\\citation{secretkey}\n\\@writefile{toc}{\\contentsline {section}{\\numberline {1}Secret heading}{1}}\n")
+            os.symlink(secret, os.path.join(build, "link.aux"))
+            put(os.path.join(build, "main-live.aux"), f"\\relax\n\\@input{{{secret}}}\n\\@input{{../../other.aux}}\n\\@input{{link.aux}}\n"
+                "\\@input{chapter.aux}\n")
+            put(os.path.join(build, "chapter.aux"), "\\citation{chapterkey}\n")
+            tree = files.aux_tree(read_text(os.path.join(build, "main-live.aux")))
+            heads = document.written_contents(os.path.join(build, "main-live.aux"), "toc")
+            if "secretkey" in tree or "chapterkey" not in tree or "Secret heading" in json.dumps(heads):
+                fail(f"an .aux's \\@input of an absolute path, of .. or through a link was read: {tree!r} {heads!r}")
 
-        put(os.path.join(build, "big.json"), "[" + "1," * (1 << 20) + "1]")
-        began = time.monotonic()
-        if files.read_json(os.path.join(build, "big.json")) is not None or time.monotonic() - began > 2:
-            fail("a JSON file past config.JSON_LIMIT was parsed")
-        config.RECORD_LIMIT = 1000
-        put(os.path.join(build, "main-live.fls"), "INPUT main.tex\n" * 5000)
-        if len(files.fls_inputs(os.path.join(build, "main-live.fls"))) != 1000:
-            fail("a recorder file was read past config.RECORD_LIMIT lines")
-        config.RECORD_LIMIT, config.SYNCTEX_LIMIT = 2_000_000, 1 << 20
-        synctex_gz = os.path.join(build, "main-live.synctex.gz")
-        head = "SyncTeX Version:1\nInput:1:/paper/main.tex\nContent:\n{x\n{1\n[1,7:4736286,4736286:30000000,40000000,0\n"
-        for body in ("h1,7:4736286,9000000:100000\n" * 400_000, "x" * (20 << 20), "h1,seven:a,b:c\n" * 10):
-            with gzip.open(synctex_gz, "wt") as f:  # (a bomb: a few KB compressed)
-                f.write(head + body)
+            put(os.path.join(build, "big.json"), "[" + "1," * (1 << 20) + "1]")
             began = time.monotonic()
-            try:
-                points = synctex.synctex_points(synctex_gz)
-                synctex.synctex_boxes(synctex_gz)
-            except Exception as e:
-                fail(f"a SyncTeX file the paper's TeX could write raised {type(e).__name__}: {e}")
-            if time.monotonic() - began > 10 or sum(len(v) for v in points.values()) > 1 << 20:
-                fail("a SyncTeX file was read past config.SYNCTEX_LIMIT")
-        put(synctex_gz, "not gzip at all")
-        if synctex.synctex_points(synctex_gz) or list(synctex.synctex_records(synctex_gz)):
-            fail("a SyncTeX file that isn't gzip gave records")
+            if files.read_json(os.path.join(build, "big.json")) is not None or time.monotonic() - began > 2:
+                fail("a JSON file past config.JSON_LIMIT was parsed")
+            put(os.path.join(build, "main-live.fls"), "INPUT main.tex\n" * 5000)
+            with patched(config, RECORD_LIMIT=1000):
+                if len(files.fls_inputs(os.path.join(build, "main-live.fls"))) != 1000:
+                    fail("a recorder file was read past config.RECORD_LIMIT lines")
+            synctex_gz = os.path.join(build, "main-live.synctex.gz")
+            head = "SyncTeX Version:1\nInput:1:/paper/main.tex\nContent:\n{x\n{1\n[1,7:4736286,4736286:30000000,40000000,0\n"
+            for body in ("h1,7:4736286,9000000:100000\n" * 400_000, "x" * (20 << 20), "h1,seven:a,b:c\n" * 10):
+                with gzip.open(synctex_gz, "wt") as f:  # (a bomb: a few KB compressed)
+                    f.write(head + body)
+                began = time.monotonic()
+                try:
+                    with patched(config, RECORD_LIMIT=2_000_000, SYNCTEX_LIMIT=1 << 20):
+                        points = synctex.synctex_points(synctex_gz)
+                        synctex.synctex_boxes(synctex_gz)
+                except Exception as e:
+                    fail(f"a SyncTeX file the paper's TeX could write raised {type(e).__name__}: {e}")
+                if time.monotonic() - began > 10 or sum(len(v) for v in points.values()) > 1 << 20:
+                    fail("a SyncTeX file was read past config.SYNCTEX_LIMIT")
+            put(synctex_gz, "not gzip at all")
+            if synctex.synctex_points(synctex_gz) or list(synctex.synctex_records(synctex_gz)):
+                fail("a SyncTeX file that isn't gzip gave records")
 
-        server = types.SimpleNamespace(paper_root=root)
-        for name in ("deep/er/refs.bib", "styles/local.bst"):
-            put(os.path.join(root, name), "% x\n")
-        auxes = "\\bibdata{deep/er/refs,later/refs,../outside,/etc/passwd}\n\\bibstyle{styles/local}\n"
-        deps = sorted(os.path.relpath(p, os.path.realpath(root)) for p in shared_watch.shared_deps(server, auxes, ""))
-        if deps != ["deep/er/refs.bib", "later/refs.bib", "styles/local.bst"]:
-            fail(f"the bibliographies and styles an .aux names, for the builder to watch: {deps}")
-        before = shared_build.bib_state(server, auxes)
-        put(os.path.join(root, "styles/local.bst"), "% changed\n")
-        if shared_build.bib_state(server, auxes) == before:
-            fail("shared mode's builder would not run bibtex again after a change to the .bst the .aux names")
-        before = shared_build.bib_state(server, auxes)
-        put(os.path.join(root, "later/refs.bib"), "@misc{x}\n")
-        if shared_build.bib_state(server, auxes) == before:
-            fail("shared mode's builder would not run bibtex again once a .bib the .aux names appears")
-    finally:
-        os.chdir(cwd)
-        config.SHARED, config.SYNCTEX_LIMIT, config.RECORD_LIMIT = saved
-        shutil.rmtree(tmp, ignore_errors=True)
+            server = fake_server(root)
+            for name in ("deep/er/refs.bib", "styles/local.bst"):
+                put(os.path.join(root, name), "% x\n")
+            auxes = "\\bibdata{deep/er/refs,later/refs,../outside,/etc/passwd}\n\\bibstyle{styles/local}\n"
+            deps = sorted(os.path.relpath(p, os.path.realpath(root)) for p in shared_watch.shared_deps(server, auxes, ""))
+            if deps != ["deep/er/refs.bib", "later/refs.bib", "styles/local.bst"]:
+                fail(f"the bibliographies and styles an .aux names, for the builder to watch: {deps}")
+            before = shared_build.bib_state(server, auxes)
+            put(os.path.join(root, "styles/local.bst"), "% changed\n")
+            if shared_build.bib_state(server, auxes) == before:
+                fail("shared mode's builder would not run bibtex again after a change to the .bst the .aux names")
+            before = shared_build.bib_state(server, auxes)
+            put(os.path.join(root, "later/refs.bib"), "@misc{x}\n")
+            if shared_build.bib_state(server, auxes) == before:
+                fail("shared mode's builder would not run bibtex again once a .bib the .aux names appears")
+        finally:
+            os.chdir(cwd)
     ok("the host reads no .aux outside build/ (absolute, .., links), and JSON, recorder and SyncTeX files only within"
        " bounds; bibtex's state and the builder's watch cover the .bib and .bst files an .aux names, at any depth, even"
        " before they exist")
@@ -306,29 +287,22 @@ def baseline_failure_checks():
     (failure, as the downloads do): an error that names a file in full names it relative to the paper; outside shared
     mode, the owner's own preview still names it in full."""
     from latexlive import baselines, config
-    saved, tmp = (config.SHARED, baselines.run_tool, baselines.image_pulled), tempfile.mkdtemp(prefix="latex-live-check-")
-    try:
+    def run_tool(*args, **kwargs):
+        raise OSError(2, "No such file or directory", missing)
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp, patched(baselines, run_tool=run_tool, image_pulled=lambda: True):
         root = os.path.join(tmp, "paper")
         put(os.path.join(root, "main.tex"), "\\documentclass{article}\\begin{document}x\\end{document}\n")
-        for args in (["init", "-q"], ["add", "-A"], ["-c", "user.name=check", "-c", "user.email=check@example.com", "commit", "-qm", "x"]):
-            subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
-        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
+        for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "x"]):
+            git(root, *args)
+        sha = git_out(root, "rev-parse", "HEAD")
         missing = os.path.join(root, config.BUILD, "diff", "gone.tex")
-
-        def run_tool(*args, **kwargs):
-            raise OSError(2, "No such file or directory", missing)
-        baselines.run_tool, baselines.image_pulled = run_tool, lambda: True
         said = {}
         for shared in (True, False):
-            config.SHARED = shared
-            server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", tex_exec="", diff={"rev": "HEAD"},
-                                           bases={"head": {"pdf": "main.pdf"}})
-            baselines.build_diff(server, sha)
-            baselines.build_base(server, "head", sha, "main.pdf")
+            server = fake_server(root, diff={"rev": "HEAD"}, bases={"head": {"pdf": "main.pdf"}})
+            with patched(config, SHARED=shared):
+                baselines.build_diff(server, sha)
+                baselines.build_base(server, "head", sha, "main.pdf")
             said[shared] = (server.diff.get("msg", ""), server.bases["head"].get("msg", ""))
-    finally:
-        config.SHARED, baselines.run_tool, baselines.image_pulled = saved
-        shutil.rmtree(tmp, ignore_errors=True)
     if any(root in msg or tmp in msg or "diff/gone.tex" not in msg for msg in said[True]):
         fail(f"in shared mode, a failed diff or baseline names the server's folders, or not the file: {said[True]}")
     if not all(root in msg for msg in said[False]):
