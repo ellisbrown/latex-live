@@ -135,9 +135,9 @@ def on_main_thread(server, job):
     return result["status"], result["body"]
 
 
-def request_switch(server, query):
-    """/switch?doc=NAME: build another root document instead (switch_doc)."""
-    doc = query.get("doc", [""])[0]
+def request_switch(server, doc):
+    """POST /switch {doc}: build another root document instead (switch_doc)."""
+    doc = doc if isinstance(doc, str) else ""
     if doc not in root_docs(server.paper_root):
         return 404, {"error": f"{doc}.tex is not a root document here"}
     return on_main_thread(server, lambda server: switch_doc(server, doc))

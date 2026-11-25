@@ -13,8 +13,8 @@ def least_role(method, path):
     Downloading the paper without its notes (export) or with its notes in the margin (review) is
     reading it: each builds at most once per build of the document (start_export,
     start_review), and the baselines that change highlights compare with (editors) once per commit
-    (base_status); each starts only with a POST, whose Origin says it comes from the viewer's own page
-    (a GET of the downloads is answered 405, so that an old viewer says why). Anyone signed in may sign
+    (base_status); each starts only with a POST, whose Origin says it comes from the viewer's own page.
+    Anyone signed in may sign
     out (logout). The checks quote the sources' comments and the text in their false branches, the build's log
     quotes the sources, and the baselines show earlier versions of the text, which only editors see (shared_pdfs,
     viewer_status). The bibliography is the editors' too (bib): it adds to the .bib files and, with
@@ -31,7 +31,7 @@ def least_role(method, path):
         return "viewer"
     if method == "GET":
         return {"/": "viewer", "/me": "viewer", "/docs": "viewer", "/forward": "viewer", "/synctex": "viewer",
-                "/viewer.html": "viewer", "/favicon.ico": "viewer", "/export": "viewer", "/review": "viewer", "/commits": "editor",
+                "/viewer.html": "viewer", "/favicon.ico": "viewer", "/commits": "editor",
                 "/files": "editor", "/file": "editor", "/completions": "editor", "/search": "editor",
                 "/bib/index": "editor", "/papers/index": "editor", "/bib/verify": "editor", "/asset": "editor", "/history": "editor",
                 "/history/diff": "editor"}.get(path, "owner")

@@ -30,7 +30,6 @@ DEFAULT_STATE = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expand
 STATE = os.path.abspath(os.environ.get("LATEX_LIVE_STATE") or DEFAULT_STATE)
 TOKEN_FILE = os.path.join(STATE, "token")
 INSTANCES = os.path.join(STATE, "instances")
-OLD_INSTANCES = os.path.join(HERE, "instances")  # (where instances of 0.1.0 list themselves)
 HUB_LOCK, HUB_FILE = os.path.join(STATE, "hub.lock"), os.path.join(STATE, "hub.json")  # (hub_watch)
 with open(os.path.join(HERE, "VERSION")) as f:
     VERSION = f.read().strip()  # (tagged v<VERSION> on release)
@@ -44,6 +43,21 @@ def default_port():
         if value and value.strip().isdigit():
             return int(value)
     return 44100
+
+
+def flag(name, default, strict=False, invalid=None):
+    """An on/off setting: 1 is on, 0 off, unset (or empty) default. Another value gives invalid (default unless given)
+    with a warning, or with strict in shared mode, a problem that stops it (SHARED_PROBLEMS)."""
+    value = os.environ.get(name, "").strip()
+    if value in ("", "0", "1"):
+        return default if value == "" else value == "1"
+    result = default if invalid is None else invalid
+    message = f"{name} must be 1 (or 0), not {value!r}"
+    if strict and SHARED:
+        SHARED_PROBLEMS.append(message)
+    else:  # (warn, not exit: forward.py imports this module too)
+        print(f"=== latex-live: {message}: taken as {'on' if result else 'off'}", file=sys.stderr, flush=True)
+    return result
 
 
 def read_text(path):
@@ -136,9 +150,7 @@ if PROXY_HOST and not HOST_RE.fullmatch(PROXY_HOST):
     SHARED_PROBLEMS.append(f"LATEX_LIVE_PROXY_HOST must be a Host header's value (host or host:port), not {PROXY_HOST!r}")
 if IDENTITY_HEADER and not re.fullmatch(r"[A-Za-z0-9_-]+", IDENTITY_HEADER):
     SHARED_PROBLEMS.append(f"LATEX_LIVE_IDENTITY_HEADER must be a header name, e.g. x-remote-user, not {IDENTITY_HEADER!r}")
-COMMIT = SHARED and os.environ.get("LATEX_LIVE_COMMIT", "").strip() == "1"
-if os.environ.get("LATEX_LIVE_COMMIT", "").strip() not in ("", "0", "1"):
-    SHARED_PROBLEMS.append(f"LATEX_LIVE_COMMIT must be 1 (or 0), not {os.environ['LATEX_LIVE_COMMIT']!r}")
+COMMIT = SHARED and flag("LATEX_LIVE_COMMIT", False, strict=True)
 COMMIT_IDLE = os.environ.get("LATEX_LIVE_COMMIT_IDLE", "").strip() or "60"
 if re.fullmatch(r"[0-9]{1,6}(\.[0-9]+)?", COMMIT_IDLE):
     COMMIT_IDLE = float(COMMIT_IDLE)
@@ -156,14 +168,14 @@ INSTANCE = f"{os.getpid()}-{secrets.token_hex(4)}"  # (tex-exec labels a shared 
 
 # The warm standby (standby.py): a pdflatex run that has read the preamble already and waits for the next pass
 # of the live build. On unless LATEX_LIVE_STANDBY=0; never in shared mode, which builds without latexmk.
-STANDBY = os.environ.get("LATEX_LIVE_STANDBY", "").strip() != "0"
+STANDBY = flag("LATEX_LIVE_STANDBY", True)
 # And a second one for the pass without notes (latex_report.py notes_free_pass): on with STANDBY, unless
 # LATEX_LIVE_CLEAN_STANDBY=0.
-CLEAN_STANDBY = STANDBY and os.environ.get("LATEX_LIVE_CLEAN_STANDBY", "").strip() != "0"
+CLEAN_STANDBY = flag("LATEX_LIVE_CLEAN_STANDBY", True) and STANDBY
 
 # LATEX_LIVE_TIMING=1: print when each phase of each build happened, from the save to the published PDFs, and have
 # the viewer log when it noticed, fetched, parsed and drew each new PDF in the browser's console (timing).
-TIMING = os.environ.get("LATEX_LIVE_TIMING", "").strip() == "1"
+TIMING = flag("LATEX_LIVE_TIMING", False)
 
 
 # LATEX_LIVE_LOOKUPS: whether the Refs panel may look references up online (bib: an arXiv ID on export.arxiv.org, a
@@ -171,14 +183,7 @@ TIMING = os.environ.get("LATEX_LIVE_TIMING", "").strip() == "1"
 # These are the only requests latex-live sends out, and only on a click. On by default in a preview of your own, where
 # only you can click; off by default in shared mode, where its owner turns them on for the coauthors with
 # LATEX_LIVE_LOOKUPS=1; 0 turns them off in either.
-LOOKUPS_SETTING = os.environ.get("LATEX_LIVE_LOOKUPS", "").strip()
-LOOKUPS = LOOKUPS_SETTING == "1" or (LOOKUPS_SETTING == "" and not SHARED)
-if LOOKUPS_SETTING not in ("", "0", "1"):
-    if SHARED:
-        SHARED_PROBLEMS.append(f"LATEX_LIVE_LOOKUPS must be 1 (or 0), not {LOOKUPS_SETTING!r}")
-    else:  # (warn, not exit: forward.py imports this module too)
-        print(f"=== latex-live: LATEX_LIVE_LOOKUPS must be 1 (or 0), not {LOOKUPS_SETTING!r}: lookups are off",
-              file=sys.stderr, flush=True)
+LOOKUPS = flag("LATEX_LIVE_LOOKUPS", not SHARED, strict=True, invalid=False)
 
 
 # LATEX_LIVE_PROTECTED, a regular expression, marks text that must stay as written, e.g.
@@ -189,6 +194,21 @@ try:
 except re.error as e:  # (warn, not exit: forward.py imports this module too)
     print(f"=== latex-live: ignoring LATEX_LIVE_PROTECTED, not a regular expression ({e})", file=sys.stderr, flush=True)
     PROTECTED_RE = None
+
+
+# LATEX_LIVE_PRIVATE_TERMS, a regular expression: codenames and other internal names, which the arXiv source check looks
+# for (arxiv). One that is not a regular expression is ignored, and the check says why.
+PRIVATE_TERMS = os.environ.get("LATEX_LIVE_PRIVATE_TERMS", "").strip()
+PRIVATE_TERMS_PROBLEM = None
+try:
+    re.compile(PRIVATE_TERMS)
+except re.error as e:
+    PRIVATE_TERMS_PROBLEM = f"LATEX_LIVE_PRIVATE_TERMS is not a regular expression ({e})"
+    PRIVATE_TERMS = ""
+
+# LATEX_LIVE_EDITOR: the editor command that a double-click opens the source in (navigation.editor_cli), e.g. cursor;
+# else VS Code's `code`, in a VS Code terminal.
+EDITOR = os.environ.get("LATEX_LIVE_EDITOR", "").strip()
 
 
 # LATEX_LIVE_ANON_TERMS, a regular expression (alternatives separated by |), e.g. r"\bNYU\b|New York University":

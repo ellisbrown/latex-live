@@ -56,14 +56,14 @@ def forward_request(server, query, user=None):
     return 404, {"error": "that line is not in the PDF"}
 
 
-def open_source(paper_root, query):
-    """Open a project file at a line in VS Code (build-error links in the viewer), and at a column in it when the
-    query has one (an inverse search that found the double-clicked word)."""
-    try:
-        src, line = os.path.realpath(os.path.join(paper_root, query["file"][0])), int(query["line"][0])
-        column = int(query.get("column", ["0"])[0])
-    except (KeyError, ValueError):
+def open_source(paper_root, req):
+    """POST /open {file, line, column?}: open a project file at a line in VS Code (build-error links in the viewer), and
+    at a column in it when the request has one (an inverse search that found the double-clicked word). The line and
+    column are numbers, or strings of digits."""
+    file, numbers = req.get("file"), [req.get("line"), req.get("column", 0)]
+    if not isinstance(file, str) or "\0" in file or not all(type(n) is int or isinstance(n, str) and n.isdigit() for n in numbers):
         return 400, "expected file, line"
+    src, (line, column) = os.path.realpath(os.path.join(paper_root, file)), map(int, numbers)
     if not within(src, os.path.realpath(paper_root)) or not os.path.isfile(src):
         return 404, "not a file in the paper"
     return open_in_vscode(src, line, paper_root, column)
@@ -71,8 +71,8 @@ def open_source(paper_root, query):
 
 def editor_cli():
     """The editor's command-line tool: LATEX_LIVE_EDITOR (e.g. cursor), else `code` in a VS Code terminal, else None."""
-    if editor := os.environ.get("LATEX_LIVE_EDITOR"):
-        return shutil.which(editor)
+    if config.EDITOR:
+        return shutil.which(config.EDITOR)
     return shutil.which("code") if "VSCODE_IPC_HOOK_CLI" in os.environ else None
 
 
@@ -80,7 +80,7 @@ def open_in_vscode(src, line, paper_root, column=0):
     """Open src at line in the editor (editor_cli), at a column from 0 when there is one (as VS Code counts: UTF-16
     units). Without an editor, say so rather than fail quietly."""
     where = f"{os.path.relpath(src, paper_root)}:{line}"
-    code, editor = editor_cli(), os.environ.get("LATEX_LIVE_EDITOR")
+    code, editor = editor_cli(), config.EDITOR
     if not code:
         why = (f"LATEX_LIVE_EDITOR ({editor}) is not a command here" if editor else
                "latex-live is not running in a VS Code terminal (start it with the VS Code task), and LATEX_LIVE_EDITOR is not set")

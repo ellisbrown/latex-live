@@ -317,6 +317,7 @@ def role_checks(sh):
     bib_checks()
     presence_checks()
     history_checks(sh, restore)
+    object_body_checks(owner)
     listing = expect_dict(with_token(owner, "/instances"), 200, "GET instances for the owner")
     if listing.get("self") != sh["proc"].pid:
         fail(f"GET instances for the owner: {listing}")
@@ -426,6 +427,23 @@ def role_checks(sh):
     ok("SyncTeX answers JSON for everyone in shared mode (file: null where the editor can't go, the last line for one past"
        " the end), and opens nothing")
     in_flight_checks(query + "&json=1")
+
+
+def object_body_checks(owner):
+    """Every action takes a JSON object: another JSON value is refused with 400 (acting on nothing) for each role that
+    may ask, and with 403 before the body is read for one that may not; an unknown action is 404."""
+    for body in ([], "text", 3, None):
+        for uid, path, status in (("vw", "/note", 403), ("cm", "/note", 400), ("ed", "/note", 400), ("ed", "/file/create", 400),
+                                  ("ed", "/presence", 400), ("vw", "/logout", 400), ("owner1", "/bib/add", 400)):
+            sent = json.dumps(body).encode()  # (null too, which an empty body is not)
+            got = expect(via_proxy(uid, path, "POST", sent), status, f"POST {path} with {sent!r} for {uid}")
+            if status == 400 and (not isinstance(got, dict) or got.get("error") != "expected a JSON object"):
+                fail(f"POST {path} with {sent!r} for {uid}: {got}")
+        expect(with_token(owner, "/rebuild", "POST", json.dumps(body).encode()), 400,
+               f"POST rebuild with {body!r} for the owner")
+    expect(with_token(owner, "/no-such-action", "POST", {}), 404, "POST no-such-action for the owner")
+    expect(via_proxy("vw", "/me"), 200, "GET me after the refused actions (still signed in)")
+    ok("every action takes a JSON object (400 for another value, for each role that may ask; 403 for one that may not)")
 
 
 def in_flight_checks(lookup):

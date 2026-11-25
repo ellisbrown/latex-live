@@ -94,10 +94,9 @@ def runs_here(pid, root):
 
 def instances():
     """The running latex-live instances on this machine: [{port, pid, root, doc}], from
-    INSTANCES (each removes its entry on exit; entries of crashed ones are dropped here), and
-    from OLD_INSTANCES for instances of an older version."""
+    INSTANCES (each removes its entry on exit; entries of crashed ones are dropped here)."""
     found = []
-    for path in glob.glob(os.path.join(config.INSTANCES, "*.json")) + glob.glob(os.path.join(config.OLD_INSTANCES, "*.json")):
+    for path in glob.glob(os.path.join(config.INSTANCES, "*.json")):
         try:
             with open(path) as f:
                 entry = json.load(f)
@@ -148,11 +147,10 @@ def stop_instance(pid, root=None):
         pass
     for i in range(150):
         if not is_live_instance(pid):
-            for folder in (config.INSTANCES, config.OLD_INSTANCES):  # (killed, it can't remove its entry itself)
-                try:
-                    os.remove(os.path.join(folder, f"{pid}.json"))
-                except OSError:
-                    pass
+            try:  # (killed, it can't remove its entry itself)
+                os.remove(os.path.join(config.INSTANCES, f"{pid}.json"))
+            except OSError:
+                pass
             return True
         if i == 100:
             os.kill(pid, signal.SIGKILL)
