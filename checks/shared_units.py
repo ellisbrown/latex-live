@@ -1,11 +1,14 @@
 """The unit checks of shared mode's parts, without an instance: the downloads' guards (confinement_checks), the
 host's reads and copies of the build's files, which follow no link (build_link_checks), the builder
-(shared_build_checks), and what the host reads of the files the paper's TeX writes (shared_parsing_checks)."""
+(shared_build_checks), what the host reads of the files the paper's TeX writes (shared_parsing_checks), and which notes
+viewers and commenters see (shown_notes_checks)."""
 
 import gzip
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -344,12 +347,10 @@ def shown_notes_checks():
     """Which notes viewers and commenters see (notes.shown_notes): those whose typesetting the published PDF's pass
     recorded (notes.shown_tex), not one in \\iffalse or a switch that is off, nor while \\todotxt hides them, however
     much of their text the PDF has elsewhere; none for a PDF without records (a build before a restart, another PDF
-    on show) or while a source has changed since its pass began, nor for records of another key (in the paper's text). With the host's pdflatex, shown_tex records just
+    on show) or while a source differs from what its pass read, nor for records of another key (in the paper's text). With the host's pdflatex, shown_tex records just
     those and changes nothing else that the build writes."""
-    import hashlib
     from latexlive import config, notes
-    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
-    try:
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
         root = os.path.join(tmp, "paper")
         put(os.path.join(root, "main.tex"), SHOWN_PAPER)
         put(os.path.join(root, "defs.tex"), SHOWN_DEFS)
@@ -364,9 +365,8 @@ def shown_notes_checks():
         records = notes.note_records(log, "k3y")
         if notes.note_records(log.replace("k3y", "other"), "k3y") or notes.note_records(log, ""):
             fail("note_records takes records of another key, or of none")
-        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf",
-                                       shared={"published": published, "shown": {"published": published, "records": records,
-                                                                                  "since": time.time_ns()}})
+        sources = notes.source_digests(root, "main.pdf")
+        server = fake_server(root, shared={"published": published, "shown": {"published": published, "records": records, "sources": sources}})
         found = notes.notes(root, "main.pdf")
         if len(found) != 12:
             fail(f"the check's paper has 12 notes, notes() found {len(found)}: {found}")
@@ -380,14 +380,18 @@ def shown_notes_checks():
                             ("after another publish", {"published": {**published, "size": 1}, "shown": server.shared["shown"]}),
                             ("for records of another publish", {"published": published,
                                                                 "shown": {**server.shared["shown"], "published": {**published, "mtime": 1}}})):
-            if notes.shown_notes(types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", shared=stale), "main.pdf", found):
+            if notes.shown_notes(fake_server(root, shared=stale), "main.pdf", found):
                 fail(f"viewers would see notes {what}")
-        if notes.shown_notes(types.SimpleNamespace(paper_root=root, default_pdf="other.pdf", shared=server.shared), "main.pdf", found):
+        if notes.shown_notes(fake_server(root, default_pdf="other.pdf", shared=server.shared), "main.pdf", found):
             fail("viewers would see notes of a PDF that isn't the shared document")
-        server.shared["shown"]["since"], since = os.stat(os.path.join(root, "defs.tex")).st_mtime_ns, server.shared["shown"]["since"]
-        if notes.shown_notes(server, "main.pdf", found):  # (as if the pass began as defs.tex was saved: maybe before)
-            fail("viewers would see notes while a source has changed since the PDF's pass began (a macro in them, say)")
-        server.shared["shown"]["since"] = since
+        put(os.path.join(root, "defs.tex"), SHOWN_DEFS.replace("from a macro", "a private draft"))
+        if notes.shown_notes(server, "main.pdf", found):
+            fail("viewers would see notes while a source differs from what the PDF's pass read (a macro in them, say)")
+        put(os.path.join(root, "defs.tex"), SHOWN_DEFS)
+        for what, unsure in (("for a pass during which a source changed", None), ("for a source the pass didn't read", {})):
+            if notes.shown_notes(fake_server(root, shared={**server.shared, "shown": {**server.shared["shown"], "sources": unsure}}),
+                                 "main.pdf", found):
+                fail(f"viewers would see notes {what}")
         put(os.path.join(root, "main.pdf"), "%PDF-1.4\n% replaced\n")  # (by something other than shared_publish)
         if notes.shown_notes(server, "main.pdf", found):
             fail("viewers would see notes of a PDF replaced since its records")
@@ -398,8 +402,6 @@ def shown_notes_checks():
         if parsed != [("sub/x.tex", 3, "b" * 32), ("/abs/dir/y.tex", 4, "c" * 32), ("", 5, "d" * 32)]:
             fail(f"note_records: {parsed}")
         tex_checks(root, published)
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
     ok("viewers and commenters see the notes whose typesetting the PDF's pass recorded: not those in \\iffalse or a switch"
        " that is off, nor a short one whose letters the PDF has elsewhere; none for a PDF without records")
 
@@ -410,7 +412,6 @@ def tex_checks(root, published):
     or robust, none for one with two arguments, and the PDF's text, the log but for the records, and the .aux, .toc
     and .out are as without shown_tex. One that writes its argument into the contents writes none of shown_tex's
     commands there (but for a group: {}), and one that highlights its argument with soul still builds."""
-    import hashlib
     from latexlive import config, notes
     if not shutil.which("pdflatex"):
         print("skip: no pdflatex here, so notes.shown_tex is not run", flush=True)
@@ -441,8 +442,8 @@ def tex_checks(root, published):
         records = notes.note_records(log, key)
         texts = {hashlib.md5(text.encode()).hexdigest(): text for _, text in SHOWN_RECORDS}
         got = sorted((line, texts.get(digest, digest)) for _, line, digest in records)
-        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", shared={"published": published,
-                                       "shown": {"published": published, "records": records, "since": time.time_ns()}})
+        server = fake_server(root, shared={"published": published, "shown": {"published": published, "records": records,
+                                                                             "sources": notes.source_digests(root, "main.pdf")}})
         seen = {n["text"] for n in notes.shown_notes(server, "main.pdf", notes.notes(root, "main.pdf"))}
         if got != want or seen != (SHOWN_TEXTS if want else set()):
             fail(f"shown_tex with a {name} \\todotxt recorded {got}, not {want}; viewers would see {sorted(seen)}")
