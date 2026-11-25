@@ -6,7 +6,8 @@ does).
    (viewer/) and the vendored editor (codemirror/) import to a file here, and every module that the
    viewer imports by path is a file here; every element that the viewer's modules look up by id ($)
    is in viewer.html; the viewer's modules parse and link (with Node, if there is one: every name a module
-   imports, the module it names exports); instances starting at once agree on one token, never an empty one.
+   imports, the module it names exports); instances starting at once agree on one token, never an empty one; latexmkrc
+   runs its Python helpers with live.py's own interpreter.
    The review copy's layout keeps notes in order, apart, and on their pages, and continues the ones
    that don't fit after the paper; its matching tells apart two authors' notes with the same text.
    In shared mode, the downloads built on request say plainly that the TeX Live image is missing, the
@@ -32,7 +33,8 @@ does).
    SyncTeX file is read once for all its lookups, and the caches that requests share answer each request while others
    change them; the change baselines run git only once a ref may have moved; the margin notes send one point per line;
    an invalid LATEX_LIVE_ANON_TERMS is named in the anonymity check; poppler runs where the system refuses one of its
-   limits; file hashes and the arXiv check's PDF text are bounded; live.py stops a notes-free pass before the standbys.
+   limits; file hashes and the arXiv check's PDF text are bounded; live.py stops a notes-free pass before the standbys,
+   and a process group of zombies counts as ended.
    Every server keeps to 64 connections at once, and takes a request's line and headers within 10 s however slowly
    they come (a body may take longer); in shared mode a coauthor has at most 32 requests in progress at once (the
    viewer's own files aside) and 2 that may start a program, the owner and others uncounted. Notes, replies and
@@ -72,6 +74,7 @@ does).
      bodies; SyncTeX finds a source line; /instances lists the instance;
    - in headless Chromium (with Playwright, if it is there), the viewer loads the PDF and opens every sidebar tab, the
      palette and the source pane without a page or console error, nor anything its Content-Security-Policy refuses;
+     a file's row opens from the keyboard, and looking again in the Files tab with nothing changed draws no row anew;
    - /me reports the owner with every capability; the viewer's and the editor's modules and the
      viewer's style are served (as JavaScript, and CSS), the viewer's revalidated; SyncTeX answers
      as JSON without opening the editor, while POST /open and plain /synctex still open it (a
@@ -112,7 +115,8 @@ does).
    (verifying a new standby beside it) and the next edits use the standby, and so does a change to the file the
    preamble reads; an error in the body is reported at its file and line; forward and inverse search work after a
    pass from the standby (also on the box); killing live.py (kill -9) stops its standbys, and so does stopping it,
-   leaving no keeper, container or folder; LATEX_LIVE_STANDBY=0 builds without standbys.
+   leaving no keeper, container or folder; stopped in the middle of a pass, it leaves no process working in the paper
+   (each pass runs live.py's own Python); LATEX_LIVE_STANDBY=0 builds without standbys.
    And in another thread, the early notes-free pass (early_run), on a paper with notes and line numbers and an
    instance of its own without the standby: a body edit's early pass is kept, with the PDF (but dates) and SyncTeX
    of the notes-free pass after the run; a two-pass edit keeps its second pass's; a failed run puts build/clean/ back.
