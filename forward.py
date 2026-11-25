@@ -17,6 +17,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from latexlive.synctex import forward_target  # noqa: E402
+from latexlive.tools import synctex_unavailable  # noqa: E402
 
 
 def main():
@@ -29,7 +30,8 @@ def main():
         root = os.path.dirname(root)
     found = forward_target(root, src, line)
     if not found:
-        sys.exit(f"latex-live: {os.path.relpath(src, root)}:{line} is not in any latex-live build")
+        why = synctex_unavailable() or f"{os.path.relpath(src, root)}:{line} is not in any latex-live build"  # (or SyncTeX can't run)
+        sys.exit(f"latex-live: {why}")
     pdf, target = found
     clean = forward_target(root, src, line, clean=True)  # the same spot in the notes-free PDF, if built
     if clean:

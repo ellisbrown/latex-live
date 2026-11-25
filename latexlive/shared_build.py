@@ -246,7 +246,7 @@ def shared_run(server):
         server.shared["status"] = {**status, "began": began, "durationMs": max(0, (time.time_ns() - began) // 1_000_000)}
         note(server, "status")
         stamp = status["time"]
-        print(f"=== live-reload: published {pdf} at {stamp}" if ok else f"=== live-reload: BUILD FAILED at {stamp}; kept the previous {pdf}",
+        print(f"=== latex-live: published {pdf} at {stamp}" if ok else f"=== latex-live: BUILD FAILED at {stamp}; kept the previous {pdf}",
               flush=True)
         if ok and latex_report.has_notes(files):
             shared_notes_free(server, job, doc)

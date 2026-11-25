@@ -96,16 +96,18 @@ def run_plugin(cmd, request, timeout=None):
                     pass
 
         def read_out():
-            while chunk := proc.stdout.read1(64 << 10):
-                if len(out) + len(chunk) > OUTPUT_LIMIT:
-                    over.set()
-                    return stop()
-                out.extend(chunk)
+            with proc.stdout:  # (closed by its reader, even when that ends only after this call: an escaped child held it)
+                while chunk := proc.stdout.read1(64 << 10):
+                    if len(out) + len(chunk) > OUTPUT_LIMIT:
+                        over.set()
+                        return stop()
+                    out.extend(chunk)
 
         def read_err():
-            while chunk := proc.stderr.read1(64 << 10):
-                err.extend(chunk)
-                del err[:-STDERR_KEPT]
+            with proc.stderr:
+                while chunk := proc.stderr.read1(64 << 10):
+                    err.extend(chunk)
+                    del err[:-STDERR_KEPT]
 
         threads = [threading.Thread(target=t, daemon=True) for t in (feed, read_out, read_err)]
         for t in threads:
@@ -130,9 +132,6 @@ def run_plugin(cmd, request, timeout=None):
             end = time.monotonic() + 2
             for t in threads[1:] + threads[:1]:  # (the readers first: a feed held up by an escaped child waits last)
                 t.join(max(0, end - time.monotonic()))
-            for pipe, reader in ((proc.stdout, threads[1]), (proc.stderr, threads[2])):
-                if not reader.is_alive():  # (else something that left its process group holds it: the reader keeps it)
-                    pipe.close()
     if threads[1].is_alive():  # (its output is not complete, and still being read)
         return "the plugin left a process running that holds its output open", None
     if timed_out:
@@ -218,10 +217,19 @@ def test_plugin(argv):
     would (run_plugin), and say whether its answer is valid. Exits 0 if so, 1 if not."""
     if len(argv) < 2 or argv[0] != "--test" or (len(argv) > 2 and (len(argv) != 4 or argv[2] != "--note")):
         sys.exit("usage: python3 -m latexlive.agent --test CMD [--note TEXT]")
-    request = {**SAMPLE, "note": argv[3] if len(argv) == 4 else ""}
+    request, cmd = {**SAMPLE, "note": argv[3] if len(argv) == 4 else ""}, argv[1]
+    try:  # (run_plugin runs it in a scratch folder, where a path relative to this one finds nothing)
+        words = shlex.split(cmd)
+    except ValueError:
+        words = []
+    relative = [w for w in words if "/" in w and not os.path.isabs(w) and os.path.exists(w)]
+    if relative:
+        cmd = shlex.join(os.path.abspath(w) if w in relative else w for w in words)
+        print(f"note: tested as {cmd}: latex-live runs the plugin in a folder of its own, so give LATEX_LIVE_AGENT_CMD"
+              f" absolute paths (not {', '.join(relative)})")
     print(f"request: {json.dumps({'protocol': PROTOCOL, **request, 'timeout': config.AGENT_TIMEOUT})}")
     started = time.monotonic()
-    error, result = run_plugin(argv[1], request)
+    error, result = run_plugin(cmd, request)
     took = f"{time.monotonic() - started:.1f} s"
     if error:
         sys.exit(f"not valid ({took}): {error}")
