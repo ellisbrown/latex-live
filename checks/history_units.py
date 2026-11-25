@@ -189,7 +189,7 @@ def diff_checks(repo, root):
 def restore_checks(repo, root, state):
     """restore_request: over the file the editor opens, at the version given only; a removed file made again, listed, and
     committed as its restorer's; never over another file; sources only; a coauthor only from commits HEAD builds on."""
-    from latexlive import commits, editor, git as history, sources
+    from latexlive import commits, file_actions, git as history, sources
     server = fake_server(root, state)
     os.makedirs(os.path.join(state, "added"), exist_ok=True)
     sources.load_added(server)
@@ -199,26 +199,26 @@ def restore_checks(repo, root, state):
     want = lambda result, status, what: result[0] == status or fail(f"{what}: {result}, not {status}")
     sec = os.path.join(root, "sec.tex")
     current = sources.file_version(read_text(sec).encode())
-    want(editor.restore_request(server, {"rev": shas["start"], "path": "sec.tex", "version": "0" * 20}, ed), 409,
+    want(file_actions.restore_request(server, {"rev": shas["start"], "path": "sec.tex", "version": "0" * 20}, ed), 409,
          "a restore over a version other than the one given")
-    want(editor.restore_request(server, {"rev": shas["start"], "path": "sec.tex", "version": current}, ed), 200, "restoring sec.tex")
+    want(file_actions.restore_request(server, {"rev": shas["start"], "path": "sec.tex", "version": current}, ed), 200, "restoring sec.tex")
     if read_text(sec) != "Section one.\n":
         fail(f"sec.tex, restored: {read_text(sec)!r}")
     elsewhere = git_out(repo, "rev-parse", "elsewhere")
-    want(editor.restore_request(server, {"rev": elsewhere, "path": "sec.tex"}, ed), 404, "a coauthor restoring from another branch")
-    want(editor.restore_request(server, {"rev": elsewhere, "path": "sec.tex"}, owner), 200, "the owner restoring from another branch")
+    want(file_actions.restore_request(server, {"rev": elsewhere, "path": "sec.tex"}, ed), 404, "a coauthor restoring from another branch")
+    want(file_actions.restore_request(server, {"rev": elsewhere, "path": "sec.tex"}, owner), 200, "the owner restoring from another branch")
     for rev, rel, status in (("HEAD", "sec.tex", 404), (shas["start"][:6], "sec.tex", 404), (shas["start"], ".env", 400),
                              (shas["remove gone.tex"], ".hidden/big.tex", 404), (shas["start"], "../outside.tex", 404),
                              (shas["start"], "nothere.tex", 404), (shas["start"], "build/main.tex", 404)):
-        want(editor.restore_request(server, {"rev": rev, "path": rel}, owner), status, f"restoring {rel} from {rev[:9]}")
+        want(file_actions.restore_request(server, {"rev": rev, "path": rel}, owner), status, f"restoring {rel} from {rev[:9]}")
     put(os.path.join(root, "zlast.tex"), "Not the document's: the editor doesn't open it.\n")
-    want(editor.restore_request(server, {"rev": shas["remove gone.tex"], "path": "zlast.tex"}, owner), 409,
+    want(file_actions.restore_request(server, {"rev": shas["remove gone.tex"], "path": "zlast.tex"}, owner), 409,
          "a restore over a file the editor doesn't open")
     if read_text(os.path.join(root, "zlast.tex")) != "Not the document's: the editor doesn't open it.\n":
         fail("a restore wrote over a file the editor doesn't open")
     server.autocommit = True
-    want(editor.restore_request(server, {"rev": shas["start"], "path": "sec.tex"}, ed), 200, "restoring sec.tex again")
-    result = editor.restore_request(server, {"rev": shas["merge the side"], "path": "gone.tex"}, ed)
+    want(file_actions.restore_request(server, {"rev": shas["start"], "path": "sec.tex"}, ed), 200, "restoring sec.tex again")
+    result = file_actions.restore_request(server, {"rev": shas["merge the side"], "path": "gone.tex"}, ed)
     if result[:1] != (200,) or result[1].get("created") is not True or read_text(os.path.join(root, "gone.tex")) != "Removed later.\n":
         fail(f"restoring gone.tex, which a commit removed: {result}")
     if "gone.tex" not in server.added or "gone.tex" not in sources.editable_files(server):
@@ -230,20 +230,20 @@ def restore_checks(repo, root, state):
         commits.commit_files(server, ed, dict(paths))
     if git_out(repo, "show", "-s", "--format=%an", "HEAD") != "Eden Doyle" or "paper/gone.tex" not in git_out(repo, "ls-files"):
         fail("a file restored after it was removed is not committed as its restorer's")
-    want(editor.restore_request(server, {"rev": shas["merge the side"], "path": "gone.tex"}, ed), 200, "restoring it again (as it is)")
+    want(file_actions.restore_request(server, {"rev": shas["merge the side"], "path": "gone.tex"}, ed), 200, "restoring it again (as it is)")
     put(sec, "% grown by notes\n" + "%" * sources.EDITABLE_SIZE + "\n")  # (past what the editor opens)
     if "sec.tex" in sources.editable_files(server):
         fail("the editor opens a source past 4 MB")
-    want(editor.restore_request(server, {"rev": shas["start"], "path": "sec.tex", "version": "0" * 20}, ed), 409,
+    want(file_actions.restore_request(server, {"rev": shas["start"], "path": "sec.tex", "version": "0" * 20}, ed), 409,
          "a restore over a source past 4 MB, at another version")
-    want(editor.restore_request(server, {"rev": shas["start"], "path": "sec.tex"}, ed), 200, "restoring sec.tex, grown past 4 MB")
+    want(file_actions.restore_request(server, {"rev": shas["start"], "path": "sec.tex"}, ed), 200, "restoring sec.tex, grown past 4 MB")
     if read_text(sec) != "Section one.\n" or "sec.tex" not in sources.editable_files(server):
         fail(f"sec.tex, grown past 4 MB and restored: {read_text(sec)[:80]!r}")
     put(os.path.join(root, "zlast.tex"), "%" * (sources.EDITABLE_SIZE + 10) + "\n")
-    want(editor.restore_request(server, {"rev": shas["remove gone.tex"], "path": "zlast.tex"}, owner), 409,
+    want(file_actions.restore_request(server, {"rev": shas["remove gone.tex"], "path": "zlast.tex"}, owner), 409,
          "a restore over a file past 4 MB that is not the document's")
     shutil.rmtree(os.path.join(root, "sections"))
-    result = editor.restore_request(server, {"rev": shas["start"], "path": "sections/intro.tex"}, ed)
+    result = file_actions.restore_request(server, {"rev": shas["start"], "path": "sections/intro.tex"}, ed)
     if result[:1] != (200,) or read_text(os.path.join(root, "sections", "intro.tex")) != "In a folder.\n":
         fail(f"restoring sections/intro.tex, whose folder is gone too: {result}")
     ok("restore: over the file the editor opens (at the version given), or a source of the document past 4 MB, a removed file made again, listed and committed as"
