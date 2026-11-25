@@ -255,7 +255,8 @@ page. To stay on a release, check out its tag, e.g.
   so another site can't make your browser act. Forward a port to the same port
   number on your laptop (as the settings in step 5 do); for another one, add
   it, e.g. `LATEX_LIVE_ALLOWED_HOSTS=localhost:8100`. The pages run only
-  latex-live's own scripts, and only VS Code's Simple Browser may frame them.
+  latex-live's own scripts, and no other site may frame them (VS Code's
+  Simple Browser may).
 - **The state folder** is `~/.config/latex-live` (`$XDG_CONFIG_HOME/latex-live`
   if that is set, or `$LATEX_LIVE_STATE`). It holds the token, the `port` file,
   the hub's lock and the list of running instances, shared by every checkout of

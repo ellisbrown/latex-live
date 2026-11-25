@@ -23,7 +23,7 @@ from .shared_helpers import (
 # The routes whose role cases are in another module, for units' guard that every route has one: the downloads built on
 # request, which every role may start, and which shared_downloads checks as each role (here they would race its checks
 # that askers share one build).
-ROLE_CASES_ELSEWHERE = {"/export": "shared_downloads", "/review": "shared_downloads"}
+ROLE_CASES_ELSEWHERE = {("POST", "/export"): "shared_downloads", ("POST", "/review"): "shared_downloads"}
 
 # What each role can do in shared mode (no one switches documents: a shared preview serves one; everyone may download
 # the paper without its notes), and commenting only with a note macro the paper defines (check_me); signing out, for
