@@ -220,12 +220,12 @@ def live_checks(tmp):
             fail("the PDF without notes is missing, or its references had not settled")
         if post("/export", token).get("version") != exported["version"]:
             fail("asking again rebuilt the PDF without notes, though the document had not changed")
-        status, _, data = request(f"{hub['base']}main/export", cookie=token)  # (as a viewer from before asked)
-        if status != 405 or "reload the page" not in _quiet(lambda: json.loads(data)["error"]):
-            fail(f"GET /export through the hub: {status} {data[:200]!r}, not 405 with a message for the viewer")
+        status, _, data = request(f"{hub['base']}main/export", cookie=token)  # (only a POST builds)
+        if status != 404:
+            fail(f"GET /export through the hub: {status} {data[:200]!r}, not 404")
         if ln_records(os.path.join(build, "export", "main", "main-export.aux")) != ln_records(os.path.join(build, "clean", "main-clean.aux")):
             fail("the download without notes has its line numbers in other places than the notes-free view")
-        ok("the download without notes is an exact build (line numbers too), made once per build; a GET of it is 405")
+        ok("the download without notes is an exact build (line numbers too), made once per build; a GET of it is 404")
         review_checks(build, token)
         arxiv_checks(build, token)
         switch_checks(token)
@@ -397,8 +397,8 @@ def arxiv_checks(build, token):
     if post("/arxiv", token).get("version") != made["version"]:
         fail("asking again remade the arXiv package, though the document had not changed")
     status, _, data = request(f"{hub['base']}main/arxiv", cookie=token)
-    if status != 405:
-        fail(f"GET /arxiv through the hub: {status} {data[:200]!r}, not 405")
+    if status != 404:
+        fail(f"GET /arxiv through the hub: {status} {data[:200]!r}, not 404")
     arxiv_check = lambda: next((c for c in get("/check/main.pdf", token) if c["title"] == "arXiv source"), {})
     source = wait_for("the arXiv check of the package (the checks are kept for 10 s)",
                       lambda: (lambda c: c if c.get("detail", "").startswith("main-arxiv.tar.gz") else None)(arxiv_check()), timeout=20)
@@ -458,9 +458,9 @@ def review_checks(build, token):
              f" pages, {drawn_pages(annotated, 0)} placed, comments {comments}")
     if reviewed.get("version") != post("/review", token).get("version"):
         fail("asking again rebuilt the review copy, though the document had not changed")
-    status, _, data = request(f"{hub['base']}main/review", cookie=token)  # (as a viewer from before asked)
-    if status != 405 or "reload the page" not in _quiet(lambda: json.loads(data)["error"]):
-        fail(f"GET /review through the hub: {status} {data[:200]!r}, not 405 with a message for the viewer")
+    status, _, data = request(f"{hub['base']}main/review", cookie=token)  # (only a POST builds)
+    if status != 404:
+        fail(f"GET /review through the hub: {status} {data[:200]!r}, not 404")
     ok(f"the review copy: {pages} pages as exported, unscaled on wider ones, with {len(texts)} notes in both gutters, apart"
        " (the protected marker, the resolved note, and the one in a branch that is off left out); its last pass loads no"
        " package that the paper's TeX wrote; beside it, the same pages at their own size with the notes as PDF comments")
@@ -468,7 +468,7 @@ def review_checks(build, token):
 
 def owner_checks(token, own, editor_log, paper):
     """The owner's own preview (not shared): GET me, the editor's modules, SyncTeX as JSON, the editor
-    stand-in through POST /open and plain /synctex (GET /open is 405, as in shared mode), and the POST
+    stand-in through POST /open and plain /synctex (GET /open is 404), and the POST
     body limits of the hub and of the preview's own port (own; a source file's save may be bigger than
     other actions)."""
     me = hub_get("/me", token)
@@ -553,8 +553,8 @@ def owner_checks(token, own, editor_log, paper):
     if editor_calls(editor_log):
         fail(f"synctex with json=1 opened the editor: {editor_calls(editor_log)}")
     status, _, data = request(f"{hub['base']}main/open?file=main.tex&line=9", cookie=token)
-    if status != 405:
-        fail(f"GET /open (not shared): {status} {data[:200]!r}, not 405")
+    if status != 404:
+        fail(f"GET /open (not shared): {status} {data[:200]!r}, not 404")
     for path, method, body in ((f"{hub['base']}main/open", "POST", {"file": "main.tex", "line": 10}),
                                (f"{hub['base']}main/open", "POST", {"file": "main.tex", "line": 11, "column": 4}),
                                (f"{hub['base']}main/synctex?{spot}", "GET", None),
@@ -570,7 +570,7 @@ def owner_checks(token, own, editor_log, paper):
         fail(f"the editor stand-in got {calls}, not -g .../main.tex:10, main.tex:11:5, and the double-clicked line"
              f" ({line}) without and with the double-clicked word's column ({column + 1})")
     ok("SyncTeX answers JSON without opening the editor, with the column of a double-clicked word; POST /open and plain"
-       " /synctex open it, at that column with one, and GET /open is 405")
+       " /synctex open it, at that column with one, and GET /open is 404")
 
     status, _, data = request(f"{hub['base']}main/file", method="POST", cookie=token,
                               body={"path": "body.tex", "base": "0" * 20, "text": "x" * (1 << 20)})
@@ -596,7 +596,7 @@ def owner_checks(token, own, editor_log, paper):
 def agent_hook_checks(token):
     """The agent hook with the example plugin (LATEX_LIVE_AGENT_CMD: examples/agent-tidy.py), through the hub: its
     revision, a request above the actions' size limit (non-ASCII text, as the viewer sends it), protected text refused,
-    GET answered 405."""
+    GET answered 404."""
     tidy = {"selection": "We utilize  it.", "paragraph": "First. We utilize  it. Last.", "note": "", "file": "main.tex", "line": 9}
     try:
         got = post("/agent/revise", token, body=tidy)
@@ -610,26 +610,26 @@ def agent_hook_checks(token):
                               body={**tidy, "paragraph": "First. We utilize  it. Last.\\eb{human-written}"})
     if status != 409:
         fail(f"POST /agent/revise of a paragraph marked LATEX_LIVE_PROTECTED: {status} {data[:200]!r}, not 409")
-    if (status := request(f"{hub['base']}main/agent/revise", cookie=token)[0]) != 405:
-        fail(f"GET /agent/revise: {status}, not 405")
+    if (status := request(f"{hub['base']}main/agent/revise", cookie=token)[0]) != 404:
+        fail(f"GET /agent/revise: {status}, not 404")
     ok("through the hub, the agent hook returns the example plugin's revision, also of a request above the actions' size"
-       " limit, refuses a paragraph marked LATEX_LIVE_PROTECTED, and answers a GET with 405")
+       " limit, refuses a paragraph marked LATEX_LIVE_PROTECTED, and answers a GET with 404")
 
 
 def switch_checks(token):
     """Outside shared mode, through the hub: POST /switch (as the viewer sends it) builds another document, and back;
-    GET /switch (as older viewers sent it) is 405; POST /diff builds a latexdiff against HEAD, and GET /diff is 405."""
+    GET /switch is 404; POST /diff builds a latexdiff against HEAD, and GET /diff is 404."""
     status, _, data = request(f"{hub['base']}main/switch", method="POST", body={"doc": "appendix"}, cookie=token)
     if status != 200 or _quiet(lambda: json.loads(data)["doc"]) != "appendix":
         fail(f"POST /switch {{doc: appendix}} through the hub: {status} {data[:200]!r}")
     wait_for("appendix.pdf, after POST /switch", lambda: _quiet(lambda: get("/status/appendix.pdf", token, "appendix")["version"]))
     status, _, data = request(f"{hub['base']}appendix/switch?doc=main", token)
-    if status != 405 or hub_get("/docs", token)["doc"] != "appendix":
-        fail(f"GET /switch?doc=main through the hub: {status} {data[:200]!r}, not 405 (it switches only by POST)")
+    if status != 404 or hub_get("/docs", token)["doc"] != "appendix":
+        fail(f"GET /switch?doc=main through the hub: {status} {data[:200]!r}, not 404 (it switches only by POST)")
     status, _, data = request(f"{hub['base']}appendix/switch", method="POST", body={"doc": "main"}, cookie=token)
     if status != 200 or _quiet(lambda: json.loads(data)["doc"]) != "main" or hub_get("/docs", token)["doc"] != "main":
         fail(f"POST /switch {{doc: main}} through the hub: {status} {data[:200]!r}")
-    ok("POST /switch builds another document, and back; GET /switch is 405 (outside shared mode, through the hub)")
+    ok("POST /switch builds another document, and back; GET /switch is 404 (outside shared mode, through the hub)")
     if not texlive_image()[1] and not shutil.which("latexdiff"):
         return print("skip: no TeX Live image and no latexdiff here, so POST /diff is not checked", flush=True)
 
@@ -640,8 +640,8 @@ def switch_checks(token):
         return diff.get("state") == "done"
 
     status, _, data = request(f"{hub['base']}main/diff?rev=HEAD", cookie=token)
-    if status != 405:
-        fail(f"GET /diff?rev=HEAD through the hub: {status} {data[:200]!r}, not 405 (it builds only by POST)")
+    if status != 404:
+        fail(f"GET /diff?rev=HEAD through the hub: {status} {data[:200]!r}, not 404 (it builds only by POST)")
     status, _, data = request(f"{hub['base']}main/diff", method="POST", body={"rev": "HEAD"}, cookie=token)
     if status != 200 or _quiet(lambda: json.loads(data)["state"]) != "running":
         fail(f"POST /diff through the hub: {status} {data[:200]!r}")
@@ -649,4 +649,4 @@ def switch_checks(token):
     status, headers, _ = request(f"{hub['base']}main/pdf/main-diff.pdf", token)
     if status != 200 or headers.get("Content-Type") != "application/pdf":
         fail(f"/pdf/main-diff.pdf through the hub: {status} {headers.get('Content-Type')}")
-    ok("POST /diff builds a latexdiff against HEAD, and GET /diff is 405 (outside shared mode, through the hub)")
+    ok("POST /diff builds a latexdiff against HEAD, and GET /diff is 404 (outside shared mode, through the hub)")

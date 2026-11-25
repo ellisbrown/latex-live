@@ -80,7 +80,7 @@ def review_shared_checks(sh):
     for path in ("/review", "/export"):  # (a GET through the proxy with neither header: all another site's page sends over http)
         for headers, what in ((proxy, "through the proxy"), (proxy + [("Sec-Fetch-Site", "same-origin")], "Sec-Fetch-Site: same-origin"),
                               (owner, "with the owner's token")):
-            expect(send("GET", path, headers), 405, f"GET {path} {what}")
+            expect(send("GET", path, headers), (403, 404), f"GET {path} {what}")
         for headers, what in ((proxy, "no Origin, through the proxy"),
                               (proxy + [("Origin", "http://evil.example")], "another site's Origin"),
                               (proxy + [("Origin", "null")], "Origin: null"),

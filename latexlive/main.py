@@ -95,6 +95,17 @@ def serve(paper_root, default_pdf, port, page_limit, hub_port=None):
     return server
 
 
+def build_env():
+    """The environment of the build's tools: this process's, with latex-live's folder, its Python and long log lines,
+    and without a LATEX_LIVE_EXEC it inherited (e.g. from another preview's build): how TeX runs here is main's choice,
+    which sets it for the image, and leaves it out for the host's TeX (--host-tex)."""
+    os.environ.pop("LATEX_LIVE_EXEC", None)
+    # (LATEX_LIVE_PYTHON: latexmkrc runs the Python helpers with this interpreter, not with whatever python3 is on the
+    # PATH, which may be another Python, or a launcher that starts one as its child and can hang when stopped)
+    return {**os.environ, "LATEX_LIVE_HOME": config.HERE, "LATEX_LIVE_PYTHON": sys.executable or "python3",
+            "max_print_line": "10000"}
+
+
 def print_urls(port, path="/"):
     token = load_token()
     print(f"=== latex-live: viewer (on a remote machine, forward port {port} first): http://localhost:{port}{path}?t={token}", flush=True)
@@ -260,7 +271,7 @@ def main():
         threading.Thread(target=server.serve_forever, daemon=True).start()
         threading.Thread(target=hub_watch, args=(args.port,), daemon=True).start()
         print_hub_urls(doc, server.server_address[1], wait=3)
-        if os.environ.get("LATEX_LIVE_COMMIT", "").strip() == "1":
+        if config.flag("LATEX_LIVE_COMMIT", False):
             print("=== latex-live: LATEX_LIVE_COMMIT works in shared mode only (LATEX_LIVE_USERS), so nothing is committed",
                   flush=True)
     others = [d for d in docs if d != doc]
@@ -270,10 +281,7 @@ def main():
         threading.Thread(target=open_in_editor, args=(pdf_path(os.getcwd(), f"{doc}.pdf"),), daemon=True).start()
 
     server.no_build = args.no_build
-    # (LATEX_LIVE_PYTHON: latexmkrc runs the Python helpers with this interpreter, not with whatever python3 is on the
-    # PATH, which may be another Python, or a launcher that starts one as its child and can hang when stopped)
-    server.env = {**os.environ, "LATEX_LIVE_HOME": config.HERE, "LATEX_LIVE_PYTHON": sys.executable or "python3",
-                  "max_print_line": "10000"}
+    server.env = build_env()
     if config.SHARED:  # (the image even with --no-build: the baselines and downloads build too, never with the host's TeX)
         server.env["LATEX_LIVE_EXEC"] = os.environ["LATEX_LIVE_EXEC"] = server.tex_exec
         threading.Thread(target=watch_build_size, args=(server,), daemon=True).start()

@@ -78,8 +78,8 @@ does).
    - /me reports the owner with every capability; the viewer's and the editor's modules and the
      viewer's style are served (as JavaScript, and CSS), the viewer's revalidated; SyncTeX answers
      as JSON without opening the editor, while POST /open and plain /synctex still open it (a
-     stand-in that logs its arguments), and GET /open is 405; the agent hook returns the example plugin's revision
-     through the hub (also above the actions' size limit), refuses protected text, answers a GET with 405, and is off
+     stand-in that logs its arguments), and GET /open is 404; the agent hook returns the example plugin's revision
+     through the hub (also above the actions' size limit), refuses protected text, answers a GET with 404, and is off
      (404) in a preview without LATEX_LIVE_AGENT_CMD; the hub takes a source file's save and the Files tab's upload above the other
      actions' size limit, refuses bodies above its limits, and survives a non-ASCII token;
      /favicon.ico is answered, not refused;
@@ -89,7 +89,7 @@ does).
      made once per build of the document, and the review copy places its pages on wider ones with
      every note in a gutter (none overlapping, the protected marker and the resolved note left out),
      and its last pass loads no package that the paper's TeX wrote; a document without notes gets a
-     clear failure, not a file; their GET forms are 405, with a message for an older viewer;
+     clear failure, not a file; their GET forms are 404;
    - who reaches the owner's preview and the hub (access): loopback names on their own and the
      hub's ports, LATEX_LIVE_HOST's name there and LATEX_LIVE_ALLOWED_HOSTS' on its port, nothing
      else; a POST's Origin must be the viewer's own page under the same kind of name (or none, with
@@ -99,7 +99,7 @@ does).
      forged, expired or other instances' ones refused; signing out expires it, and the page says so;
      a token file that others could read is made private at the start;
    - POST /switch moves the preview to another document and back, and POST /diff builds a latexdiff
-     (through the hub); their GET forms are 405;
+     (through the hub); their GET forms are 404;
    - a second document runs in its own process behind the same port, and /papers links both; the
      hub, refused by a preview that a stale entry says is another paper's, looks again and doesn't
      misroute; after a switch, the old document's viewers still reach their preview;

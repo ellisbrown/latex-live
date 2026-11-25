@@ -85,8 +85,8 @@ then shows "restart to update".
   from a users file, or a session cookie. Every request needs one, and anything
   that reaches the port can send requests.
 - **Nothing acts on a GET, in any mode.** Actions and builds made on request
-  are POSTs, which go through the `Origin` check; their GET forms answer 405
-  with a message an older viewer shows (`handler.ACTIONS`).
+  are POSTs (`handler.POSTS`), which go through the `Origin` check and take a
+  JSON object.
 - **Keep coauthors to their role in shared mode.** An endpoint is the owner's
   until `least_role` grants it to a lesser role. TeX tools
   run only in the image, through `tex-exec` with `LATEX_LIVE_SANDBOX`, each

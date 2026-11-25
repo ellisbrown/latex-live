@@ -36,7 +36,7 @@ from .review import start_review
 from .roles import READ_PATHS, STATIC_DIRS, allowed, at_least, least_role, shared_pdfs, viewer_status
 from .shared_build import shared_rebuild_request
 from .status import presence, presence_request, status
-from .web import BaseHandler, POST_LIMIT, POST_LIMITS, content_length, json_query, page_policy
+from .web import BaseHandler, POST_LIMIT, POST_LIMITS, content_length, page_policy
 
 
 def me(server, user):
@@ -64,7 +64,6 @@ def me(server, user):
 
 
 STATIC = {"/viewer.html"}  # plus the files in the folders of STATIC_DIRS (static_file)
-ACTIONS = ("/open", "/diff", "/switch", "/export", "/review", "/arxiv", "/agent/revise")  # (POST only: a GET of one is answered 405)
 ASSET_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox; frame-ancestors 'none'"  # (a figure opened alone runs nothing)
 
 
@@ -183,36 +182,31 @@ class Handler(BaseHandler):
                     info["source"] = source_status(self.server, query["open"][0])
                 if allowed(self.principal, "POST", "/presence"):  # (who else has the paper open: editors and the owner)
                     info["presence"] = presence(self.server, self.principal)
-                body = json.dumps(viewer_status(info) if below_editor else info).encode()
+                value = viewer_status(info) if below_editor else info
             elif path.startswith("/outline/"):
-                body = json.dumps(toc_outline(self.server.paper_root, doc_pdf, name.endswith("-clean.pdf"))).encode()
+                value = toc_outline(self.server.paper_root, doc_pdf, name.endswith("-clean.pdf"))
             elif path.startswith("/notes/"):
                 found = notes(self.server.paper_root, doc_pdf)
-                body = json.dumps(shown_notes(self.server, doc_pdf, found) if below_editor else found).encode()
+                value = shown_notes(self.server, doc_pdf, found) if below_editor else found
             elif path.startswith("/authors/"):
-                body = json.dumps(note_authors(self.server.paper_root, doc_pdf)).encode()
+                value = note_authors(self.server.paper_root, doc_pdf)
             elif path.startswith("/check/"):
-                body = json.dumps(cached_checks(self.server, doc_pdf)).encode()
+                value = cached_checks(self.server, doc_pdf)
             elif path.startswith("/logs/"):
-                body = json.dumps(build_logs(self.server, doc_pdf)).encode()
+                value = build_logs(self.server, doc_pdf)
             elif path.startswith("/graphics/"):  # (figure files, where in the sources, git's state: not in the PDF)
-                body = json.dumps([] if below_editor else graphics(self.server.paper_root, doc_pdf)).encode()
+                value = [] if below_editor else graphics(self.server.paper_root, doc_pdf)
             elif path.startswith("/margin/"):
                 found = margin_notes(self.server.paper_root, doc_pdf)
-                body = json.dumps(shown_notes(self.server, doc_pdf, found) if below_editor else found).encode()
+                value = shown_notes(self.server, doc_pdf, found) if below_editor else found
             elif path.startswith("/floats/"):
                 found = floats(self.server.paper_root, doc_pdf, name.endswith("-clean.pdf"))
                 if below_editor:  # (the label names and where in the sources: not in the PDF)
                     found = [{k: v for k, v in f.items() if k not in ("keys", "file", "line", "last")} for f in found]
-                body = json.dumps(found).encode()
+                value = found
             else:
                 return self.send_pdf(pdf)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.write_body(body)
+            self.send_json(200, value)
         elif path == "/me":
             self.send_json(200, me(self.server, self.principal))
         elif path == "/synctex":  # (JSON for the browser; without shared mode and json=1 it opens the editor here)
@@ -246,8 +240,6 @@ class Handler(BaseHandler):
                           "application/gzip")
         elif path == "/file":
             self.send_json(*file_request(self.server, query))
-        elif path in ACTIONS:  # (only as POST, which checks the Origin; a viewer from before says this)
-            self.send_json(405, {"error": "this preview takes that as a POST now: reload the page"})
         elif path == "/forward":
             self.send_json(*forward_request(self.server, query, self.principal))
         elif path == "/commits":
@@ -341,52 +333,39 @@ class Handler(BaseHandler):
             req = json.loads(data or b"{}")
         except (ValueError, RecursionError):
             return self.send_error(400, "bad JSON")
-        if path == "/note" and isinstance(req, dict):
-            self.send_json(*note_request(self.server, req, self.principal))
-        elif path == "/file" and isinstance(req, dict):
-            self.send_json(*save_request(self.server, req, self.principal))
-        elif path == "/file/create" and isinstance(req, dict):
-            self.send_json(*create_request(self.server, req, self.principal))
-        elif path == "/file/upload" and isinstance(req, dict):
-            self.send_json(*upload_request(self.server, req, self.principal))
-        elif path == "/file/rename" and isinstance(req, dict):
-            self.send_json(*rename_request(self.server, req, self.principal))
-        elif path == "/file/delete" and isinstance(req, dict):
-            self.send_json(*delete_request(self.server, req, self.principal))
-        elif path == "/history/restore" and isinstance(req, dict):
-            self.send_json(*restore_request(self.server, req, self.principal))
-        elif path == "/bib/lookup" and isinstance(req, dict):
-            self.send_json(*lookup_request(req))
-        elif path == "/bib/add" and isinstance(req, dict):
-            self.send_json(*add_request(self.server, req, self.principal))
-        elif path == "/bib/verify":
-            self.send_json(*start_verify(self.server))
-        elif path == "/agent/revise":
-            self.send_json(*(revise_request(req) if isinstance(req, dict) else (400, {"error": "expected a JSON object"})))
-        elif path == "/presence" and isinstance(req, dict):
-            self.send_json(*presence_request(self.server, req, self.principal))
-        elif path == "/logout":
-            self.logout()
-        elif path == "/commit":
-            self.send_json(*commit_request(self.server))
-        elif path == "/rebuild" and config.SHARED:
-            self.send_json(*shared_rebuild_request(self.server, self.principal))
-        elif path == "/rebuild":
-            self.send_json(*on_main_thread(self.server, rebuild_doc))
-        elif path == "/baseline" and config.SHARED and isinstance(req, dict):
-            self.send_json(*baseline_request(self.server, req.get("kind")))
-        elif path == "/switch" and isinstance(req, dict):
-            self.send_json(*request_switch(self.server, json_query(req, "doc")))
-        elif path == "/diff" and isinstance(req, dict):
-            rev = json_query(req, "rev").get("rev", [""])[0]
-            self.send_json(*start_diff(self.server, rev, any_rev=self.principal["role"] == "owner"))
-        elif path == "/open" and isinstance(req, dict):
-            self.send_text(*open_source(self.server.paper_root, json_query(req, "file", "line", "column")))
-        elif path == "/export":
-            self.send_json(*start_export(self.server))
-        elif path == "/review":
-            self.send_json(*start_review(self.server))
-        elif path == "/arxiv":
-            self.send_json(*start_arxiv(self.server))
-        else:
-            self.send_error(404)
+        answer = POSTS.get(path)
+        if answer is None or path in SHARED_POSTS and not config.SHARED:
+            return self.send_error(404)
+        if not isinstance(req, dict):
+            return self.send_json(400, {"error": "expected a JSON object"})
+        answer(self, req)
+
+
+# The actions (do_POST), each answered by a function of the handler and the request's body (a JSON object). SHARED_POSTS:
+# those of shared mode only.
+POSTS = {
+    "/note": lambda h, req: h.send_json(*note_request(h.server, req, h.principal)),
+    "/file": lambda h, req: h.send_json(*save_request(h.server, req, h.principal)),
+    "/file/create": lambda h, req: h.send_json(*create_request(h.server, req, h.principal)),
+    "/file/upload": lambda h, req: h.send_json(*upload_request(h.server, req, h.principal)),
+    "/file/rename": lambda h, req: h.send_json(*rename_request(h.server, req, h.principal)),
+    "/file/delete": lambda h, req: h.send_json(*delete_request(h.server, req, h.principal)),
+    "/history/restore": lambda h, req: h.send_json(*restore_request(h.server, req, h.principal)),
+    "/bib/lookup": lambda h, req: h.send_json(*lookup_request(req)),
+    "/bib/add": lambda h, req: h.send_json(*add_request(h.server, req, h.principal)),
+    "/bib/verify": lambda h, req: h.send_json(*start_verify(h.server)),
+    "/agent/revise": lambda h, req: h.send_json(*revise_request(req)),
+    "/presence": lambda h, req: h.send_json(*presence_request(h.server, req, h.principal)),
+    "/logout": lambda h, req: h.logout(),
+    "/commit": lambda h, req: h.send_json(*commit_request(h.server)),
+    "/rebuild": lambda h, req: h.send_json(*(shared_rebuild_request(h.server, h.principal) if config.SHARED
+                                             else on_main_thread(h.server, rebuild_doc))),
+    "/baseline": lambda h, req: h.send_json(*baseline_request(h.server, req.get("kind"))),
+    "/switch": lambda h, req: h.send_json(*request_switch(h.server, req.get("doc"))),
+    "/diff": lambda h, req: h.send_json(*start_diff(h.server, req.get("rev"), any_rev=h.principal["role"] == "owner")),
+    "/open": lambda h, req: h.send_text(*open_source(h.server.paper_root, req)),
+    "/export": lambda h, req: h.send_json(*start_export(h.server)),
+    "/review": lambda h, req: h.send_json(*start_review(h.server)),
+    "/arxiv": lambda h, req: h.send_json(*start_arxiv(h.server)),
+}
+SHARED_POSTS = {"/baseline"}

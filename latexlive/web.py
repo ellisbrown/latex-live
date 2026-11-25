@@ -437,12 +437,6 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-def json_query(req, *keys):
-    """A JSON body's keys as parse_qs gives a query string's (strings and integers), for the handlers
-    that GET requests share."""
-    return {key: [str(req[key])] for key in keys if isinstance(req.get(key), (str, int)) and not isinstance(req.get(key), bool)}
-
-
 PAGE_STYLE = "<style>body { font: 15px system-ui, sans-serif; background: #323639; color: #eee; margin: 3em; max-width: 40em; }</style>"
 
 

@@ -167,12 +167,9 @@ def arxiv_source(paper_root, pdf_name):
         return {"text": f"{name}:{n}: {what}" if package else what, **({"file": loc[0], "line": loc[1]} if loc else {})}
 
     found = collections.defaultdict(list)
-    terms = os.environ.get("LATEX_LIVE_PRIVATE_TERMS", "").strip()
-    try:
-        private = re.compile(terms) if terms else None
-    except re.error as e:
-        private = None
-        found["config"].append({"text": f"LATEX_LIVE_PRIVATE_TERMS is not a regular expression ({e})"})
+    private = re.compile(config.PRIVATE_TERMS) if config.PRIVATE_TERMS else None
+    if config.PRIVATE_TERMS_PROBLEM:
+        found["config"].append({"text": config.PRIVATE_TERMS_PROBLEM})
 
     def context(text, m):
         """The match with up to 25 characters of its line on each side."""
