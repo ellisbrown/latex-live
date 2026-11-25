@@ -41,22 +41,25 @@ def blank_notes(text, kinds):
     return text
 
 
-# Put before the document by shared mode's builds (shared_build.shared_run), for shown_notes: from \begin{document}
-# on, \todotxt hands the note macro's text on with a record in front of it, which writes a line into the log when
-# its page is shipped out (a \write that isn't \immediate): latex-live|shown|<folder>|<file>|<line>|<MD5 of the
-# text without its spaces>. So a note that isn't typeset, in \iffalse or a switch that is off, dropped by
-# \todotxt (\showtodosfalse) or only measured (a box thrown away), records nothing. In what is written to files
-# (moving arguments, a running head), \todotxt is the paper's as it was. Only a \todotxt of one argument (or a
-# robust one: its inner command) gets the record, \protected if the paper's was; without one, no note counts.
-SHOWN_TEX = (r"\makeatletter\protected\long\def\latexlive@shown#1{\edef\latexlive@w{\write-1{latex-live|shown|"
+# Put before the document by shared mode's builds (shown_tex), for shown_notes: from \begin{document} on, \todotxt
+# hands the note macro's text on with a record in front of it (in a group of its own, which soul's \hl takes as one
+# piece), which writes a line into the log when its page is shipped out (a \write that isn't \immediate):
+# latex-live|shown|<key>|<folder>|<file>|<line>|<MD5 of the text without its spaces>. So a note that isn't typeset,
+# in \iffalse or a switch that is off, dropped by \todotxt (\showtodosfalse) or only measured (a box thrown away),
+# records nothing. In what is written to files (moving arguments, a running head), \todotxt is the paper's as it
+# was, and the record vanishes. Only a \todotxt of one argument (or a robust one: its inner command) gets the record,
+# \protected if the paper's was; without one, no note counts. key, new for each run, keeps the paper's text from
+# passing for a record (a commenter's note in a box TeX shows in the log, say).
+SHOWN_TEX = (r"\makeatletter\protected\long\def\latexlive@record#1{\edef\latexlive@w{\write-1{latex-live|shown|<KEY>|"
              r"\ifdefined\CurrentFile\detokenize\expandafter{\CurrentFilePath}|\detokenize\expandafter{\CurrentFile}\else|\fi"
              r"|\the\inputlineno|\pdfmdfivesum{\expandafter\zap@space\detokenize{#1} \@empty}}}\latexlive@w}"
+             r"\def\latexlive@shown{\ifx\protect\@typeset@protect\expandafter\latexlive@record\else\expandafter\@gobble\fi}"
              r"\long\def\latexlive@todotxt#1{\ifx\protect\@typeset@protect\expandafter\@firstoftwo\else\expandafter\@secondoftwo"
-             r"\fi{\latexlive@orig@todotxt{\latexlive@shown{#1}#1}}{\latexlive@orig@todotxt{#1}}}"
+             r"\fi{\latexlive@orig@todotxt{{\latexlive@shown{#1}}#1}}{\latexlive@orig@todotxt{#1}}}"
              r"\def\latexlive@wrap#1{\expandafter\let\expandafter\latexlive@orig@todotxt\csname#1\endcsname"
              r"\ifnum\pdfmatch{^(\string\\protected)?(\string\\long)? ?macro:\string##1->}{\meaning\latexlive@orig@todotxt}=1 "
              r"\ifnum\pdfmatch{^\string\\protected}{\meaning\latexlive@orig@todotxt}=1 "
-             r"\expandafter\protected\expandafter\long\expandafter\def\csname#1\endcsname##1{\latexlive@orig@todotxt{\latexlive@shown{##1}##1}}"
+             r"\expandafter\protected\expandafter\long\expandafter\def\csname#1\endcsname##1{\latexlive@todotxt{##1}}"
              r"\else\expandafter\let\csname#1\endcsname\latexlive@todotxt\fi"
              r"\ifdefined\pdfstringdefDisableCommands\pdfstringdefDisableCommands{\let\latexlive@shown\@gobble}\fi\fi}"
              r"\def\latexlive@notes{\ifdefined\todotxt\ifdefined\pdfmdfivesum"
@@ -64,14 +67,19 @@ SHOWN_TEX = (r"\makeatletter\protected\long\def\latexlive@shown#1{\edef\latexliv
              r"\else\latexlive@wrap{todotxt}\fi\fi\fi}"
              r"\ifdefined\AddToHook\AddToHook{begindocument/end}{\latexlive@notes}\else\AtBeginDocument{\latexlive@notes}\fi"
              r"\makeatother")
-SHOWN_RE = re.compile(r"^latex-live\|shown\|([^|\n]*)\|([^|\n]*)\|(\d+)\|([0-9A-F]{32})$", re.M)
 
 
-def note_records(log):
-    """The notes a pass typeset, from its log (SHOWN_TEX): [(file, line, digest)], file as TeX named it (relative to
-    the paper root, or absolute), line where TeX was reading then."""
+def shown_tex(key):
+    """SHOWN_TEX with its records keyed key (letters and digits)."""
+    return SHOWN_TEX.replace("<KEY>", key)
+
+
+def note_records(log, key):
+    """The notes a pass typeset, from its log (shown_tex(key)): [(file, line, digest)], file as TeX named it (relative
+    to the paper root, or absolute), line where TeX was reading then."""
+    pattern = r"^latex-live\|shown\|%s\|([^|\n]*)\|([^|\n]*)\|(\d+)\|([0-9A-F]{32})$" % re.escape(key)
     return [(os.path.normpath(os.path.join(m.group(1), m.group(2))) if m.group(2) else "", int(m.group(3)), m.group(4).lower())
-            for m in SHOWN_RE.finditer(log or "")]
+            for m in re.finditer(pattern, log or "", re.M)] if key else []
 
 
 def typeset_digest(tex):
@@ -81,50 +89,67 @@ def typeset_digest(tex):
     return hashlib.md5(re.sub(r"[ \t\n\r\f\v]+", "", tex).encode("utf-8")).hexdigest()
 
 
-def recorded_notes(paper_root, pdf_name, records):
+# A macro's definition, up to its body's brace: a note in one is typeset where the macro is used.
+DEFINITION_RE = re.compile(r"\\(?:(?:re|provide)?newcommand\*?\s*\{?\\[a-zA-Z@]+\}?(?:\s*\[\d\])?(?:\s*\[[^\]]*\])?"
+                           r"|[gex]?def\s*\\[a-zA-Z@]+[^{%\n]*)\s*(?=\{)")
+
+
+def recorded_notes(paper_root, pdf_name, records, since):
     """The notes of the build's files that records (note_records) are of, as {(file, line, macro, tex)} (note
-    fields: tex squeezed). Each record goes to one note that hands \\todotxt exactly what it recorded: the
-    nearest one above it in its file (a note is recorded at its last line, or later in an argument read whole,
-    such as a caption), else one elsewhere (in a macro defined in another file)."""
-    files = project_tex_files(paper_root, fls_file(paper_root, pdf_name))
-    texts = {path: read_tex(path) for path in files}
+    fields: tex squeezed): notes that hand \\todotxt exactly what a record recorded. A note is recorded at its last
+    line, or later in an argument read whole (a caption), so a record is of the nearest such note above it in its
+    file; failing that (a macro's use), of one in a macro's definition elsewhere, one per record. Another record (a
+    list of contents, a running head) shows no note, so that a note in a false branch with the text of one shown
+    stays hidden. None if one of those files changed since since (time.time_ns() as the pass began), or is gone: then
+    what the notes say (their text, a macro in it, the words around them) may not be what the PDF shows."""
+    texts = {}
+    for path in project_tex_files(paper_root, fls_file(paper_root, pdf_name)):
+        try:
+            with open(path, errors="replace") as f:
+                if os.fstat(f.fileno()).st_mtime_ns >= since:
+                    return None
+                texts[path] = blank_comments(f.read())
+        except OSError:
+            return None
     kinds = note_kinds(texts.values())
-    templates = {}  # (note macro: the argument it gives \todotxt, with #1 in it)
+    templates = {}  # (note macro: the argument it gives \todotxt, with #1 in it; the last definition, as note_kinds)
     for text in texts.values():
         for m in NOTE_DEF_RE.finditer(text):
             at = re.search(r"\\todotxt\s*(?=\{)", body := brace_group(text, m.end())[0])
             if m.group(1) in kinds and at:
-                templates.setdefault(m.group(1), brace_group(body, at.end())[0])
-    by_digest = {}
-    for path in files if kinds else []:
-        try:
-            with open(path, errors="replace") as f:
-                text = blank_comments(f.read())
-        except OSError:
-            continue
+                templates[m.group(1)] = brace_group(body, at.end())[0]
+    by_digest = {}  # (digest: [(note, its last line, whether it is in a macro's definition)])
+    for path, text in texts.items() if kinds else ():
         rel = os.path.relpath(path, paper_root)
+        defined = [(m.end(), brace_group(text, m.end())[1]) for m in DEFINITION_RE.finditer(text)]
         for m in note_use_re(kinds).finditer(text):
             if m.group(1) not in templates:
                 continue
             body, end = brace_group(text, m.end())
             note = (rel, text.count("\n", 0, m.start()) + 1, m.group(1), " ".join(body.replace("\x7f", " ").split()))
-            by_digest.setdefault(typeset_digest(templates[m.group(1)].replace("#1", body)), []).append((note, text.count("\n", 0, end) + 1))
-    taken = set()
+            by_digest.setdefault(typeset_digest(templates[m.group(1)].replace("#1", body)), []).append(
+                (note, text.count("\n", 0, end) + 1, any(start < m.start() < stop for start, stop in defined)))
+    shown, elsewhere = set(), []
     for path, line, digest in records:
         path = os.path.relpath(path, paper_root) if os.path.isabs(path) else path
-        free = [(note, last) for note, last in by_digest.get(digest, []) if note not in taken]
-        above = [(note, last) for note, last in free if note[0] == path and last <= line]
-        if above or free:
-            taken.add(max(above, key=lambda n: n[1])[0] if above else free[0][0])
-    return taken
+        above = [(last, note) for note, last, _ in by_digest.get(digest, []) if note[0] == path and last <= line]
+        if above:
+            shown.add(max(above)[1])
+        else:
+            elsewhere.append(digest)
+    for digest in elsewhere:
+        note = next((note for note, _, in_macro in by_digest.get(digest, []) if in_macro and note not in shown), None)
+        if note:
+            shown.add(note)
+    return shown
 
 
 def shown_notes(server, pdf_name, found):
     """Of the notes found (notes, margin_notes), those that the published PDF shows, for viewers and commenters in
-    shared mode: the notes its pass recorded typesetting (SHOWN_TEX; shared_build.shared_publish keeps the records
+    shared mode: the notes its pass recorded typesetting (shown_tex; shared_build.shared_publish keeps the records
     with what it published), so that notes in a false branch (\\iffalse, a switch that is off), or all of them while
     \\todotxt hides them, stay with the editors, who read the sources anyway. None without records of the PDF on
-    show (before the first build of a restarted instance, say)."""
+    show (before the first build of a restarted instance, say), or while a source has changed since its pass began."""
     shared = getattr(server, "shared", None) or {}
     kept = shared.get("shown")
     try:
@@ -134,7 +159,7 @@ def shown_notes(server, pdf_name, found):
     if pdf_name != server.default_pdf or not kept or kept["published"] != shared.get("published") \
             or kept["published"] != {"mtime": st.st_mtime_ns, "size": st.st_size}:
         return []
-    shown = recorded_notes(server.paper_root, pdf_name, kept["records"])
+    shown = recorded_notes(server.paper_root, pdf_name, kept["records"], kept["since"]) or set()
     return [n for n in found if (n.get("file"), n.get("line"), n.get("macro"),
                                  " ".join((n.get("tex") or "").replace("\x7f", " ").split())) in shown]
 

@@ -310,17 +310,17 @@ def baseline_failure_checks():
     ok("in shared mode, a failed diff or change-highlight baseline names no folder of the server's")
 
 
-# A paper for shown_notes_checks: notes that the PDF shows, and notes that it doesn't (one only measured), whose words it
-# has elsewhere.
+# A paper for shown_notes_checks: notes that the PDF shows, and notes that it doesn't (one only measured, one with the
+# text of a note typeset again in the contents), whose words it has elsewhere.
 SHOWN_PAPER = r"""\documentclass{article}
 \usepackage{xcolor,hyperref}
 \newif\ifshowtodos \showtodostrue
 \newcommand{\todotxt}[1]{\ifshowtodos\textcolor{red}{#1}\fi}
 \newcommand{\eb}[1]{\todotxt{[EB: #1]}}\input{defs}\newlength\notewidth
-\begin{document}
+\begin{document}\tableofcontents
 \section{Start \eb{in a title}}
 Hello world, this is a scratch paper. Why not? \eb{shown note}
-\iffalse\eb{Hello world, this is a scratch paper -- PRIVATE: reviewer two}\fi
+\iffalse\eb{Hello world, this is a scratch paper -- PRIVATE: reviewer two}\eb{in a title}\fi
 \ifnum0=1 \eb{why?}\fi
 \eb{one} \iffalse\eb{two}\fi
 \eb{a note on
@@ -333,7 +333,8 @@ three lines}
 \end{document}
 """
 SHOWN_DEFS = "\\newcommand{\\fromdefs}{\\eb{from a macro}}\n"
-# (each record: the line TeX was reading, and what \todotxt typeset, without its spaces)
+# (each record: the line TeX was reading, and what \todotxt typeset, without its spaces; the contents may add one, at
+# line 1 of the .toc, which shows no note)
 SHOWN_RECORDS = ((7, "[EB:inatitle]"), (8, "[EB:shownnote]"), (11, "[EB:one]"), (14, "[EB:anoteonthreelines]"),
                  (16, "[EB:inacaption]"), (17, "[EB:fromamacro]"))
 SHOWN_TEXTS = {"in a title", "shown note", "one", "a note on three lines", "in a caption", "from a macro"}
@@ -341,9 +342,10 @@ SHOWN_TEXTS = {"in a title", "shown note", "one", "a note on three lines", "in a
 
 def shown_notes_checks():
     """Which notes viewers and commenters see (notes.shown_notes): those whose typesetting the published PDF's pass
-    recorded (notes.SHOWN_TEX), not one in \\iffalse or a switch that is off, nor while \\todotxt hides them, however
+    recorded (notes.shown_tex), not one in \\iffalse or a switch that is off, nor while \\todotxt hides them, however
     much of their text the PDF has elsewhere; none for a PDF without records (a build before a restart, another PDF
-    on show). With the host's pdflatex, SHOWN_TEX records just those and changes nothing else that the build writes."""
+    on show) or while a source has changed since its pass began, nor for records of another key (in the paper's text). With the host's pdflatex, shown_tex records just
+    those and changes nothing else that the build writes."""
     import hashlib
     from latexlive import config, notes
     tmp = tempfile.mkdtemp(prefix="latex-live-check-")
@@ -355,15 +357,19 @@ def shown_notes_checks():
         put(os.path.join(root, "main.pdf"), "%PDF-1.4\n")
         st = os.stat(os.path.join(root, "main.pdf"))
         published = {"mtime": st.st_mtime_ns, "size": st.st_size}
-        log = "".join(f"latex-live|shown||main.tex|{line}|{hashlib.md5(text.encode()).hexdigest().upper()}\n"
-                      for line, text in SHOWN_RECORDS)
-        log += "latex-live|shown||main.tex|9|0123\nlatex-live|shown|x\n  latex-live|shown||main.tex|9|" + "A" * 32 + "\n"
-        records = notes.note_records(log)
+        digest = {text: hashlib.md5(text.encode()).hexdigest().upper() for _, text in SHOWN_RECORDS}
+        log = "".join(f"latex-live|shown|k3y||main.tex|{line}|{digest[text]}\n" for line, text in SHOWN_RECORDS)
+        log += f"latex-live|shown|k3y||main.tex|1|{digest['[EB:inatitle]']}\nlatex-live|shown|k3y||other.tex|40|{digest['[EB:inatitle]']}\n"
+        log += "latex-live|shown|k3y||main.tex|9|0123\nlatex-live|shown|k3y|x\n  latex-live|shown|k3y||main.tex|9|" + "A" * 32 + "\n"
+        records = notes.note_records(log, "k3y")
+        if notes.note_records(log.replace("k3y", "other"), "k3y") or notes.note_records(log, ""):
+            fail("note_records takes records of another key, or of none")
         server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf",
-                                       shared={"published": published, "shown": {"published": published, "records": records}})
+                                       shared={"published": published, "shown": {"published": published, "records": records,
+                                                                                  "since": time.time_ns()}})
         found = notes.notes(root, "main.pdf")
-        if len(found) != 11:
-            fail(f"the check's paper has 11 notes, notes() found {len(found)}: {found}")
+        if len(found) != 12:
+            fail(f"the check's paper has 12 notes, notes() found {len(found)}: {found}")
         seen = {n["text"] for n in notes.shown_notes(server, "main.pdf", found)}
         if seen != SHOWN_TEXTS:
             fail(f"viewers would see {sorted(seen)}, not the notes the PDF shows: {sorted(SHOWN_TEXTS)}")
@@ -373,18 +379,22 @@ def shown_notes_checks():
         for what, stale in (("before the first build (no records)", {"published": published, "shown": None}),
                             ("after another publish", {"published": {**published, "size": 1}, "shown": server.shared["shown"]}),
                             ("for records of another publish", {"published": published,
-                                                                "shown": {"published": {**published, "mtime": 1}, "records": records}})):
+                                                                "shown": {**server.shared["shown"], "published": {**published, "mtime": 1}}})):
             if notes.shown_notes(types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", shared=stale), "main.pdf", found):
                 fail(f"viewers would see notes {what}")
         if notes.shown_notes(types.SimpleNamespace(paper_root=root, default_pdf="other.pdf", shared=server.shared), "main.pdf", found):
             fail("viewers would see notes of a PDF that isn't the shared document")
+        server.shared["shown"]["since"], since = os.stat(os.path.join(root, "defs.tex")).st_mtime_ns, server.shared["shown"]["since"]
+        if notes.shown_notes(server, "main.pdf", found):  # (as if the pass began as defs.tex was saved: maybe before)
+            fail("viewers would see notes while a source has changed since the PDF's pass began (a macro in them, say)")
+        server.shared["shown"]["since"] = since
         put(os.path.join(root, "main.pdf"), "%PDF-1.4\n% replaced\n")  # (by something other than shared_publish)
         if notes.shown_notes(server, "main.pdf", found):
             fail("viewers would see notes of a PDF replaced since its records")
         st = os.stat(os.path.join(root, "main.pdf"))
         published = {"mtime": st.st_mtime_ns, "size": st.st_size}
-        parsed = notes.note_records(f"latex-live|shown|sub|x.tex|3|{'B' * 32}\nlatex-live|shown|/abs/dir|y.tex|4|{'C' * 32}\n"
-                                    f"latex-live|shown|||5|{'D' * 32}\n")
+        parsed = notes.note_records(f"latex-live|shown|k|sub|x.tex|3|{'B' * 32}\nlatex-live|shown|k|/abs/dir|y.tex|4|{'C' * 32}\n"
+                                    f"latex-live|shown|k|||5|{'D' * 32}\n", "k")
         if parsed != [("sub/x.tex", 3, "b" * 32), ("/abs/dir/y.tex", 4, "c" * 32), ("", 5, "d" * 32)]:
             fail(f"note_records: {parsed}")
         tex_checks(root, published)
@@ -395,13 +405,15 @@ def shown_notes_checks():
 
 
 def tex_checks(root, published):
-    """shown_notes_checks with the host's pdflatex, if there is one: SHOWN_TEX's records of SHOWN_PAPER are just those
-    of SHOWN_RECORDS, also when the paper's \\todotxt is \\protected or robust, none for one with two arguments, and the
-    PDF's text, the log but for the records, and the .aux and .out are as without SHOWN_TEX."""
+    """shown_notes_checks with the host's pdflatex, if there is one: shown_tex's records of SHOWN_PAPER are just those
+    of SHOWN_RECORDS (and the contents' one) and show just those notes, also when the paper's \\todotxt is \\protected
+    or robust, none for one with two arguments, and the PDF's text, the log but for the records, and the .aux, .toc
+    and .out are as without shown_tex. One that writes its argument into the contents writes none of shown_tex's
+    commands there (but for a group: {}), and one that highlights its argument with soul still builds."""
     import hashlib
     from latexlive import config, notes
     if not shutil.which("pdflatex"):
-        print("skip: no pdflatex here, so notes.SHOWN_TEX is not run", flush=True)
+        print("skip: no pdflatex here, so notes.shown_tex is not run", flush=True)
         return
     build = os.path.join(root, config.BUILD)
 
@@ -413,37 +425,52 @@ def tex_checks(root, published):
         with open(os.path.join(build, f"{job}.log"), errors="replace") as f:
             return f.read()
 
-    plain = "\\newcommand{\\todotxt}[1]{\\ifshowtodos\\textcolor{red}{#1}\\fi}"
-    want = sorted(SHOWN_RECORDS)
-    for name, todotxt, want in (("one argument", plain, want),
-                                   ("\\protected", "\\protected\\long\\def\\todotxt#1{\\ifshowtodos\\textcolor{red}{#1}\\fi}", want),
-                                   ("robust", "\\DeclareRobustCommand{\\todotxt}[1]{\\ifshowtodos\\textcolor{red}{#1}\\fi}", want),
-                                   ("two arguments", "\\newcommand{\\todotxt}[2][red]{\\ifshowtodos\\textcolor{#1}{#2}\\fi}", [])):
+    plain, key = "\\newcommand{\\todotxt}[1]{\\ifshowtodos\\textcolor{red}{#1}\\fi}", "0123456789abcdef"
+    want, again = sorted(SHOWN_RECORDS), sorted([*SHOWN_RECORDS, (1, "[EB:inatitle]")])  # (the contents: line 1 of the .toc)
+    for name, todotxt, want in (
+            ("one argument", plain, want),
+            ("\\protected", "\\protected\\long\\def\\todotxt#1{\\ifshowtodos\\textcolor{red}{#1}\\fi}", again),
+            ("robust", "\\DeclareRobustCommand{\\todotxt}[1]{\\ifshowtodos\\textcolor{red}{#1}\\fi}", again),
+            ("two arguments", "\\newcommand{\\todotxt}[2][red]{\\ifshowtodos\\textcolor{#1}{#2}\\fi}", [])):
         put(os.path.join(root, "main.tex"), SHOWN_PAPER.replace(plain, todotxt))
-        for ext in (".aux", ".out", ".log", ".pdf"):
+        for ext in (".aux", ".toc", ".out", ".log", ".pdf"):
             for job in ("main-live", "main-plain"):
                 if os.path.exists(os.path.join(build, job + ext)):
                     os.remove(os.path.join(build, job + ext))
-        log, before = run("main-live", notes.SHOWN_TEX), run("main-plain", "")
-        records = notes.note_records(log)
+        log, before = run("main-live", notes.shown_tex(key)), run("main-plain", "")
+        records = notes.note_records(log, key)
         texts = {hashlib.md5(text.encode()).hexdigest(): text for _, text in SHOWN_RECORDS}
         got = sorted((line, texts.get(digest, digest)) for _, line, digest in records)
         server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", shared={"published": published,
-                                       "shown": {"published": published, "records": records}})
+                                       "shown": {"published": published, "records": records, "since": time.time_ns()}})
         seen = {n["text"] for n in notes.shown_notes(server, "main.pdf", notes.notes(root, "main.pdf"))}
         if got != want or seen != (SHOWN_TEXTS if want else set()):
-            fail(f"SHOWN_TEX with a {name} \\todotxt recorded {got}, not {want}; viewers would see {sorted(seen)}")
+            fail(f"shown_tex with a {name} \\todotxt recorded {got}, not {want}; viewers would see {sorted(seen)}")
         if not os.path.isfile(os.path.join(build, "main-live.pdf")):
-            fail(f"the build with SHOWN_TEX and a {name} \\todotxt made no PDF: {log[-1500:]}")
+            fail(f"the build with shown_tex and a {name} \\todotxt made no PDF: {log[-1500:]}")
         mine = [line for line in log.splitlines()[1:] if not line.startswith(("latex-live|shown|", "**"))]
         theirs = [line for line in before.replace("main-plain", "main-live").splitlines()[1:] if not line.startswith("**")]
         if [line for line in mine if "out of" not in line] != [line for line in theirs if "out of" not in line]:
-            fail(f"SHOWN_TEX changes the log of a paper with a {name} \\todotxt: {set(mine) ^ set(theirs)}")
-        for ext in (".aux", ".out"):
+            fail(f"shown_tex changes the log of a paper with a {name} \\todotxt: {set(mine) ^ set(theirs)}")
+        for ext in (".aux", ".toc", ".out"):
             if read_text(os.path.join(build, "main-live" + ext)) != read_text(os.path.join(build, "main-plain" + ext)).replace("main-plain", "main-live"):
-                fail(f"SHOWN_TEX changes the {ext} of a paper with a {name} \\todotxt")
+                fail(f"shown_tex changes the {ext} of a paper with a {name} \\todotxt")
         if shutil.which("pdftotext"):
             text = [subprocess.run(["pdftotext", os.path.join(build, f"{job}.pdf"), "-"], capture_output=True).stdout
                     for job in ("main-live", "main-plain")]
             if text[0] != text[1]:
-                fail(f"SHOWN_TEX changes the PDF's text with a {name} \\todotxt")
+                fail(f"shown_tex changes the PDF's text with a {name} \\todotxt")
+    put(os.path.join(root, "main.tex"), "\\documentclass{article}\\usepackage{xcolor}\n"
+        "\\newcommand{\\todotxt}[1]{\\addcontentsline{toc}{subsection}{#1}\\textcolor{red}{#1}}\n"
+        "\\newcommand{\\eb}[1]{\\todotxt{[EB: #1]}}\n\\begin{document}\\tableofcontents\nWords \\eb{one note} more.\n\\end{document}\n")
+    log = run("main-live", notes.shown_tex(key))
+    written = read_text(os.path.join(build, "main-live.aux")) + read_text(os.path.join(build, "main-live.toc"))
+    if [(line, digest) for _, line, digest in notes.note_records(log, key)] != [(5, hashlib.md5(b"[EB:onenote]").hexdigest())] \
+            or "latexlive" in written or "[EB: one note]" not in written:
+        fail(f"shown_tex with a \\todotxt that writes its argument into the contents: {written} {log[-1500:]}")
+    if subprocess.run(["kpsewhich", "soul.sty"], capture_output=True).returncode == 0:  # (\\hl takes a group as one piece)
+        put(os.path.join(root, "main.tex"), "\\documentclass{article}\\usepackage{xcolor,soul}\\newcommand{\\todotxt}[1]{\\hl{#1}}\n"
+            "\\newcommand{\\eb}[1]{\\todotxt{[EB: #1]}}\n\\begin{document}\nWords \\eb{one note} more.\\iffalse\\eb{hidden}\\fi\n\\end{document}\n")
+        log = run("main-live", notes.shown_tex(key))
+        if [(line, digest) for _, line, digest in notes.note_records(log, key)] != [(4, hashlib.md5(b"[EB:onenote]").hexdigest())]:
+            fail(f"shown_tex with a \\todotxt that highlights with soul: {log[-1500:]}")
