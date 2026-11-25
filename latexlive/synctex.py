@@ -238,6 +238,7 @@ def bib_span(paper_root, files, cache=None):
         if known and known[0] == version:
             return known[1]
         span = look_up_bib(paper_root, files)
+        cache.pop(synctex_gz, None)
         if len(cache) >= 16:
             cache.pop(next(iter(cache)))
         cache[synctex_gz] = (version, span)

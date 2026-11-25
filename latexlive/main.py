@@ -287,8 +287,8 @@ def main():
         print("=== latex-live: TeX Live 2024 (podman)" if image_pulled()
               else f"=== latex-live: {config.IMAGE_MISSING}; until then, the host's TeX runs", flush=True)
     if not config.SHARED:
-        owner_starts(server.paper_root, config.BUILD)
         stop_doc_standbys(server)  # (what an instance that was killed left)
+        owner_starts(server.paper_root, config.BUILD)
         start_latexmk(server)
 
     # Only signal latexmk here; the main loop reaps it.
