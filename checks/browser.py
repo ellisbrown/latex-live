@@ -1,7 +1,9 @@
-"""The viewer in a browser (browser_checks, which preview runs on its instance): headless Chromium, through
-Playwright, loads the viewer and the PDF, opens every sidebar tab, the shortcuts' list, the palette and the source
-pane, and no page error or console error comes up meanwhile; and the keyboard gets around (the sidebar's tabs, the
-shortcuts' dialog, the palette's box, a file's row in the Files tab), with the tabs in one row. Optional: without the playwright package or a Chromium for it, it says so
+"""The viewer in a browser (browser_checks, which preview runs on its instance, and shared mode's checks as each
+role): headless Chromium, through Playwright, loads the viewer and the PDF, opens every sidebar tab, the shortcuts'
+list, the palette and (for an editor) the source pane, and no page error or console error comes up meanwhile, nor
+anything the page's Content-Security-Policy refuses; and the keyboard gets around (the sidebar's tabs, the shortcuts'
+dialog, the palette's box, a file's row in the Files tab), with the tabs in one row. Optional: without the playwright
+package or a Chromium for it, it says so
 and checks nothing (pip install playwright, then playwright install chromium; or LATEX_LIVE_CHECK_CHROMIUM, a
 Chromium's path). Only the checks use Playwright: latex-live itself needs nothing beyond Python's standard library."""
 
@@ -10,8 +12,10 @@ import os
 from .base import fail, ok
 
 
-def browser_checks(url):
-    """Check the viewer at url (with its token, which fail's redaction keeps out of the output) in headless Chromium."""
+def browser_checks(url, editor=True, answer=None, who="the viewer"):
+    """Check the viewer at url (with its token, which fail's redaction keeps out of the output) in headless Chromium;
+    without editor, not the source pane (a viewer's or commenter's). answer: for each request the browser makes,
+    (status, [(header, value)], body) to answer it with, instead of the network (shared mode's trusted proxy)."""
     try:
         from playwright.sync_api import Error, sync_playwright
     except ImportError:
@@ -26,11 +30,19 @@ def browser_checks(url):
                          " browser (playwright install chromium, or LATEX_LIVE_CHECK_CHROMIUM)", flush=True)
         try:
             page = browser.new_page(viewport={"width": 1400, "height": 900})
+            if answer:
+                page.route("**/*", lambda route: fulfil(route, answer))
+            page.add_init_script("addEventListener('securitypolicyviolation', (e) => console.error("
+                                 "`CSP refused ${e.violatedDirective}: ${e.blockedURI || 'inline'}`))")
             page.on("pageerror", lambda e: errors.append(f"page error: {e}"))
             # (a fetch of a PDF that a newer one replaced is aborted: PDF.js's normal net::ERR_ABORTED)
             page.on("console", lambda m: m.type == "error" and "ERR_ABORTED" not in m.text and errors.append(f"console error: {m.text}"))
-            page.goto(url)
+            policy = page.goto(url).header_value("content-security-policy") or ""
+            if "script-src 'self'" not in policy or "object-src 'none'" not in policy:
+                errors.append(f"the page's Content-Security-Policy is {policy!r}")
             page.wait_for_selector(".page canvas", timeout=30_000)
+            if page.locator("#welcome").is_visible():  # (the welcome guide, a coauthor's first visit in shared mode)
+                page.click("#welcome .ok")
             if page.locator("#side").is_hidden():
                 page.click("#toggleSide")
             tabs = page.eval_on_selector_all("#tabs [data-tab]", "tabs => tabs.filter(t => !t.hidden).map(t => t.dataset.tab)")
@@ -59,25 +71,35 @@ def browser_checks(url):
             if page.get_attribute("#paletteInput", "role") != "combobox" or not chosen or not page.locator(f"#{chosen}[role=option]").count():
                 errors.append("the palette's box doesn't say which option is chosen (combobox, aria-activedescendant)")
             page.keyboard.press("Escape")
-            page.click("#layoutSplit")
-            page.wait_for_selector("#editorPane:not([hidden]) .cm-content", timeout=10_000)
-            # With the source pane open, the editor's eight tabs still fit in one row.
-            tops = page.eval_on_selector_all("#tabs [data-tab]", "tabs => tabs.filter(t => !t.hidden).map(t => t.offsetTop)")
-            if len(set(tops)) > 1:
-                errors.append(f"the sidebar's tabs take {len(set(tops))} rows")
-            if "files" in tabs:  # (a file's row opens from the keyboard)
-                page.click('#tabs [data-tab="files"]')
-                row = page.wait_for_selector('.files-file[data-key^="s:"]:not(.on)', timeout=10_000)  # (a source: a figure previews)
-                path = row.get_attribute("data-key")[2:]
-                row.focus()
-                page.keyboard.press("Enter")
-                page.wait_for_function("p => document.querySelector('#editorTabs .tab.on')?.dataset.path === p", arg=path, timeout=10_000)
+            if editor:
+                page.click("#layoutSplit")
+                page.wait_for_selector("#editorPane:not([hidden]) .cm-content", timeout=10_000)
+                # With the source pane open, the editor's eight tabs still fit in one row.
+                tops = page.eval_on_selector_all("#tabs [data-tab]", "tabs => tabs.filter(t => !t.hidden).map(t => t.offsetTop)")
+                if len(set(tops)) > 1:
+                    errors.append(f"the sidebar's tabs take {len(set(tops))} rows")
+                if "files" in tabs:  # (a file's row opens from the keyboard)
+                    page.click('#tabs [data-tab="files"]')
+                    row = page.wait_for_selector('.files-file[data-key^="s:"]:not(.on)', timeout=10_000)  # (a source: a figure previews)
+                    path = row.get_attribute("data-key")[2:]
+                    row.focus()
+                    page.keyboard.press("Enter")
+                    page.wait_for_function("p => document.querySelector('#editorTabs .tab.on')?.dataset.path === p", arg=path, timeout=10_000)
             page.wait_for_timeout(500)  # (for what the last click started)
         except Error as e:
-            errors.append(f"{type(e).__name__}: {str(e).strip().splitlines()[0]}")
+            lines = str(e).strip().splitlines()
+            errors.append(f"{type(e).__name__}: {lines[0]}{''.join(f' ({l.strip()})' for l in lines if l.strip().startswith('waiting for'))}")
         finally:
             browser.close()
     if errors:
-        fail("in a browser, the viewer:\n" + "\n".join(errors))
-    ok(f"in a browser (headless Chromium), the viewer loads the PDF and opens every sidebar tab ({len(tabs)}, in one row), the"
-       " shortcuts, the palette and the source pane, from the keyboard too, with no page or console error")
+        fail(f"in a browser, {who}:\n" + "\n".join(errors))
+    ok(f"in a browser (headless Chromium), {who} loads the PDF and opens every sidebar tab ({len(tabs)}, in one row), the"
+       f" shortcuts, the palette{' and the source pane' if editor else ''}, from the keyboard too, with no page or console"
+       " error, nor anything its CSP refuses")
+
+
+def fulfil(route, answer):
+    """Answer a request of the browser's with answer(method, path and query, body)."""
+    request = route.request
+    status, headers, body = answer(request.method, "/" + request.url.split("/", 3)[3], request.post_data_buffer)
+    route.fulfill(status=status, headers={key: value for key, value in headers if key.lower() != "content-length"}, body=body)

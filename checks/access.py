@@ -21,6 +21,21 @@ EXTRA = "extra.invalid:8443"  # their LATEX_LIVE_ALLOWED_HOSTS: a reverse proxy'
 FRAME = "frame-ancestors 'self' vscode-webview: vscode-file:"  # (VS Code's Simple Browser frames the owner's own)
 
 
+def policies_of(port, path, headers):
+    """The Content-Security-Policy headers of a GET of path on port, each as sent."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    try:
+        conn.putrequest("GET", path, skip_host=True, skip_accept_encoding=True)
+        for key, value in headers:
+            conn.putheader(key, value)
+        conn.endheaders()
+        r = conn.getresponse()
+        r.read()
+        return r.msg.get_all("Content-Security-Policy") or []
+    finally:
+        conn.close()
+
+
 def raw(port, method, path, headers, body=None):
     """(status, {header: value} in lower case, body) of one request to port, with exactly these headers (Host too)."""
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
@@ -101,13 +116,21 @@ def access_checks(token, own, state, log):
     # The security headers, as in shared mode, but VS Code's Simple Browser may frame the owner's own.
     for port, path in ((PORT, f"{base}main/viewer.html?file=main.pdf"), (own, "/viewer.html?file=main.pdf"),
                        (PORT, f"{base}main/status/main.pdf"), (PORT, "/papers")):
-        _, headers, _ = raw(port, "GET", path, [("Host", f"localhost:{port}"), cookie])
-        for name, want in (("x-content-type-options", "nosniff"), ("x-frame-options", "SAMEORIGIN"),
-                           ("content-security-policy", FRAME), ("referrer-policy", "no-referrer")):
+        _, headers, body = raw(port, "GET", path, [("Host", f"localhost:{port}"), cookie])
+        for name, want in (("x-content-type-options", "nosniff"), ("x-frame-options", "SAMEORIGIN"), ("referrer-policy", "no-referrer")):
             if headers.get(name) != want:
                 fail(f"GET {path} on port {port} is sent with {name}: {headers.get(name)!r}, not {want!r}")
-    ok("the hub and the previews send nosniff, no referrer, and frame-ancestors (themselves and VS Code's Simple Browser"
-       " only)")
+        # (through the hub, the preview's policy and the hub's: a browser keeps to both)
+        policies = policies_of(port, path, [("Host", f"localhost:{port}"), cookie])
+        scripts = [p for p in policies if "script-src 'self'" in p]
+        page_map = re.search(rb'<script type="importmap">(.*?)</script>', body, re.S)
+        hashed = page_map and f"'sha256-{base64.b64encode(hashlib.sha256(page_map.group(1)).digest()).decode()}'"
+        script = scripts[0] if len(scripts) == 1 else ""
+        if (not policies or not all(p.startswith(FRAME) for p in policies) or "object-src 'none'" not in script
+                or "base-uri 'none'" not in script or hashed and hashed not in script or " 'unsafe-" in script):
+            fail(f"GET {path} on port {port} is sent with the policies {policies!r}")
+    ok("the hub and the previews send nosniff, no referrer, frame-ancestors (themselves and VS Code's Simple Browser"
+       " only), and a policy that runs only their own scripts (the viewer's import map by its hash)")
 
     # Sessions: a link's token becomes a signed cookie (never the token), new on each link, working on the hub and the
     # preview alike; one older than a day is renewed; a forged, expired or other instance's one is refused.

@@ -5,6 +5,7 @@ below this one, and in shared_run's list."""
 
 from .base import in_thread
 from .shared_access import identity_checks, role_checks
+from .shared_browser import shared_browser_checks
 from .shared_commits import commit_checks, shared_stop_checks
 from .shared_downloads import export_checks, review_shared_checks
 from .shared_editor import editor_checks
@@ -28,6 +29,6 @@ def shared_checks(sh, sharing, own, token):
 def shared_run(sh, sharing):
     """The shared-mode checks after the first ones, in order, ending with the instance's stop."""
     for check in (identity_checks, role_checks, session_checks, sandbox_checks, export_checks, review_shared_checks, note_checks,
-                  editor_checks, commit_checks, file_checks):
+                  editor_checks, commit_checks, file_checks, shared_browser_checks):
         check(sh)
     shared_stop_checks(sh, sharing)

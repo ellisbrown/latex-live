@@ -1,6 +1,8 @@
 """HTTP plumbing shared by the instances and the hub: the servers, request body limits, the pages
 for a browser without access, and BaseHandler, which checks who is asking and sends answers."""
 
+import base64
+import hashlib
 import html
 import http.cookies
 import http.server
@@ -144,6 +146,23 @@ class HeaderDeadline(socket.SocketIO):
 
 
 FRAME_ANCESTORS = "frame-ancestors 'self' vscode-webview: vscode-file:"  # (the owner's previews: VS Code's Simple Browser)
+INLINE_SCRIPT_RE = re.compile(rb"<script\b(?![^>]*\bsrc\s*=)[^>]*>(.*?)</script\s*>", re.S | re.I)
+
+
+def frame_policy():
+    """Who may frame a page of this server: no one in shared mode; the owner's own pages and VS Code's Simple Browser
+    (a webview) outside it. Modern browsers follow frame-ancestors and ignore X-Frame-Options then."""
+    return "frame-ancestors 'none'" if config.SHARED else FRAME_ANCESTORS
+
+
+def page_policy(page=b""):
+    """The Content-Security-Policy of a response: frame_policy, scripts only from this server's own files (and the
+    WebAssembly that PDF.js's worker compiles) and the inline scripts of page (an HTML page's bytes, as sent: the
+    viewer's import map), each by its hash, no plugins, and no <base> that would move where the page's relative URLs
+    lead. Nothing else is restricted: the viewer sets styles inline."""
+    hashes = "".join(f" 'sha256-{base64.b64encode(hashlib.sha256(m.group(1)).digest()).decode()}'"
+                      for m in INLINE_SCRIPT_RE.finditer(page))
+    return f"{frame_policy()}; script-src 'self' 'wasm-unsafe-eval'{hashes}; object-src 'none'; base-uri 'none'"
 
 
 def serving_hub_port(cache={}):
@@ -346,12 +365,12 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Set-Cookie", f"latex_live={self.set_cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age={age}{secure}")
         if self.path.startswith(("/viewer.html", "/viewer/")):  # revalidate, so an update shows on the next reload
             self.send_header("Cache-Control", "no-cache")
-        # No other site may frame the viewer, nor learn its URL. Outside shared mode, VS Code's Simple Browser (a
-        # webview) may frame the owner's own: modern browsers follow frame-ancestors and ignore X-Frame-Options then.
+        # No other site may frame the viewer, nor learn its URL (frame_policy), and its pages run only this server's
+        # scripts (page_policy; a response may set its own, csp_override).
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY" if config.SHARED else "SAMEORIGIN")
         csp, self.csp_override = getattr(self, "csp_override", None), None  # (this response's only, not the next one's)
-        self.send_header("Content-Security-Policy", csp or ("frame-ancestors 'none'" if config.SHARED else FRAME_ANCESTORS))
+        self.send_header("Content-Security-Policy", csp or page_policy())
         self.send_header("Referrer-Policy", "no-referrer")
         super().end_headers()
 
@@ -372,6 +391,7 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
             return self.send_error(404)
         with f:
             self.send_response(200)
+            self.csp_override = frame_policy()  # (a PDF opened in a tab: Chrome's viewer of it is a plugin, object-src)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(os.fstat(f.fileno()).st_size))
             self.send_header("Cache-Control", "no-store")

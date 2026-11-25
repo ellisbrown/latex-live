@@ -13,7 +13,8 @@ does).
    review copy reads its notes from the files of the last good build (only the paper's own), and
    the inputs kept for its probe leave out symbolic links; the host's reads and copies of the build's files (the
    downloads, the diff, the baselines, the kept recorder file, the notes-free pass's seed, the log) follow no link,
-   and no copy is written through one; shared mode's builder prints the page
+   and no copy is written through one, nor anything into a folder there that is a link (made a folder of the
+   build's own first), nor does the push baseline take a link; shared mode's builder prints the page
    layout as latexmkrc does, runs biber again when a data source changes, and reads a chapter's .aux
    for bibtex; a failed diff or baseline names no folder of the server's there. Viewers and commenters see the
    notes whose typesetting the published PDF's pass recorded (not one in \\iffalse, behind a switch that is off or
@@ -64,7 +65,7 @@ does).
      GET of /status never does, and the History tab's); the hub and the previews refuse HEAD and bad or oversized POST
      bodies; SyncTeX finds a source line; /instances lists the instance;
    - in headless Chromium (with Playwright, if it is there), the viewer loads the PDF and opens every sidebar tab, the
-     palette and the source pane without a page or console error;
+     palette and the source pane without a page or console error, nor anything its Content-Security-Policy refuses;
    - /me reports the owner with every capability; the viewer's and the editor's modules and the
      viewer's style are served (as JavaScript, and CSS), the viewer's revalidated; SyncTeX answers
      as JSON without opening the editor, while POST /open and plain /synctex still open it (a
@@ -84,7 +85,7 @@ does).
      hub's ports, LATEX_LIVE_HOST's name there and LATEX_LIVE_ALLOWED_HOSTS' on its port, nothing
      else; a POST's Origin must be the viewer's own page under the same kind of name (or none, with
      the token), refused before its body is read; nosniff, no referrer, frame-ancestors (VS Code's
-     Simple Browser only); a link's token becomes a signed session cookie (new each time, never the
+     Simple Browser only), and a policy that runs only their own scripts and the viewer's import map (by its hash); a link's token becomes a signed session cookie (new each time, never the
      token) that both take, a cookie from before sessions is replaced, one older than a day renewed,
      forged, expired or other instances' ones refused; signing out expires it, and the page says so;
      a token file that others could read is made private at the start;
@@ -141,7 +142,8 @@ does).
      no document switch or agent hook, for anyone, even with a plugin set) and every endpoint per role (the checks and the build's log for editors only, the log with the paper's files
      relative to it),
      the Origin rules for POSTs (a loopback one only on the instance's own port), POST body limits,
-     non-owners pinned to the document, and the viewer's security headers; the Refs panel for editors, without
+     non-owners pinned to the document, and the viewer's security headers (its import map by its hash, no inline
+     handler; a PDF's policy only frame-ancestors); the Refs panel for editors, without
      online lookups; who has the paper open for editors and the owner (names, files and lines, no ids or roles),
      never for viewers or commenters; the History tab for editors and the owner, an editor's without another
      branch's commits (nor restoring from one); a viewer's SyncTeX lookups past two at once refused while the
@@ -200,6 +202,6 @@ Live image), papers (the scratch paper), access (who reaches the owner's preview
 (the viewer in headless Chromium, if Playwright is there), static (the checkout as it is), shared_units, bib_units, files_units, history_units and units (the server's parts without an instance), standby, early, clean_standby
 and landscape (the threads beside the instance checks: the warm standby, the early notes-free pass and its warm
 standby, turned pages), shared_helpers, shared_setup, shared_access, shared_sessions, shared_sandbox, shared_downloads,
-shared_notes, shared_editor, shared_rebuild, shared_commits, shared_files and shared (shared mode, two threads of its own), preview (the
+shared_notes, shared_editor, shared_rebuild, shared_commits, shared_files, shared_browser and shared (shared mode, two threads of its own), preview (the
 instance checks, which start the threads), and main.
 """

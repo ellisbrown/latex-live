@@ -318,7 +318,6 @@
 </div>
 <div id="preview" hidden></div>
 
-<!-- (onerror: a preview started before its script moved to viewer/ can't send it; the status line says so) -->
-<script type="module" src="viewer/main.js" onerror="document.getElementById('status').textContent = 'server is older than this viewer: restart the LaTeX build task'"></script>
+<script type="module" src="viewer/main.js"></script>
 </body>
 </html>
