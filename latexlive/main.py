@@ -78,11 +78,11 @@ def serve(paper_root, default_pdf, port, page_limit, hub_port=None):
     server.git_dir = None  # (git_dir)
     server.results, server.results_lock = {}, threading.Lock()  # (shared_result)
     server.checks, server.checks_running, server.checks_lock = {}, {}, threading.Lock()  # (cached_checks)
-    # shared_build's state: whether a run is on, its status and the notes-free pass's, what it published, the
-    # tools' states (bib, biber, idx) and the rebuilds' generation (gen), the files it missed or depends on beyond
-    # its file list (missing, deps), and the requests to build again (POST /rebuild: admit; at most every 20 s
-    # for coauthors), and what stopped runs (overflow, no_image).
-    server.shared = {"building": False, "status": None, "clean": None, "published": None, "wanted": threading.Event(),
+    # shared_build's state: whether a run is on, its status and the notes-free pass's, what it published (and the
+    # notes that PDF shows: shown), the tools' states (bib, biber, idx) and the rebuilds' generation (gen), the files
+    # it missed or depends on beyond its file list (missing, deps), and the requests to build again (POST /rebuild:
+    # admit; at most every 20 s for coauthors), and what stopped runs (overflow, no_image).
+    server.shared = {"building": False, "status": None, "clean": None, "published": None, "shown": None, "wanted": threading.Event(),
                      "force": False, "rebuilt": -60, "proc": None, "clean_seq": 0, "bib": None, "biber": None, "idx": None,
                      "gen": 0, "retried": -60, "overflow": 0, "overflows": 0, "no_image": False, "missing": [], "deps": [],
                      "admit": threading.Lock(), "clean_lock": threading.Lock()}

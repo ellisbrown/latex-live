@@ -23,6 +23,7 @@ import traceback
 from . import config
 from .files import aux_tree, fls_file, pdf_path, project_tex_files, read_build, read_capped
 from .latex import RERUN_RE
+from .notes import SHOWN_TEX, note_records
 from .shared_watch import shared_deps, shared_inputs, shared_missing
 from .timing import note
 from .tools import LIVE_SPAWN, RUN_SEQ, SPAWNS, container_argv, image_pulled, stop_containers
@@ -175,7 +176,7 @@ def shared_run(server):
         if server.shared["no_image"]:
             raise RuntimeError(f"{config.IMAGE_MISSING}; until then nothing builds (never the host's TeX here)")
         tex = ["pdflatex", "-recorder", "-synctex=1", "-file-line-error", "-halt-on-error", "-interaction=batchmode",
-               f"-output-directory={config.BUILD}", f"-jobname={job}", f"{LAYOUT_TEX}\\input{{{doc}}}"]
+               f"-output-directory={config.BUILD}", f"-jobname={job}", f"{SHOWN_TEX}{LAYOUT_TEX}\\input{{{doc}}}"]
         ok = False
 
         def tool(name, state_key, state, argv, log_ext, **where):
@@ -197,9 +198,10 @@ def shared_run(server):
                 break
             latex_report.keep_inputs(job)
             latex_report.keep_synctex(os.path.join(config.BUILD, f"{job}.synctex.gz"))
-            shared_publish(server, job)
+            log = read_build(out(".log"))
+            shared_publish(server, job, note_records(log))
             note(server, "published")
-            aux, log, bcf = read_build(out(".aux")), read_build(out(".log")), read_build(out(".bcf"))
+            aux, bcf = read_build(out(".aux")), read_build(out(".bcf"))
             auxes, ran = aux_tree(aux), False
             server.shared["deps"] = shared_deps(server, auxes, bcf)
             if "\\bibdata" in auxes:
@@ -258,10 +260,11 @@ def shared_run(server):
         note(server, "run-end")
 
 
-def shared_publish(server, job):
+def shared_publish(server, job, records):
     """Publish build/<job>.pdf as the shared document's PDF, in one step, and remember what was published
-    (status's "overwritten" compares the PDF with it). Never through a symbolic link: build/ is written in
-    the containers."""
+    (status's "overwritten" compares the PDF with it), with the notes its pass recorded typesetting (records:
+    notes.note_records), which viewers and commenters see (notes.shown_notes). Never through a symbolic link:
+    build/ is written in the containers."""
     dest = pdf_path(server.paper_root, server.default_pdf)
     try:
         fd = os.open(os.path.join(server.paper_root, config.BUILD, f"{job}.pdf"), os.O_RDONLY | os.O_NOFOLLOW)
@@ -273,6 +276,7 @@ def shared_publish(server, job):
     os.replace(tmp, dest)
     st = os.stat(dest)
     server.shared["published"] = {"mtime": st.st_mtime_ns, "size": st.st_size}
+    server.shared["shown"] = {"published": server.shared["published"], "records": records}
 
 
 def shared_notes_free(server, job, doc):

@@ -15,7 +15,10 @@ does).
    downloads, the diff, the baselines, the kept recorder file, the notes-free pass's seed, the log) follow no link,
    and no copy is written through one; shared mode's builder prints the page
    layout as latexmkrc does, runs biber again when a data source changes, and reads a chapter's .aux
-   for bibtex; a failed diff or baseline names no folder of the server's there. LATEX_LIVE_TIMING=1's lines
+   for bibtex; a failed diff or baseline names no folder of the server's there. Viewers and commenters see the
+   notes whose typesetting the published PDF's pass recorded (not one in \\iffalse, behind a switch that is off or
+   only measured, however much of its text the PDF has elsewhere), none for a PDF without records; with the host's
+   pdflatex, the records leave the PDF's text, the log, .aux and .out as they were. LATEX_LIVE_TIMING=1's lines
    leave out the events of a notes-free pass that a newer run superseded. The editor and the notes never read or
    write a source through a folder or file swapped for a link after the check. Forward search looks a line up
    again a few seconds after it found nothing, and keeps what it finds for the build. The build's log for editors

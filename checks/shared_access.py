@@ -186,12 +186,19 @@ def role_checks(sh):
     authors = as_viewer("/authors/main.pdf")
     if not isinstance(authors, list) or not {"eb", "ed", "cm"} <= {a.get("macro") for a in authors if isinstance(a, dict)}:
         fail(f"/authors does not list every note macro for a viewer: {authors}")
-    hidden = ("Quagga private draft note", "a note in a branch that is off")  # (\iffalse, and \ifnum0=1: not in the PDF)
+    # (\iffalse, and \ifnum0=1: not in the PDF, though the PDF has the words of the last two elsewhere)
+    hidden = ("Quagga private draft note", "a note in a branch that is off", "PRIVATE: reviewer two", '"why?"')
     seen = {uid: json.dumps(expect(via_proxy(uid, "/notes/main.pdf"), 200, f"GET notes for {uid}")) for uid in ("vw", "cm", "ed")}
     if any(h in seen[uid] for h in hidden for uid in ("vw", "cm")) or not all(h in seen["ed"] for h in hidden) \
             or not all("An owner note to resolve" in seen[uid] for uid in seen):
         fail(f"/notes for a viewer or commenter lists notes the PDF doesn't show, or misses one it does (or the editor's"
              f" misses a hidden one): {seen}")
+    margins = {uid: json.dumps(expect(via_proxy(uid, "/margin/main.pdf"), 200, f"GET margin for {uid}")) for uid in ("vw", "ed")}
+    if any(h in margins["vw"] for h in hidden) or "An owner note to resolve" not in margins["vw"] \
+            or '"why?"' not in margins["ed"]:
+        fail(f"/margin for a viewer lists notes the PDF doesn't show, or misses one it does (or the editor's misses the one"
+             f" behind a switch that is off): {margins}")
+    private = next(n for n in json.loads(seen["ed"]) if "PRIVATE: reviewer two" in n.get("text", ""))
     for uid in ("vw", "cm"):
         info = expect_dict(via_proxy(uid, "/status/main.pdf?base=push"), 200, f"GET status for {uid}")
         if {"head", "push", "diff", "source"} & set(info) or not info.get("version"):
@@ -208,7 +215,8 @@ def role_checks(sh):
         note = next(n for n in json.loads(seen[uid]) if "An owner note to resolve" in n.get("text", ""))
         expect(via_proxy(uid, f"/forward?file={urllib.parse.quote(note['file'])}&line={note['line']}"), 200,
                f"forward search for {uid} to a note the PDF shows (the notes list's rows)")
-        for query in ("file=main.tex&line=9", f"file={urllib.parse.quote(note['file'])}&line={note['line'] + 1}", "file=nope.tex&line=1"):
+        for query in ("file=main.tex&line=9", f"file={urllib.parse.quote(note['file'])}&line={note['line'] + 1}", "file=nope.tex&line=1",
+                      f"file={urllib.parse.quote(private['file'])}&line={private['line']}"):
             refused = via_proxy(uid, f"/forward?{query}")
             if refused[0] != 404 or b"that line is not in the PDF" not in refused[2]:
                 fail(f"forward search for {uid} to a line that is no note's ({query}): {refused[0]} {refused[2][:120]!r}")
