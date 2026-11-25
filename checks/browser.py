@@ -2,7 +2,8 @@
 role): headless Chromium, through Playwright, loads the viewer and the PDF, opens every sidebar tab, the shortcuts'
 list, the palette and (for an editor) the source pane, and no page error or console error comes up meanwhile, nor
 anything the page's Content-Security-Policy refuses; and the keyboard gets around (the sidebar's tabs, the shortcuts'
-dialog, the palette's box, a file's row in the Files tab), with the tabs in one row. Optional: without the playwright
+dialog, the palette's box, a file's row in the Files tab), with the tabs in one row; and looking again in the Files tab with
+nothing changed draws no row anew. Optional: without the playwright
 package or a Chromium for it, it says so
 and checks nothing (pip install playwright, then playwright install chromium; or LATEX_LIVE_CHECK_CHROMIUM, a
 Chromium's path). Only the checks use Playwright: latex-live itself needs nothing beyond Python's standard library."""
@@ -80,15 +81,8 @@ def browser_checks(url, editor=True, answer=None, who="the viewer"):
                 tops = page.eval_on_selector_all("#tabs [data-tab]", "tabs => tabs.filter(t => !t.hidden).map(t => t.offsetTop)")
                 if len(set(tops)) > 1:
                     errors.append(f"the sidebar's tabs take {len(set(tops))} rows")
-                if "files" in tabs:  # (a file's row opens from the keyboard)
-                    page.click('#tabs [data-tab="files"]')
-                    row = page.locator('.files-file[data-key^="s:"]:not(.on)').first  # (a source: a figure previews)
-                    row.wait_for(timeout=10_000)  # (a locator, found again should the list be redrawn meanwhile)
-                    path = row.get_attribute("data-key")[2:]
-                    page.focus(f'.files-file[data-key={json.dumps("s:" + path)}]')
-                    page.keyboard.press("Enter")
-                    # (not wait_for_function, which evaluates a string in the page: its policy refuses that)
-                    page.wait_for_selector(f"#editorTabs .tab.on[data-path={json.dumps(path)}]", timeout=10_000)
+                if "files" in tabs:
+                    files_tab_checks(page, errors, redraws=not answer)  # (shared mode: others' comings and goings redraw)
             page.wait_for_timeout(500)  # (for what the last click started)
         except Error as e:
             lines = str(e).strip().splitlines()
@@ -100,6 +94,34 @@ def browser_checks(url, editor=True, answer=None, who="the viewer"):
     ok(f"in a browser (headless Chromium), {who} loads the PDF and opens every sidebar tab ({len(tabs)}, in one row), the"
        f" shortcuts, the palette{' and the source pane' if editor else ''}, from the keyboard too, with no page or console"
        " error, nor anything its CSP refuses")
+
+
+def files_tab_checks(page, errors, redraws=True):
+    """The Files tab: a file's row opens from the keyboard; with redraws, looking again with nothing changed draws no row
+    anew (the tab draws its tree only when what it shows changes, so that a row keeps the focus)."""
+    from playwright.sync_api import Error
+    page.click('#tabs [data-tab="files"]')
+    for tries in range(3):  # (a row is found anew each time: a build or a change of the list may redraw them meanwhile)
+        try:
+            row = page.locator('#files .files-file[data-key^="s:"]:not(.on)').first  # (a source: a figure previews)
+            row.wait_for(timeout=10_000)
+            path = row.get_attribute("data-key")[2:]
+            page.locator(f'#files .files-file[data-key={json.dumps("s:" + path)}]').press("Enter")  # (focuses it, then the key)
+            # (not wait_for_function, which evaluates a string in the page: its policy refuses that)
+            page.wait_for_selector(f"#editorTabs .tab.on[data-path={json.dumps(path)}]", timeout=5_000)
+            break
+        except Error:
+            if tries == 2:
+                raise
+    if not redraws:
+        return
+    page.wait_for_selector(f'#files .files-file.on[data-key={json.dumps("s:" + path)}]', timeout=10_000)
+    page.evaluate("document.querySelector('#files .files-file').dataset.marked = 'yes'")
+    with page.expect_response(lambda r: r.url.split("?")[0].endswith("/files"), timeout=10_000):
+        page.click("#files .panel-refresh")
+    page.wait_for_timeout(300)  # (the answer drawn, if it were)
+    if not page.locator("#files .files-file[data-marked=yes]").count():
+        errors.append("looking again in the Files tab with nothing changed draws its rows anew")
 
 
 def fulfil(route, answer, origin):

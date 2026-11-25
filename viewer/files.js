@@ -45,6 +45,7 @@ let action = null; // the form's: {kind: "new" | "upload" | "rename", path?, fil
 // change the paper's files call it too. Until a list has loaded, the tree says why it didn't; after, it keeps the last one.
 export async function loadFiles() {
   if (!editorAllowed()) return;
+  if (srcFiles) drawTree(); // (at once what changed while the tab was hidden, e.g. the open file: the list's answer then redraws only if it changed)
   const got = await fetchFiles();
   loadError = got.ok ? "" : `The files did not load: ${got.error}`;
   drawTree();
