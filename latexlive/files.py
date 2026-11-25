@@ -200,7 +200,7 @@ def read_output(paper_root, path, encoding=None):
     f = open_output(path)
     if f is None:
         return None
-    with io.TextIOWrapper(f, encoding=encoding, errors="replace") as text_file:
+    with f, io.TextIOWrapper(f, encoding=encoding, errors="replace") as text_file:
         text = text_file.read(config.OUTPUT_LIMIT + 1)
     if len(text) > config.OUTPUT_LIMIT:
         raise RuntimeError(too_big(os.path.relpath(path, paper_root), config.OUTPUT_LIMIT))

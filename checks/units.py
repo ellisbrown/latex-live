@@ -1311,8 +1311,8 @@ def header_deadline_checks():
 
 def in_flight_checks():
     """In shared mode, a coauthor has at most handler.USER_REQUESTS requests in progress at once (the viewer's own files
-    and /favicon.ico aside) and at most USER_SPAWNS of those that may start a process (SyncTeX, forward search, a
-    commit's diff, a note): past that, refused; another user and the owner are not counted, nor anyone outside shared mode;
+    and /favicon.ico aside) and at most USER_SPAWNS of those that may start a process (SyncTeX, forward search, the
+    commits and a commit's diff, a note): past that, refused; another user and the owner are not counted, nor anyone outside shared mode;
     a request that ends, also with an error, frees its place."""
     from latexlive import config, handler
     viewer = {"id": "vw", "role": "viewer"}
@@ -1323,7 +1323,8 @@ def in_flight_checks():
             spawns = [held.enter_context(handler.in_flight(viewer, "GET", "/synctex")) for _ in range(3)]
             if spawns != [True, True, False]:
                 fail(f"a viewer's SyncTeX lookups at once, {handler.USER_SPAWNS} allowed: {spawns}")
-            for method, path in (("GET", "/forward"), ("GET", "/history/diff"), ("POST", "/note")):
+            for method, path in (("GET", "/forward"), ("GET", "/history"), ("GET", "/history/diff"), ("GET", "/commits"),
+                                 ("POST", "/note")):
                 with handler.in_flight(viewer, method, path) as admitted:
                     if admitted:
                         fail(f"{method} {path} is not counted with the requests that may start a process")

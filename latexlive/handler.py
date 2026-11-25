@@ -83,10 +83,11 @@ def static_file(path):
 # Requests of one coauthor in progress at once, in shared mode (in_flight): at most USER_REQUESTS of any kind but the
 # viewer's own files (static_file: a page loads dozens of modules at once), half the server's connections
 # (DualStackServer.CONNECTIONS), and at most USER_SPAWNS of those that may start a process each time (SPAWNING: SyncTeX,
-# which shares three slots with the builds made on request, git, and a note's inverse search). Past that, 429. Counted per
-# user, so a person's tabs and sign-ins share them; the owner's are not counted.
+# which shares three slots with the builds made on request, git for the commits and their diffs, and a note's inverse
+# search). Past that, 429. Counted per user, so a person's tabs and sign-ins share them; the owner's are not counted.
 USER_REQUESTS, USER_SPAWNS = 32, 2
-SPAWNING = {("GET", "/synctex"), ("GET", "/forward"), ("GET", "/history/diff"), ("POST", "/note")}
+SPAWNING = {("GET", "/synctex"), ("GET", "/forward"), ("GET", "/history"), ("GET", "/history/diff"), ("GET", "/commits"),
+            ("POST", "/note")}
 IN_FLIGHT, IN_FLIGHT_LOCK = collections.Counter(), threading.Lock()
 
 
