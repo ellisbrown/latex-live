@@ -503,14 +503,14 @@ def owner_checks(token, own, editor_log, paper):
     refs = os.path.join(paper, "refs.bib")  # (no build reads it; gone again after)
     put(refs, "@misc{alpha, title={Alpha}}\n")
     try:
-        index = hub_get("/papers/index", token)
+        index = hub_get("/bib/index", token)
         added = post("/bib/add", token, body={"bibtex": "@misc{beta, title={Beta}}"})
         if ([(e["key"], e["citeCount"]) for e in index.get("entries", [])] != [("alpha", 0)] or index.get("lookups") is not True
                 or added != {"file": "refs.bib", "keys": ["beta"]} or read_text(refs) != "@misc{alpha, title={Alpha}}\n\n@misc{beta, title={Beta}}\n"):
             fail(f"the bibliography through the hub: {index}, adding: {added}")
     finally:
         os.remove(refs)
-    ok("through the hub, /papers/index lists the bibliography (lookups on by default outside shared mode), and /bib/add adds"
+    ok("through the hub, /bib/index lists the bibliography (lookups on by default outside shared mode), and /bib/add adds"
        " an entry")
     figure = os.urandom(300_000)  # (an upload's body, above the other actions' limit)
     try:

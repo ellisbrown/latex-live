@@ -1,4 +1,4 @@
-// The Refs tab (editors and the owner): the paper's bibliography (live.py /papers/index), each .bib entry with how
+// The Refs tab (editors and the owner): the paper's bibliography (live.py /bib/index), each .bib entry with how
 // often the paper cites it (3×, 0×; a click goes to the first citation), a button that types \cite{key} at the source
 // pane's cursor and one that opens the entry; adding entries by arXiv ID, DOI or pasted BibTeX (/bib/lookup, /bib/add);
 // and checking the bibliography (/bib/verify). An ID's lookup and the check against Crossref go online, which a
@@ -16,7 +16,7 @@ import { wrote } from "./build.js";
 import { registerCommands } from "./palette.js";
 import { icon } from "./icons.js";
 
-let index = null, loadError = ""; // (/papers/index: {entries, bibFiles, lookups}; why it last failed to load)
+let index = null, loadError = ""; // (/bib/index: {entries, bibFiles, lookups}; why it last failed to load)
 let verify = null, verifyTimer = 0, verifyMisses = 0; // (/bib/verify's last answer; the poll while it runs, and its misses)
 
 const panel = addTab("refs", { label: "Refs", icon: "refs", title: "The bibliography: citations, adding and checking entries",
@@ -45,7 +45,7 @@ panel.append(el("div", { className: "panel-bar" }, search, sort, addBtn, checkBt
 // doesn't load, the list says why (over the one loaded before, if any).
 async function loadRefs() {
   if (!editorAllowed()) return;
-  const got = await getJSON("papers/index");
+  const got = await getJSON("bib/index");
   loadError = got.ok && Array.isArray(got.body.entries) ? "" : `The bibliography did not load: ${got.error || "no entries in the answer"}`;
   if (loadError) return renderList();
   index = got.body;

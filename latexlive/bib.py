@@ -1,4 +1,4 @@
-"""The Refs panel's bibliography: GET /papers/index lists the entries of the paper's .bib files with how often its
+"""The Refs panel's bibliography: GET /bib/index lists the entries of the paper's .bib files with how often its
 .tex files cite each, and where; POST /bib/add appends entries to a .bib file, as a save from the browser editor;
 POST /bib/lookup turns an arXiv ID, a DOI or pasted BibTeX into an entry to add; and POST /bib/verify checks the
 bibliography in the background (keys and titles twice over, entries never cited, and against Crossref: years, and
@@ -91,8 +91,8 @@ def citations(text):
     return found
 
 
-def papers_index(server):
-    """GET /papers/index: {"entries": [entry (parse_bib_entries) plus "citeCount" and "citedIn" (the first 10 places
+def bib_index(server):
+    """GET /bib/index (also as /papers/index, its older name): {"entries": [entry (parse_bib_entries) plus "citeCount" and "citedIn" (the first 10 places
     it is cited, [{"file", "line"}])], at most COMPLETIONS_LIMIT; "bibFiles" (bib_order); "lookups": whether this preview looks
     references up online (config.LOOKUPS)}."""
     entries, bib_files, cited = [], [], collections.defaultdict(list)
@@ -390,7 +390,7 @@ def run_verify(server, job):
     out since, and Crossref's year; and a DOI that Crossref doesn't know. When a few requests fail and none went
     through, Crossref is offline, and the check ends there."""
     try:
-        entries = papers_index(server)["entries"]
+        entries = bib_index(server)["entries"]
         findings, by_key, by_title = [], {}, {}
         note = lambda severity, kind, e, msg: findings.append({"severity": severity, "kind": kind, "key": e["key"],
                                                                "file": e["file"], "line": e["line"], "msg": msg})

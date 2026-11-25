@@ -43,12 +43,12 @@ def paper():
 
 
 def index_checks():
-    """GET /papers/index (bib.papers_index): every entry of the paper's .bib files (not @string), its fields, how
+    """GET /bib/index (bib.bib_index): every entry of the paper's .bib files (not @string), its fields, how
     often the .tex files cite it outside comments and where (\\citep[...]{a, b}, \\nocite, \\citet), each file read
     again once it changed; and whether this preview looks references up online."""
     from latexlive import bib, config
     with paper() as (root, server):
-        found = bib.papers_index(server)
+        found = bib.bib_index(server)
         got = {e["key"]: (e["citeCount"], [(c["file"], c["line"]) for c in e["citedIn"]], e["file"], e["line"])
                for e in found["entries"]}
         want = {"alpha": (3, [("main.tex", 3), ("main.tex", 3), ("sec.tex", 2)], "refs.bib", 2),
@@ -64,7 +64,7 @@ def index_checks():
             fail(f"a quoted field with a quote in braces: {quoted}")
         put(os.path.join(root, "sec.tex"), "\\cite{gamma}\n")
         os.utime(os.path.join(root, "sec.tex"), ns=(1, 1))  # (a new mtime as well as a new size)
-        counts = {e["key"]: e["citeCount"] for e in bib.papers_index(server)["entries"]}
+        counts = {e["key"]: e["citeCount"] for e in bib.bib_index(server)["entries"]}
         if counts != {"alpha": 2, "beta": 1, "gamma": 1, "Delta": 0}:
             fail(f"the bibliography's citation counts after a change to sec.tex: {counts}")
     ok("the Refs panel lists the .bib files' entries with how often and where the .tex files cite them (not in comments),"
@@ -197,7 +197,7 @@ def lookups_off_checks():
         code, answer = bib.start_verify(server)
         if code != 403 or not answer.get("lookupsOff") or server.bib_verify:
             fail(f"the check against Crossref with lookups off: {code} {answer}")
-        if (bib.papers_index(server)["lookups"] is not False or bib.lookup_request({"query": "@misc{k, title={T}}"})[0] != 200
+        if (bib.bib_index(server)["lookups"] is not False or bib.lookup_request({"query": "@misc{k, title={T}}"})[0] != 200
                 or bib.add_request(server, {"bibtex": "@misc{k, title={T}}"}, OWNER)[0] != 200):
             fail("with lookups off, the index, pasted BibTeX or adding stopped working")
     if asked:
