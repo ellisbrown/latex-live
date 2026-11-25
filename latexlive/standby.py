@@ -721,8 +721,13 @@ def keep(folder):
         proc = subprocess.Popen(info["argv"], env={**os.environ, **info["env"]}, stdin=subprocess.DEVNULL, stdout=out,
                                 stderr=subprocess.STDOUT,
                                 preexec_fn=(lambda: ctypes.CDLL("libc.so.6").prctl(1, signal.SIGTERM)) if linux else None)
-    write_json(sb.path("keeper.json"), {"pid": os.getpid(), "start": process_start(os.getpid()), "tex": proc.pid, "t0": t0,
-                                        "snapshot": snap})
+    try:
+        write_json(sb.path("keeper.json"), {"pid": os.getpid(), "start": process_start(os.getpid()), "tex": proc.pid, "t0": t0,
+                                            "snapshot": snap})
+    except OSError:  # (live.py removed the folder meanwhile, not knowing of this keeper yet)
+        stop_tex(proc, info)
+        remove(folder)
+        return
     while True:
         try:
             code = proc.wait(0.25)
