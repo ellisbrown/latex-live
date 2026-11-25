@@ -542,13 +542,13 @@ def forward_cache_checks():
         server = fake_server(root)
         query = {"file": ["main.tex"], "line": ["1"]}
         first, again = navigation.forward_request(server, query), navigation.forward_request(server, query)
-        for entry in server.results.values():  # (as if the few seconds had passed)
+        for entry in server.results.entries.values():  # (as if the few seconds had passed)
             entry["expires"] = 0
         later = navigation.forward_request(server, query)
-        for entry in server.results.values():
+        for entry in server.results.entries.values():
             entry["expires"] = 0
         found = navigation.forward_request(server, query)
-        if any("expires" in entry for entry in server.results.values()):  # (a lookup that found the line is kept for the build)
+        if any("expires" in entry for entry in server.results.entries.values()):  # (a lookup that found the line is kept for the build)
             fail("forward search keeps what it found for only a few seconds")
         cached = navigation.forward_request(server, query)
     if first[0] != 404 or again[0] != 404 or later[0] != 404 or found[0] != 200 or cached[0] != 200 or len(calls) != 3:
