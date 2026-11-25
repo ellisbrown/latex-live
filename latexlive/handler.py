@@ -14,7 +14,7 @@ from .agent import revise_request, enabled as agent_enabled
 from .arxiv import start_arxiv
 from .auth import owner_name
 from .baselines import baseline_request, start_diff
-from .bib import add_request, lookup_request, papers_index, start_verify, verify_status
+from .bib import add_request, bib_index, lookup_request, start_verify, verify_status
 from .build import on_main_thread, rebuild_doc, request_switch
 from .checks import cached_checks
 from .commits import commit_request
@@ -237,8 +237,8 @@ class Handler(BaseHandler):
             self.send_json(200, completions(self.server, self.principal))
         elif path == "/search":
             self.send_json(*search_request(self.server, query))
-        elif path == "/papers/index":
-            self.send_json(200, papers_index(self.server))
+        elif path in ("/bib/index", "/papers/index"):  # (/papers/index: its name before 0.4.33)
+            self.send_json(200, bib_index(self.server))
         elif path == "/bib/verify":
             self.send_json(200, verify_status(self.server))
         elif path == "/arxiv.tar.gz":  # (the package that POST /arxiv made)

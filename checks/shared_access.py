@@ -279,7 +279,7 @@ def role_checks(sh):
                   ("GET", "/arxiv.tar.gz", None))
     editor_up = (("GET", "/files", None), ("GET", "/file?path=body.tex", None), ("POST", "/file", probe), ("POST", "/rebuild", {}),
                  ("GET", "/commits", None), ("POST", "/diff", {"rev": "HEAD"}), ("GET", "/completions", None),
-                 ("GET", "/search?q=quokka", None), ("GET", "/logs/main.pdf", None), ("GET", "/papers/index", None),
+                 ("GET", "/search?q=quokka", None), ("GET", "/logs/main.pdf", None), ("GET", "/bib/index", None), ("GET", "/papers/index", None),
                  ("GET", "/bib/verify", None), ("POST", "/bib/lookup", {"query": "@misc{x, title={X}}"}),
                  ("POST", "/bib/add", {"bibtex": "@misc{x, title={X}}"}), ("POST", "/bib/verify", {}),
                  ("POST", "/presence", {"tab": "probe", "open": "body.tex", "line": 3}),
@@ -455,10 +455,12 @@ def bib_checks():
     """The Refs panel for the editor: the bibliography with its counts, pasted BibTeX read, an entry whose key is taken
     refused (writing nothing); and without LATEX_LIVE_LOOKUPS, shared mode's default, no lookup by ID and no check
     against Crossref, saying why."""
-    index = expect_dict(via_proxy("ed", "/papers/index"), 200, "GET papers/index for the editor")
+    index = expect_dict(via_proxy("ed", "/bib/index"), 200, "GET bib/index for the editor")
+    if expect_dict(via_proxy("ed", "/papers/index"), 200, "GET papers/index (its older name) for the editor") != index:
+        fail("GET papers/index is not GET bib/index")
     if (index.get("lookups") is not False or "refs.bib" not in index.get("bibFiles", [])
             or not any(e.get("key") == "one" and e.get("citeCount") == 0 for e in index.get("entries", []))):
-        fail(f"GET papers/index for the editor: {str(index)[:300]}")
+        fail(f"GET bib/index for the editor: {str(index)[:300]}")
     expect(via_proxy("ed", "/bib/verify"), 200, "GET bib/verify for the editor")
     found = expect_dict(via_proxy("ed", "/bib/lookup", "POST", {"query": "@misc{x, title={X}}"}), 200, "POST bib/lookup of BibTeX for the editor")
     if found.get("key") != "x":
