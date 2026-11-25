@@ -19,7 +19,7 @@ import threading
 import time
 
 from . import config
-from .commits import charge, commit_others, paused, remember_write, source_budget, updating
+from .commits import charge, commit_others, paused, remember_write, source_budget, unpaid, updating
 from .git import commit_sha, file_at_commit
 from .latex import brace_group
 from .sources import (
@@ -390,6 +390,7 @@ def files_changed(server, user, add=(), drop=()):
     longer (remember_added); the lists of sources and figures are made again; and each path is committed as user's
     (remember_write, kind "files": added to git, or removed)."""
     remember_added(server, add, drop)
+    unpaid(server, user, [*drop, *(add if drop else ())])  # (a rename's new name too: source_budget)
     server.editable = None
     invalidate_assets(server)
     for rel in (*drop, *add):

@@ -279,9 +279,15 @@ def source_budget_checks():
         if spent() != 901:
             fail(f"with auto-commit, a coauthor's first edit of a file they renamed cost {spent()} bytes, not its 901 (its commit"
                  " stores it whole)")
+        want(editor.delete_request(server, {"path": "moved.tex"}, ed), 200, "a coauthor's removal of it")
+        want(editor.rename_request(server, {"from": "one.tex", "to": "moved.tex"}, ed), 200, "another file renamed to its name")
+        server.writes = {}
+        want(save(ed, read_text(os.path.join(root, "moved.tex"))[:-1] + "y", "moved.tex"), 200, "an edit of that file")
+        if spent() != 1000:
+            fail(f"with auto-commit, the first edit of a file renamed to a name paid for already cost {spent()} bytes, not its 1000")
         server.autocommit = False
         want(editor.create_request(server, {"path": "more.bib", "text": "@misc{c,\n  title = {C},\n}\n"}, owner), 200, "making more.bib")
-        added = bib.add_request(server, {"bibtex": "@misc{d,\n  title = {" + "t" * 1200 + "},\n}", "file": "more.bib"}, owner)
+        added = bib.add_request(server, {"bibtex": "@misc{d,\n  title = {" + "t" * 2500 + "},\n}", "file": "more.bib"}, owner)
         if added[0] != 413 or "added" not in added[1].get("error", ""):
             fail(f"an entry added in the Refs tab past the added sources' total: {added}")
     ok(f"in shared mode, a coauthor writes at most {commits.SOURCE_RATE // 1_000_000} MB to the sources a day (saves, the Refs"

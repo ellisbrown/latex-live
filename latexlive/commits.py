@@ -94,6 +94,14 @@ def charge(server, user, cost):
             server.paid.setdefault(user["id"], set()).add(rel)
 
 
+def unpaid(server, user, rels):
+    """Forget that user's writes to rels, still to commit, were paid for whole (charge): a file removed or renamed
+    away, or one renamed there, is another file now."""
+    with server.pending_lock:
+        for rel in rels:
+            server.paid.get(user["id"], set()).discard(rel)
+
+
 def added_size(server, but):
     """The bytes of the sources added through the Files tab (server.added) but the one at but."""
     root = os.path.realpath(server.paper_root)
