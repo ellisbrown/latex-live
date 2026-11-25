@@ -5,6 +5,7 @@ at their own size with each note as a PDF comment at its spot (annotated), to re
 reader."""
 
 import errno
+import io
 import json
 import os
 import re
@@ -16,7 +17,8 @@ import time
 from . import config
 from .document import layout
 from .export import exact_export, links_in, waiting_for_build
-from .files import copy_output, fls_file, job_file, mtime, pdf_path, project_tex_files, read_output, too_big
+from .files import (
+    build_folder, copy_output, create_output, fls_file, job_file, mtime, pdf_path, project_tex_files, read_output, too_big)
 from .latex import blank_comments, brace_group, false_blocks, project_macros, read_tex
 from .notes import NOTE_DEF_RE, escape_note, note_kinds, note_use_re
 from .review_anchors import BP, note_source, review_anchors, squeeze, synctex_pages
@@ -169,8 +171,7 @@ def build_review(server, pdf, source):
             notes = review_notes(root, pdf)
             if not notes:
                 raise RuntimeError("the paper has no notes to show (resolved ones and protected markers don't count)")
-            shutil.rmtree(out, ignore_errors=True)
-            os.makedirs(out)
+            build_folder(root, os.path.join("review", doc), fresh=True)  # (never through a link in build/)
             exact_export(server, pdf, keep)
             step("placing the notes")
             area = layout(root, pdf) or {"W": 612, "H": 792, "left": 72, "top": 72, "bottom": 720, "width": 468, "columns": 1}
@@ -187,8 +188,8 @@ def build_review(server, pdf, source):
             plan = review_layout(placed, probe, geo, pages, project_macros(root, fls_file(root, pdf)),
                                  {page: shown_size(turn) for page, turn in turns.items()})
             step("typesetting the review copy")
-            with open(os.path.join(out, f"{doc}-review.json"), "w") as f:
-                json.dump(plan, f, indent=1)
+            with create_output(os.path.join(out, f"{doc}-review.json")) as f:
+                f.write(json.dumps(plan, indent=1).encode())
             # (TeX takes packages from its working folder first, and the paper's TeX writes into out: the last pass
             # runs in a folder made only now, with a name that starts with a dot, which no TeX run of the paper's can
             # write into either, as openout_any=p refuses it)
@@ -199,8 +200,8 @@ def build_review(server, pdf, source):
                     os.replace(os.path.join(out, name), os.path.join(copy, name))
 
             def typeset(job, source, pages, what):
-                with open(os.path.join(copy, f"{job}.tex"), "w", encoding="utf-8") as f:
-                    f.write(source)
+                with create_output(os.path.join(copy, f"{job}.tex")) as f:
+                    f.write(source.encode("utf-8"))
                 code, _ = run_tool(tex_argv(server, "pdflatex", "-interaction=batchmode", "-halt-on-error", f"{job}.tex"), copy,
                                    kind="review")
                 if code is None:
@@ -279,9 +280,9 @@ def run_probe(server, out, job, doc, notes, geo):
     than the page's, or more than the width set); {} if it didn't get as far as the notes. Raises
     RuntimeError for a log past OUTPUT_LIMIT."""
     rel = os.path.relpath(out, server.paper_root)
-    with open(os.path.join(out, "probe.tex"), "w") as f:
-        f.write(REVIEW_PROBE.replace("<WIDTH>", f"{geo['snippet']:.2f}").replace("<NOTES>", f"{rel}/notes"))
-    with open(os.path.join(out, "notes.tex"), "w", encoding="latin-1") as f:
+    with create_output(os.path.join(out, "probe.tex")) as f:  # (never through a link in build/)
+        f.write(REVIEW_PROBE.replace("<WIDTH>", f"{geo['snippet']:.2f}").replace("<NOTES>", f"{rel}/notes").encode())
+    with io.TextIOWrapper(create_output(os.path.join(out, "notes.tex")), encoding="latin-1") as f:
         for macro, (model, spec) in note_colors(server.paper_root, f"{doc}.pdf", {n["macro"] for n in notes}).items():
             f.write(f"\\latexlivecolor{{{macro}}}{{{model}}}{{{spec}}}\n")
         for key, label in note_citations(server.paper_root, f"{doc}.pdf", os.path.join(out, f"{job}.bbl"), notes).items():

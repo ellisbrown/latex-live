@@ -19,7 +19,8 @@ import zipfile
 
 from . import config
 from .export import exact_export, waiting_for_build
-from .files import copy_output, fls_file, mtime, open_output, pdf_path, project_inputs, project_tex_files, read_output
+from .files import (
+    build_folder, copy_output, create_output, fls_file, mtime, open_output, pdf_path, project_inputs, project_tex_files, read_output)
 from .latex import DOCCLASS_RE, RERUN_RE, brace_group, false_blocks, read_tex, root_docs, source_tree
 from .notes import note_kinds, note_use_re
 from .standby import DATE_RES
@@ -439,7 +440,7 @@ def make_package(server, pdf, step):
     import latex_report
 
     def keep(export):  # the export's PDF, file list, and the generated files the package holds
-        shutil.rmtree(out, ignore_errors=True)
+        build_folder(root, os.path.join("arxiv", doc), fresh=True)  # (never through a link in build/)
         os.makedirs(os.path.join(out, "export"))
         copy_output(os.path.join(root, config.BUILD, f"{job}.pdf"), os.path.join(out, "export.pdf"))
         for ext in (".fls", ".bbl", ".ind"):
@@ -480,10 +481,10 @@ def make_package(server, pdf, step):
         test = os.path.join(out, "test")
         for name, data in files.items():
             os.makedirs(os.path.dirname(os.path.join(test, name)), exist_ok=True)
-            with open(os.path.join(test, name), "wb") as f:
+            with create_output(os.path.join(test, name)) as f:
                 f.write(data)
         package = os.path.join(out, f"{doc}-arxiv.tar.gz")
-        with tarfile.open(package, "w:gz") as t:
+        with create_output(package) as f, tarfile.open(fileobj=f, mode="w:gz") as t:
             for name in sorted(files):
                 info = tarfile.TarInfo(name)
                 info.size, info.mode = len(files[name]), 0o644

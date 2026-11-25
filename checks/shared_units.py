@@ -1,7 +1,7 @@
 """The unit checks of shared mode's parts, without an instance: the downloads' guards (confinement_checks), the
-host's reads and copies of the build's files, which follow no link (build_link_checks), the builder
-(shared_build_checks), what the host reads of the files the paper's TeX writes (shared_parsing_checks), and which notes
-viewers and commenters see (shown_notes_checks)."""
+host's reads and copies of the build's files, which follow no link (build_link_checks), nor do its writes in the
+build's folders (build_folder_checks), the builder (shared_build_checks), what the host reads of the files the paper's
+TeX writes (shared_parsing_checks), and which notes viewers and commenters see (shown_notes_checks)."""
 
 import gzip
 import hashlib
@@ -174,6 +174,95 @@ def build_link_checks():
             os.chdir(cwd)
     ok("in shared mode, the host's reads and copies of the build's files (the downloads, the diff, the baselines, the kept"
        " recorder file, the notes-free pass's seed, the build's log) follow no link, and no copy is written through one")
+
+
+def build_folder_checks():
+    """In shared mode, the host writes nothing through a link that TeX in a container could leave in build/: a folder
+    there that is a link (build/diff, build/export, build/head, build/review, build/arxiv, build/clean, a notes-free
+    pass's build/clean-<n>) is replaced by a folder of the build's own (files.build_folder) before the export, the diff,
+    the baselines and the others write in it, and nothing where it leads is removed or written; the push baseline
+    never links or copies a link to the HEAD baseline, nor what it leads to; a status file is never written through a
+    link at its temporary name (latex_report.write_json)."""
+    from latexlive import baselines, config, export, files
+    sys.path.insert(0, HERE)
+    import latex_report
+    latexdiff = lambda argv, cwd, **kwargs: (0, "\\documentclass{article}\\begin{document}y\\end{document}\n" if "latexdiff" in argv else "")
+    cwd = os.getcwd()
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp, patched(config, SHARED=True), \
+            patched(export, image_pulled=lambda: True, run_tool=lambda *args, **kwargs: (1, "")), \
+            patched(baselines, image_pulled=lambda: True, run_tool=latexdiff):
+        try:
+            root = os.path.join(tmp, "paper")
+            build = os.path.join(root, config.BUILD)
+            os.makedirs(build)
+            put(os.path.join(root, "main.tex"), "\\documentclass{article}\\begin{document}x\\end{document}\n")
+            git(root, "init", "-q")
+            git(root, "add", "main.tex")
+            git(root, "commit", "-q", "-m", "one")
+            sha = git_out(root, "rev-parse", "HEAD")
+            put(os.path.join(build, "main-live.aux"), "\\relax\n")
+            outside = {}
+            for name in ("diff", "export", "head", "review", "arxiv", "clean", "clean-1"):
+                folder = os.path.join(tmp, f"owners-{name}")
+                for rel in ("kept.txt", os.path.join("old", "kept.txt"), os.path.join("main", "kept.txt")):
+                    put(os.path.join(folder, rel), "the owner's\n")
+                os.symlink(folder, os.path.join(build, name))
+                outside[name] = folder
+
+            def listing(folder):
+                return sorted((os.path.relpath(os.path.join(d, f), folder), read_text(os.path.join(d, f)))
+                              for d, _, names in os.walk(folder) for f in names)
+
+            before = {name: listing(folder) for name, folder in outside.items()}
+            os.chdir(root)
+            server = fake_server(root, diff={}, bases={"head": {"pdf": "main.pdf"}})
+            try:
+                export.exact_export(server, "main.pdf")
+            except RuntimeError:
+                pass
+            baselines.build_diff(server, sha)
+            baselines.build_base(server, "head", sha, "main.pdf")
+            for rel in (os.path.join("review", "main"), os.path.join("arxiv", "main"), "clean", "clean-1"):
+                made = files.build_folder(root, rel, fresh=True)
+                with files.create_output(os.path.join(made, "x.tex")) as f:
+                    f.write(b"written\n")
+            touched = [name for name, folder in outside.items() if listing(folder) != before[name]]
+            linked = [name for name in outside if os.path.islink(os.path.join(build, name))]
+            if touched or linked:
+                fail(f"in shared mode, the host wrote through a folder in build/ that is a link: {', '.join(touched)} changed"
+                     f" outside build/, {', '.join(linked) or 'none'} still links")
+            if not os.path.isfile(os.path.join(build, "diff", "main-diff.tex")):
+                fail("with build/diff a link, the diff wrote no main-diff.tex in a folder of its own")
+            for rel in ("..", os.path.join("diff", ".."), os.path.join("diff", "..", "..", "away"), ""):
+                try:
+                    files.build_folder(root, rel)
+                    fail(f"build_folder took {rel!r}, which is not a folder in build/")
+                except ValueError:
+                    pass
+            secret = os.path.join(tmp, "secret.pdf")
+            put(secret, "THE OWNER'S SECRET\n")
+            os.symlink(secret, os.path.join(build, "main-head.pdf"))
+            baselines.share_head_base(server, "main.pdf")
+            push = os.path.join(build, "main-push.pdf")
+            if os.path.lexists(push) and (os.path.islink(push) or "SECRET" in read_text(push)):
+                fail("the push baseline links or copies a link that build/ holds for the HEAD baseline")
+            os.remove(os.path.join(build, "main-head.pdf"))
+            put(os.path.join(build, "main-head.pdf"), "%PDF head\n")
+            baselines.share_head_base(server, "main.pdf")
+            if read_text(push) != "%PDF head\n" or os.path.islink(push):
+                fail("the push baseline is not the HEAD baseline's PDF when nothing is unpushed")
+            status = os.path.join(build, "clean", "main-clean.status.json")
+            target = os.path.join(tmp, "owners.json")
+            put(target, "kept\n")
+            os.symlink(target, f"{status}.{os.getpid()}.tmp")
+            latex_report.write_json(status, {"ok": True})
+            if read_text(target) != "kept\n" or json.loads(read_text(status)) != {"ok": True}:
+                fail("a status file was written through a link at its temporary name")
+        finally:
+            os.chdir(cwd)
+    ok("in shared mode, a folder in build/ that is a link is made a folder of the build's own before the host writes in"
+       " it (the export, the diff, the baselines, the review copy, the arXiv package, the notes-free pass), the push"
+       " baseline never takes a link, and no status file is written through one")
 
 
 def shared_build_checks():

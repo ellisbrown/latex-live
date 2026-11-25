@@ -1,6 +1,7 @@
 """The download without notes (/export): an exact build of the document without its notes, made
 once per build of the document, which the review copy builds on too."""
 
+import contextlib
 import os
 import re
 import shutil
@@ -11,7 +12,7 @@ import time
 
 from . import config
 from .build import build_running
-from .files import aux_tree, copy_output, job_file, mtime, pdf_path, read_output
+from .files import aux_tree, build_folder, copy_output, job_file, mtime, pdf_path, read_output
 from .latex import RERUN_RE
 from .tools import failure, image_pulled, run_tool, tex_argv
 
@@ -115,8 +116,7 @@ def exact_export(server, pdf, keep=None):
                 raise RuntimeError(f"{config.IMAGE_MISSING}; until then there is no download without notes (never the host's TeX here)")
             server.exported.pop(pdf, None)
             try:
-                shutil.rmtree(out, ignore_errors=True)
-                os.makedirs(out)
+                build_folder(root, os.path.join("export", doc), fresh=True)  # (never through a link in build/)
                 for ext in (".aux", ".bbl", ".brf", ".out", ".toc"):  # (a head start; bibtex and the passes correct them)
                     copy_output(job_file(root, pdf, ext), os.path.join(out, job + ext))
                 tex = ["pdflatex", "-interaction=batchmode", "-halt-on-error", "-file-line-error", "-synctex=1",
@@ -160,6 +160,8 @@ def keep_inputs(out):
     """Copy the files the next pass in out will read (.aux, .bbl, .toc..., an \\include's .aux) into
     out/inputs/."""
     inputs = os.path.join(out, "inputs")
+    with contextlib.suppress(OSError):
+        os.unlink(inputs)  # (a link: removed, never emptied where it leads)
     shutil.rmtree(inputs, ignore_errors=True)
     shutil.copytree(out, inputs, ignore=lambda folder, names: [n for n in names if n.endswith(AUX_SKIP)
                                                                 or (folder == out and n == "inputs")] + links_in(folder, names))

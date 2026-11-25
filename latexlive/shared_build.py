@@ -8,6 +8,7 @@ itself and runs pdflatex, bibtex, biber and makeindex as argument lists, each in
 in build/ as written by someone else: the run's state, its status and what it published stay in memory
 (server.shared)."""
 
+import contextlib
 import glob
 import hashlib
 import math
@@ -22,7 +23,7 @@ import time
 import traceback
 
 from . import config
-from .files import aux_tree, fls_file, pdf_path, project_tex_files, read_build, read_capped
+from .files import aux_tree, build_folder, create_output, fls_file, open_output, pdf_path, project_tex_files, read_build, read_capped
 from .latex import RERUN_RE
 from .notes import note_records, shown_tex, source_digests
 from .shared_watch import shared_deps, shared_inputs, shared_missing
@@ -273,12 +274,11 @@ def shared_publish(server, job, records, sources):
     pass), which say what viewers and commenters see (notes.shown_notes). Never through a symbolic link: build/ is
     written in the containers."""
     dest = pdf_path(server.paper_root, server.default_pdf)
-    try:
-        fd = os.open(os.path.join(server.paper_root, config.BUILD, f"{job}.pdf"), os.O_RDONLY | os.O_NOFOLLOW)
-    except OSError:
+    src = open_output(os.path.join(server.paper_root, config.BUILD, f"{job}.pdf"))
+    if src is None:
         return
     tmp = os.path.join(os.path.dirname(dest), f".{os.path.basename(dest)}.tmp")
-    with open(fd, "rb") as src, open(tmp, "wb") as f:
+    with src, create_output(tmp) as f:
         shutil.copyfileobj(src, f)
     os.replace(tmp, dest)
     st = os.stat(dest)
@@ -300,7 +300,12 @@ def shared_notes_free(server, job, doc):
     note(server, "clean-start", str(seq))  # (the pass's events name it: timing.NAMING)
     out = os.path.join(config.BUILD, f"clean-{seq}")
     for old in glob.glob(os.path.join(glob.escape(config.BUILD), "clean-*")):
-        shutil.rmtree(old, ignore_errors=True)
+        if os.path.isdir(old) and not os.path.islink(old):
+            shutil.rmtree(old, ignore_errors=True)
+        else:
+            with contextlib.suppress(OSError):
+                os.remove(old)
+    build_folder(server.paper_root, f"clean-{seq}", fresh=True)  # (never through a link in build/)
     latex_report.seed_notes_free(job, doc, out)
     clean = os.path.join(config.BUILD, "clean")
 
@@ -308,7 +313,7 @@ def shared_notes_free(server, job, doc):
         with server.shared["clean_lock"]:
             if seq != server.shared["clean_seq"]:  # (a newer run's pass came meanwhile)
                 return False
-            os.makedirs(clean, exist_ok=True)
+            build_folder(server.paper_root, "clean")
             for ext in (".synctex.gz", ".aux", ".bbl", ".log"):
                 if os.path.lexists(src := os.path.join(out, f"{doc}-clean{ext}")):
                     os.replace(src, os.path.join(clean, f"{doc}-clean{ext}"))

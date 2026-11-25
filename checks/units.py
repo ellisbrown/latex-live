@@ -20,7 +20,7 @@ import time
 from .base import HERE, fail, ok, wait_for
 from .helpers import fake_server, git, git_out, patched, put, put_bytes, read_bytes, tex_stand_in
 from .static import link_modules
-from .shared_units import baseline_failure_checks, build_link_checks, confinement_checks, shared_build_checks, shown_notes_checks
+from .shared_units import baseline_failure_checks, build_folder_checks, build_link_checks, confinement_checks, shared_build_checks, shown_notes_checks
 from .bib_units import bib_checks
 from .files_units import files_checks
 from .history_units import history_checks
@@ -29,7 +29,7 @@ from .agent_units import agent_checks
 
 def unit_checks():
     """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
-    for check in (layout_checks, matching_checks, confinement_checks, build_link_checks, shared_build_checks, shown_notes_checks, bounds_checks, failed_export_checks,
+    for check in (layout_checks, matching_checks, confinement_checks, build_link_checks, build_folder_checks, shared_build_checks, shown_notes_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
                   code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, forward_script_checks, link_checks, completion_checks, assets_checks, search_checks, logs_checks, presence_checks, word_column_checks, venue_checks, diff_retry_checks,
                   arxiv_strip_checks, graphics_synctex_checks, turned_page_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks,

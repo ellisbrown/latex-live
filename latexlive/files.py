@@ -1,7 +1,8 @@
 """The paper's files and the build's: where each is (job_file, pdf_path...), which of them are the
 paper's own (in_paper) or in the build directory (in_build), and reading and copying what TeX wrote within bounds and
-without following a link (open_output, read_capped, read_output, copy_output), since the paper's TeX decides how big those
-files are, and in shared mode writes them in containers."""
+without following a link (open_output, read_capped, read_output, copy_output), and the build's folders that the host
+writes in, never through a link either (build_folder), since the paper's TeX decides how big those files are, and in
+shared mode writes them in containers."""
 
 import contextlib
 import glob
@@ -77,6 +78,35 @@ def create_output(path):
     with contextlib.suppress(FileNotFoundError):
         os.unlink(path)
     return open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644), "wb")
+
+
+def build_folder(paper_root, rel, fresh=False):
+    """The path of build/<rel>, made a folder of the build's own: each of its parts below the build folder a folder (made
+    if missing), not a link or a file, which are removed first (the link, never what it points to), so that what the
+    host writes there stays in build/, whatever TeX in a container left there; with fresh, the last part emptied first
+    (made anew). Each part is checked through the descriptor of the one before it."""
+    base = os.path.join(paper_root, config.BUILD)
+    parts = [part for part in os.path.normpath(rel).split(os.sep) if part]
+    if not parts or any(part in (".", "..") for part in parts):
+        raise ValueError(f"not a folder in the build folder: {rel}")
+    fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for i, part in enumerate(parts):
+            try:
+                st = os.stat(part, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                st = None
+            if st and stat.S_ISDIR(st.st_mode) and fresh and i == len(parts) - 1:
+                shutil.rmtree(os.path.join(base, *parts[:i + 1]), ignore_errors=True)  # (its parents checked just now)
+            elif st and not stat.S_ISDIR(st.st_mode):
+                os.unlink(part, dir_fd=fd)
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(part, 0o755, dir_fd=fd)
+            fd, parent = os.open(part, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0), dir_fd=fd), fd
+            os.close(parent)
+    finally:
+        os.close(fd)
+    return os.path.join(base, *parts)
 
 
 def copy_output(src, dst):

@@ -230,10 +230,16 @@ def keep_synctex(path):
 
 
 def write_json(path, value):
-    """Atomically write value to path (read by live.py's /status endpoint)."""
-    with open(path + ".tmp", "w") as f:
+    """Atomically write value to path (read by live.py's /status endpoint), never through a link left at its temporary
+    file's name (in shared mode, build/ is written in the containers)."""
+    tmp = f"{path}.{os.getpid()}.tmp"  # (each process its own: two may write path at once)
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644), "w") as f:
         json.dump(value, f)
-    os.replace(path + ".tmp", path)
+    os.replace(tmp, path)
 
 
 def write_status(root, status, directory=BUILD):

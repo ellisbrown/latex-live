@@ -1,16 +1,18 @@
 """Builds of the paper as committed: the baselines that the viewer's change highlights compare with
 (HEAD and the last push), and the latexdiff against a commit."""
 
+import contextlib
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import threading
 import time
 
 from . import config
-from .files import copy_output, create_output, job_file, mtime, pdf_path, read_capped, too_big
+from .files import build_folder, copy_output, create_output, job_file, mtime, pdf_path, read_capped, too_big
 from .git import SHA_RE, commit_sha, git_text, pushed_commit
 from .tools import container_argv, failure, image_pulled, run_tool, tex_argv
 
@@ -86,7 +88,7 @@ def build_diff(server, sha):
             fh.write(text.encode())
         for ext in (".aux", ".bbl", ".brf"):  # current references, so the diff needs no bibtex run
             copy_output(job_file(root, server.default_pdf, ext), os.path.join(out, job + ext))
-        if os.path.exists(pdf):
+        with contextlib.suppress(FileNotFoundError):  # (a link too: removed, not followed)
             os.remove(pdf)
         tex = [*exec_, "pdflatex", "-interaction=nonstopmode", f"-output-directory={out}", f"-jobname={job}",
                os.path.relpath(os.path.join(out, f"{job}.tex"), root)]  # (relative: shared mode's TeX opens no absolute path)
@@ -100,9 +102,8 @@ def build_diff(server, sha):
 
     pdf, full = os.path.join(out, f"{job}.pdf"), os.path.join(out, f"{job}-full.pdf")
     try:
-        for d in (old, new):
-            shutil.rmtree(d, ignore_errors=True)
-            os.makedirs(d)
+        for side in ("old", "new"):  # (never through a link in build/: build_folder)
+            build_folder(root, os.path.join("diff", side), fresh=True)
         archive = subprocess.Popen(["git", "-C", root, "archive", sha, "--", *tex_pathspec()], stdout=subprocess.PIPE)
         subprocess.run(["tar", "-x", "-C", old], stdin=archive.stdout, check=True)
         archive.wait()
@@ -118,7 +119,7 @@ def build_diff(server, sha):
         if config.SHARED and not pulled:  # (shared mode never runs the host's TeX tools)
             raise RuntimeError(f"{config.IMAGE_MISSING}; meanwhile there is no diff")
         exec_ = container_argv(root) if pulled else []  # else the host's, if it has latexdiff
-        if os.path.exists(full):
+        with contextlib.suppress(FileNotFoundError):
             os.remove(full)
         try:
             errors = attempt(DIFF_MARKS)
@@ -239,19 +240,23 @@ def base_status(server, pdf_name, kind, build=True):
 
 
 def share_head_base(server, pdf_name):
-    """The push baseline when nothing is unpushed: build/<doc>-push[-clean].pdf as links to the
-    HEAD baseline's PDFs, which a rebuild of that baseline replaces rather than rewrites."""
+    """The push baseline when nothing is unpushed: build/<doc>-push[-clean].pdf as hard links to the
+    HEAD baseline's PDFs, which a rebuild of that baseline replaces rather than rewrites (or copies, copy_output), only
+    of a regular file: never of a link there, nor to where it leads."""
     for suffix in ("", "-clean"):
         head, push = (pdf_path(server.paper_root, f"{pdf_name[:-4]}-{kind}{suffix}.pdf") for kind in ("head", "push"))
         try:
             os.remove(push)
         except FileNotFoundError:
             pass
-        if os.path.isfile(head):
-            try:
-                os.link(head, push)
-            except OSError:
-                shutil.copy2(head, push)
+        try:
+            if not stat.S_ISREG(os.lstat(head).st_mode):  # (a link that TeX in a container left there is not linked to)
+                continue
+            os.link(head, push, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            copy_output(head, push)
 
 
 def link_missing(source, target, skip=()):
@@ -296,7 +301,7 @@ def build_base(server, kind, sha, pdf_name):
         return os.path.join(out, f"{jobname}.pdf")
 
     try:
-        shutil.rmtree(out, ignore_errors=True)
+        build_folder(root, os.path.join(kind, doc), fresh=True)  # (never through a link in build/)
         os.makedirs(src)
         if config.SHARED and not image_pulled():
             raise RuntimeError(f"{config.IMAGE_MISSING}; meanwhile there is no baseline")
