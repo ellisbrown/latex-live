@@ -36,9 +36,10 @@ export const building = new Set();
 // The live build's state on the status line (poll, load), unless a download that the server builds is in
 // progress: that has the line meanwhile (downloadBuilt), rather than the two taking turns. Nor does it replace a
 // message held on the line (an error, say): it shows once the hold ends.
-let held = null; // ({timer, live: the live state that came meanwhile}) while a message holds the line
+let held = null, lastLive = null; // ({timer, live: the live state that came meanwhile}) while a message holds the line
 export function liveStatus(text, cls = "", title = text) {
-  if (held) return void (held.live = [text, cls, title]);
+  lastLive = [text, cls, title];
+  if (held) return void (held.live = lastLive);
   if (building.size) return;
   showStatus(text, cls);
   $("status").title = title;
@@ -52,7 +53,7 @@ export function setStatus(text, cls = "", hold = cls === "error" ? HOLD : 0) {
   showStatus(text, cls);
   if (!hold || !text) return;
   const ms = hold + 40 * text.length;
-  held = { timer: setTimeout(release, ms), live: null };
+  held = { timer: setTimeout(() => release(false), ms), live: null };
   const line = $("status");
   if (line.scrollWidth > line.clientWidth + 1) showWhole(text, cls, line);
 }
@@ -62,8 +63,11 @@ function showStatus(text, cls) {
   whole?.remove();
   whole = null;
 }
-function release() {
-  const live = held?.live;
+// The hold's end: the live state that came meanwhile, if any; dismissed, the last one (an error left on its own stays
+// until the next one, as before holds).
+function release(dismissed = true) {
+  const live = held?.live || (dismissed ? lastLive || ["", ""] : null);
+  clearTimeout(held?.timer); // (dismissed before its time: the timer would end a later message's hold)
   held = null;
   whole?.remove();
   whole = null;
@@ -72,7 +76,7 @@ function release() {
 let whole = null; // (the note with a held message whole)
 function showWhole(text, cls, line) {
   const box = line.getBoundingClientRect();
-  whole = el("div", { className: `status-whole ${cls}`, role: "status", textContent: text, title: "Close", onclick: release });
+  whole = el("div", { className: `status-whole ${cls}`, role: "status", textContent: text, title: "Close", onclick: () => release() });
   whole.style.top = `${box.bottom + 6}px`;
   whole.style.right = `${Math.max(8, innerWidth - box.right)}px`;
   document.body.append(whole);

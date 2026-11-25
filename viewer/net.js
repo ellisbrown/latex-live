@@ -38,7 +38,7 @@ const NO_ANSWER = "can't reach the preview server";
 async function answer(sent) {
   let r;
   try { r = await sent; } catch { return { ok: false, status: 0, body: {}, error: NO_ANSWER }; }
-  const body = await readBody(r).catch(() => ({ error: `failed (${r.status})` }));
+  const body = (await readBody(r).catch(() => null)) ?? { error: `failed (${r.status})` };
   const fail = (error) => ({ ok: false, status: r.status, body, error });
   if (signInPage(r, body)) return fail(SIGNED_OUT);
   if (unreachable(r, body)) return fail(NO_ANSWER);
