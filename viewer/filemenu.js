@@ -22,7 +22,7 @@ function renderFileList(problem = null) {
     if (dir) rows.push(el("div", { className: "dir", textContent: dir }));
     for (const f of files.filter((g) => dirOf(g.path) === dir)) {
       const row = el("div", { className: `f${dir ? " sub" : ""}${f.path === ed?.path ? " current" : ""}`, textContent: f.path.slice(dir.length),
-                              title: `${f.path} (${Math.max(1, Math.round(f.size / 1024))} KB)` });
+                              title: `${f.path} (${Math.max(1, Math.round(f.size / 1000))} KB)` });
       row.onclick = async () => { showFileMenu(false); await openFile(f.path); cmView?.focus(); };
       rows.push(row);
     }

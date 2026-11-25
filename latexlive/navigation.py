@@ -60,8 +60,9 @@ def open_source(paper_root, req):
     """POST /open {file, line, column?}: open a project file at a line in VS Code (build-error links in the viewer), and
     at a column in it when the request has one (an inverse search that found the double-clicked word). The line and
     column are numbers, or strings of digits."""
-    file, numbers = req.get("file"), [req.get("line"), req.get("column", 0)]
-    if not isinstance(file, str) or "\0" in file or not all(type(n) is int or isinstance(n, str) and n.isdigit() for n in numbers):
+    file, numbers = req.get("file"), [req.get("line"), req.get("column") or 0]
+    if not isinstance(file, str) or "\0" in file or not all(type(n) is int or isinstance(n, str) and n.isascii() and n.isdigit()
+                                                            for n in numbers):
         return 400, "expected file, line"
     src, (line, column) = os.path.realpath(os.path.join(paper_root, file)), map(int, numbers)
     if not within(src, os.path.realpath(paper_root)) or not os.path.isfile(src):

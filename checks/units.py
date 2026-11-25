@@ -33,7 +33,7 @@ from .agent_units import agent_checks
 def unit_checks():
     """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
     for check in (layout_checks, matching_checks, confinement_checks, build_link_checks, build_folder_checks, shared_build_checks, shown_notes_checks, bounds_checks, failed_export_checks,
-                  waiting_download_checks, tool_timeout_checks, runner_checks, settings_checks, standby_snapshot_checks, timing_checks,
+                  waiting_download_checks, tool_timeout_checks, runner_checks, settings_checks, open_request_checks, standby_snapshot_checks, timing_checks,
                   code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, forward_script_checks, link_checks, completion_checks, assets_checks, search_checks, logs_checks, presence_checks, word_column_checks, venue_checks, diff_retry_checks,
                   arxiv_strip_checks, graphics_synctex_checks, turned_page_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks,
                   header_deadline_checks, in_flight_checks, note_limit_checks, perf_checks, bib_checks, files_checks, history_checks, agent_checks):
@@ -458,6 +458,22 @@ def settings_checks():
         fail(f"a process's command line (standby.command_line): {standby.command_line(os.getpid())!r}")
     ok("an on/off setting is 1 or 0 (unset: its default; else its default, with a warning), and the build's environment"
        " drops an inherited LATEX_LIVE_EXEC; a process's command line read one way")
+
+
+def open_request_checks():
+    """POST /open's body (navigation.open_source): a file and a line (a number or ASCII digits), maybe a column; anything
+    else is 400 before anything opens, and a file outside the paper 404."""
+    from latexlive import navigation
+    with tempfile.TemporaryDirectory(prefix="latex-live-open-") as root:
+        put(os.path.join(root, "main.tex"), "x\n")
+        for req in ({}, {"file": "main.tex"}, {"file": ["main.tex"], "line": 1}, {"file": "main.tex", "line": True},
+                    {"file": "main.tex", "line": "\u00b2"}, {"file": "main.tex", "line": 1.5}, {"file": "main.tex", "line": 1, "column": "x"},
+                    {"file": "main\0.tex", "line": 1}):
+            if navigation.open_source(root, req)[0] != 400:
+                fail(f"POST /open with {req}: {navigation.open_source(root, req)}")
+        if navigation.open_source(root, {"file": "../main.tex", "line": "2"})[0] != 404:
+            fail("POST /open of a file outside the paper is not 404")
+    ok("POST /open takes a file and a line (a number or digits), and refuses anything else before opening anything")
 
 
 def standby_snapshot_checks():
