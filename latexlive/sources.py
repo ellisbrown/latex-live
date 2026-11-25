@@ -16,7 +16,7 @@ import time
 
 from . import config
 from .auth import owner_name
-from .files import fls_file, in_build, project_inputs, read_json
+from .files import fls_file, in_build, plain_rel, project_inputs, read_json
 from .latex import source_tree
 
 
@@ -135,13 +135,12 @@ def paper_file(paper_root, rel, exts, limit):
     """The real path of rel, relative to the paper root, if it is an existing regular file there with one of exts, of
     at most limit bytes, outside the build directory and dot folders and not a dot file, also once symbolic links are
     resolved; else None."""
-    if not isinstance(rel, str) or not rel or "\0" in rel or os.path.isabs(rel):
+    if not plain_rel(rel):
         return None
     root = os.path.realpath(paper_root)
     real = os.path.realpath(os.path.join(root, rel))
-    for path in (os.path.normpath(rel), os.path.relpath(real, root)):
-        parts = path.split(os.sep)
-        if any(part.startswith(".") for part in parts) or os.path.splitext(path)[1].lower() not in exts or in_build(path):
+    for path in (rel, os.path.relpath(real, root)):  # (as named, and once links are resolved)
+        if not (norm := plain_rel(path)) or os.path.splitext(norm)[1].lower() not in exts:
             return None
     try:
         st = os.stat(real)
@@ -427,11 +426,8 @@ def changed_path(paper_root, rel):
     """Whether rel may be a path the Files tab changed (to commit it, as load_pending reads it back): one it could have
     made (no dot part, a source's or a figure's extension, outside the build directory), and gone, or one of the
     paper's own files there (own_file)."""
-    if not isinstance(rel, str) or not rel or "\0" in rel or os.path.isabs(rel):
-        return False
-    norm = os.path.normpath(rel)
-    if (any(part.startswith(".") for part in norm.split(os.sep)) or in_build(norm)
-            or not norm.lower().endswith((*EDITABLE_EXTS, *ASSET_EXTS))):
+    norm = plain_rel(rel)
+    if not norm or not norm.lower().endswith((*EDITABLE_EXTS, *ASSET_EXTS)):
         return False
     if not os.path.lexists(os.path.join(os.path.realpath(paper_root), norm)):
         return True

@@ -11,7 +11,7 @@ import time
 import unicodedata
 
 from . import config
-from .files import shown_synctex, shown_synctexes
+from .files import shown_synctex, shown_synctexes, within
 from .notes import margin_notes, notes, shown_notes
 from .roles import at_least
 from .sources import editable_files
@@ -65,7 +65,7 @@ def forward_request(server, query, user=None):
         src, line = os.path.realpath(os.path.join(paper_root, query["file"][0])), int(query["line"][0])
     except (KeyError, ValueError):
         return 400, {"error": "expected file, line"}
-    if not src.startswith(os.path.realpath(paper_root) + os.sep):
+    if not within(src, os.path.realpath(paper_root)):
         return 404, {"error": "not a file in the paper"}
     if config.SHARED and user is not None and not at_least(user, "editor"):
         pdf = server.default_pdf
@@ -91,7 +91,7 @@ def open_source(paper_root, query):
         column = int(query.get("column", ["0"])[0])
     except (KeyError, ValueError):
         return 400, "expected file, line"
-    if not src.startswith(os.path.realpath(paper_root) + os.sep) or not os.path.isfile(src):
+    if not within(src, os.path.realpath(paper_root)) or not os.path.isfile(src):
         return 404, "not a file in the paper"
     return open_in_vscode(src, line, paper_root, column)
 
@@ -280,9 +280,9 @@ def synctex_spot(server, query):
     if path.endswith(".bbl") and (entry := bib_source(server.paper_root, path, line)):  # (an entry of the bibliography)
         src, line = entry
         path = os.path.realpath(src)
-    if path.startswith(os.path.realpath(os.path.join(root, config.BUILD)) + os.sep):
+    if within(path, os.path.realpath(os.path.join(root, config.BUILD))):
         return 200, {"file": None, "reason": f"generated text ({os.path.basename(src)}); no source line"}
-    if not path.startswith(root + os.sep):
+    if not within(path, root):
         return 200, {"file": None, "reason": f"{os.path.basename(src)} is not one of the paper's files"}
     rel = next((rel for rel, real in editable_files(server, fresh=False).items() if real == path), None)
     if not rel:

@@ -8,7 +8,7 @@ import re
 import subprocess
 import time
 
-from .files import in_build
+from .files import plain_rel
 from .tools import run_bounded
 
 
@@ -141,11 +141,7 @@ GIT_TIMEOUT, POLL_TIMEOUT = 20, 5  # seconds (POLL_TIMEOUT: the commands the sta
 def shown_path(rel):
     """Whether rel, a path relative to the paper root as git names it (--relative), is one the History tab shows: in
     the paper root, with no part that starts with a dot, and not in the build directory."""
-    if not isinstance(rel, str) or not rel or "\0" in rel or os.path.isabs(rel):
-        return False
-    norm = os.path.normpath(rel)
-    parts = norm.split(os.sep)
-    return norm != "." and parts[0] != ".." and not any(part.startswith(".") for part in parts) and not in_build(norm)
+    return plain_rel(rel) is not None
 
 
 GIT_OUTPUT, GIT_STDERR = 4_000_000, 8_000  # (bytes: what run_git keeps of what git prints, by default; of its stderr)

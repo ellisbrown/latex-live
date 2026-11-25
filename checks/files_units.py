@@ -16,8 +16,65 @@ from .helpers import fake_server, git, git_out, patched, put, put_bytes, read_te
 
 
 def files_checks():
-    for check in (name_checks, change_checks, request_checks, source_budget_checks, commit_checks, csp_checks):
+    for check in (containment_checks, name_checks, change_checks, request_checks, source_budget_checks, commit_checks, csp_checks):
         check()
+
+
+def containment_checks():
+    """The path checks that confine requests to the paper (latexlive.files: within, plain_rel, in_paper, child_aux; and
+    built on them, sources.paper_file, changed_path and git.shown_path): a path in a folder, never the folder itself nor
+    a sibling that shares its name's start; never .. out of the paper, a dot part, or build/ in any case; in shared
+    mode, never through a link out of the paper or into build/ (outside it, the owner's links count as before)."""
+    from latexlive import config, files, git, sources
+    for path, folder, want in (("/a/b", "/a", True), ("/a", "/a", False), ("/ab", "/a", False), ("/", "/", False),
+                               ("/x", "/", True), ("/a/b/c", "/a/b", True)):
+        if files.within(path, folder) is not want:
+            fail(f"within({path!r}, {folder!r}) is not {want}")
+    for rel, want in (("a/b.tex", "a/b.tex"), ("a/../b.tex", "b.tex"), ("./a.tex", "a.tex"), ("builds/x.tex", "builds/x.tex"),
+                      ("../x.tex", None), ("a/../../x.tex", None), ("/etc/x.tex", None), ("", None), ("a\0.tex", None),
+                      (".git/config", None), ("a/.env", None), ("build/x.tex", None), ("BUILD/x.tex", None), ("Build", None),
+                      (".", None), (None, None)):
+        if files.plain_rel(rel) != want or git.shown_path(rel) is not (want is not None):
+            fail(f"plain_rel({rel!r}) is {files.plain_rel(rel)!r}, shown_path {git.shown_path(rel)}, not {want!r}")
+    with tempfile.TemporaryDirectory(prefix="latex-live-confine-") as tmp:
+        root, outside = os.path.join(tmp, "paper"), os.path.join(tmp, "outside.tex")
+        for rel in ("main.tex", "sub/sec.tex", "build/gen.tex", "Build/x.tex", ".hidden/x.tex", "build2.tex"):
+            put(os.path.join(root, rel), "x\n")
+        put(outside, "x\n")
+        put(os.path.join(tmp, "paper2", "x.tex"), "x\n")
+        os.symlink(outside, os.path.join(root, "away.tex"))
+        os.symlink(os.path.join(root, "build", "gen.tex"), os.path.join(root, "gen.tex"))
+        os.symlink(os.path.join(root, "build"), os.path.join(root, "out"))
+        os.symlink(os.path.join(root, "sub"), os.path.join(root, "linked"))
+        cases = {"main.tex": (True, True), "sub/sec.tex": (True, True), "build2.tex": (True, True), "build/gen.tex": (False, False),
+                 "Build/x.tex": (False, False), ".hidden/x.tex": (True, False), "away.tex": (True, False), "gen.tex": (True, False),
+                 "out/gen.tex": (True, False), "linked/sec.tex": (True, True), "../paper2/x.tex": (False, False),
+                 "sub/../../outside.tex": (False, False)}
+        for rel, wants in cases.items():
+            path = os.path.normpath(os.path.join(root, rel))
+            for shared, want in zip((False, True), wants):
+                with patched(config, SHARED=shared):
+                    if files.in_paper(root, path) is not want:
+                        fail(f"in_paper of {rel} ({'shared' if shared else 'not shared'}) is not {want}")
+        editable = {"main.tex": True, "sub/sec.tex": True, "sub/../main.tex": True, "linked/sec.tex": True, "away.tex": False,
+                    "gen.tex": False, "out/gen.tex": False, "build/gen.tex": False, "Build/x.tex": False, "BUILD/x.tex": False,
+                    ".hidden/x.tex": False, "../outside.tex": False, outside: False, "build2.tex": True}
+        for rel, want in editable.items():
+            if bool(sources.editable_real(root, rel)) is not want:
+                fail(f"editable_real({rel!r}) is not {want}")
+        for rel, want in (("gone.tex", True), ("main.tex", True), ("Build/x.tex", False), ("../outside.tex", False),
+                          ("away.tex", False), (".hidden/x.tex", False), ("sub/../main.tex", True)):
+            if sources.changed_path(root, rel) is not want:
+                fail(f"changed_path({rel!r}) is not {want}")
+        aux = os.path.join(root, "build")
+        put(os.path.join(aux, "ch", "a.aux"), "x")
+        os.symlink(tmp, os.path.join(aux, "up"))
+        for name, want in (("ch/a.aux", True), ("../main.aux", False), (os.path.join(aux, "ch", "a.aux"), False), ("up/x.aux", False)):
+            if bool(files.child_aux(aux, name)) is not want:
+                fail(f"child_aux({name!r}) is not {want}")
+    ok("paths stay in the paper: in a folder (not the folder, nor a sibling sharing its name's start), no .., dot part"
+       " or build/ in any case; in shared mode not through a link out of the paper or into build/; the editor's files,"
+       " the Files tab's changes, the History tab's paths and the .aux files a build names alike")
 
 
 def name_checks():

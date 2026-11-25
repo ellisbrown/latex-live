@@ -11,7 +11,7 @@ import threading
 import zlib
 
 from . import config
-from .files import clean_file, job_file, open_output, read_capped, shown_synctex, shown_synctexes
+from .files import clean_file, job_file, open_output, read_capped, shown_synctex, shown_synctexes, within
 from .latex import find_bib_entry
 from .tools import container_argv, pdf_tool, run_tool, synctex_unavailable
 
@@ -804,6 +804,6 @@ def inverse_search(paper_root, name, page, x, y, clean, bib=False, look_up=None)
     src, line = found
     if bib and src.endswith(".bbl") and (entry := bib_source(paper_root, src, line)):
         return entry
-    if src.startswith(os.path.join(paper_root, config.BUILD) + os.sep):  # generated, e.g. the table of contents
+    if within(src, os.path.join(paper_root, config.BUILD)):  # generated, e.g. the table of contents
         return 404, f"generated text ({os.path.basename(src)}); no source line"
     return src, line

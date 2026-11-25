@@ -23,7 +23,7 @@ from .editor import (
     UPLOAD_SLOTS, asset_request, completions, create_request, delete_request, file_request, files_listing, rename_request,
     restore_request, save_request, search_request, source_status, upload_request)
 from .export import start_export
-from .files import pdf_path
+from .files import pdf_path, within
 from .git import commit_diff, commits, history
 from .hub import papers_page
 from .instances import instances
@@ -77,7 +77,7 @@ def static_file(path):
     if not path.startswith(STATIC_DIRS) or ".." in path or path.endswith("/") or "\0" in path:
         return False
     folder = os.path.realpath(os.path.join(config.HERE, path.split("/")[1]))
-    return os.path.realpath(os.path.join(config.HERE, path.lstrip("/"))).startswith(os.path.join(folder, ""))
+    return within(os.path.realpath(os.path.join(config.HERE, path.lstrip("/"))), folder)
 
 
 # Requests of one coauthor in progress at once, in shared mode (in_flight): at most USER_REQUESTS of any kind but the
