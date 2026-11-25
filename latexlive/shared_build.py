@@ -24,7 +24,7 @@ import traceback
 from . import config
 from .files import aux_tree, fls_file, pdf_path, project_tex_files, read_build, read_capped
 from .latex import RERUN_RE
-from .notes import note_records, shown_tex
+from .notes import note_records, shown_tex, source_digests
 from .shared_watch import shared_deps, shared_inputs, shared_missing
 from .timing import note
 from .tools import LIVE_SPAWN, RUN_SEQ, SPAWNS, container_argv, image_pulled, stop_containers
@@ -192,7 +192,7 @@ def shared_run(server):
         for passes in range(1, 7):
             before = read_build(out(".aux"))
             note(server, "pass")
-            began_pass = time.time_ns()  # (what the pass read is older: notes.shown_notes)
+            read = source_digests(root, pdf)  # (the sources as the pass reads them, if the same after it: notes.shown_notes)
             ok = shared_tool(server, tex)
             note(server, "pass-end")
             if server.shared["force"]:  # (a rebuild stopped it: shared_build starts again)
@@ -202,7 +202,9 @@ def shared_run(server):
             latex_report.keep_inputs(job)
             latex_report.keep_synctex(os.path.join(config.BUILD, f"{job}.synctex.gz"))
             log = read_build(out(".log"))
-            shared_publish(server, job, note_records(log, key), began_pass)
+            after = source_digests(root, pdf)
+            shared_publish(server, job, note_records(log, key),
+                           after if all(read.get(path) == digest for path, digest in after.items()) else None)
             note(server, "published")
             aux, bcf = read_build(out(".aux")), read_build(out(".bcf"))
             auxes, ran = aux_tree(aux), False
@@ -220,7 +222,8 @@ def shared_run(server):
                 ran = tool("makeindex", "idx", state, ["makeindex", "-o", out(".ind"), out(".idx")], ".ilg") or ran
             if server.shared["force"]:
                 return
-            if not ran and not RERUN_RE.search(log) and aux == before:
+            # (and once more when the pass read a file new to the build, for the notes that viewers see)
+            if not ran and not RERUN_RE.search(log) and aux == before and set(after) <= set(read):
                 break
         if server.shared["overflow"] > began:  # (watch_build_size stopped it: tried again a few times, further apart)
             server.shared["overflows"] += 1
@@ -263,11 +266,12 @@ def shared_run(server):
         note(server, "run-end")
 
 
-def shared_publish(server, job, records, since):
+def shared_publish(server, job, records, sources):
     """Publish build/<job>.pdf as the shared document's PDF, in one step, and remember what was published
     (status's "overwritten" compares the PDF with it), with the notes its pass recorded typesetting (records:
-    notes.note_records) and when the pass began (since: time.time_ns()), which say what viewers and commenters
-    see (notes.shown_notes). Never through a symbolic link: build/ is written in the containers."""
+    notes.note_records) and the sources as it read them (notes.source_digests, or None if they changed during the
+    pass), which say what viewers and commenters see (notes.shown_notes). Never through a symbolic link: build/ is
+    written in the containers."""
     dest = pdf_path(server.paper_root, server.default_pdf)
     try:
         fd = os.open(os.path.join(server.paper_root, config.BUILD, f"{job}.pdf"), os.O_RDONLY | os.O_NOFOLLOW)
@@ -279,7 +283,7 @@ def shared_publish(server, job, records, since):
     os.replace(tmp, dest)
     st = os.stat(dest)
     server.shared["published"] = {"mtime": st.st_mtime_ns, "size": st.st_size}
-    server.shared["shown"] = {"published": server.shared["published"], "records": records, "since": since}
+    server.shared["shown"] = {"published": server.shared["published"], "records": records, "sources": sources}
 
 
 def shared_notes_free(server, job, doc):

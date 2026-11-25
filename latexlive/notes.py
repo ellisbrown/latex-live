@@ -90,27 +90,41 @@ def typeset_digest(tex):
 
 
 # A macro's definition, up to its body's brace: a note in one is typeset where the macro is used.
-DEFINITION_RE = re.compile(r"\\(?:(?:re|provide)?newcommand\*?\s*\{?\\[a-zA-Z@]+\}?(?:\s*\[\d\])?(?:\s*\[[^\]]*\])?"
+DEFINITION_RE = re.compile(r"\\(?:(?:(?:re|provide)?newcommand|DeclareRobustCommand)\*?\s*\{?\\[a-zA-Z@]+\}?(?:\s*\[\d\])?"
+                           r"(?:\s*\[[^\]]*\])?|(?:New|Renew|Provide|Declare)DocumentCommand\s*\{?\\[a-zA-Z@]+\}?\s*\{[^{}]*\}"
                            r"|[gex]?def\s*\\[a-zA-Z@]+[^{%\n]*)\s*(?=\{)")
 
 
-def recorded_notes(paper_root, pdf_name, records, since):
+def source_digests(paper_root, pdf_name):
+    """{path: SHA-256} of the build's .tex files (those its last successful pass read)."""
+    found = {}
+    for path in project_tex_files(paper_root, fls_file(paper_root, pdf_name)):
+        try:
+            with open(path, "rb") as f:
+                found[path] = hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            pass
+    return found
+
+
+def recorded_notes(paper_root, pdf_name, records, sources):
     """The notes of the build's files that records (note_records) are of, as {(file, line, macro, tex)} (note
     fields: tex squeezed): notes that hand \\todotxt exactly what a record recorded. A note is recorded at its last
     line, or later in an argument read whole (a caption), so a record is of the nearest such note above it in its
     file; failing that (a macro's use), of one in a macro's definition elsewhere, one per record. Another record (a
     list of contents, a running head) shows no note, so that a note in a false branch with the text of one shown
-    stays hidden. None if one of those files changed since since (time.time_ns() as the pass began), or is gone: then
-    what the notes say (their text, a macro in it, the words around them) may not be what the PDF shows."""
+    stays hidden. None unless those files are as the pass read them (sources: source_digests), as what the notes
+    say (their text, a macro in it, the words around them) may not be what the PDF shows otherwise."""
     texts = {}
     for path in project_tex_files(paper_root, fls_file(paper_root, pdf_name)):
         try:
-            with open(path, errors="replace") as f:
-                if os.fstat(f.fileno()).st_mtime_ns >= since:
-                    return None
-                texts[path] = blank_comments(f.read())
+            with open(path, "rb") as f:
+                data = f.read()
         except OSError:
             return None
+        if not sources or sources.get(path) != hashlib.sha256(data).hexdigest():
+            return None
+        texts[path] = blank_comments(data.decode("utf-8", errors="replace"))
     kinds = note_kinds(texts.values())
     templates = {}  # (note macro: the argument it gives \todotxt, with #1 in it; the last definition, as note_kinds)
     for text in texts.values():
@@ -149,7 +163,7 @@ def shown_notes(server, pdf_name, found):
     shared mode: the notes its pass recorded typesetting (shown_tex; shared_build.shared_publish keeps the records
     with what it published), so that notes in a false branch (\\iffalse, a switch that is off), or all of them while
     \\todotxt hides them, stay with the editors, who read the sources anyway. None without records of the PDF on
-    show (before the first build of a restarted instance, say), or while a source has changed since its pass began."""
+    show (before the first build of a restarted instance, say), or while a source differs from what its pass read."""
     shared = getattr(server, "shared", None) or {}
     kept = shared.get("shown")
     try:
@@ -159,7 +173,7 @@ def shown_notes(server, pdf_name, found):
     if pdf_name != server.default_pdf or not kept or kept["published"] != shared.get("published") \
             or kept["published"] != {"mtime": st.st_mtime_ns, "size": st.st_size}:
         return []
-    shown = recorded_notes(server.paper_root, pdf_name, kept["records"], kept["since"]) or set()
+    shown = recorded_notes(server.paper_root, pdf_name, kept["records"], kept["sources"]) or set()
     return [n for n in found if (n.get("file"), n.get("line"), n.get("macro"),
                                  " ".join((n.get("tex") or "").replace("\x7f", " ").split())) in shown]
 
