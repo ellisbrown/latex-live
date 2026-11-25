@@ -194,12 +194,12 @@ def request_checks():
     coauthor's figures are the document's (those its build read and those added), the owner's every one; the files
     added are listed (the editor opens a source added, though no \\input names it) and kept for a restart; each change
     is remembered for its commit, a rename's two paths too."""
-    from latexlive import config, editor, sources
+    from latexlive import config, editor, file_actions, sources
     owner = {"id": "owner", "name": "Owner", "role": "owner", "macro": "", "email": None, "via": "token"}
     ed = {"id": "ed", "name": "Eden", "role": "editor", "macro": "ed", "email": None, "via": "proxy"}
-    limits = {"UPLOAD_TOTAL": editor.UPLOAD_TOTAL, "UPLOAD_RATE": editor.UPLOAD_RATE, "ASSETS_LIMIT": editor.ASSETS_LIMIT}  # (as they are)
+    limits = {"UPLOAD_TOTAL": file_actions.UPLOAD_TOTAL, "UPLOAD_RATE": file_actions.UPLOAD_RATE, "ASSETS_LIMIT": file_actions.ASSETS_LIMIT}  # (as they are)
     with tempfile.TemporaryDirectory(prefix="latex-live-requests-") as root, tempfile.TemporaryDirectory() as state, \
-            patched(config, STATE=state, SHARED=config.SHARED), patched(editor, paused=lambda s: None, **limits):
+            patched(config, STATE=state, SHARED=config.SHARED), patched(file_actions, paused=lambda s: None, **limits):
         put(os.path.join(root, "main.tex"), "\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n")
         put_bytes(os.path.join(root, "figures", "old.png"), b"x" * 10)
         put_bytes(os.path.join(root, "other", "theirs.png"), b"x" * 10)
@@ -207,37 +207,37 @@ def request_checks():
         server = fake_server(root, state)
         b64 = lambda data: __import__("base64").b64encode(data).decode()
         want = lambda result, status, what: result[0] == status or fail(f"{what}: {result}, not {status}")
-        want(editor.upload_request(server, {"path": "sec.tex", "data": b64(b"x")}, ed), 400, "uploading a source")
-        want(editor.create_request(server, {"path": "sec/new.tex", "text": "New\n"}, ed), 200, "making sec/new.tex")
-        want(editor.create_request(server, {"path": "sec/new.tex"}, ed), 409, "making sec/new.tex again")
+        want(file_actions.upload_request(server, {"path": "sec.tex", "data": b64(b"x")}, ed), 400, "uploading a source")
+        want(file_actions.create_request(server, {"path": "sec/new.tex", "text": "New\n"}, ed), 200, "making sec/new.tex")
+        want(file_actions.create_request(server, {"path": "sec/new.tex"}, ed), 409, "making sec/new.tex again")
         if "sec/new.tex" not in sources.editable_files(server):
             fail("the editor does not open a source made in the Files tab (no \\input names it)")
         for path in ("main.tex", "./main.tex"):
-            want(editor.rename_request(server, {"from": path, "to": "paper.tex"}, owner), 404, f"renaming {path}")
-            want(editor.delete_request(server, {"path": path}, owner), 404, f"removing {path}")
-        want(editor.rename_request(server, {"from": "figures/old.png", "to": "figures/old.tex"}, owner), 400, "a figure renamed to a source")
-        want(editor.upload_request(server, {"path": "figures/new.png", "data": "not base64!"}, ed), 400, "data that is not base64")
-        want(editor.upload_request(server, {"path": "figures/old.png", "data": b64(b"y")}, ed), 409, "an upload over a figure")
-        editor.UPLOAD_TOTAL = 25
-        want(editor.upload_request(server, {"path": "figures/big.png", "data": b64(b"y" * 6)}, ed), 413, "past the paper's bytes")
-        editor.UPLOAD_TOTAL, editor.ASSETS_LIMIT = 10 ** 9, 2
-        want(editor.upload_request(server, {"path": "figures/many.png", "data": b64(b"y")}, ed), 413, "past the paper's figures")
-        editor.ASSETS_LIMIT, editor.UPLOAD_RATE, config.SHARED = 400, 8, True
-        want(editor.upload_request(server, {"path": "figures/a.png", "data": b64(b"y" * 5)}, ed), 200, "a coauthor's first upload")
-        want(editor.upload_request(server, {"path": "figures/b.png", "data": b64(b"y" * 5)}, ed), 429, "past a coauthor's bytes a day")
-        want(editor.upload_request(server, {"path": "figures/c.png", "data": b64(b"y" * 5)}, owner), 200, "the owner, past that")
+            want(file_actions.rename_request(server, {"from": path, "to": "paper.tex"}, owner), 404, f"renaming {path}")
+            want(file_actions.delete_request(server, {"path": path}, owner), 404, f"removing {path}")
+        want(file_actions.rename_request(server, {"from": "figures/old.png", "to": "figures/old.tex"}, owner), 400, "a figure renamed to a source")
+        want(file_actions.upload_request(server, {"path": "figures/new.png", "data": "not base64!"}, ed), 400, "data that is not base64")
+        want(file_actions.upload_request(server, {"path": "figures/old.png", "data": b64(b"y")}, ed), 409, "an upload over a figure")
+        file_actions.UPLOAD_TOTAL = 25
+        want(file_actions.upload_request(server, {"path": "figures/big.png", "data": b64(b"y" * 6)}, ed), 413, "past the paper's bytes")
+        file_actions.UPLOAD_TOTAL, file_actions.ASSETS_LIMIT = 10 ** 9, 2
+        want(file_actions.upload_request(server, {"path": "figures/many.png", "data": b64(b"y")}, ed), 413, "past the paper's figures")
+        file_actions.ASSETS_LIMIT, file_actions.UPLOAD_RATE, config.SHARED = 400, 8, True
+        want(file_actions.upload_request(server, {"path": "figures/a.png", "data": b64(b"y" * 5)}, ed), 200, "a coauthor's first upload")
+        want(file_actions.upload_request(server, {"path": "figures/b.png", "data": b64(b"y" * 5)}, ed), 429, "past a coauthor's bytes a day")
+        want(file_actions.upload_request(server, {"path": "figures/c.png", "data": b64(b"y" * 5)}, owner), 200, "the owner, past that")
         for user, want_paths in ((ed, ["figures/a.png", "figures/c.png", "figures/old.png"]),
                                  (owner, ["figures/a.png", "figures/c.png", "figures/old.png", "other/theirs.png"])):
             found = [a["path"] for a in editor.files_listing(server, user)["assets"]]
             if found != want_paths:
                 fail(f"in shared mode, the {user['role']}'s Files tab lists {found}, not {want_paths}")
-        want(editor.asset_request(server, {"path": ["other/theirs.png"]}, ed), 404, "a coauthor reading a figure the document doesn't use")
-        want(editor.delete_request(server, {"path": "other/theirs.png"}, ed), 404, "a coauthor removing a figure the document doesn't use")
-        if editor.asset_request(server, {"path": ["figures/old.png"]}, ed)[:2] != (200, "image/png"):
+        want(file_actions.asset_request(server, {"path": ["other/theirs.png"]}, ed), 404, "a coauthor reading a figure the document doesn't use")
+        want(file_actions.delete_request(server, {"path": "other/theirs.png"}, ed), 404, "a coauthor removing a figure the document doesn't use")
+        if file_actions.asset_request(server, {"path": ["figures/old.png"]}, ed)[:2] != (200, "image/png"):
             fail("GET asset of the document's figure, for a coauthor")
         server.autocommit = True
-        want(editor.rename_request(server, {"from": "figures/a.png", "to": "figures/renamed.png"}, ed), 200, "renaming a figure")
-        want(editor.delete_request(server, {"path": "sec/new.tex"}, ed), 200, "removing sec/new.tex")
+        want(file_actions.rename_request(server, {"from": "figures/a.png", "to": "figures/renamed.png"}, ed), 200, "renaming a figure")
+        want(file_actions.delete_request(server, {"path": "sec/new.tex"}, ed), 200, "removing sec/new.tex")
         remembered = {rel: kind for rel, (kind, _) in server.pending["ed"]["paths"].items()}
         if remembered != {"figures/a.png": "files", "figures/renamed.png": "files", "sec/new.tex": "files"}:
             fail(f"the Files tab's changes are remembered for their commit as {remembered}")
@@ -256,7 +256,7 @@ def source_budget_checks():
     file when it is not among their writes still to commit (a note too); past that, 429 with a message, nothing written; the owner's
     and anyone's outside shared mode are not counted, nor a save that changes nothing. A source added through the Files
     tab may not grow once the added sources pass ADDED_SOURCES_TOTAL (413, for everyone), but may shrink."""
-    from latexlive import bib, commits, config, editor, note_writer, sources
+    from latexlive import bib, commits, config, editor, file_actions, note_writer, sources
     owner = {"id": "owner", "name": "Owner", "role": "owner", "macro": "", "email": None, "via": "token"}
     ed = {"id": "ed", "name": "Eden", "role": "editor", "macro": "ed", "email": None, "via": "proxy"}
     for old, new, want in (("abc", "abXc", 1), ("aaaa", "aaaaa", 1), ("", "xyz", 3), ("xyz", "", 0), ("abab", "ab", 0),
@@ -264,7 +264,7 @@ def source_budget_checks():
         if commits.changed_bytes(old.encode(), new.encode()) != want:
             fail(f"changed_bytes({old!r}, {new!r}) is {commits.changed_bytes(old.encode(), new.encode())}, not {want}")
     with tempfile.TemporaryDirectory(prefix="latex-live-budget-") as root, tempfile.TemporaryDirectory() as state, \
-            patched(config, STATE=state, SHARED=True), patched(editor, paused=lambda s: None), patched(commits, SOURCE_RATE=1000, ADDED_SOURCES_TOTAL=3000), \
+            patched(config, STATE=state, SHARED=True), patched(editor, paused=lambda s: None), patched(file_actions, paused=lambda s: None), patched(commits, SOURCE_RATE=1000, ADDED_SOURCES_TOTAL=3000), \
             patched(bib, paused=lambda s: None), patched(note_writer, paused=lambda s: None):
         main = os.path.join(root, "main.tex")
         put(main, "\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n")
@@ -295,10 +295,10 @@ def source_budget_checks():
         added = bib.add_request(server, {"bibtex": "@misc{b,\n  title = {" + "t" * 1200 + "},\n}"}, ed)
         if added[0] != 429 or "a day" not in added[1].get("error", ""):
             fail(f"an entry added in the Refs tab past a coauthor's day: {added}")
-        want(editor.create_request(server, {"path": "made.tex", "text": "m" * 1200}, ed), 429, "a coauthor's new file past their day")
+        want(file_actions.create_request(server, {"path": "made.tex", "text": "m" * 1200}, ed), 429, "a coauthor's new file past their day")
         git(root, "commit", "-qam", "big")
-        want(editor.restore_request(server, {"rev": sha, "path": "main.tex"}, owner), 200, "the owner's restore of the small file")
-        want(editor.restore_request(server, {"rev": git_out(root, "rev-parse", "HEAD"), "path": "main.tex"}, ed), 429, "a coauthor's restore past their day")
+        want(file_actions.restore_request(server, {"rev": sha, "path": "main.tex"}, owner), 200, "the owner's restore of the small file")
+        want(file_actions.restore_request(server, {"rev": git_out(root, "rev-parse", "HEAD"), "path": "main.tex"}, ed), 429, "a coauthor's restore past their day")
         server.writes.clear()
         server.autocommit = True
         want(save(ed, read_text(main) + "%first\n"), 200, "a coauthor's edit with auto-commit")
@@ -308,11 +308,11 @@ def source_budget_checks():
             fail(f"with auto-commit, a coauthor's first write of a file cost {first} bytes (the file has {size}), the next"
                  f" one {spent() - first} (6 changed)")
         server.autocommit = False
-        want(editor.create_request(server, {"path": "one.tex", "text": "a" * 2000}, owner), 200, "making a source of 2000 bytes")
-        refused = editor.create_request(server, {"path": "two.tex", "text": "b" * 1500}, owner)
+        want(file_actions.create_request(server, {"path": "one.tex", "text": "a" * 2000}, owner), 200, "making a source of 2000 bytes")
+        refused = file_actions.create_request(server, {"path": "two.tex", "text": "b" * 1500}, owner)
         if refused[0] != 413 or "added" not in refused[1].get("error", "") or os.path.exists(os.path.join(root, "two.tex")):
             fail(f"a new source past the added sources' {commits.ADDED_SOURCES_TOTAL} bytes: {refused}")
-        want(editor.create_request(server, {"path": "two.tex", "text": "b" * 900}, owner), 200, "a new source within them")
+        want(file_actions.create_request(server, {"path": "two.tex", "text": "b" * 900}, owner), 200, "a new source within them")
         want(save(owner, "a" * 2200, "one.tex"), 413, "an added source grown past the added sources' total")
         want(save(owner, "a" * 1000, "one.tex"), 200, "an added source shrunk")
         put(main, "\\newcommand{\\ed}[1]{\\todotxt{#1}}\n\\begin{document}\nSome words. \\ed{first note}\n" + "%" * 900 + "\n\\end{document}\n")
@@ -330,19 +330,19 @@ def source_budget_checks():
         if not 300 <= spent() < 400:
             fail(f"a coauthor's reply of 300 characters cost {spent()} bytes of their day")
         server.autocommit, server.writes = True, {}
-        want(editor.rename_request(server, {"from": "two.tex", "to": "moved.tex"}, ed), 200, "a coauthor's rename")
+        want(file_actions.rename_request(server, {"from": "two.tex", "to": "moved.tex"}, ed), 200, "a coauthor's rename")
         want(save(ed, read_text(os.path.join(root, "moved.tex")) + "x", "moved.tex"), 200, "a coauthor's edit of a file they renamed")
         if spent() != 901:
             fail(f"with auto-commit, a coauthor's first edit of a file they renamed cost {spent()} bytes, not its 901 (its commit"
                  " stores it whole)")
-        want(editor.delete_request(server, {"path": "moved.tex"}, ed), 200, "a coauthor's removal of it")
-        want(editor.rename_request(server, {"from": "one.tex", "to": "moved.tex"}, ed), 200, "another file renamed to its name")
+        want(file_actions.delete_request(server, {"path": "moved.tex"}, ed), 200, "a coauthor's removal of it")
+        want(file_actions.rename_request(server, {"from": "one.tex", "to": "moved.tex"}, ed), 200, "another file renamed to its name")
         server.writes = {}
         want(save(ed, read_text(os.path.join(root, "moved.tex"))[:-1] + "y", "moved.tex"), 200, "an edit of that file")
         if spent() != 1000:
             fail(f"with auto-commit, the first edit of a file renamed to a name paid for already cost {spent()} bytes, not its 1000")
         server.autocommit = False
-        want(editor.create_request(server, {"path": "more.bib", "text": "@misc{c,\n  title = {C},\n}\n"}, owner), 200, "making more.bib")
+        want(file_actions.create_request(server, {"path": "more.bib", "text": "@misc{c,\n  title = {C},\n}\n"}, owner), 200, "making more.bib")
         added = bib.add_request(server, {"bibtex": "@misc{d,\n  title = {" + "t" * 2500 + "},\n}", "file": "more.bib"}, owner)
         if added[0] != 413 or "added" not in added[1].get("error", ""):
             fail(f"an entry added in the Refs tab past the added sources' total: {added}")

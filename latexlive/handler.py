@@ -19,10 +19,10 @@ from .build import on_main_thread, rebuild_doc, request_switch
 from .checks import cached_checks
 from .commits import commit_request
 from .document import floats, graphics, toc_outline
-from .editor import (
-    UPLOAD_SLOTS, asset_request, completions, create_request, delete_request, file_request, files_listing, rename_request,
-    restore_request, save_request, search_request, source_status, upload_request)
+from .editor import completions, file_request, files_listing, save_request, search_request, source_status
 from .export import start_export
+from .file_actions import (
+    UPLOAD_SLOTS, asset_request, create_request, delete_request, rename_request, restore_request, upload_request)
 from .files import pdf_path, within
 from .git import commit_diff, commits, history
 from .hub import papers_page
