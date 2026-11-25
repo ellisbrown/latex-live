@@ -7,12 +7,14 @@ import re
 import shutil
 import stat
 import subprocess
+import tempfile
 import threading
 import time
 
 from . import config
 from .files import build_folder, copy_output, create_output, job_file, mtime, pdf_path, read_capped, too_big
-from .git import POLL_TIMEOUT, SHA_RE, commit_sha, git_text, pushed_commit, ref_stamp
+from .git import POLL_TIMEOUT, SHA_RE, commit_sha, git_text, pushed_commit, ref_stamp, run_git
+from .latex import first_error
 from .tools import container_argv, failure, image_pulled, run_tool, tex_argv
 
 
@@ -43,6 +45,20 @@ def tex_pathspec():
     return [":(glob)**/*.tex", *([":(exclude,glob)**/.*", ":(exclude,glob)**/.*/**"] if config.SHARED else [])]
 
 
+def extract_tex(root, sha, folder):
+    """Put the paper's .tex files (tex_pathspec) as commit sha left them into folder (git archive, through a file in a
+    temporary folder of the server's own, never in build/); RuntimeError if git or tar fails."""
+    with tempfile.TemporaryDirectory(prefix="latex-live-archive-") as tmp:
+        tar = os.path.join(tmp, "tex.tar")
+        r = run_git(root, ["archive", "--format=tar", "-o", tar, sha, "--", *tex_pathspec()], timeout=60, literal=False)
+        if r.code != 0:
+            why = (r.err.strip() or f"status {r.code}").splitlines()[-1]
+            raise RuntimeError(f"{sha[:9]} has no .tex file here" if "did not match" in why else f"git archive failed: {why}")
+        r = subprocess.run(["tar", "-x", "-f", tar, "-C", folder], capture_output=True, text=True, timeout=60)
+        if r.returncode:
+            raise RuntimeError(f"tar could not unpack {sha[:9]}'s .tex files: {(r.stderr.strip() or str(r.returncode)).splitlines()[-1]}")
+
+
 # latexdiff's marks, and the plainer ones a second try takes when the document with the first doesn't build (marks in
 # math, around figures and in citations are the ones that break documents most often).
 DIFF_MARKS = ["--math-markup=coarse"]
@@ -66,9 +82,6 @@ def build_diff(server, sha):
     out = os.path.join(root, config.BUILD, "diff")
     old, new = os.path.join(out, "old"), os.path.join(out, "new")
     job = f"{doc}-diff"
-
-    def run(cmd, **kw):
-        return subprocess.run(cmd, capture_output=True, text=True, cwd=root, **kw)
 
     def attempt(marks):
         """The diff with these marks, as out/<job>.pdf: how many errors its log has. Raises RuntimeError with the reason
@@ -95,20 +108,20 @@ def build_diff(server, sha):
         for _ in range(2):
             if run_tool(tex, root, timeout=300, kind="diff", env={**os.environ, "max_print_line": "10000"})[0] is None:
                 raise TimeoutError("a pdflatex pass took more than 5 minutes")
-        errors = [l for l in (read_capped(os.path.join(out, f"{job}.log")) or "").splitlines() if l.startswith("! ")]
+        log = read_capped(os.path.join(out, f"{job}.log")) or ""
         if not os.path.isfile(pdf):
-            raise RuntimeError(errors[0] if errors else "pdflatex produced no PDF")
-        return len(errors)
+            raise RuntimeError(first_error(log) or "pdflatex produced no PDF")
+        return sum(line.startswith("! ") for line in log.splitlines())
 
     pdf, full = os.path.join(out, f"{job}.pdf"), os.path.join(out, f"{job}-full.pdf")
     try:
         for side in ("old", "new"):  # (never through a link in build/: build_folder)
             build_folder(root, os.path.join("diff", side), fresh=True)
-        archive = subprocess.Popen(["git", "-C", root, "archive", sha, "--", *tex_pathspec()], stdout=subprocess.PIPE)
-        subprocess.run(["tar", "-x", "-C", old], stdin=archive.stdout, check=True)
-        archive.wait()
-        tracked = run(["git", "ls-files", "-co", "--exclude-standard", "--", *tex_pathspec()]).stdout.splitlines()
-        for rel_path in tracked:
+        extract_tex(root, sha, old)
+        tracked = run_git(root, ["ls-files", "-z", "-co", "--exclude-standard", "--", *tex_pathspec()], literal=False)
+        if tracked.code != 0 or tracked.more:
+            raise RuntimeError(f"git could not list the .tex files: {tracked.err.strip() or tracked.code}")
+        for rel_path in filter(None, tracked.text.split("\0")):
             if os.path.isfile(os.path.join(root, rel_path)):
                 os.makedirs(os.path.dirname(os.path.join(new, rel_path)), exist_ok=True)
                 shutil.copyfile(os.path.join(root, rel_path), os.path.join(new, rel_path))
@@ -308,9 +321,7 @@ def build_base(server, kind, sha, pdf_name):
         os.makedirs(src)
         if config.SHARED and not image_pulled():
             raise RuntimeError(f"{config.IMAGE_MISSING}; meanwhile there is no baseline")
-        archive = subprocess.Popen(["git", "-C", root, "archive", sha, "--", *tex_pathspec()], stdout=subprocess.PIPE)
-        subprocess.run(["tar", "-x", "-C", src], stdin=archive.stdout, check=True)
-        archive.wait()
+        extract_tex(root, sha, src)
         if not os.path.isfile(os.path.join(src, f"{doc}.tex")):
             raise RuntimeError(f"{doc}.tex is not in {sha[:9]}")
         link_missing(root, src, skip=(".git", config.BUILD.split(os.sep)[0]))  # (fonts are not looked up through TEXINPUTS)

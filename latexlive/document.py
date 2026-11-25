@@ -4,12 +4,11 @@ the graphics it includes, from the build's log, .aux and SyncTeX file."""
 import collections
 import os
 import re
-import subprocess
 
 from . import config
 from .files import (
     child_aux, clean_file, file_hash, fls_file, job_file, mtime, project_inputs, project_tex_files, read_capped, shown_synctex)
-from .git import git_read_env, pushed_commit
+from .git import pushed_commit, run_git
 from .latex import brace_group, project_macros, read_tex, tex_to_text
 from .synctex import synctex_boxes
 
@@ -260,10 +259,9 @@ def graphics(paper_root, pdf_name):
     \\includegraphics; dirty: changed since HEAD, or untracked; unpushed: likewise since the last
     push). The viewer compares hashes across rebuilds to mark figures whose files changed, or marks
     the dirty (unpushed) ones against HEAD (the last push)."""
-    git = ["git", "-C", paper_root]
-    changed = lambda rev: set(subprocess.run(git + ["diff", "--name-only", "--relative", rev], capture_output=True, text=True,
-                                             env=git_read_env()).stdout.splitlines())
-    untracked = set(subprocess.run(git + ["ls-files", "-o", "--exclude-standard"], capture_output=True, text=True).stdout.splitlines())
+    names = lambda args: set(run_git(paper_root, args).text.split("\0"))  # (none if git fails: nothing marked)
+    changed = lambda rev: names(["diff", "--name-only", "-z", "--relative", rev])
+    untracked = names(["ls-files", "-z", "-o", "--exclude-standard"])
     dirty = changed("HEAD") | untracked
     pushed = pushed_commit(paper_root)[0]
     unpushed = changed(pushed) | untracked if pushed else set()

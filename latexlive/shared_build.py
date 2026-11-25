@@ -17,7 +17,6 @@ import re
 import secrets
 import shutil
 import stat
-import subprocess
 import threading
 import time
 import traceback
@@ -28,7 +27,7 @@ from .latex import RERUN_RE
 from .notes import note_records, shown_tex, source_digests
 from .shared_watch import shared_deps, shared_inputs, shared_missing
 from .timing import note
-from .tools import LIVE_SPAWN, RUN_SEQ, SPAWNS, container_argv, image_pulled, stop_containers
+from .tools import LIVE_SPAWN, SPAWNS, container_argv, image_pulled, run_tool, stop_containers
 
 
 # The same layout line as latexmkrc's $pre_tex_code (check.py checks that they agree).
@@ -102,24 +101,20 @@ def shared_tool(server, argv, kind="main", cwd=None, env=None):
     container is labelled with a run of its own (e.g. main-12) and its kind, so that a rebuild stops the
     main run's (stop_containers); when the tool fails or runs out of time, its container is stopped before
     the slot is free again."""
-    label = f"{kind}-{next(RUN_SEQ)}"
-    with LIVE_SPAWN if kind == "main" else SPAWNS:
-        proc = subprocess.Popen([*container_argv(server.paper_root), *argv], cwd=cwd or server.paper_root,
-                                env={**server.env, **(env or {}), "LATEX_LIVE_RUN": label, "LATEX_LIVE_TIMEOUT": "600"},
-                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    mine = []
+
+    def started(proc):  # (the main run's, for POST /rebuild to stop)
+        mine.append(proc)
         if kind == "main":
             server.shared["proc"] = proc
-        try:
-            proc.wait(timeout=600)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-        finally:
-            if proc.returncode != 0:
-                stop_containers(label)
-            if kind == "main":
-                server.shared["proc"] = None
-        return proc.returncode == 0
+    try:
+        code, _ = run_tool([*container_argv(server.paper_root), *argv], cwd or server.paper_root, kind=kind,
+                           env={**server.env, **(env or {})}, slot=LIVE_SPAWN if kind == "main" else SPAWNS,
+                           started=started, stop_failed=True)
+    finally:
+        if mine and server.shared["proc"] is mine[0]:
+            server.shared["proc"] = None
+    return code == 0
 
 
 def dep_stats(paths):

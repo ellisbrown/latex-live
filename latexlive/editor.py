@@ -13,14 +13,13 @@ import base64
 import binascii
 import os
 import re
-import subprocess
 import tempfile
 import threading
 import time
 
 from . import config
 from .commits import charge, commit_others, paused, remember_write, source_budget, unpaid, updating
-from .git import commit_sha, file_at_commit
+from .git import commit_sha, file_at_commit, run_git
 from .latex import brace_group
 from .sources import (
     ADDED_LIMIT, ASSET_EXTS, ASSET_SIZE, ASSETS_LIMIT, EDITABLE_EXTS, EDITABLE_SIZE, NOTE_LOCK, SourceChanged, add_file,
@@ -267,7 +266,7 @@ def save_file(server, user, rel, real, sent, base, base_text, force, editor=None
                          "error": f"{rel} changed meanwhile, and the text your edits started from is not known here"}
         try:
             conflicts, text = merge_texts(current, base_text, sent)
-        except (OSError, RuntimeError, UnicodeDecodeError, subprocess.SubprocessError) as e:
+        except (OSError, RuntimeError, UnicodeDecodeError) as e:
             return 422, {"error": f"could not merge your edits with the changes saved meanwhile ({e})"}
         if conflicts:
             by = server.last_writer.get(written)
@@ -313,11 +312,11 @@ def merge_texts(current, base, new):
             with open(path, "w", encoding="utf-8", newline="") as f:
                 f.write(text)
         labels = [arg for label in MERGE_LABELS for arg in ("-L", label)]
-        r = subprocess.run(["git", "-c", "merge.conflictStyle=merge", "merge-file", "-p", "-q", *labels, *paths],
-                           capture_output=True, cwd=tmp, timeout=60)
-    if not 0 <= r.returncode <= 127:  # (git's count of conflicts stops at 127; it fails with 255)
-        raise RuntimeError(r.stderr.decode(errors="replace").strip() or f"git merge-file failed ({r.returncode})")
-    return r.returncode, r.stdout.decode("utf-8")
+        r = run_git(tmp, ["-c", "merge.conflictStyle=merge", "merge-file", "-p", "-q", *labels, *paths],
+                    limit=2 * sum(os.path.getsize(path) for path in paths) + 1_000_000, timeout=60)  # (all of it)
+    if r.code is None or r.more or not 0 <= r.code <= 127:  # (git's count of conflicts stops at 127; it fails with 255)
+        raise RuntimeError(r.err.strip() or f"git merge-file failed ({r.code})")
+    return r.code, r.out.decode("utf-8")
 
 
 SEARCH_LIMIT, SEARCH_QUERY, SEARCH_TEXT = 200, 200, 200  # (matches, characters of a query, of a line shown)

@@ -5,11 +5,11 @@ placed or referenced badly."""
 import collections
 import os
 import re
-import subprocess
 
 from . import config
 from .document import GRAPHIC_EXTS, floats, include_sites, layout
 from .files import fls_file, in_paper, job_file, project_tex_files, read_capped, shown_synctex
+from .git import run_git
 from .latex import brace_group, project_macros, read_tex, tex_to_text
 from .notes import blank_notes, note_kinds
 from .synctex import synctex_points
@@ -19,17 +19,16 @@ from .tools import pdf_pages_text
 def git_times(paper_root):
     """When each file last changed: {relative path: unix time}, from git history, or the file's
     mtime when it has uncommitted edits or is untracked (checkouts reset mtimes, commits don't)."""
-    git = ["git", "-C", paper_root]
     times = {}
-    log = subprocess.run(git + ["log", "-n", "3000", "--format=@%ct", "--name-only", "--no-renames", "--relative"],
-                         capture_output=True, text=True).stdout
+    log = run_git(paper_root, ["log", "-n", "3000", "--format=@%ct", "--name-only", "--no-renames", "--relative"])
+    lines = log.text.splitlines()[:-1 if log.more else None]  # (past the limit: the last line cut off)
     when = 0
-    for line in log.splitlines():
+    for line in lines:
         if line.startswith("@"):
             when = int(line[1:])
         elif line and line not in times:
             times[line] = when
-    dirty = subprocess.run(git + ["ls-files", "-m", "-o", "--exclude-standard"], capture_output=True, text=True).stdout.split("\n")
+    dirty = run_git(paper_root, ["ls-files", "-z", "-m", "-o", "--exclude-standard"]).text.split("\0")
     for path in filter(None, dirty):
         try:
             times[path] = os.path.getmtime(os.path.join(paper_root, path))

@@ -20,7 +20,7 @@ from . import config
 from .export import exact_export, waiting_for_build
 from .files import (
     build_folder, copy_output, create_output, fls_file, mtime, open_output, pdf_path, project_inputs, project_tex_files, read_output)
-from .latex import DOCCLASS_RE, RERUN_RE, brace_group, false_blocks, read_tex, root_docs, source_tree
+from .latex import DOCCLASS_RE, RERUN_RE, brace_group, false_blocks, first_error, read_tex, root_docs, source_tree
 from .notes import note_kinds, note_use_re
 from .standby import DATE_RES
 from .tools import failure, pdf_pages_text, pdf_tool, run_tool, tex_argv
@@ -501,8 +501,7 @@ def make_package(server, pdf, step):
             if code is None:
                 raise RuntimeError(f"a pass of the package's own build took over 10 minutes; see {config.BUILD}/arxiv/{doc}/test/{doc}.log")
             if code != 0:
-                first = next((l for l in log.splitlines() if l.startswith("! ") or re.match(r"^\S+:\d+: ", l)), "")
-                raise RuntimeError(f"the package doesn't build on its own: {first or 'pdflatex failed'}"
+                raise RuntimeError(f"the package doesn't build on its own: {first_error(log) or 'pdflatex failed'}"
                                    f" (see {config.BUILD}/arxiv/{doc}/test/{doc}.log)")
             if passes >= 2 and not RERUN_RE.search(log):  # (a cold start: at least two passes, as for the citations)
                 break

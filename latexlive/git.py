@@ -1,14 +1,15 @@
-"""The paper's git checkout, read only: its git directory and whether git is busy there, the last
-pushed commit, the recent commits for the viewer's compare menu, and the History tab's commits, diffs and earlier
-versions of a file."""
+"""The paper's git checkout: every git command the server runs, bounded (run_git, git_capped, git_text), its git
+directory and whether git is busy there, the last pushed commit, the recent commits for the viewer's compare menu, and
+the History tab's commits, diffs and earlier versions of a file."""
 
+import collections
 import os
 import re
 import subprocess
-import threading
 import time
 
 from .files import in_build
+from .tools import run_bounded
 
 
 GIT_OPERATIONS = (("MERGE_HEAD", "a merge"), ("rebase-merge", "a rebase"), ("rebase-apply", "a rebase"),
@@ -147,28 +148,38 @@ def shown_path(rel):
     return norm != "." and parts[0] != ".." and not any(part.startswith(".") for part in parts) and not in_build(norm)
 
 
+GIT_OUTPUT, GIT_STDERR = 4_000_000, 8_000  # (bytes: what run_git keeps of what git prints, by default; of its stderr)
+
+
+class GitRun(collections.namedtuple("GitRun", "code out err more")):
+    """run_git's result: code (git's exit status; None if it ran past its time, or there is no git), out (what it
+    printed, bytes), err (the end of its stderr, text), more (it printed more than the limit, and was stopped)."""
+
+    @property
+    def text(self):
+        """out as text, with the bytes of a file name that isn't UTF-8 kept (surrogateescape), as Python names files."""
+        return self.out.decode("utf-8", errors="surrogateescape")
+
+
+def run_git(folder, args, limit=GIT_OUTPUT, timeout=GIT_TIMEOUT, write=False, literal=True):
+    """git args in folder, bounded (tools.run_bounded): what it printed, read as it comes, up to limit bytes, and stopped
+    past that or past timeout seconds (GitRun). File names are printed as they are (core.quotePath=false); paths are
+    taken literally, unless literal is False (a pathspec with magic, :(glob)). A command that only reads takes no
+    optional locks (git_read_env); with write (git add, commit), it may take the index."""
+    argv = ["git", *(["--literal-pathspecs"] if literal else []), "-c", "core.quotePath=false", "-C", folder, *args]
+    env = git_read_env() if not write else {k: v for k, v in os.environ.items() if k != "GIT_OPTIONAL_LOCKS"}
+    try:
+        ran = run_bounded(argv, timeout, env=env, limit=limit, stop_at_limit=True, err_kept=GIT_STDERR)
+    except OSError as e:  # (no git)
+        return GitRun(None, b"", f"git did not run ({e.strerror or e})", False)
+    return GitRun(ran.code, ran.out, ran.err.decode("utf-8", errors="replace"), ran.more)
+
+
 def git_capped(paper_root, args, limit, timeout=GIT_TIMEOUT):
-    """(returncode, bytes, more) of git args in the paper's folder: what it printed, read as it comes, up to limit bytes
-    (more: it printed more, and was stopped); returncode None if it ran past timeout seconds (killed), or there is no
-    git. Paths are taken literally, and file names printed as they are."""
-    argv = ["git", "--literal-pathspecs", "-c", "core.quotePath=false", "-C", paper_root, *args]
-    try:
-        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                env=git_read_env())
-    except OSError:
-        return None, b"", False
-    late = threading.Event()
-    timer = threading.Timer(timeout, lambda: (late.set(), proc.kill()))
-    timer.start()
-    try:
-        data = proc.stdout.read(limit + 1)
-        if len(data) > limit:
-            proc.kill()
-        proc.stdout.close()
-        code = proc.wait()
-    finally:
-        timer.cancel()
-    return (None if late.is_set() else code), data[:limit], len(data) > limit
+    """(returncode, bytes, more) of git args in the paper's folder (run_git): what it printed, up to limit bytes (more:
+    it printed more, and was stopped); returncode None if it ran past timeout seconds (killed), or there is no git."""
+    r = run_git(paper_root, args, limit, timeout)
+    return r.code, r.out, r.more
 
 
 def git_text(paper_root, args, limit=100_000, timeout=GIT_TIMEOUT):
@@ -176,6 +187,11 @@ def git_text(paper_root, args, limit=100_000, timeout=GIT_TIMEOUT):
     else None."""
     code, data, more = git_capped(paper_root, args, limit, timeout)
     return data.decode("utf-8", "replace").strip() if code == 0 and not more else None
+
+
+def git_user(folder, key="name"):
+    """git's user.name (or with key "email", user.email) where folder is, or ""."""
+    return git_text(folder, ["config", f"user.{key}"]) or ""
 
 
 def commit_sha(paper_root, rev, any_rev=True):

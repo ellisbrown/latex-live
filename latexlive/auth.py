@@ -9,7 +9,6 @@ import json
 import os
 import re
 import secrets
-import subprocess
 import sys
 import tempfile
 import threading
@@ -205,12 +204,10 @@ def owner_principal(via):
 
 
 def owner_name(server):
-    """The owner's name, for coauthors: from the users file, else git's user.name, else "the owner"."""
+    """The owner's name, for coauthors: from the users file, else git's user.name (server.git_name, read at the start),
+    else "the owner"."""
     if entry := users_owner():
         return entry["name"]
-    if server.git_name is None:
-        r = subprocess.run(["git", "-C", server.paper_root, "config", "user.name"], capture_output=True, text=True)
-        server.git_name = r.stdout.strip()
     return server.git_name or "the owner"
 
 

@@ -14,14 +14,13 @@ tries a plugin as the viewer would."""
 import json
 import os
 import shlex
-import signal
-import subprocess
 import sys
 import tempfile
 import threading
 import time
 
 from . import config
+from .tools import run_bounded
 
 PROTOCOL = 1
 # The bounds on a request (in characters) and on the plugin's answer: what it prints (bytes; past that it is
@@ -49,19 +48,12 @@ def plugin_env():
     return {n: os.environ[n] for n in names if n in os.environ}
 
 
-def kill_group(pid, sig):
-    try:
-        os.killpg(pid, sig)
-    except (ProcessLookupError, PermissionError):  # (gone already)
-        pass
-
-
 def run_plugin(cmd, request, timeout=None):
     """Run the plugin cmd on request (a dict, sent as JSON with protocol and timeout added) and return
-    (None, {replacement, rationale}) or (error, None). Each pipe has a thread of its own, so that none
-    fills while another waits; stdout past OUTPUT_LIMIT stops the plugin, and of stderr only the last
-    STDERR_KEPT bytes are kept. At the timeout, or when it exits, its process group is killed: nothing it
-    started outlives it."""
+    (None, {replacement, rationale}) or (error, None). It runs bounded (tools.run_bounded): stdout past
+    OUTPUT_LIMIT stops the plugin, and of stderr only the last STDERR_KEPT bytes are kept. At the timeout
+    (SIGTERM, then 2 s later SIGKILL), or when it exits, its process group is killed: nothing it started
+    outlives it."""
     timeout = config.AGENT_TIMEOUT if timeout is None else timeout
     try:
         argv = shlex.split(cmd)
@@ -72,76 +64,20 @@ def run_plugin(cmd, request, timeout=None):
     data = json.dumps({"protocol": PROTOCOL, **request, "timeout": timeout}).encode()
     with tempfile.TemporaryDirectory(prefix="latex-live-agent-") as scratch:  # (not the paper's folder)
         try:
-            proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    cwd=scratch, env=plugin_env(), close_fds=True, start_new_session=True)
+            ran = run_bounded(argv, timeout, cwd=scratch, env=plugin_env(), data=data, limit=OUTPUT_LIMIT,
+                              stop_at_limit=True, err_kept=STDERR_KEPT, group=True, grace=2)
         except OSError as e:
             return f"the plugin did not start ({e.strerror or e})", None
-        out, err, over = bytearray(), bytearray(), threading.Event()
-        state = {"lock": threading.Lock(), "finished": False}  # (finished: nothing may signal its group any more)
-
-        def stop():
-            with state["lock"]:
-                if not state["finished"]:
-                    kill_group(proc.pid, signal.SIGKILL)
-
-        def feed():
-            try:
-                proc.stdin.write(data)
-            except OSError:  # (it stopped reading: its answer says why)
-                pass
-            finally:
-                try:
-                    proc.stdin.close()
-                except OSError:
-                    pass
-
-        def read_out():
-            with proc.stdout:  # (closed by its reader, even when that ends only after this call: an escaped child held it)
-                while chunk := proc.stdout.read1(64 << 10):
-                    if len(out) + len(chunk) > OUTPUT_LIMIT:
-                        over.set()
-                        return stop()
-                    out.extend(chunk)
-
-        def read_err():
-            with proc.stderr:
-                while chunk := proc.stderr.read1(64 << 10):
-                    err.extend(chunk)
-                    del err[:-STDERR_KEPT]
-
-        threads = [threading.Thread(target=t, daemon=True) for t in (feed, read_out, read_err)]
-        for t in threads:
-            t.start()
-        timed_out = False
-        try:
-            proc.wait(timeout)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            kill_group(proc.pid, signal.SIGTERM)
-            try:
-                proc.wait(2)
-            except subprocess.TimeoutExpired:
-                pass
-        finally:
-            # What it left running, which may hold its pipes open. (Its group's id is free for another process only
-            # once none of the group is left, and pids are handed out in turn, so this signals nothing else.)
-            with state["lock"]:
-                kill_group(proc.pid, signal.SIGKILL)
-                state["finished"] = True
-            proc.wait()
-            end = time.monotonic() + 2
-            for t in threads[1:] + threads[:1]:  # (the readers first: a feed held up by an escaped child waits last)
-                t.join(max(0, end - time.monotonic()))
-    if threads[1].is_alive():  # (its output is not complete, and still being read)
+    if ran.open:  # (its output is not complete, and still being read)
         return "the plugin left a process running that holds its output open", None
-    if timed_out:
+    if ran.code is None:
         return f"the plugin did not answer within {timeout} s", None
-    if over.is_set():
+    if ran.more:
         return f"the plugin printed more than {OUTPUT_LIMIT >> 10} KB", None
-    if proc.returncode:
-        lines = [] if threads[2].is_alive() else bytes(err).decode("utf-8", "replace").strip().splitlines()
-        return f"the plugin exited with {proc.returncode}" + (f": {lines[-1][:300]}" if lines else ""), None
-    return answer(bytes(out))
+    if ran.code:
+        lines = ran.err.decode("utf-8", "replace").strip().splitlines()
+        return f"the plugin exited with {ran.code}" + (f": {lines[-1][:300]}" if lines else ""), None
+    return answer(ran.out)
 
 
 def answer(out):

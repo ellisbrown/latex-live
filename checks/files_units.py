@@ -10,7 +10,6 @@ import io
 import os
 import tempfile
 import time
-import types
 
 from .base import fail, ok
 from .helpers import fake_server, git, git_out, patched, put, put_bytes, read_text
@@ -300,6 +299,7 @@ def commit_checks():
     committed as removed, a rename as both; a file made and removed before its commit, nothing; an edit after a file
     was made keeps it a new file (remember_write); a commit that fails leaves nothing in the index."""
     from latexlive import commits
+    from latexlive.git import GitRun
     with tempfile.TemporaryDirectory(prefix="latex-live-commits-") as root, tempfile.TemporaryDirectory() as state:
         git(root, "init", "-q")
         git(root, "config", "user.name", "Owner Example")
@@ -322,10 +322,10 @@ def commit_checks():
         paths = server.pending["ed"]["paths"]
         if paths["sec.tex"][0] != "files":
             fail(f"an edit of a file the Files tab made makes it an edit only: {paths['sec.tex']}")
-        run = commits.subprocess.run  # (a commit that fails: the new files it added leave the index again)
-        refuse = lambda args, **kw: types.SimpleNamespace(returncode=1, stdout="", stderr="refused") if "--only" in args else run(args, **kw)
+        run = commits.run_git  # (a commit that fails: the new files it added leave the index again)
+        refuse = lambda root, args, **kw: GitRun(1, b"", "refused", False) if "--only" in args else run(root, args, **kw)
         try:
-            with patched(commits.subprocess, run=refuse):
+            with patched(commits, run_git=refuse):
                 commits.commit_files(server, user, dict(paths))
             fail("commit_files did not say that git refused the commit")
         except RuntimeError:
