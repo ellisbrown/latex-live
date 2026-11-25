@@ -26,7 +26,7 @@ PROTOCOL = 1
 # The bounds on a request (in characters) and on the plugin's answer: what it prints (bytes; past that it is
 # stopped), the stderr kept for the error message, the replacement and the rationale.
 SELECTION_LIMIT, PARAGRAPH_LIMIT, NOTE_LIMIT = 16_000, 32_000, 2_000
-OUTPUT_LIMIT, STDERR_KEPT, REPLACEMENT_LIMIT, RATIONALE_LIMIT = 256 << 10, 8 << 10, 64_000, 2_000
+OUTPUT_LIMIT, STDERR_KEPT, REPLACEMENT_LIMIT, RATIONALE_LIMIT = 256_000, 8_000, 64_000, 2_000
 # The variables a plugin gets from latex-live's own environment, besides those LATEX_LIVE_AGENT_ENV names.
 BASE_ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR")
 RUNNING = threading.Lock()  # (one revision at a time)
@@ -73,7 +73,7 @@ def run_plugin(cmd, request, timeout=None):
     if ran.code is None:
         return f"the plugin did not answer within {timeout} s", None
     if ran.more:
-        return f"the plugin printed more than {OUTPUT_LIMIT >> 10} KB", None
+        return f"the plugin printed more than {OUTPUT_LIMIT // 1000} KB", None
     if ran.code:
         lines = ran.err.decode("utf-8", "replace").strip().splitlines()
         return f"the plugin exited with {ran.code}" + (f": {lines[-1][:300]}" if lines else ""), None

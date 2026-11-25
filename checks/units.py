@@ -453,8 +453,11 @@ def settings_checks():
         env = main.build_env()
         if "LATEX_LIVE_EXEC" in env or "LATEX_LIVE_EXEC" in os.environ or env.get("LATEX_LIVE_HOME") != config.HERE:
             fail(f"the build's environment keeps an inherited LATEX_LIVE_EXEC: {env.get('LATEX_LIVE_EXEC')}")
+    from latexlive import standby
+    if "check.py" not in standby.command_line(os.getpid()) and "checks" not in standby.command_line(os.getpid()):
+        fail(f"a process's command line (standby.command_line): {standby.command_line(os.getpid())!r}")
     ok("an on/off setting is 1 or 0 (unset: its default; else its default, with a warning), and the build's environment"
-       " drops an inherited LATEX_LIVE_EXEC")
+       " drops an inherited LATEX_LIVE_EXEC; a process's command line read one way")
 
 
 def standby_snapshot_checks():

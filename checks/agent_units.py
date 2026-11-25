@@ -132,7 +132,7 @@ def stop_checks(agent, cmd, tmp):
         fail(f"a plugin whose child left its process group leaves its pipes unclosed: {leaked}")
     started = time.monotonic()
     error, _ = agent.run_plugin(cmd("floods"), REQUEST, timeout=20)
-    if error != f"the plugin printed more than {agent.OUTPUT_LIMIT >> 10} KB" or time.monotonic() - started > 5:
+    if error != f"the plugin printed more than {agent.OUTPUT_LIMIT // 1000} KB" or time.monotonic() - started > 5:
         fail(f"a plugin that prints 1 MB: {error!r} after {time.monotonic() - started:.1f} s")
     big = {**REQUEST, "selection": "é" * 16_000, "paragraph": "ü" * 32_000}  # (more than a pipe holds)
     for name, want in (("deaf", "deaf"), ("noisy", "ok")):

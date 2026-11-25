@@ -254,6 +254,8 @@ def alive(pid, start=None):
 
 
 def command_line(pid):
+    """A process's command line, its arguments joined by spaces ("" if there is none): from /proc on Linux, else ps.
+    instances and latex_report.py's stop read it too."""
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             return f.read().decode(errors="replace").replace("\0", " ")
@@ -772,15 +774,17 @@ def stop_tex(proc, info):
         proc.kill()
         proc.wait()
     if not info["host"]:
-        remove_containers("latex-live.run", info["env"]["LATEX_LIVE_RUN"])
+        remove_containers(f"latex-live.run={info['env']['LATEX_LIVE_RUN']}")
 
 
-def remove_containers(name, value):
+def remove_containers(*labels):
+    """Remove the containers that carry every one of labels ("name=value"), in any state (one created and not started
+    too); nothing without podman. tools.stop_containers and latex_report.py's stop use it too."""
     if not shutil.which("podman"):
         return
     try:
-        ids = subprocess.run(["podman", "ps", "-aq", "--filter", f"label={name}={value}"], capture_output=True, text=True,
-                             timeout=30).stdout.split()
+        ids = subprocess.run(["podman", "ps", "-aq", *(arg for label in labels for arg in ("--filter", f"label={label}"))],
+                             capture_output=True, text=True, timeout=30).stdout.split()
         if ids:
             subprocess.run(["podman", "rm", "-f", "-t", "0", *ids], capture_output=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
@@ -1293,7 +1297,7 @@ def stop_taken(build, pid):
     halt(taken)
     for sb in taken:
         if sb.info and not sb.info.get("host"):
-            remove_containers("latex-live.run", sb.info["env"]["LATEX_LIVE_RUN"])
+            remove_containers(f"latex-live.run={sb.info['env']['LATEX_LIVE_RUN']}")
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -1329,7 +1333,7 @@ def stop_standbys(paper_root, build, job):
     except OSError:
         names = []
     halt([Standby(os.path.join(folder, name)) for name in names])
-    remove_containers("latex-live.standby", label_of(paper_root, build, job))
+    remove_containers(f"latex-live.standby={label_of(paper_root, build, job)}")
     records = read_json(os.path.join(folder, f"{job}.json"))
     if records and records.get("said"):
         records["said"] = []

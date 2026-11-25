@@ -226,7 +226,7 @@ def shared_run(server):
                 retry = threading.Timer(5 * 2 ** server.shared["overflows"], server.shared["wanted"].set)
                 retry.daemon = True
                 retry.start()
-            raise RuntimeError(f"the build wrote more than {config.BUILD_LIMIT >> 20} MB into {config.BUILD}/ (LATEX_LIVE_BUILD_LIMIT), so it"
+            raise RuntimeError(f"the build wrote more than {config.BUILD_LIMIT // 1_000_000} MB into {config.BUILD}/ (LATEX_LIVE_BUILD_LIMIT), so it"
                                f" was stopped and {config.BUILD}/ emptied")
         files = [os.path.relpath(p, root) for p in project_tex_files(root, fls_file(root, pdf))]
         ok, status, log, _ = latex_report.run_report(job, "ok" if ok else "fail", files)
