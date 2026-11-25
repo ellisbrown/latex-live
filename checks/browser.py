@@ -33,8 +33,10 @@ def browser_checks(url):
             if page.locator("#side").is_hidden():
                 page.click("#toggleSide")
             tabs = page.eval_on_selector_all("#tabs [data-tab]", "tabs => tabs.filter(t => !t.hidden).map(t => t.dataset.tab)")
+            if not tabs:
+                errors.append("the sidebar has no tabs")
             for tab in tabs:
-                page.click(f"#tabs [data-tab={tab}]")
+                page.click(f'#tabs [data-tab="{tab}"]')
                 page.wait_for_selector(f"#side #{tab}.panel:not([hidden])", timeout=10_000)
             page.keyboard.press("Meta+k" if page.evaluate("/^Mac|^iP/.test(navigator.platform)") else "Control+k")
             page.wait_for_selector("#paletteBackdrop:not([hidden])", timeout=10_000)
