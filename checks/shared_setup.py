@@ -136,8 +136,11 @@ def make_shared_paper(tmp, state, name="shared"):
                        (BIBDATA_NAME + ".bib", "@misc{probe, title = {Probe}}\n")):
         write_text(root, name, text)
     with open(os.path.join(root, "body.tex"), "a") as f:
-        f.write("\n\\input{generated.inc}\n\\iffalse\\eb{Quagga private draft note}\\fi\n")  # (typeset text from a file the
-        # editor does not offer, and a note that is not: role_checks)
+        f.write("\n\\input{generated.inc}\n\\iffalse\\eb{Quagga private draft note}\\fi\n"  # (typeset text from a file the
+                # editor does not offer, and notes that are not, whose words the PDF has elsewhere: role_checks)
+                "Why does the marmot capybara wombat lemur swim?\n"
+                "\\iffalse\\eb{Marmot capybara wombat lemur -- PRIVATE: reviewer two is a rival}\\fi\n"
+                "\\ifnum0=1 \\eb{why?}\\fi\n")
     git(root, "add", "-A")
     git(root, "commit", "-qm", "shared fixtures")
     os.chmod(os.path.join(root, "crlf.bib"), 0o640)  # (a save keeps the mode; git does not track this one)

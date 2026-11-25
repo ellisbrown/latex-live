@@ -308,3 +308,142 @@ def baseline_failure_checks():
     if not all(root in msg for msg in said[False]):
         fail(f"outside shared mode, a failed diff or baseline no longer names the file in full: {said[False]}")
     ok("in shared mode, a failed diff or change-highlight baseline names no folder of the server's")
+
+
+# A paper for shown_notes_checks: notes that the PDF shows, and notes that it doesn't (one only measured), whose words it
+# has elsewhere.
+SHOWN_PAPER = r"""\documentclass{article}
+\usepackage{xcolor,hyperref}
+\newif\ifshowtodos \showtodostrue
+\newcommand{\todotxt}[1]{\ifshowtodos\textcolor{red}{#1}\fi}
+\newcommand{\eb}[1]{\todotxt{[EB: #1]}}\input{defs}\newlength\notewidth
+\begin{document}
+\section{Start \eb{in a title}}
+Hello world, this is a scratch paper. Why not? \eb{shown note}
+\iffalse\eb{Hello world, this is a scratch paper -- PRIVATE: reviewer two}\fi
+\ifnum0=1 \eb{why?}\fi
+\eb{one} \iffalse\eb{two}\fi
+\eb{a note on
+% a comment
+three lines}
+\begin{figure}\caption{A caption \eb{in a caption}
+}\end{figure}
+\fromdefs \settowidth{\notewidth}{\eb{only measured}}
+\showtodosfalse \eb{while todotxt hides notes}
+\end{document}
+"""
+SHOWN_DEFS = "\\newcommand{\\fromdefs}{\\eb{from a macro}}\n"
+# (each record: the line TeX was reading, and what \todotxt typeset, without its spaces)
+SHOWN_RECORDS = ((7, "[EB:inatitle]"), (8, "[EB:shownnote]"), (11, "[EB:one]"), (14, "[EB:anoteonthreelines]"),
+                 (16, "[EB:inacaption]"), (17, "[EB:fromamacro]"))
+SHOWN_TEXTS = {"in a title", "shown note", "one", "a note on three lines", "in a caption", "from a macro"}
+
+
+def shown_notes_checks():
+    """Which notes viewers and commenters see (notes.shown_notes): those whose typesetting the published PDF's pass
+    recorded (notes.SHOWN_TEX), not one in \\iffalse or a switch that is off, nor while \\todotxt hides them, however
+    much of their text the PDF has elsewhere; none for a PDF without records (a build before a restart, another PDF
+    on show). With the host's pdflatex, SHOWN_TEX records just those and changes nothing else that the build writes."""
+    import hashlib
+    from latexlive import config, notes
+    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
+    try:
+        root = os.path.join(tmp, "paper")
+        put(os.path.join(root, "main.tex"), SHOWN_PAPER)
+        put(os.path.join(root, "defs.tex"), SHOWN_DEFS)
+        put(os.path.join(root, config.BUILD, "main-live.fls"), f"PWD {root}\nINPUT main.tex\nINPUT defs.tex\n")
+        put(os.path.join(root, "main.pdf"), "%PDF-1.4\n")
+        st = os.stat(os.path.join(root, "main.pdf"))
+        published = {"mtime": st.st_mtime_ns, "size": st.st_size}
+        log = "".join(f"latex-live|shown||main.tex|{line}|{hashlib.md5(text.encode()).hexdigest().upper()}\n"
+                      for line, text in SHOWN_RECORDS)
+        log += "latex-live|shown||main.tex|9|0123\nlatex-live|shown|x\n  latex-live|shown||main.tex|9|" + "A" * 32 + "\n"
+        records = notes.note_records(log)
+        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf",
+                                       shared={"published": published, "shown": {"published": published, "records": records}})
+        found = notes.notes(root, "main.pdf")
+        if len(found) != 11:
+            fail(f"the check's paper has 11 notes, notes() found {len(found)}: {found}")
+        seen = {n["text"] for n in notes.shown_notes(server, "main.pdf", found)}
+        if seen != SHOWN_TEXTS:
+            fail(f"viewers would see {sorted(seen)}, not the notes the PDF shows: {sorted(SHOWN_TEXTS)}")
+        margin = [{**n, "tex": n["tex"].replace("on three", "on \x7f three")} for n in found]  # (margin_notes keeps a \x7f)
+        if {n["text"] for n in notes.shown_notes(server, "main.pdf", margin)} != SHOWN_TEXTS:
+            fail("a margin note across a commented-out line is not matched to its record")
+        for what, stale in (("before the first build (no records)", {"published": published, "shown": None}),
+                            ("after another publish", {"published": {**published, "size": 1}, "shown": server.shared["shown"]}),
+                            ("for records of another publish", {"published": published,
+                                                                "shown": {"published": {**published, "mtime": 1}, "records": records}})):
+            if notes.shown_notes(types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", shared=stale), "main.pdf", found):
+                fail(f"viewers would see notes {what}")
+        if notes.shown_notes(types.SimpleNamespace(paper_root=root, default_pdf="other.pdf", shared=server.shared), "main.pdf", found):
+            fail("viewers would see notes of a PDF that isn't the shared document")
+        put(os.path.join(root, "main.pdf"), "%PDF-1.4\n% replaced\n")  # (by something other than shared_publish)
+        if notes.shown_notes(server, "main.pdf", found):
+            fail("viewers would see notes of a PDF replaced since its records")
+        st = os.stat(os.path.join(root, "main.pdf"))
+        published = {"mtime": st.st_mtime_ns, "size": st.st_size}
+        parsed = notes.note_records(f"latex-live|shown|sub|x.tex|3|{'B' * 32}\nlatex-live|shown|/abs/dir|y.tex|4|{'C' * 32}\n"
+                                    f"latex-live|shown|||5|{'D' * 32}\n")
+        if parsed != [("sub/x.tex", 3, "b" * 32), ("/abs/dir/y.tex", 4, "c" * 32), ("", 5, "d" * 32)]:
+            fail(f"note_records: {parsed}")
+        tex_checks(root, published)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    ok("viewers and commenters see the notes whose typesetting the PDF's pass recorded: not those in \\iffalse or a switch"
+       " that is off, nor a short one whose letters the PDF has elsewhere; none for a PDF without records")
+
+
+def tex_checks(root, published):
+    """shown_notes_checks with the host's pdflatex, if there is one: SHOWN_TEX's records of SHOWN_PAPER are just those
+    of SHOWN_RECORDS, also when the paper's \\todotxt is \\protected or robust, none for one with two arguments, and the
+    PDF's text, the log but for the records, and the .aux and .out are as without SHOWN_TEX."""
+    import hashlib
+    from latexlive import config, notes
+    if not shutil.which("pdflatex"):
+        print("skip: no pdflatex here, so notes.SHOWN_TEX is not run", flush=True)
+        return
+    build = os.path.join(root, config.BUILD)
+
+    def run(job, pre):
+        for _ in range(2):
+            subprocess.run(["pdflatex", "-interaction=batchmode", f"-output-directory={build}", f"-jobname={job}",
+                            f"{pre}\\input{{main}}"], cwd=root, env={**os.environ, "max_print_line": "10000"},
+                           capture_output=True, timeout=120)
+        with open(os.path.join(build, f"{job}.log"), errors="replace") as f:
+            return f.read()
+
+    plain = "\\newcommand{\\todotxt}[1]{\\ifshowtodos\\textcolor{red}{#1}\\fi}"
+    want = sorted(SHOWN_RECORDS)
+    for name, todotxt, want in (("one argument", plain, want),
+                                   ("\\protected", "\\protected\\long\\def\\todotxt#1{\\ifshowtodos\\textcolor{red}{#1}\\fi}", want),
+                                   ("robust", "\\DeclareRobustCommand{\\todotxt}[1]{\\ifshowtodos\\textcolor{red}{#1}\\fi}", want),
+                                   ("two arguments", "\\newcommand{\\todotxt}[2][red]{\\ifshowtodos\\textcolor{#1}{#2}\\fi}", [])):
+        put(os.path.join(root, "main.tex"), SHOWN_PAPER.replace(plain, todotxt))
+        for ext in (".aux", ".out", ".log", ".pdf"):
+            for job in ("main-live", "main-plain"):
+                if os.path.exists(os.path.join(build, job + ext)):
+                    os.remove(os.path.join(build, job + ext))
+        log, before = run("main-live", notes.SHOWN_TEX), run("main-plain", "")
+        records = notes.note_records(log)
+        texts = {hashlib.md5(text.encode()).hexdigest(): text for _, text in SHOWN_RECORDS}
+        got = sorted((line, texts.get(digest, digest)) for _, line, digest in records)
+        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", shared={"published": published,
+                                       "shown": {"published": published, "records": records}})
+        seen = {n["text"] for n in notes.shown_notes(server, "main.pdf", notes.notes(root, "main.pdf"))}
+        if got != want or seen != (SHOWN_TEXTS if want else set()):
+            fail(f"SHOWN_TEX with a {name} \\todotxt recorded {got}, not {want}; viewers would see {sorted(seen)}")
+        if not os.path.isfile(os.path.join(build, "main-live.pdf")):
+            fail(f"the build with SHOWN_TEX and a {name} \\todotxt made no PDF: {log[-1500:]}")
+        mine = [line for line in log.splitlines()[1:] if not line.startswith(("latex-live|shown|", "**"))]
+        theirs = [line for line in before.replace("main-plain", "main-live").splitlines()[1:] if not line.startswith("**")]
+        if [line for line in mine if "out of" not in line] != [line for line in theirs if "out of" not in line]:
+            fail(f"SHOWN_TEX changes the log of a paper with a {name} \\todotxt: {set(mine) ^ set(theirs)}")
+        for ext in (".aux", ".out"):
+            if read_text(os.path.join(build, "main-live" + ext)) != read_text(os.path.join(build, "main-plain" + ext)).replace("main-plain", "main-live"):
+                fail(f"SHOWN_TEX changes the {ext} of a paper with a {name} \\todotxt")
+        if shutil.which("pdftotext"):
+            text = [subprocess.run(["pdftotext", os.path.join(build, f"{job}.pdf"), "-"], capture_output=True).stdout
+                    for job in ("main-live", "main-plain")]
+            if text[0] != text[1]:
+                fail(f"SHOWN_TEX changes the PDF's text with a {name} \\todotxt")

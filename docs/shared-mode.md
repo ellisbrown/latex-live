@@ -48,7 +48,8 @@ before it may:
 Viewers and commenters see the current PDF and what it shows, nothing more:
 
 - the notes the PDF shows (not those in `\iffalse` or a switch that is off,
-  nor any while `\todotxt` hides them);
+  nor any while `\todotxt` hides them, nor any until the instance's first
+  build since it started has published);
 - whether the build failed and how many errors it had, not the messages, which
   quote the sources;
 - the figures without their labels and source lines, and not the list of
