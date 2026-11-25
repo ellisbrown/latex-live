@@ -164,7 +164,9 @@ python3 -m latexlive.agent --test "/path/to/my-plugin" --note "shorter"
 ```
 
 It prints the request and the answer, and exits with 0 if latex-live would
-show it, else 1 with what was wrong.
+show it, else 1 with what was wrong. A path relative to the current folder is
+tested as an absolute one, with a note: `LATEX_LIVE_AGENT_CMD` needs absolute
+paths.
 
 ## A prompt for your coding agent
 

@@ -804,7 +804,7 @@ def main():
     note_time(root, "status")
 
     if ok:
-        print(f"=== live-reload: published {dest} at {stamp}")
+        print(f"=== latex-live: published {dest} at {stamp}")
         if has_notes(files):
             if not keep_early(root, doc):
                 start_notes_free_build(root, doc)
@@ -813,7 +813,7 @@ def main():
     else:
         if not report["errors"][0]["file"]:  # no file:line errors parsed; show the tail of the log instead
             print("\n".join(log.splitlines()[-25:]))
-        print(f"=== live-reload: BUILD FAILED at {stamp}; kept previous {dest} (full log: {BUILD}/{root}.log)")
+        print(f"=== latex-live: BUILD FAILED at {stamp}; kept previous {dest} (full log: {BUILD}/{root}.log)")
         # The .aux this run read may be unreadable: cut off by an interrupted run, or written by
         # another TeX installation, whose packages store their data differently (e.g. the host's
         # TeX, while the TeX Live image was missing).
@@ -821,7 +821,7 @@ def main():
         if damaged_aux(log, root) or other:
             rebuild_from_scratch(root)
             why = f"was written by another TeX installation ({previous['tex']})" if other else "was cut off (by an interrupted run?)"
-            print(f"=== live-reload: {BUILD}/{root}.aux {why}; rebuilding from scratch")
+            print(f"=== latex-live: {BUILD}/{root}.aux {why}; rebuilding from scratch")
         keep_early(root, doc, drop=True)
 
 
