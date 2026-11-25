@@ -43,7 +43,7 @@ def set_doc(server, doc):
     with NOTE_LOCK:  # (as the Files tab's changes keep the list: remember_added)
         server.default_pdf = f"{doc}.pdf"
         load_added(server)
-    server.bases, server.base_checked = {"head": {}, "push": {}}, {"head": 0, "push": 0}
+    server.bases, server.base_checked, server.base_stamps = {"head": {}, "push": {}}, {"head": 0, "push": 0}, {}
     if server.diff.get("state") != "running":
         server.diff = {}
     with open(os.path.join(server.paper_root, config.BUILD, "latex-live-doc"), "w") as f:
@@ -92,7 +92,6 @@ def retry_build(server):
     server.retried = time.monotonic()
     stop_latexmk(server)
     stop_doc_standbys(server)
-    sys.path.insert(0, config.HERE)
     import latex_report
     for ext in (*latex_report.AUX_EXTS, ".fdb_latexmk", ".fls", ".log", ".bbl", ".blg"):
         try:
@@ -115,10 +114,14 @@ def stop_latexmk(server):
 
 def stop_doc_standbys(server, doc=None):
     """Stop the warm standbys of doc (default: the current document), its live build's and its notes-free pass's,
-    and remove what they left."""
+    and remove what they left; first its notes-free pass, which runs on after latexmk and could start one after them
+    (latex_report.stop_notes_free)."""
     if not config.SHARED:
+        import latex_report
+        doc = doc or server.default_pdf[:-4]
+        latex_report.stop_notes_free(doc)
         for job in ("live", "clean"):
-            stop_standbys(server.paper_root, config.BUILD, f"{doc or server.default_pdf[:-4]}-{job}")
+            stop_standbys(server.paper_root, config.BUILD, f"{doc}-{job}")
 
 
 def on_main_thread(server, job):

@@ -335,8 +335,9 @@ Where the tabs don't fit with their names, they show their icons alone.
 The Checks tab of the sidebar lists, each as ok, info, warning or failure:
 
 - **Anonymity:** author names (git `user.name` and the note-macro comments)
-  and `LATEX_LIVE_ANON_TERMS` in the PDF; checked when page 1 says
-  "Anonymous", as blind-review styles print it.
+  and `LATEX_LIVE_ANON_TERMS` in the PDF (a setting that is not a regular
+  expression is named there); checked when page 1 says "Anonymous", as
+  blind-review styles print it.
 - **Draft notes and switches**, **undefined references and citations**,
   **placeholder text**.
 - **Fonts** (unembedded and Type 3), **raster image resolution**, and **file

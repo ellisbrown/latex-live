@@ -30,6 +30,36 @@ def git_dir(server):
     return server.git_dir or None
 
 
+def ref_stamp(server):
+    """What changes when HEAD or a ref moves (a commit, a checkout, a push, a fetch, a gc): the stats of HEAD,
+    packed-refs and config, and of each folder of refs/ (git writes a ref by renaming a new file into its folder) and
+    reftable/; None outside a git checkout. A few stats, where asking git takes several commands (base_status)."""
+    folder = git_dir(server)
+    if not folder:
+        return None
+    try:
+        with open(os.path.join(folder, "commondir")) as f:  # (a linked worktree's: the main checkout's git directory)
+            common = os.path.normpath(os.path.join(folder, f.read().strip()))
+    except OSError:
+        common = folder
+    stamp = [stat_stamp(os.path.join(folder, "HEAD")), stat_stamp(os.path.join(common, "packed-refs")),
+             stat_stamp(os.path.join(common, "config"))]
+    for top in dict.fromkeys((os.path.join(common, "refs"), os.path.join(folder, "refs"), os.path.join(common, "reftable"))):
+        for here, _, _ in os.walk(top):
+            stamp.append((here, stat_stamp(here)))
+            if len(stamp) > 1000:  # (enough to tell; the rest is caught by base_status's minute)
+                return tuple(stamp)
+    return tuple(stamp)
+
+
+def stat_stamp(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size, st.st_ino
+
+
 def git_operation(server):
     """The operation git is in the middle of in the paper's checkout: "a merge", "a rebase", "a
     cherry-pick" or "a revert"; else None."""
@@ -72,10 +102,10 @@ def pushed_commit(paper_root):
     remote's branch of the same name (for a branch never pushed, or a detached HEAD, each remote's
     default branch); the one whose merge base with HEAD is nearest to HEAD wins. The merge base,
     not the remote branch itself, so that others' work fetched since doesn't show as deletions.
-    Remote-tracking branches move on push and fetch, so this needs no network."""
+    Remote-tracking branches move on push and fetch, so this needs no network. Each git command has
+    POLL_TIMEOUT seconds (the status poll waits for this)."""
     def git(*args):
-        r = subprocess.run(["git", "-C", paper_root, *args], capture_output=True, text=True)
-        return r.stdout.strip() if r.returncode == 0 else ""
+        return git_text(paper_root, list(args), timeout=POLL_TIMEOUT) or ""
 
     branch = git("symbolic-ref", "-q", "--short", "HEAD")
     remotes = git("remote").split()
@@ -101,7 +131,7 @@ def pushed_commit(paper_root):
 SHA_RE = re.compile(r"[0-9a-f]{7,64}")
 HISTORY_LIMIT, HISTORY_SCAN = 60, 1000  # (commits listed; commits read to find them, as some change nothing shown)
 LOG_LIMIT, DIFF_LIMIT, DIFF_FILES, FILES_LISTED = 4_000_000, 512_000, 200, 100  # (bytes, bytes, files, files)
-GIT_TIMEOUT = 20  # seconds
+GIT_TIMEOUT, POLL_TIMEOUT = 20, 5  # seconds (POLL_TIMEOUT: the commands the status poll waits for, pushed_commit's)
 
 
 def shown_path(rel):
@@ -138,10 +168,10 @@ def git_capped(paper_root, args, limit, timeout=GIT_TIMEOUT):
     return (None if late.is_set() else code), data[:limit], len(data) > limit
 
 
-def git_text(paper_root, args, limit=100_000):
-    """What git args printed in the paper's folder, stripped, if it succeeded in time and within limit bytes; else
-    None."""
-    code, data, more = git_capped(paper_root, args, limit)
+def git_text(paper_root, args, limit=100_000, timeout=GIT_TIMEOUT):
+    """What git args printed in the paper's folder, stripped, if it succeeded within timeout seconds and limit bytes;
+    else None."""
+    code, data, more = git_capped(paper_root, args, limit, timeout)
     return data.decode("utf-8", "replace").strip() if code == 0 and not more else None
 
 

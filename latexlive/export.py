@@ -6,7 +6,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import threading
 import time
 
@@ -94,7 +93,6 @@ def exact_export(server, pdf, keep=None):
     root, doc = server.paper_root, pdf[:-4]
     out = os.path.join(root, config.BUILD, "export", doc)  # (per document: another instance may export another)
     job = f"{doc}-export"
-    sys.path.insert(0, config.HERE)
     import latex_report
 
     def run(argv, cwd, env=None):

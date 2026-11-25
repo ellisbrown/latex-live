@@ -140,8 +140,10 @@ def landscape_run(tmp):
         margin = wait_for("the margin notes", lambda: ask("/margin/main-clean.pdf"), timeout=60)
         note = next((n for n in margin if n["text"] == "a landscape note"), None)
         end = stored(word_boxes(os.path.join(build, "main-clean.pdf"), 2)["walrus."], H)  # (the note comes right after it)
-        if not note or note["side"] != "line" or {p[0] for p in note["points"]} != {2} or not any(
-                abs(p[1] - end[2]) < 3 and abs(p[2] - end[1]) < 3 for p in note["points"]):
+        # (its points: on the line of that word, which runs up the page as stored, the last one past the word's end)
+        on_line = lambda p: end[0] - 3 <= p[1] <= end[2] + 3
+        if not note or note["side"] != "line" or {p[0] for p in note["points"]} != {2} or not all(map(on_line, note["points"])) \
+                or note["points"][-1][2] > end[1] + 3:
             fail(f"the landscape note's margin note: {note}, not at its line, after {end}")
         floats = ask("/floats/main.pdf") or []
         if len(floats) != 1 or floats[0]["page"] != 2 or not holds(floats[0]["box"], row) or floats[0]["box"][2] > 612:

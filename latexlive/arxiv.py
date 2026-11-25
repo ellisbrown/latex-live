@@ -10,7 +10,6 @@ import io
 import os
 import re
 import shutil
-import sys
 import tarfile
 import tempfile
 import threading
@@ -84,17 +83,20 @@ def package_files(path, limit=50e6):
 
 
 def pdf_strings(data, cache={}):
-    """A PDF's metadata (pdfinfo) and text (pdftotext), from its bytes; "" without poppler."""
+    """A PDF's metadata (pdfinfo) and text (pdftotext), from its bytes; "" without poppler. The last 8 are kept."""
     key = hashlib.sha1(data).digest()
-    if key not in cache:
+    if (found := cache.get(key)) is None:
         out = []
         with tempfile.NamedTemporaryFile(suffix=".pdf") as f:
             f.write(data)
             f.flush()
             for cmd in (["pdfinfo", f.name], ["pdftotext", "-q", f.name, "-"]):
                 out.append(pdf_tool(cmd, timeout=30))
-        cache[key] = "\n".join(out)
-    return cache[key]
+        found = "\n".join(out)
+        if len(cache) >= 8:
+            cache.clear()
+        cache[key] = found
+    return found
 
 
 def ago(t):
@@ -436,7 +438,6 @@ def make_package(server, pdf, step):
     root, doc = server.paper_root, pdf[:-4]
     out = os.path.join(root, config.BUILD, "arxiv", doc)
     job = f"{doc}-export"
-    sys.path.insert(0, config.HERE)
     import latex_report
 
     def keep(export):  # the export's PDF, file list, and the generated files the package holds

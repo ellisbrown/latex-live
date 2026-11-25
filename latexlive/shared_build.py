@@ -18,7 +18,6 @@ import secrets
 import shutil
 import stat
 import subprocess
-import sys
 import threading
 import time
 import traceback
@@ -164,7 +163,6 @@ def shared_run(server):
     successful run starts the notes-free pass (shared_notes_free). A rebuild stops a run part way (its
     containers: stop_containers) and starts it again; a tool's state is kept only when it succeeded, and
     only if no rebuild (server.shared["gen"]) came meanwhile, so that it runs again until it does."""
-    sys.path.insert(0, config.HERE)
     import latex_report
     root, pdf = server.paper_root, server.default_pdf
     doc, job = pdf[:-4], f"{pdf[:-4]}-live"
@@ -292,7 +290,6 @@ def shared_notes_free(server, job, doc):
     slot and a container labelled "clean", in a folder of its own (build/clean-<n>/): a newer run's pass
     stops an older one's, and only the newest publishes, under clean_lock (its PDF to build/, its SyncTeX
     and .aux to build/clean/, where the viewer's lookups read them)."""
-    sys.path.insert(0, config.HERE)
     import latex_report
     stop_containers(kind="clean")
     with server.shared["clean_lock"]:

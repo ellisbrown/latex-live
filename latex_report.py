@@ -441,6 +441,39 @@ def stop_early(early):
             os.remove(path)
 
 
+def stop_notes_free(doc):
+    """Stop doc's notes-free pass, the early one or the one after the run (build/clean/pid), waiting until it is
+    gone, and the warm standby it ran from: live.py, before it stops the document's standbys (as it stops, switches
+    documents, or rebuilds from scratch), so that the pass can't start one after them. Each pass runs in a session of
+    its own, which neither stopping latexmk nor live.py's process group reaches. Run from the paper root."""
+    if not running_notes_free(doc):
+        return
+    with early_lock():
+        early = read_early()
+        if early and early.get("state") == "running" and running_notes_free(doc, early.get("pid")):
+            stop_early(early)  # (and puts build/clean/ back)
+            return
+    try:
+        with open(os.path.join(BUILD, "clean", "pid")) as f:
+            pid = int(f.read())
+    except (OSError, ValueError):
+        return
+    if not running_notes_free(doc, pid):
+        return
+    for sig, wait in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):  # (its process group: its TeX run too)
+        try:
+            os.killpg(pid, sig)
+        except OSError:
+            pass
+        end = time.monotonic() + wait
+        while group_alive(pid) and time.monotonic() < end:
+            time.sleep(0.01)
+        if not group_alive(pid):
+            break
+    if os.path.isdir(os.path.join(BUILD, "standby")):
+        standby_module().stop_taken(BUILD, pid)
+
+
 def read_json(path):
     try:
         with open(path) as f:
@@ -560,11 +593,12 @@ def process_alive(pid):
         return False
 
 
-def running_notes_free(doc):
-    """Whether a notes-free pass of doc runs (build/clean/pid), as started by start_notes_free_build or kept."""
+def running_notes_free(doc, pid=None):
+    """Whether a notes-free pass of doc runs (build/clean/pid, or pid), as started by start_notes_free_build or kept."""
     try:
-        with open(os.path.join(BUILD, "clean", "pid")) as f:
-            pid = int(f.read())
+        if pid is None:
+            with open(os.path.join(BUILD, "clean", "pid")) as f:
+                pid = int(f.read())
         command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
     except (OSError, ValueError):
         return False

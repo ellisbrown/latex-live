@@ -1,6 +1,7 @@
 """SyncTeX: running it (synctex view and edit) and reading a build's SyncTeX file, for forward
 search (a source line to a spot in the PDF; forward.py too) and inverse search (a spot to a source line)."""
 
+import array
 import gzip
 import os
 import re
@@ -88,128 +89,318 @@ def to_int(text, default=None):
         return default
 
 
-BIB_SPAN_LOCK = threading.Lock()  # (bib_span: one lookup per build, however many viewers poll at once)
-PENDING = "pending"  # (bib_span without wait: the lookup for the newest build runs meanwhile)
-BIB_SPAN_RUNNING, RUNNING_LOCK = set(), threading.Lock()  # (the lookups started without wait that have yet to end: (synctex_gz, mtime))
+class Kept:
+    """Values computed from a file, once per version of it: each key (e.g. a SyncTeX file's path) keeps the value for
+    one version (its stamp), so that a new build replaces the last one's rather than adding to it, and the requests that
+    ask at once (as the viewer's do when a new PDF arrives) wait for one computation rather than each making its own.
+    At most size keys, the oldest dropped first. Nothing is computed while the lock is held, so a computation may use
+    other Kept values, and a value is returned as computed, never read back after another request changed the table."""
+
+    def __init__(self, size):
+        self.size, self.lock, self.entries = size, threading.Lock(), {}
+
+    def get(self, key, stamp, compute):
+        with self.lock:
+            entry = self.entries.get(key)
+            mine = entry is None or entry["stamp"] != stamp
+            if mine:
+                self.entries.pop(key, None)
+                while len(self.entries) >= self.size:
+                    self.entries.pop(next(iter(self.entries)))
+                entry = self.entries[key] = {"stamp": stamp, "done": threading.Event()}
+        if not mine:
+            entry["done"].wait()
+            if "value" in entry:
+                return entry["value"]
+            return compute()  # (the first one failed)
+        try:
+            entry["value"] = value = compute()
+        except BaseException:
+            with self.lock:
+                if self.entries.get(key) is entry:
+                    del self.entries[key]
+            raise
+        finally:
+            entry["done"].set()
+        return value
 
 
-def bib_span(paper_root, files, cache={}, wait=True):
-    """Where the bibliography starts and ends: ({"page", "y"}, {"page", "y"}) (y in points
-    from the page top), or None. Maps the first and last lines of the .bbl to the PDF, cached
-    per build (each viewer's status poll asks, and a lookup may take several SyncTeX runs).
-    files = (synctex_gz, bbl, pdf). Without wait, while the build's lookup has yet to be made,
-    PENDING, with the lookup started in a thread (the status poll must not wait for it: a new
-    PDF shows at once, and its page count once the lookup ends).
-    """
-    synctex_gz, bbl, pdf = files
+def stamp(path):
+    """A file's version, as the caches here tell them apart: (mtime in ns, size), or None if there is none."""
     try:
-        mtime = os.stat(synctex_gz).st_mtime_ns
-        text = read_capped(bbl)
-        if text is None:
-            return None
-        last = text.count("\n") + 1
+        st = os.stat(path)
     except OSError:
         return None
-    if cache.get(synctex_gz, (None,))[0] != mtime and not wait:
-        with RUNNING_LOCK:
-            if (synctex_gz, mtime) not in BIB_SPAN_RUNNING:
-                BIB_SPAN_RUNNING.add((synctex_gz, mtime))
+    return st.st_mtime_ns, st.st_size
 
-                def look_up():
-                    try:
-                        bib_span(paper_root, files, cache)
-                    finally:
-                        with RUNNING_LOCK:
-                            BIB_SPAN_RUNNING.discard((synctex_gz, mtime))
-                threading.Thread(target=look_up, daemon=True).start()
-        return PENDING
-    if cache.get(synctex_gz, (None,))[0] != mtime:
-        with BIB_SPAN_LOCK:
-            if cache.get(synctex_gz, (None,))[0] != mtime:  # (another request may have looked it up meanwhile)
-                def where(records):
-                    rec = next((r for r in records if "Page" in r), None)
-                    if not rec:
-                        return None
-                    try:
-                        page = int(rec["Page"])
-                        x, y = on_page(page_turns(synctex_gz).get(page), float(rec["h"]), float(rec["v"]) - float(rec["H"]))
-                    except (KeyError, ValueError):  # (a record that isn't what SyncTeX writes)
-                        return None
-                    return {"page": page, "x": x, "y": y}
 
-                def look_up(lines):
-                    return [where(r) for r in run_synctexes(paper_root, [("view", "-i", f"{n}:0:{bbl}", "-o", pdf) for n in lines])]
-                # The first line and the last; the last lines (\end{thebibliography}, blank ones) may have no boxes:
-                # then walk back to one that does, within seven more.
-                start, end = look_up([1, last]) if last > 1 else (*look_up([1]), None)
-                if start and not end:
-                    end = next(filter(None, look_up(range(last - 1, max(1, last - 8), -1))), None)
-                end = end if start else None
-                cache[synctex_gz] = (mtime, start and (start, end))
-    return cache[synctex_gz][1]
+def version(path):
+    """A file's path and stamp, or None if there is none: what a value computed from it depends on."""
+    found = stamp(path)
+    return found and (path, *found)
+
+
+def kept_as(synctex_gz):
+    """Where the values computed from a build's SyncTeX file are kept (Kept's key): one place for the build's own file
+    and the copy of it in build/shown/ (shown_synctex reads the newer: the build's own while its PDF is published),
+    which hold the same, so that only one of them is kept."""
+    folder, name = os.path.split(synctex_gz)
+    return os.path.dirname(folder) if os.path.basename(folder) in ("shown", "clean") else folder, name
+
+
+SYNCTEX_TEXTS = Kept(4)  # (synctex_text: the live build's and the notes-free one's, of a document or two)
+INPUT_RE = re.compile(r"^Input:([^:\n]*)(?::(.*))?$", re.M)
+PAGE_START_RE = re.compile(r"^\{(.*)$", re.M)
+
+
+def synctex_text(synctex_gz):
+    """A build's SyncTeX file, read once for every lookup here (synctex_boxes, synctex_points, page_nodes, page_turns):
+    ({tag: input path}, [(page, its {page line, its records)]: the text of each page's records, compressed (a long
+    paper's take megabytes), in order, from what comes before the first page as page 0), as far as synctex_records
+    reads the file; empty if there is none. The pages' text: synctex_pages."""
+    return SYNCTEX_TEXTS.get(kept_as(synctex_gz), version(synctex_gz), lambda: read_synctex(synctex_gz))
+
+
+def synctex_pages(synctex_gz, wanted=None):
+    """(page, its {page line, the text of its records) for each page of a build's SyncTeX file (synctex_text), or only
+    for those in wanted."""
+    for page, head, packed in synctex_text(synctex_gz)[1]:
+        if wanted is None or page in wanted:
+            yield page, head, zlib.decompress(packed).decode()
+
+
+def read_synctex(synctex_gz):
+    """synctex_text's value, read now: up to SYNCTEX_LIMIT bytes in whole lines and RECORD_LIMIT lines, as
+    synctex_records reads them."""
+    f, parts, size = open_output(synctex_gz), [], 0
+    if f is None:
+        return {}, []
+    with f, gzip.open(f, "rt", errors="replace") as text:
+        while size <= config.SYNCTEX_LIMIT:
+            try:
+                part = text.read(1 << 20)
+            except (OSError, EOFError, zlib.error):  # (not gzip, or cut off: what came before)
+                break
+            if not part:
+                break
+            parts.append(part)
+            size += len(part)
+    text = "".join(parts)
+    if len(text) > config.SYNCTEX_LIMIT:
+        text = text[:text.rfind("\n", 0, config.SYNCTEX_LIMIT) + 1]
+    if text.count("\n") >= config.RECORD_LIMIT:
+        end = -1
+        for _ in range(config.RECORD_LIMIT):
+            end = text.find("\n", end + 1)
+        text = text[:end + 1]
+    inputs = {m[1]: os.path.normpath(m[2] or "") for m in INPUT_RE.finditer(text)}
+    pages, page, head, start = [], 0, "", 0
+    for m in PAGE_START_RE.finditer(text):  # (a page's records start after its {page line)
+        pages.append((page, head, zlib.compress(text[start:m.start()].encode(), 1)))
+        page, head, start = to_int(m[1], page), m[0], m.end()
+    pages.append((page, head, zlib.compress(text[start:].encode(), 1)))
+    return inputs, pages
+
+
+# Where the bibliography starts and ends (bib_span), for each viewer's status poll: looked up once per build, with
+# one SyncTeX run. The status poll never waits for it (refs_start without wait): it answers PENDING meanwhile, and a
+# worker per document and variant (live or notes-free) looks up the build on show when it runs, so the builds that came
+# and went while it was busy are never looked up.
+BIB_SPAN_LOCK = threading.Lock()  # (one lookup at a time: each runs SyncTeX, often in a container)
+BIB_SPANS = {}  # (synctex_gz: (its stamp, the span))
+PENDING = "pending"  # (refs_start without wait: the lookup for the build on show runs meanwhile)
+BIB_WORKERS, WORKERS_LOCK = {}, threading.Lock()  # ((paper_root, pdf_name, clean): whether it is wanted again)
+
+
+def bib_files(paper_root, pdf_name, clean=False):
+    """(synctex_gz, bbl, pdf) of the build on show, the live one or the notes-free one, for bib_span."""
+    f, synctex_gz = clean_file if clean else job_file, shown_synctex(paper_root, pdf_name, clean)
+    return synctex_gz, f(paper_root, pdf_name, ".bbl"), synctex_gz[:-len(".synctex.gz")] + ".pdf"
+
+
+def bib_span(paper_root, files, cache=None):
+    """Where the bibliography starts and ends: ({"page", "x", "y"}, {"page", "x", "y"} or None) (points from the
+    page's top-left), or None. Maps the first line of the .bbl to the PDF, and the last one (or, as the last lines may
+    have no boxes, the nearest of the seven before it that has some), in one SyncTeX run, once per build (cache, by
+    default BIB_SPANS): files = (synctex_gz, bbl, pdf) (bib_files). A result is kept under the version it was looked up
+    from, read once the lock is held: a lookup that waited behind another may find the build changed meanwhile."""
+    cache = BIB_SPANS if cache is None else cache
+    synctex_gz, bbl, pdf = files
+    known, version = cache.get(synctex_gz), stamp(synctex_gz)
+    if version is None:
+        return None
+    if known and known[0] == version:
+        return known[1]
+    with BIB_SPAN_LOCK:
+        known, version = cache.get(synctex_gz), stamp(synctex_gz)
+        if version is None:
+            return None
+        if known and known[0] == version:
+            return known[1]
+        span = look_up_bib(paper_root, files)
+        if len(cache) >= 16:
+            cache.clear()
+        cache[synctex_gz] = (version, span)
+    return span
+
+
+def look_up_bib(paper_root, files):
+    """bib_span's lookup, made now."""
+    synctex_gz, bbl, pdf = files
+    text = read_capped(bbl)
+    if text is None:
+        return None
+    last = text.count("\n") + 1
+
+    def where(records):
+        rec = next((r for r in records if "Page" in r), None)
+        if not rec:
+            return None
+        try:
+            page = int(rec["Page"])
+            x, y = on_page(page_turns(synctex_gz).get(page), float(rec["h"]), float(rec["v"]) - float(rec["H"]))
+        except (KeyError, ValueError):  # (a record that isn't what SyncTeX writes)
+            return None
+        return {"page": page, "x": x, "y": y}
+    lines = [1, *range(last, max(1, last - 8), -1)]  # (\end{thebibliography} and blank lines have no boxes)
+    found = [where(r) for r in run_synctexes(paper_root, [("view", "-i", f"{n}:0:{bbl}", "-o", pdf) for n in lines])]
+    return found[0] and (found[0], next(filter(None, found[1:]), None))
 
 
 def refs_start(paper_root, pdf_name, clean=False, wait=True):
-    """Where the bibliography starts, in the live build or the notes-free one (without wait, PENDING
-    while it is being looked up: bib_span)."""
-    f, synctex_gz = clean_file if clean else job_file, shown_synctex(paper_root, pdf_name, clean)
-    span = bib_span(paper_root, (synctex_gz, f(paper_root, pdf_name, ".bbl"), synctex_gz[:-len(".synctex.gz")] + ".pdf"),
-                    wait=wait)
-    return span if span is PENDING else span and span[0]
+    """Where the bibliography starts, in the live build or the notes-free one (bib_span). Without wait, PENDING while
+    it is being looked up: the lookup goes to the variant's worker (want_bib_span), and the status poll goes on."""
+    files = bib_files(paper_root, pdf_name, clean)
+    if wait:
+        span = bib_span(paper_root, files)
+    else:
+        known, version = BIB_SPANS.get(files[0]), stamp(files[0])
+        if version is None or not os.path.isfile(files[1]):
+            return None
+        if not known or known[0] != version:
+            want_bib_span(paper_root, pdf_name, clean)
+            return PENDING
+        span = known[1]
+    return span and span[0]
 
 
-SYNCTEX_BOX_RE = re.compile(r"([\[(h])(\d+),(\d+):(-?\d+),(-?\d+):(-?\d+),(-?\d+),(-?\d+)")  # vboxes, hboxes
+def want_bib_span(paper_root, pdf_name, clean):
+    """Have the variant's worker look up the build on show: start it, or, while it runs, have it look again once it
+    is done (requests meanwhile merge into that one)."""
+    key = (paper_root, pdf_name, clean)
+    with WORKERS_LOCK:
+        if key in BIB_WORKERS:
+            BIB_WORKERS[key] = True
+            return
+        BIB_WORKERS[key] = False
+    threading.Thread(target=bib_span_worker, args=(key,), daemon=True).start()
 
 
-def synctex_boxes(synctex_gz, cache={}):
+def bib_span_worker(key):
+    """Look up the bibliography of the build on show of a document's variant (key: want_bib_span's) until no one has
+    asked again since the last lookup began; then end."""
+    paper_root, pdf_name, clean = key
+    try:
+        while True:
+            bib_span(paper_root, bib_files(paper_root, pdf_name, clean))
+            with WORKERS_LOCK:
+                if not BIB_WORKERS[key]:
+                    del BIB_WORKERS[key]
+                    return
+                BIB_WORKERS[key] = False
+    except BaseException:
+        with WORKERS_LOCK:
+            BIB_WORKERS.pop(key, None)
+        raise
+
+
+SYNCTEX_BOX_RE = re.compile(r"^([\[(h])(\d+),(\d+):(-?\d+),(-?\d+):(-?\d+),(-?\d+),(-?\d+)", re.M)  # vboxes, hboxes
+BOXES, POINTS = Kept(4), Kept(4)  # (synctex_boxes, synctex_points: per SyncTeX file, its last build)
+
+
+def synctex_boxes(synctex_gz):
     """{(file, line): [(page, left, top, right, bottom)]}: the boxes each source line made (points
     from the page's top-left, where they are drawn: on_page), from a build's SyncTeX file."""
     turns = page_turns(synctex_gz)
-    key = (synctex_gz, mtime(synctex_gz), str(turns))
-    if key not in cache:
-        inputs, boxes, page = {}, {}, 0
-        pt = 72 / 72.27 / 65536  # scaled points to PDF points
-        for record in synctex_records(synctex_gz):
-            if record.startswith("Input:"):
-                tag, _, path = record[6:].rstrip("\n").partition(":")
-                inputs[tag] = os.path.normpath(path)
-            elif record.startswith("{"):
-                page = to_int(record[1:], page)
-            elif m := SYNCTEX_BOX_RE.match(record):
-                x, y, w, h, d = (int(v) * pt for v in m.groups()[3:])
-                rect = rect_on_page(turns.get(page), (x, y - h, x + w, y + d))
-                boxes.setdefault((inputs.get(m.group(2)), int(m.group(3))), []).append((page, *(round(c, 1) for c in rect)))
-        cache.clear()
-        cache[key] = boxes
-    return cache[key]
+    return BOXES.get(kept_as(synctex_gz), (version(synctex_gz), str(turns)), lambda: line_boxes(synctex_gz, turns))
+
+
+def line_boxes(synctex_gz, turns):
+    """synctex_boxes' value, found now."""
+    inputs, boxes = synctex_text(synctex_gz)[0], {}
+    for page, _, text in synctex_pages(synctex_gz):
+        turn = turns.get(page)
+        for _, tag, line, *size in SYNCTEX_BOX_RE.findall(text):
+            x, y, w, h, d = (int(v) * PT for v in size)
+            rect = (x, y - h, x + w, y + d) if turn is None else rect_on_page(turn, (x, y - h, x + w, y + d))
+            key = (inputs.get(tag), int(line))
+            (boxes.get(key) or boxes.setdefault(key, Packed(5))).add(page, *(round(c, 1) for c in rect))
+    return boxes
+
+
+class Packed:
+    """A list of tuples of numbers of one length (a source line's boxes or points: synctex_boxes, synctex_points),
+    packed in an array of doubles: a fifth of the memory of tuples, for the hundreds of thousands of them a long
+    paper's SyncTeX file holds. It reads as the list of tuples, the first of each (a page) an int."""
+    __slots__ = ("width", "data")
+
+    def __init__(self, width):
+        self.width, self.data = width, array.array("d")
+
+    def add(self, *values):
+        self.data.extend(values)
+
+    def __len__(self):
+        return len(self.data) // self.width
+
+    def __iter__(self):
+        data, width = self.data, self.width
+        for i in range(0, len(data), width):
+            yield (int(data[i]), *data[i + 1:i + width])
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            return list(self)[i]
+        n = len(self)
+        if not -n <= i < n:
+            raise IndexError("Packed index out of range")
+        i, width = i % n, self.width
+        return (int(self.data[i * width]), *self.data[i * width + 1:(i + 1) * width])
+
+    def __eq__(self, other):
+        return list(self) == list(other)
+
+    def __repr__(self):
+        return repr(list(self))
 
 
 SYNCTEX_NODE_RE = re.compile(r"([\[(hvkgx$])(\d+),(\d+):(-?\d+),(-?\d+)(?::(-?\d+)(?:,(-?\d+),(-?\d+))?)?")
 PT = 72 / 72.27 / 65536  # (scaled points to PDF points)
 
 
-def page_nodes(synctex_gz, page, cache={}):
+NODES = Kept(8)  # (page_nodes: the last few pages read)
+
+
+def page_nodes(synctex_gz, page):
     """A page's records in a build's SyncTeX file: ({tag: input path}, [(kind, tag, line, h, v, width, height, depth)]
     in scaled points, with (")",) and ("]",) where a box ends). The last few pages read are kept."""
-    key = (synctex_gz, mtime(synctex_gz), page)
-    if key not in cache:
-        inputs, nodes, on, start = {}, [], False, f"{{{page}\n"
-        for record in synctex_records(synctex_gz):
-            if record.startswith("Input:"):
-                tag, _, path = record[6:].rstrip("\n").partition(":")
-                inputs[tag] = os.path.normpath(path)
-            elif not on:
-                on = record == start
-            elif record[0] == "}":
-                break
-            elif record[0] in ")]":
-                nodes.append((record[0],))
-            elif m := SYNCTEX_NODE_RE.match(record):
-                nodes.append((m[1], m[2], int(m[3]), *(int(v or 0) for v in m.groups()[3:])))
-        if len(cache) >= 8:
-            cache.clear()
-        cache[key] = inputs, nodes
-    return cache[key]
+    return NODES.get((kept_as(synctex_gz), page), version(synctex_gz), lambda: read_page_nodes(synctex_gz, page))
+
+
+def read_page_nodes(synctex_gz, page):
+    """page_nodes' value, found now: the records from the page's {page line to its end (the first } line)."""
+    text = next((text for _, head, text in synctex_pages(synctex_gz, {page}) if head == f"{{{page}"), "")
+    nodes = []
+    for record in text.split("\n"):
+        if not record:
+            continue
+        if record[0] == "}":
+            break
+        if record[0] in ")]":
+            nodes.append((record[0],))
+        elif m := SYNCTEX_NODE_RE.match(record):
+            nodes.append((m[1], m[2], int(m[3]), *(int(v or 0) for v in m.groups()[3:])))
+    return synctex_text(synctex_gz)[0], nodes
 
 
 def box_extent(box):
@@ -240,22 +431,25 @@ def mapped_pdf(synctex_gz):
 PAGE_INFO_RE = re.compile(r"^Page\s+(\d+) (size|rot):\s+(-?[\d.]+)(?: x ([\d.]+))?", re.M)
 
 
-def page_rotations(pdf, cache={}):
+ROTATIONS = Kept(16)
+
+
+def page_rotations(pdf):
     """{page: {"rotate", "W", "H"}} for the pages of a PDF that have a /Rotate (90, 180 or 270): it, and the page's size as
     stored (points), from pdfinfo; {} without poppler. Cached per PDF and mtime."""
-    key = (pdf, mtime(pdf))
-    if key not in cache:
-        info = {}
-        for m in PAGE_INFO_RE.finditer(pdf_tool(["pdfinfo", "-f", "1", "-l", "1000000", pdf])):
-            page = info.setdefault(int(m[1]), {"rotate": 0, "W": 0.0, "H": 0.0})
-            if m[2] == "rot":
-                page["rotate"] = int(float(m[3])) % 360
-            elif m[4]:
-                page["W"], page["H"] = float(m[3]), float(m[4])
-        if len(cache) >= 16:
-            cache.clear()
-        cache[key] = {page: p for page, p in info.items() if p["rotate"] in (90, 180, 270) and p["W"] and p["H"]}
-    return cache[key]
+    return ROTATIONS.get(pdf, mtime(pdf), lambda: read_rotations(pdf))
+
+
+def read_rotations(pdf):
+    """page_rotations' value, read now."""
+    info = {}
+    for m in PAGE_INFO_RE.finditer(pdf_tool(["pdfinfo", "-f", "1", "-l", "1000000", pdf])):
+        page = info.setdefault(int(m[1]), {"rotate": 0, "W": 0.0, "H": 0.0})
+        if m[2] == "rot":
+            page["rotate"] = int(float(m[3])) % 360
+        elif m[4]:
+            page["W"], page["H"] = float(m[3]), float(m[4])
+    return {page: p for page, p in info.items() if p["rotate"] in (90, 180, 270) and p["W"] and p["H"]}
 
 
 def turned(x, y, h, v, angle):
@@ -272,7 +466,7 @@ def turned_rect(rect, h, v, angle):
     return min(a, c), min(b, d), max(a, c), max(b, d)
 
 
-def page_turns(synctex_gz, cache={}):
+def page_turns(synctex_gz):
     """{page: {"rotate", "W", "H", "blocks"}} for the pages of the PDF that a build's SyncTeX file maps (mapped_pdf) that
     have a /Rotate (page_rotations). blocks: [(h, v, angle, extent)], the boxes drawn rotated on the page (in PDF points
     from its top-left): the spot each is drawn from, its rotation (turned), and its extent as SyncTeX records it. graphicx
@@ -284,17 +478,22 @@ def page_turns(synctex_gz, cache={}):
     rotations = page_rotations(pdf) if pdf else {}
     if not rotations:
         return {}
-    key = (mtime(synctex_gz), pdf, mtime(pdf))
-    if cache.get(synctex_gz, (None,))[0] != key:
-        turns = {page: {**info, "blocks": []} for page, info in rotations.items()}
-        page, stack, inside = 0, [], None  # (inside: the depth of the rotated block the records are in)
-        for record in synctex_records(synctex_gz):
+    return TURNS.get(kept_as(synctex_gz), (version(synctex_gz), pdf, stamp(pdf)), lambda: find_turns(synctex_gz, rotations))
+
+
+TURNS = Kept(8)
+
+
+def find_turns(synctex_gz, rotations):
+    """page_turns' value, found now from the turned pages' records."""
+    turns = {page: {**info, "blocks": []} for page, info in rotations.items()}
+    for page, _, text in synctex_pages(synctex_gz, turns):
+        stack, inside = [], None  # (inside: the depth of the rotated block the records are in)
+        for record in text.split("\n"):
             c = record[:1]
-            if c == "{":
-                page, stack, inside = to_int(record[1:], page), [], None
-            elif page not in turns:
+            if not c:
                 continue
-            elif c in ")]":
+            if c in ")]":
                 stack = stack[:-1]
                 inside = inside if inside is not None and len(stack) >= inside else None
             elif c in "([" and (m := SYNCTEX_NODE_RE.match(record)):
@@ -305,10 +504,7 @@ def page_turns(synctex_gz, cache={}):
                     if block := rotated_block(turns[page], box):
                         turns[page]["blocks"].append(block)
                         inside = len(stack)
-        if len(cache) >= 8:
-            cache.clear()
-        cache[synctex_gz] = key, turns
-    return cache[synctex_gz][1]
+    return turns
 
 
 def rotated_block(turn, box):
@@ -531,29 +727,28 @@ def forward_target(paper_root, src, line, clean=False):
     return None
 
 
-SYNCTEX_POINT_RE = re.compile(r"([gkx$])(\d+),(\d+):(-?\d+),(-?\d+)")  # glue, kerns, points, math
+SYNCTEX_POINT_RE = re.compile(r"^([gkx$])(\d+),(\d+):(-?\d+),(-?\d+)", re.M)  # glue, kerns, points, math
 
 
-def synctex_points(synctex_gz, cache={}):
+def synctex_points(synctex_gz):
     """{(file, line): [(page, x, y)]}: where each source line's words, spaces, and math
     landed (points from the page's top-left, y at the baseline, where they are drawn: on_page), from a
     build's SyncTeX file."""
     turns = page_turns(synctex_gz)
-    key = (synctex_gz, mtime(synctex_gz), str(turns))
-    if key not in cache:
-        inputs, points, page = {}, {}, 0
-        for record in synctex_records(synctex_gz):
-            if record.startswith("Input:"):
-                tag, _, path = record[6:].rstrip("\n").partition(":")
-                inputs[tag] = os.path.normpath(path)
-            elif record.startswith("{"):
-                page = to_int(record[1:], page)
-            elif m := SYNCTEX_POINT_RE.match(record):
-                x, y = on_page(turns.get(page), int(m.group(4)) * PT, int(m.group(5)) * PT)
-                points.setdefault((inputs.get(m.group(2)), int(m.group(3))), []).append((page, round(x, 1), round(y, 1)))
-        cache.clear()
-        cache[key] = points
-    return cache[key]
+    return POINTS.get(kept_as(synctex_gz), (version(synctex_gz), str(turns)), lambda: line_points(synctex_gz, turns))
+
+
+def line_points(synctex_gz, turns):
+    """synctex_points' value, found now."""
+    inputs, points = synctex_text(synctex_gz)[0], {}
+    for page, _, text in synctex_pages(synctex_gz):
+        turn = turns.get(page)
+        for _, tag, line, h, v in SYNCTEX_POINT_RE.findall(text):
+            x, y = int(h) * PT, int(v) * PT
+            x, y = (x, y) if turn is None else on_page(turn, x, y)
+            key = (inputs.get(tag), int(line))
+            (points.get(key) or points.setdefault(key, Packed(3))).add(page, round(x, 1), round(y, 1))
+    return points
 
 
 def synctex_input(paper_root, name, page, x, y, clean):
@@ -592,10 +787,11 @@ def bib_source(paper_root, bbl, line):
     return found and (os.path.join(paper_root, found[0]), found[1])
 
 
-def inverse_search(paper_root, name, page, x, y, clean, bib=False):
-    """PDF position -> (source path, line), or (status, message) when there is none (synctex_input). With bib, an entry
-    of the bibliography goes to its .bib entry (bib_source), not the .bbl that the build wrote."""
-    found = synctex_input(paper_root, name, page, x, y, clean)
+def inverse_search(paper_root, name, page, x, y, clean, bib=False, look_up=None):
+    """PDF position -> (source path, line), or (status, message) when there is none (synctex_input, or look_up given
+    (name, page, x, y, clean): the viewer's, cached). With bib, an entry of the bibliography goes to its .bib entry
+    (bib_source), not the .bbl that the build wrote."""
+    found = (look_up or (lambda *spot: synctex_input(paper_root, *spot)))(name, page, x, y, clean)
     if isinstance(found[0], int):
         return found
     src, line = found

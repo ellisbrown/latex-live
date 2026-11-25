@@ -98,7 +98,7 @@ At most one standby waits per job (a document's live build, and its notes-free p
 is using (and, briefly, one being verified). A pass removes the remains of dead standbys; a keeper stops
 its TeX run when live.py dies (also after kill -9) or the pass that took it does, and its TeX run gets
 SIGTERM if the keeper dies (on Linux); a container stops at its deadline (DEADLINE) whatever happens, and
-live.py removes leftovers by label (stop_standbys).
+live.py removes leftovers by label (stop_standbys); once live.py begins to stop, no pass starts one (stop_owner).
 
 This file imports nothing from latexlive: latexmkrc runs it as a script (python3 -I).
 """
@@ -575,7 +575,7 @@ def refuse(records, key, done):
 def start_standby(p, records, key, lines, line):
     """Start a standby for passes like p (key: its key; lines and line: the preamble and L), unless one of
     that key waits already or the key is refused. Returns it, or None."""
-    if records.find("refused", key):
+    if records.find("refused", key) or owner_stopping(p.build, p.owner):
         return None
     for sb in standbys(p):
         if sb.info and sb.info["key"] == key and sb.claimed() is None and sb.done() is None and not sb.keeper_lost():
@@ -598,10 +598,25 @@ def start_standby(p, records, key, lines, line):
         "key": key, "job": p.job, "root": p.root, "line": line, "build": p.build, "out": p.out, "argv": [*p.exec, *argv],
         "env": env, "pass": p.argv, "owner": p.owner, "owner_start": process_start(p.owner), "created": time.time(),
         "host": not p.exec})
+    if owner_stopping(p.build, p.owner):  # (live.py began to stop meanwhile, perhaps after it listed the standbys)
+        remove(folder)
+        return None
     keeper_env = {k: v for k, v in p.env.items() if k not in PASS_ONLY}  # (the pass's, but what ties a run to it)
     subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "--keep", folder], cwd=p.cwd, env=keeper_env,
                      start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return Standby(folder)
+
+
+def owner_stopping(build, owner):
+    """Whether live.py (owner: its pid) has gone or is stopping (stop_owner): then no standby is started for it, as
+    nothing would stop it once live.py has stopped the ones it found."""
+    if not alive(owner):
+        return True
+    try:
+        with open(os.path.join(build, "standby", "stopping")) as f:
+            return f.read().strip() == str(owner)
+    except OSError:
+        return False
 
 
 def out_of(info):
@@ -1275,6 +1290,15 @@ def stop_taken(build, pid):
 
 # ---------------------------------------------------------------------------------------------------
 # For live.py.
+
+def stop_owner(paper_root, build):
+    """Say that this live.py is stopping (R/standby/stopping: its pid), before it stops latexmk and the standbys: from
+    then on no pass of its starts a standby (owner_stopping), however long the pass runs on. A notes-free pass runs in a
+    session of its own, and one may be starting as live.py stops."""
+    folder = os.path.join(paper_root, build, "standby")
+    os.makedirs(folder, exist_ok=True)
+    put(os.path.join(folder, "stopping"), str(os.getpid()).encode())
+
 
 def stop_standbys(paper_root, build, job):
     """Stop a document's standbys and remove their folders and containers, and forget what was said about

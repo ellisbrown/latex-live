@@ -4,7 +4,6 @@ arXiv source, the bibliography, generated figures, placement, consistency, overf
 import os
 import re
 import subprocess
-import sys
 import threading
 import time
 
@@ -67,12 +66,11 @@ def checks(server, pdf_name):
         git_name = subprocess.run(["git", "-C", root, "config", "user.name"], capture_output=True, text=True).stdout.strip()
         if git_name:
             names.add(git_name)
-        # Affiliations and other terms that identify the authors: LATEX_LIVE_ANON_TERMS, a regular
-        # expression (alternatives separated by |), e.g. r"\bNYU\b|New York University".
-        anon_terms = os.environ.get("LATEX_LIVE_ANON_TERMS", "").strip()
+        anon_terms = config.ANON_TERMS  # (affiliations and other terms that identify the authors)
         ident = [r"\b%s\b" % re.escape(n) for n in sorted(names)] + ([f"(?:{anon_terms})"] if anon_terms else []) + [
             r"github\.com/\S+", r"huggingface\.co/\S+", r"\bwandb\b"]
-        anon = hits("|".join(ident), skip_bib=True, flags=0)
+        anon = [{"text": config.ANON_TERMS_PROBLEM}] if config.ANON_TERMS_PROBLEM else []
+        anon += hits("|".join(ident), skip_bib=True, flags=0)
         anon += hits(r"\b(?:our|my) (?:prior|previous|earlier|recent) (?:work|paper|study)|\bwe (?:previously|earlier) (?:showed|proposed|introduced|found)")
         info = pdf_tool(["pdfinfo", pdf])
         # (ICML's submission style sets the metadata author to "Anonymous Authors".)
@@ -194,7 +192,6 @@ def checks(server, pdf_name):
         if duplicates or venues else "no duplicate entries; each venue is written one way", duplicates + venues)
 
     # Overfull boxes.
-    sys.path.insert(0, config.HERE)
     import latex_report
     boxes = []
     if (log := read_capped(job_file(root, pdf_name, ".log"), config.OUTPUT_LIMIT)) is not None:

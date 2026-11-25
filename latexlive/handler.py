@@ -219,7 +219,7 @@ class Handler(BaseHandler):
             if config.SHARED or query.get("json") == ["1"]:
                 self.send_json(*synctex_lookup(self.server, query, self.principal))
             else:
-                self.send_text(*synctex_edit(self.server.paper_root, query))
+                self.send_text(*synctex_edit(self.server, query))
         elif path == "/files":
             self.send_json(200, files_listing(self.server, self.principal))
         elif path == "/asset":
