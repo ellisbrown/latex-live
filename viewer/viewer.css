@@ -21,7 +21,7 @@
 
   --ink: #18181b;
   --ink-2: #52525b;
-  --ink-3: #71717a;
+  --ink-3: #66666e; /* (4.8:1 or more on every light surface, the tints' too) */
 
   --border: rgba(24, 24, 27, 0.095);
   --border-strong: rgba(24, 24, 27, 0.16);

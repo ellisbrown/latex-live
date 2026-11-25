@@ -1,7 +1,7 @@
 // Writing notes from the PDF (live.py /note): a comment on selected text, and the tools on every note.
 
-import { $, docFile, el, hubBase, isDiff, setStatus, sleep } from "./page.js";
-import { readBody, signInPage, unreachable } from "./net.js";
+import { $, SIGNED_OUT, docFile, el, hubBase, isDiff, setStatus, sleep } from "./page.js";
+import { NO_ANSWER, sendJSON } from "./net.js";
 import { me, notSetUp, ownerName, who, whoLabel } from "./role.js";
 import { container, shownVariant, viewer } from "./pdfview.js";
 import { wrote } from "./build.js";
@@ -120,21 +120,20 @@ let noteSeq = 0; // (bumped when the note box closes: a note still waiting to go
 async function postNote(body) {
   const seq = noteSeq, kept = "(your text is still here)";
   try {
-    let r, res;
+    let sent;
     for (let attempt = 1; ; attempt++) {
-      r = await fetch("note", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => null);
-      if (!r) return `Can't reach the preview server: try again in a moment ${kept}`;
-      res = await readBody(r);
-      if (!(r.status === 503 && res.retry) || attempt >= 30) break;
+      sent = await sendJSON("note", body);
+      if (!(sent.status === 503 && sent.body?.retry) || attempt >= 30) break;
       if (!$("notePop").hidden) $("notePop").querySelector(".error").textContent = "Owner is updating the copy — retrying…";
       setStatus("Owner is updating the copy — retrying…", "busy");
       await sleep(2000);
       if (seq !== noteSeq) return "not sent: the note box was closed";
     }
-    if (signInPage(r, res)) return `The preview answered with a web page: your sign-in may have expired. Copy your text, then reload the page ${kept}`;
-    if (r.status === 503 && res.retry) return `${ownerName()} is still updating the shared copy: try again in a minute ${kept}`;
-    if (unreachable(r, res)) return `Can't reach the preview server: try again in a moment ${kept}`;
-    if (!r.ok || typeof res.source !== "string") return res.error || `failed (${r.status})`;
+    const res = sent.body;
+    if (sent.error === SIGNED_OUT) return `The preview answered with a web page: your sign-in may have expired. Copy your text, then reload the page ${kept}`;
+    if (sent.status === 503 && res?.retry) return `${ownerName()} is still updating the shared copy: try again in a minute ${kept}`;
+    if (sent.error === NO_ANSWER) return `Can't reach the preview server: try again in a moment ${kept}`;
+    if (!sent.ok || typeof res.source !== "string") return sent.error || res?.error || `failed (${sent.status})`;
     wrote(); // (a build comes: behind)
     const old = writtenKey(body.source, body.macro, body.tex);
     if (body.action === "add" || body.action === "reply") markWritten(writtenKey(res.source, res.macro, res.tex), true);
