@@ -30,6 +30,7 @@
   --accent: #2563eb;
   --accent-soft: rgba(37, 99, 235, 0.11);
   --accent-ink: #1d4ed8;
+  --on-accent: #ffffff; /* (text on an accent background: a primary button) */
 
   --ok: #15803d;
   --ok-bg: rgba(22, 163, 74, 0.11);
@@ -94,7 +95,7 @@
 
   --ink: #ececef;
   --ink-2: #a1a1aa;
-  --ink-3: #71717a;
+  --ink-3: #8e8e97; /* (4.6:1 or more on every dark surface, the tints' too) */
 
   --border: rgba(255, 255, 255, 0.09);
   --border-strong: rgba(255, 255, 255, 0.16);
@@ -103,6 +104,7 @@
   --accent: #60a5fa;
   --accent-soft: rgba(96, 165, 250, 0.16);
   --accent-ink: #93c5fd;
+  --on-accent: #0b1220; /* (white on this accent would be 2.5:1) */
 
   --ok: #4ade80;
   --ok-bg: rgba(74, 222, 128, 0.13);
@@ -157,18 +159,23 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 button, input, select, textarea { font: inherit; color: inherit; }
-button:focus-visible, select:focus-visible, input:focus-visible {
+button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible,
+[tabindex]:not(#editorPane, [tabindex="-1"]):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 [hidden] { display: none !important; }
 
-/* Inverted PDF colors (Invert PDF colors, in either theme): the pages, the reference previews and the thumbnails. */
+/* Inverted PDF colors (Invert PDF colors, in either theme): the pages, the reference previews, the thumbnails, the
+   Figures tab's crops, and the Files tab's previews of PDF figures. */
 body.pdf-invert #viewer .canvasWrapper,
 body.pdf-invert #preview canvas,
-body.pdf-invert .thumb canvas {
+body.pdf-invert .thumb canvas,
+body.pdf-invert .float .crop canvas,
+body.pdf-invert .fig-thumb img.pdf-page {
   filter: invert(0.88) hue-rotate(180deg);
 }
+body.pdf-invert .float .crop { background: #1f1f1f; } /* (white, as the filter turns it, at the crop's edges) */
 
 /* Icons (icons.js), in the text's color. */
 .ic { display: inline-block; flex: none; vertical-align: -2px; }
@@ -309,16 +316,19 @@ body.pdf-invert .thumb canvas {
   overflow: hidden;
 }
 
-/* The sidebar: its tabs (sidebar.js addTab: an icon, a label and a count each), wrapping onto more rows as needed. */
+/* The sidebar: its tabs (sidebar.js addTab: an icon, a label and a count each), in one row; where they don't fit with
+   their labels, icons alone (.compact). */
 #side {
   flex: none; width: var(--side-w);
   background: var(--bg-panel); color: var(--ink);
 }
 
 #tabs {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(48px, 1fr)); gap: 2px; padding: 5px 6px;
+  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px; padding: 5px 6px;
   border-bottom: 1px solid var(--border); flex: none;
 }
+#tabs.compact button { padding: 7px 0; }
+#tabs.compact .label { display: none; }
 #tabs button {
   display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
   min-width: 0; padding: 5px 3px; border: 0; border-radius: 6px;
@@ -326,6 +336,7 @@ body.pdf-invert .thumb canvas {
   position: relative; transition: background 0.12s, color 0.12s;
 }
 #tabs button:hover { background: var(--bg-hover); color: var(--ink); }
+#tabs button:focus-visible { outline-offset: -2px; }
 #tabs button.on { background: var(--bg-surface); color: var(--ink); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.07); }
 #tabs .n {
   position: absolute; top: 2px; right: 2px; font-size: 9px; font-weight: 700;
@@ -338,6 +349,44 @@ body.pdf-invert .thumb canvas {
 .panel .empty { padding: 16px 14px; color: var(--ink-3); font-size: 12.5px; text-align: center; }
 .panel .panel-error { color: var(--err); display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .panel .panel-error button { font: inherit; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-surface); color: var(--ink); cursor: pointer; }
+
+/* The controls of the panels that have their own (.panel-ui: Checks, Refs, Files, History): a bar on top (a filter,
+   menus, buttons, and the refresh button at its end), a box with a form or findings, a row of buttons, notes and
+   errors in a box. A primary button is the accent's, there and in the note box and the agent's card. */
+.panel-ui :is(button, select, input, textarea) {
+  font: inherit; font-size: 12px; color: var(--ink); background: var(--bg-input);
+  border: 1px solid var(--border); border-radius: var(--radius-ctl);
+}
+.panel-ui button { background: var(--bg-surface); cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.panel-ui button:hover:not(:disabled) { background: var(--bg-hover); }
+.panel-ui button:disabled { opacity: 0.5; cursor: default; }
+:is(.panel-ui, #notePop, .cm-agent-acts) button.primary { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+:is(.panel-ui, #notePop, .cm-agent-acts) button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 86%, var(--ink)); }
+.panel-bar {
+  display: flex; align-items: center; gap: 4px; padding: 2px 10px 8px; border-bottom: 1px solid var(--hairline);
+  font-size: 12px; color: var(--ink-2);
+}
+.panel-bar input { flex: 1; min-width: 0; height: 27px; padding: 0 8px; }
+.panel-bar select { flex: none; width: 78px; height: 27px; }
+.panel-bar button { flex: none; height: 27px; padding: 0 6px; }
+.panel-bar button.on { background: var(--bg-active); }
+.panel-bar > .panel-note:first-child { margin-right: auto; }
+.panel-bar .panel-refresh { margin-left: auto; }
+.panel-bar input + .panel-refresh, .panel-bar button + .panel-refresh { margin-left: 0; }
+.panel-box {
+  margin: 8px 10px; padding: 8px; border-radius: 8px; background: var(--bg-surface); border: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 6px; font-size: 12px;
+}
+.panel-box textarea { padding: 5px 8px; resize: vertical; }
+.panel-box input { height: 27px; padding: 0 8px; }
+.panel-row { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
+.panel-row > :first-child:is(span, strong) { margin-right: auto; }
+.panel-row button { height: 25px; padding: 0 9px; }
+.panel-row select { flex: 1; min-width: 0; height: 25px; }
+.panel-note { font-size: 11.5px; color: var(--ink-3); line-height: 1.4; }
+.panel-note.empty { padding: 10px; }
+.box-error { font-size: 11.5px; color: var(--err); }
+.box-error:empty { display: none; }
 
 /* The outline, the page thumbnails, the notes, the checks and the figures. */
 #outline ul { list-style: none; margin: 0; padding-left: 12px; }
@@ -365,7 +414,7 @@ body.pdf-invert .thumb canvas {
 .thumb.last-allowed .img { box-shadow: var(--shadow-page), 0 4px 0 -1px var(--err); }
 .thumb .tag { color: var(--err); }
 
-#notes .filters, #checks .toolbar, #figures .filters {
+#notes .filters, #figures .filters {
   display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 10px 8px; align-items: center;
   border-bottom: 1px solid var(--hairline);
 }
@@ -402,12 +451,6 @@ body.pdf-invert .thumb canvas {
   margin-top: 5px; font-size: 11.5px; color: var(--ink-2);
 }
 
-#checks button {
-  background: var(--bg-surface); color: var(--ink); border: 1px solid var(--border);
-  border-radius: var(--radius-ctl); padding: 3px 9px; font-size: 12px; font-weight: 500; cursor: pointer;
-}
-#checks button:hover { background: var(--bg-hover); }
-#checks .when { font-size: 11px; color: var(--ink-3); }
 .check { border-bottom: 1px solid var(--hairline); }
 .check summary { padding: 7px 10px; cursor: pointer; list-style: none; display: grid; grid-template-columns: 1.5em 1fr; font-size: 12.5px; }
 .check summary::-webkit-details-marker { display: none; }
@@ -419,35 +462,10 @@ body.pdf-invert .thumb canvas {
 .check li { padding: 4px 10px 4px 28px; font-size: 12px; cursor: pointer; word-break: break-word; color: var(--ink-2); }
 .check li:hover { background: var(--bg-hover); color: var(--ink); }
 
-/* The Refs tab (refs.js): a bar to filter, order, add and check; the add box; the check's findings; a card per entry. */
-.refs button, .refs select, .refs input, .refs textarea {
-  font: inherit; font-size: 12px; color: var(--ink); background: var(--bg-input);
-  border: 1px solid var(--border); border-radius: var(--radius-ctl);
-}
-.refs button { background: var(--bg-surface); cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
-.refs button:hover:not(:disabled) { background: var(--bg-hover); }
-.refs button:disabled { opacity: 0.5; cursor: default; }
-.refs button.primary { background: var(--accent); color: #fff; border-color: transparent; }
-.refs-bar { display: flex; gap: 5px; padding: 2px 10px 8px; border-bottom: 1px solid var(--hairline); }
-.refs-bar input { flex: 1; min-width: 0; height: 27px; padding: 0 8px; }
-.refs-bar select { flex: none; width: 92px; height: 27px; }
-.refs-bar button { flex: none; height: 27px; padding: 0 7px; }
-.refs-bar button.on { background: var(--bg-active); }
-.refs-add, .refs-verify {
-  margin: 8px 10px; padding: 8px; border-radius: 8px; background: var(--bg-surface); border: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 6px; font-size: 12px;
-}
-.refs-add[hidden], .refs-verify[hidden] { display: none; }
-.refs-add textarea { padding: 5px 8px; resize: vertical; }
+/* The Refs tab (refs.js): its bar (filter, order, add, check, refresh), the add box, the check's findings, a card per
+   entry. */
 .refs-add .refs-query { min-height: 27px; }
 .refs-add .refs-preview { min-height: 110px; font-family: var(--font-mono); font-size: 11.5px; }
-.refs-row { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
-.refs-row > :first-child:is(span, strong) { margin-right: auto; }
-.refs-row button { height: 25px; padding: 0 9px; }
-.refs-row select { flex: 1; min-width: 0; height: 25px; }
-.refs-note { font-size: 11.5px; color: var(--ink-3); line-height: 1.4; }
-.refs-error { font-size: 11.5px; color: var(--err); }
-.refs-error:empty { display: none; }
 .refs .refs-finding {
   display: flex; gap: 6px; align-items: flex-start; text-align: left; padding: 4px 2px; border: 0;
   border-top: 1px solid var(--hairline); border-radius: 0; background: none; line-height: 1.35;
@@ -475,31 +493,9 @@ body.pdf-invert .thumb canvas {
 }
 .refs-acts button { height: 22px; padding: 0 7px; font-size: 11px; background: var(--bg-surface-2); }
 
-/* The Files tab (files.js): a bar to filter, make and upload; the form for a name; the tree of sources and figures,
-   in folders, each file with its size, who has it open, and its actions on hover; a figure's preview. */
-.files button, .files input {
-  font: inherit; font-size: 12px; color: var(--ink); background: var(--bg-input);
-  border: 1px solid var(--border); border-radius: var(--radius-ctl);
-}
-.files button { background: var(--bg-surface); cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
-.files button:hover:not(:disabled) { background: var(--bg-hover); }
-.files button:disabled { opacity: 0.5; cursor: default; }
-.files button.primary { background: var(--accent); color: #fff; border-color: transparent; }
-.files-bar { display: flex; gap: 5px; padding: 2px 10px 8px; border-bottom: 1px solid var(--hairline); }
-.files-bar input { flex: 1; min-width: 0; height: 27px; padding: 0 8px; }
-.files-bar button { flex: none; height: 27px; padding: 0 7px; }
-.files-form {
-  margin: 8px 10px; padding: 8px; border-radius: 8px; background: var(--bg-surface); border: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 6px; font-size: 12px;
-}
-.files-form[hidden] { display: none; }
-.files-form input { height: 27px; padding: 0 8px; font-family: var(--font-mono); font-size: 11.5px; }
-.files-row { display: flex; gap: 6px; justify-content: flex-end; }
-.files-row button { height: 25px; padding: 0 9px; }
-.files-note { font-size: 11.5px; color: var(--ink-3); line-height: 1.4; }
-.files-note.empty { padding: 10px; }
-.files-error { font-size: 11.5px; color: var(--err); }
-.files-error:empty { display: none; }
+/* The Files tab (files.js): its bar (filter, new, upload, refresh), the form for a name, the tree of sources and figures
+   in folders, each file with its size, who has it open, and its actions on hover or focus; a figure's preview. */
+.files-form input { font-family: var(--font-mono); font-size: 11.5px; }
 .files-head {
   display: flex; justify-content: space-between; padding: 8px 12px 3px; font-size: 10.5px; font-weight: 600;
   text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-3);
@@ -515,6 +511,7 @@ body.pdf-invert .thumb canvas {
 }
 .files-file.nested { padding-left: 26px; }
 .files-file:hover { background: var(--bg-hover); }
+.files-file:focus-visible { outline-offset: -2px; }
 .files-file.on { background: var(--bg-active); font-weight: 600; }
 .files-file > svg { flex: none; color: var(--ink-3); }
 .files-file .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -532,16 +529,8 @@ body.pdf-invert .thumb canvas {
 .cm-hover-card .fig-thumb { margin-top: 6px; }
 .cm-hover-card .fig-thumb img { max-width: 240px; }
 
-/* The History tab: the branch and a refresh over the commits, each a card that opens to its files, a file's diff, and
-   Compare and Restore. */
-.history button {
-  font: inherit; font-size: 12px; color: var(--ink); background: var(--bg-surface); cursor: pointer;
-  border: 1px solid var(--border); border-radius: var(--radius-ctl); display: inline-flex; align-items: center; gap: 4px;
-}
-.history button:hover { background: var(--bg-hover); }
-.hist-top { display: flex; align-items: center; gap: 6px; padding: 2px 10px 8px; font-size: 12px; color: var(--ink-2);
-            border-bottom: 1px solid var(--hairline); }
-.hist-top button { margin-left: auto; height: 25px; padding: 0 7px; }
+/* The History tab: the branch, the count and the refresh over the commits, each a card that opens to its files, a
+   file's diff, and Compare and Restore. */
 .hist-branch { padding: 1px 7px; border-radius: 99px; border: 1px solid var(--border); font-family: var(--font-mono); font-size: 11px;
                color: var(--ink); max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hist-item { margin: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-surface); overflow: hidden; }
@@ -592,6 +581,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   border: 1px solid transparent; border-radius: 6px; color: var(--ink-2); font-size: 12px; cursor: pointer;
 }
 #editorTabs .tab:hover { background: var(--bg-hover); color: var(--ink); }
+#editorTabs .tab:focus-visible { outline-offset: -2px; }
 #editorTabs .tab.on { background: var(--bg-surface); border-color: var(--border); color: var(--ink); font-weight: 500; }
 #editorTabs .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #editorTabs .dot { display: none; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); flex: none; }
@@ -603,10 +593,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 #editorTabs .tab:hover .x, #editorTabs .tab.on .x, #editorTabs .x:focus-visible { opacity: 1; }
 #editorBody { flex: 1; min-height: 0; display: flex; }
 /* (the rail: a tick per heading, longer for a section than for a subsection) */
-#outlineRail {
+#outlineRail { /* (scrolls, without a scroll bar, for a file with more headings than fit: editor.js keeps the current one in view) */
   flex: none; width: 22px; padding: 14px 4px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
-  border-left: 1px solid var(--hairline); overflow: hidden; user-select: none;
+  position: relative; border-left: 1px solid var(--hairline); overflow: hidden auto; scrollbar-width: none; user-select: none;
 }
+#outlineRail::-webkit-scrollbar { display: none; }
 #outlineRail .tick { flex: none; height: 3px; border-radius: 2px; background: var(--border-strong); cursor: pointer; }
 #outlineRail .level1 { width: 13px; } #outlineRail .level2 { width: 9px; } #outlineRail .level3 { width: 6px; opacity: 0.7; }
 #outlineRail .tick:hover, #outlineRail .tick.on { width: 14px; background: var(--accent); opacity: 1; }
@@ -646,7 +637,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   display: inline-flex; align-items: center; height: 19px; padding: 0 7px; border-radius: 99px; cursor: pointer;
   border: 1px solid var(--border); background: var(--bg-surface); color: var(--ink-2); font: inherit; font-weight: 500;
 }
-#buildState:hover { filter: brightness(0.97); }
+#buildState:hover { background-image: linear-gradient(var(--bg-hover), var(--bg-hover)); } /* (over its color, in either theme) */
 #buildState.ok { background: var(--ok-bg); color: var(--ok); border-color: var(--ok-border); }
 #buildState.busy, #buildState.warn { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-border); }
 #buildState.error { background: var(--err-bg); color: var(--err); border-color: var(--err-border); }
@@ -666,6 +657,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .log-row { display: flex; align-items: baseline; gap: 8px; padding: 5px 10px; border-bottom: 1px solid var(--hairline); }
 .log-row.opens { cursor: pointer; }
 .log-row.opens:hover { background: var(--bg-hover); }
+.log-row.opens:focus-visible { outline-offset: -2px; }
 .log-sev { flex: none; width: 58px; font-size: 10.5px; font-weight: 700; text-transform: uppercase; }
 .log-sev.error, .cm-hover-card .hc-kind.error { color: var(--err); }
 .log-sev.warning, .cm-hover-card .hc-kind.warning { color: var(--warn); }
@@ -707,7 +699,6 @@ body.resizing { cursor: col-resize; user-select: none; }
   padding: 3px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-ctl); background: var(--bg-surface-2);
   color: var(--ink); font: inherit; cursor: pointer;
 }
-.cm-agent-acts button.primary { background: var(--accent); border-color: transparent; color: #fff; }
 
 /* The file picker's menu: the editable sources by folder, with a filter. */
 #fileMenu {
@@ -837,7 +828,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 #commentBtn {
   position: fixed; z-index: 30; padding: 5px 11px; border: 0; border-radius: 99px;
-  background: var(--accent); color: #fff; font: 500 12px var(--font-ui);
+  background: var(--accent); color: var(--on-accent); font: 500 12px var(--font-ui);
   cursor: pointer; box-shadow: var(--shadow-pop);
 }
 #notePop {
@@ -854,7 +845,6 @@ body.resizing { cursor: col-resize; user-select: none; }
 #notePop .hint { color: var(--ink-3); margin-right: auto; }
 #notePop .latex { color: var(--warn); font-weight: 600; }
 #notePop button { padding: 4px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-surface-2); color: var(--ink); cursor: pointer; font-weight: 500; }
-#notePop button.primary { background: var(--accent); color: #fff; border-color: transparent; }
 #notePop button:disabled { opacity: 0.5; cursor: default; }
 #notePop .error { color: var(--err); font-size: 12px; margin-top: 5px; }
 #notePop .error:empty { display: none; }
@@ -961,7 +951,7 @@ kbd {
 #welcome .row { display: flex; align-items: center; gap: 8px; margin-top: 14px; justify-content: flex-end; }
 #welcome .row label { margin-right: auto; cursor: pointer; color: var(--ink-2); }
 #welcome button.ok {
-  background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 6px 16px; cursor: pointer; font-weight: 500;
+  background: var(--accent); color: var(--on-accent); border: 0; border-radius: 6px; padding: 6px 16px; cursor: pointer; font-weight: 500;
 }
 
 /* The build's errors (a banner over the PDF), Compare's commits, and the preview of a reference's target. */
@@ -980,6 +970,7 @@ kbd {
   background: var(--bg-surface); color: var(--ink); border-radius: 10px; box-shadow: var(--shadow-pop);
 }
 #comparePanel .head { padding: 9px 12px; color: var(--ink-3); font-size: 12px; border-bottom: 1px solid var(--hairline); }
+#comparePanel .head.error { color: var(--err); }
 #comparePanel .commit { padding: 6px 12px; cursor: pointer; display: grid; grid-template-columns: 5.5em 7.5em 1fr; gap: 6px; font-size: 12.5px; }
 #comparePanel .commit:hover { background: var(--bg-hover); }
 #comparePanel .commit span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

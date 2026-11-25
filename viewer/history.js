@@ -8,7 +8,7 @@
 // save on its way, and merges edits typed meanwhile as a save would): no edit is dropped without the confirmation saying
 // so. The tab is drawn again only when what it shows changes, so that its scroll stays.
 
-import { $, editorShown, el, HOLD, isDiff, isPopout, panelError, setStatus } from "./page.js";
+import { $, editorShown, el, HOLD, isDiff, isPopout, panelError, plural, refreshButton, setStatus } from "./page.js";
 import { getJSON, sendJSON } from "./net.js";
 import { me } from "./role.js";
 import { closeTab, ed, flushSource, openFile, reloadSource, showEditor, srcFiles } from "./editor.js";
@@ -22,7 +22,7 @@ const SOURCES = /\.(tex|bib|sty|cls)$/i; // (live.py's EDITABLE_EXTS: what a res
 const STATUS = { A: "added", M: "changed", D: "removed", T: "changed type" };
 const allowed = () => !!me.can?.history && !isDiff && !isPopout;
 const panel = addTab("history", { label: "History", icon: "history", title: "The paper's commits: what each changed, and restoring a file",
-                                  refresh: () => loadHistory() });
+                                  refresh: () => loadHistory(), onHead: true }); // (a new commit, e.g. shared mode's)
 panel.classList.add("history");
 
 // The history as live.py last listed it ({isGit, branch, dirty: [{status, path}], commits: [{sha, parent, author, time,
@@ -31,7 +31,7 @@ panel.classList.add("history");
 let data = null, open = null, shownFile = null, drawn = "", loadSeq = 0, worktreeSeq = 0;
 const diffs = new Map();
 
-export async function loadHistory() {
+async function loadHistory() {
   if (!allowed()) return;
   const seq = ++loadSeq;
   const got = await getJSON("history"), body = got.body;
@@ -57,10 +57,10 @@ function draw() {
   drawn = key;
   if (!data.isGit) return panel.replaceChildren(el("div", { className: "empty", textContent: "The paper is not in a git repository." }));
   const scroll = panel.scrollTop;
-  const top = el("div", { className: "hist-top" },
+  const top = el("div", { className: "panel-bar" },
                  ...(data.branch ? [el("span", { className: "hist-branch", textContent: data.branch, title: "The branch checked out" })] : []),
-                 el("span", { textContent: `${data.commits.length}${data.commits.length >= 60 ? "+" : ""} commit${data.commits.length === 1 ? "" : "s"}` }),
-                 el("button", { title: "Look again", ariaLabel: "Look again", onclick: () => loadHistory() }, icon("rebuild", 12)));
+                 el("span", { className: "panel-note", textContent: plural(data.commits.length, "commit").replace(" ", data.commits.length >= 60 ? "+ " : " ") }),
+                 refreshButton("Look again", () => loadHistory()));
   const entries = [];
   if (data.dirty.length) entries.push(entry({ rev: "WORKTREE", subject: "Not committed yet", files: data.dirty }));
   for (const c of data.commits) entries.push(entry({ rev: c.sha, ...c }));
@@ -82,7 +82,7 @@ function entry(c) {
                   el("span", { className: "hist-meta" },
                      ...(worktree ? [] : [el("code", { textContent: c.sha.slice(0, 7) }), el("span", { textContent: c.author }),
                                           el("span", { textContent: ago(c.time), title: new Date(c.time * 1000).toLocaleString() })]),
-                     el("span", { textContent: `${c.files.length}${c.more ? "+" : ""} file${c.files.length === 1 ? "" : "s"}` })));
+                     el("span", { textContent: plural(c.files.length, "file").replace(" ", c.more ? "+ " : " ") })));
   const card = el("div", { className: `hist-item${isOpen ? " open" : ""}` }, head);
   if (!isOpen) return card;
   const files = el("div", { className: "hist-files" }, ...c.files.map((f) => el("button", {

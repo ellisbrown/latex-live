@@ -1,6 +1,6 @@
 // Where to cut (✂ in the toolbar).
 
-import { $, el, isDiff } from "./page.js";
+import { $, el, isDiff, plural } from "./page.js";
 import { doc, pdfjsLib } from "./pdfview.js";
 import { area, columnMid, textLines } from "./pagetext.js";
 import { reveal } from "./navigation.js";
@@ -78,7 +78,7 @@ async function findCutSpots(d, r) {
         const n = Math.round((gap - 10) / area.leading); // a paragraph break leaves ~10pt
         if (gap > 28 && n >= 1) {
           const top = y0 + run, bottom = y0 + y, atEnd = y === y1 - y0 && p < r.page;
-          spots.push({ page: p, col, top, lines: n, label: `≈${n} line${n === 1 ? "" : "s"}`,
+          spots.push({ page: p, col, top, lines: n, label: `≈${plural(n, "line")}`,
                        text: `${Math.round(gap)} pt of empty space ${atEnd ? "at the bottom of the column" : "in the text column"}`,
                        rect: [colLeft, top, colRight, bottom] });
         }
@@ -103,7 +103,7 @@ export async function updateCut() {
       marks.cut.get(s.page).push({ rect: s.rect, cls: "cut", label: s.label });
     }
     const lines = spots.reduce((n, s) => n + s.lines, 0);
-    $("cutCount").textContent = spots.length ? `${spots.length} spot${spots.length === 1 ? "" : "s"} · ≈${lines} line${lines === 1 ? "" : "s"}` : "nothing to cut";
+    $("cutCount").textContent = spots.length ? `${plural(spots.length, "spot")} · ≈${plural(lines, "line")}` : "nothing to cut";
   }
   $("cutNav").hidden = !cutOn || !r;
   drawAllMarks();

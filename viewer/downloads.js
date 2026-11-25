@@ -1,9 +1,10 @@
 // The toolbar's download menu.
 
-import { $, building, docFile, el, file, isDiff, setStatus, SIGNED_OUT, sleep } from "./page.js";
-import { postJSON, readBody, signInPage, unreachable } from "./net.js";
+import { $, building, docFile, el, file, isDiff, plural, setStatus, SIGNED_OUT, sleep } from "./page.js";
+import { sendJSON } from "./net.js";
 import { behind, buildFailed, buildVersion } from "./build.js";
 import { showMore } from "./toolbar.js";
+import { registerCommands } from "./palette.js";
 
 // Downloads: the PDF as built (notes included); without notes, from an exact build that the server
 // makes on request (live.py start_export; once per build of the document); or that build with the
@@ -63,11 +64,9 @@ async function downloadBuilt(endpoint, built, saveAs, what, done) { // (built: a
       await new Promise((r) => setTimeout(r, 250));
     }
     for (;;) {
-      const r = await postJSON(endpoint, {}).catch(() => null);
-      const e = r ? await readBody(r) : {};
-      if (!r || unreachable(r, e)) return setStatus("download failed: can't reach the preview server", "error");
-      if (signInPage(r, e)) return setStatus(SIGNED_OUT, "error"); // (a proxy's sign-in page, not the server's answer)
-      if (!r.ok && !e.state) return setStatus(`download failed: ${e.error}`, "error"); // (refused: e.g. the access ended)
+      const got = await sendJSON(endpoint, {}), e = got.body;
+      if (got.error === SIGNED_OUT) return setStatus(SIGNED_OUT, "error"); // (a proxy's sign-in page, not the server's answer)
+      if (!got.ok && !e.state) return setStatus(`download failed: ${got.error}`, "error"); // (no answer, or refused: e.g. the access ended)
       if (e.state === "done") {
         saveFile(`${built.endsWith(".pdf") ? `pdf/${encodeURIComponent(built)}` : built}?v=${e.version}`, saveAs);
         return setStatus(`saved ${saveAs} (${done(e)}${buildFailed ? "; of the last build that worked" : ""})`,
@@ -85,17 +84,20 @@ async function downloadBuilt(endpoint, built, saveAs, what, done) { // (built: a
 }
 $("downloadClean").onclick = () => downloadBuilt("export", `${docName()}-export.pdf`, `${docName()}.pdf`, "the PDF without notes",
                                                  () => "without notes");
-const reviewed = (where) => (e) => [`${e.notes} note${e.notes === 1 ? "" : "s"} ${where}`,
+const reviewed = (where) => (e) => [`${plural(e.notes, "note")} ${where}`,
   e.approximate && `${e.approximate} placed by source line`, where === "in the margin" && e.continued && `${e.continued} continued after the paper`]
   .filter(Boolean).join(", ");
 $("downloadReview").onclick = () => downloadBuilt("review", `${docName()}-review.pdf`, `${docName()}-with-margin-notes.pdf`,
   "the PDF with notes in the margin", reviewed("in the margin"));
 $("downloadAnnotated").onclick = () => downloadBuilt("review", `${docName()}-annotated.pdf`, `${docName()}-with-comments.pdf`,
   "the PDF with notes as comments", reviewed("as comments"));
-const plural = (n, what) => `${n} ${what}${n === 1 ? "" : "s"}`;
 const packaged = (e) => [`${plural(e.files, "file")}, ${(e.size / 1e6).toFixed(1)} MB`,
   (e.comments || e.hidden || e.notes) && `${[e.comments && plural(e.comments, "comment"), e.hidden && plural(e.hidden, "hidden block"),
     e.notes && plural(e.notes, "note")].filter(Boolean).join(", ")} taken out`,
   e.same ? "its own build matches the PDF without notes" : `its own build differs from the PDF without notes: ${e.differs}`]
   .filter(Boolean).join("; ");
 $("downloadArxiv").onclick = () => downloadBuilt("arxiv", "arxiv.tar.gz", `${docName()}-arxiv.tar.gz`, "the arXiv package", packaged);
+
+// The palette's commands: each download this user has.
+registerCommands(() => [...$("downloadMenu").querySelectorAll("button")].filter((b) => !b.hidden).map((b) => (
+  { title: `Download: ${b.textContent}`, sub: "Download", icon: "download", run: () => b.click() })));

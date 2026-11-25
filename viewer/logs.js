@@ -2,7 +2,8 @@
 // underline, a mark in the gutter, a card on hover), the build's state in the source pane's status bar, and the drawer
 // under the source (Cmd/Ctrl+Shift+L, or that status) that lists them, or shows the end of the log itself.
 
-import { $, docFile, editorShown, el, isDiff, isPopout } from "./page.js";
+import { $, activatable, docFile, editorShown, el, isDiff, isPopout, plural, rovingTabs, tabKeys } from "./page.js";
+import { getJSON } from "./net.js";
 import { editable, editorAllowed, me } from "./role.js";
 import { addEditorExtension } from "./cm.js";
 import { cmView, ed, openFile, showEditor } from "./editor.js";
@@ -29,14 +30,9 @@ export function noteBuild(info) {
 async function loadLogs(key) {
   logsAsked = key;
   const seq = ++logsSeq;
-  try {
-    const r = await fetch(`logs/${encodeURIComponent(docFile)}`, { cache: "no-store" });
-    const body = r.ok ? await r.json() : null;
-    if (seq !== logsSeq || !body || !Array.isArray(body.errors) || !Array.isArray(body.warnings)) return;
-    [logs, logsKey] = [body, key];
-  } catch {
-    return; // (the next build asks again; opening the drawer too)
-  }
+  const got = await getJSON(`logs/${encodeURIComponent(docFile)}`), body = got.body;
+  if (seq !== logsSeq || !got.ok || !Array.isArray(body.errors) || !Array.isArray(body.warnings)) return; // (the next build asks again; opening the drawer too)
+  [logs, logsKey] = [body, key];
   showBuildState();
   showMarks();
   if (!$("logsDrawer").hidden) showLogs();
@@ -44,7 +40,6 @@ async function loadLogs(key) {
 
 // The status bar's account of the build, from the status poll's answers alone (so that it changes only when the
 // build does), with the warnings once its log has come: building, how long it took, or how many errors it had.
-const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const warningCount = () => logs.warnings.filter((w) => w.severity !== "info").length;
 function showBuildState() {
   const pill = $("buildState");
@@ -66,7 +61,7 @@ function showBuildState() {
 // The drawer: every error and warning, the errors, the warnings (boxes too), or the end of the log as it is. A row
 // with a source file the editor opens goes to its line.
 let filter = "all";
-export function toggleLogs(open = $("logsDrawer").hidden) {
+function toggleLogs(open = $("logsDrawer").hidden) {
   if (open && !allowed()) return;
   $("logsDrawer").hidden = !open;
   $("buildState").setAttribute("aria-expanded", String(open));
@@ -81,7 +76,7 @@ function showLogs() {
   $("logsErrCount").textContent = logs?.errors.length || "";
   $("logsWarnCount").textContent = (logs && warningCount()) || ""; // (as the status bar counts them: boxes aside)
   const boxes = logs ? logs.warnings.length - warningCount() : 0;
-  $("logsWarnCount").parentElement.title = boxes ? `The warnings, and ${boxes} box${boxes === 1 ? "" : "es"} too wide or too loose` : "The warnings";
+  $("logsWarnCount").parentElement.title = boxes ? `The warnings, and ${plural(boxes, "box", "boxes")} too wide or too loose` : "The warnings";
   if (!logs) return body.replaceChildren(el("div", { className: "empty", textContent: "No build log yet." }));
   if (filter === "raw") {
     body.replaceChildren(el("pre", { className: "log-raw", textContent: `${logs.truncated ? "(the end of the log)\n" : ""}${logs.raw || "(the log is empty)"}` }));
@@ -91,11 +86,13 @@ function showLogs() {
   if (!items.length) return body.replaceChildren(el("div", { className: "empty", textContent: filter === "error" ? "No errors." : filter === "warning" ? "No warnings." : "No errors or warnings." }));
   body.replaceChildren(...items.map((d) => {
     const opens = d.file && d.line && editable(d.file);
-    return el("div", { className: `log-row${opens ? " opens" : ""}`, title: opens ? `Open ${d.file}:${d.line}` : "",
-                       onclick: opens ? () => openFile(d.file, d.line) : null },
-              el("span", { className: `log-sev ${d.severity}`, textContent: d.severity === "info" ? "box" : d.severity }),
-              ...(d.file ? [el("span", { className: "log-loc", textContent: d.line ? `${d.file}:${d.line}` : d.file })] : []),
-              el("span", { className: "log-msg", textContent: d.msg }));
+    const row = el("div", { className: `log-row${opens ? " opens" : ""}`, title: opens ? `Open ${d.file}:${d.line}` : "",
+                            onclick: opens ? () => openFile(d.file, d.line) : null },
+                   el("span", { className: `log-sev ${d.severity}`, textContent: d.severity === "info" ? "box" : d.severity }),
+                   ...(d.file ? [el("span", { className: "log-loc", textContent: d.line ? `${d.file}:${d.line}` : d.file })] : []),
+                   el("span", { className: "log-msg", textContent: d.msg }));
+    if (opens) row.setAttribute("role", "button");
+    return opens ? activatable(row, () => openFile(d.file, d.line)) : row;
   }));
 }
 for (const b of $("logsTabs").children) {
@@ -105,9 +102,12 @@ for (const b of $("logsTabs").children) {
       other.classList.toggle("on", other === b);
       other.setAttribute("aria-selected", String(other === b));
     }
+    rovingTabs($("logsTabs"));
     showLogs();
   };
 }
+rovingTabs($("logsTabs"));
+tabKeys($("logsTabs"));
 $("logsClose").replaceChildren(icon("close", 13));
 $("logsClose").onclick = () => toggleLogs(false);
 $("buildState").onclick = () => toggleLogs();

@@ -5,8 +5,8 @@
 // Cmd/Ctrl+Z takes it back. Esc dismisses the card, whatever it shows; asking again, cancelling or opening another file
 // drops an answer still on its way.
 
-import { editorShown, el, setStatus } from "./page.js";
-import { readBody } from "./net.js";
+import { editorShown, el, IS_MAC, setStatus } from "./page.js";
+import { sendJSON } from "./net.js";
 import { me } from "./role.js";
 import { addEditorExtension } from "./cm.js";
 import { cmView, ed } from "./editor.js";
@@ -14,7 +14,6 @@ import { lineHunks } from "./diff.js";
 import { paletteOpen, registerCommands } from "./palette.js";
 
 const SELECTION_LIMIT = 16000, PARAGRAPH_LIMIT = 32000, NOTE_LIMIT = 2000; // (live.py's, in characters)
-const IS_MAC = /^Mac|^iP/.test(navigator.platform);
 const STRUCTURE = /^\s*(%|\\(begin|end|documentclass|usepackage|part|chapter|(sub)*section|(sub)?paragraph)\b)/;
 
 // The card, in the open file's editor state (gone with it when another file opens): {id (its request), file, from, to
@@ -98,19 +97,14 @@ async function ask(range = null, note = "") {
   aborter = new AbortController();
   show({ id, file: ed.path, from: ctx.from, to: ctx.to, original: ctx.selection, note, kind: "loading" });
   cmView.focus(); // (for Esc, also after the palette)
-  let r = null, body = {};
-  try {
-    r = await fetch("agent/revise", { method: "POST", headers: { "Content-Type": "application/json" }, signal: aborter.signal,
-                                      body: JSON.stringify({ selection: ctx.selection, paragraph: ctx.paragraph, note,
-                                                             file: ed.path, line: ctx.line }) });
-    body = await readBody(r);
-  } catch { /* cancelled, or no answer */ }
+  const got = await sendJSON("agent/revise", { selection: ctx.selection, paragraph: ctx.paragraph, note, file: ed.path, line: ctx.line },
+                             { signal: aborter.signal }), body = got.body;
   const now = card();
   if (id !== seq || now?.id !== id) return; // (cancelled, asked again, or another file opened meanwhile)
-  if (r?.ok && typeof body.replacement === "string") {
+  if (got.ok && typeof body.replacement === "string") {
     show({ ...now, kind: "result", replacement: body.replacement, rationale: typeof body.rationale === "string" ? body.rationale : "" });
   } else {
-    show({ ...now, kind: "error", error: body.error || (r ? `the agent did not answer (${r.status})` : "can't reach the preview server") });
+    show({ ...now, kind: "error", error: got.error || `the agent did not answer (${got.status})` });
   }
 }
 // Ask with a note: the card first asks for it.

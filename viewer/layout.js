@@ -65,7 +65,7 @@ export function setLayoutMode(mode, remember = true) {
 // Alone (Source), the pane takes the whole width.
 let editorWidth = +localStorage.getItem("latex-live:editorWidth") || 0;
 const PDF_ROOM = 420, EDITOR_MIN = 300, FRAME = 18; // (FRAME: the workspace's padding and the source pane's grip)
-export function fitEditor(opening = false) {
+function fitEditor(opening = false) {
   if (layoutMode === "source") return editorWidth;
   const gutters = GUTTER * (+wantGutter.right + +wantGutter.left); // (asked for, not shown: so no loop with fitGutters)
   const side = () => ($("side").hidden ? 0 : fitSide() + 6);

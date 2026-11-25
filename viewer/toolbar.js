@@ -1,8 +1,8 @@
 // The top bar and the PDF's bar: their icons, the ⋯ menus with the controls that move into them when a bar runs out of
 // room, the look (the theme, the tint, inverting the PDF), the pop-out window, and the list of shortcuts.
 
-import { $, docFile, el, file, hubBase, isDiff, isPopout, setStatus } from "./page.js";
-import { postJSON } from "./net.js";
+import { $, docFile, el, file, hubBase, IS_MAC, isDiff, isPopout, setStatus } from "./page.js";
+import { sendJSON } from "./net.js";
 import { canComment, editorAllowed, me, opensSources, openWhere } from "./role.js";
 import { icon } from "./icons.js";
 import { onThemeChange, pdfInvert, setPdfInvert, setTheme, setTint, theme, tint, TINTS } from "./theme.js";
@@ -60,31 +60,48 @@ for (const m of menus) m.button.onclick = () => showMenu(m, m.menu.hidden);
 export function revealControl(node) { // (before focusing a control that may be in a menu)
   for (const m of menus) if (m.menu.contains(node)) showMenu(m, true);
 }
-// The shortcuts list (?), with only the rows for what this user can do.
-export function showKeys(open) {
+// The shortcuts list (?), with only the rows for what this user can do: a dialog, which takes the focus while it is
+// open and gives it back when it closes (refocus; not when a click elsewhere closed it, which put the focus there).
+let keysFocus = null;
+export function showKeys(open, refocus = true) {
+  const was = !$("keys").hidden;
   if (open) {
     $("keysComment").hidden = !canComment();
     $("keysEdit").hidden = $("keysSearch").hidden = $("keysFormat").hidden = !editorAllowed() || isPopout;
     $("keysLogs").hidden = !editorAllowed() || isPopout || !me.can.logs;
     $("keysDblclickRow").hidden = isDiff || !opensSources();
     $("keysDblclick").textContent = `open the source line in ${openWhere()}`;
+    $("keysFold").hidden = $("keysLeave").hidden = !editorAllowed() || isPopout;
+    $("keysAgent").hidden = !me.can.agent || isPopout;
+    for (const [id, text] of Object.entries(IS_MAC ? FOLD_KEYS.mac : FOLD_KEYS.other)) $(id).replaceChildren(...text);
   }
   $("keys").hidden = !open;
+  if (open && !was) {
+    keysFocus = document.activeElement;
+    $("keys").querySelector(".close").focus();
+  } else if (!open && was) {
+    if (refocus && keysFocus?.isConnected) keysFocus.focus();
+    keysFocus = null;
+  }
 }
+// The folding keys, as CodeMirror binds them on each platform (its foldKeymap).
+const kbd = (...keys) => keys.flatMap((k, i) => [...(i ? [" "] : []), el("kbd", { textContent: k })]);
+const FOLD_KEYS = { mac: { keysFoldOne: kbd("Cmd", "Alt", "["), keysUnfoldOne: kbd("Cmd", "Alt", "]") },
+                    other: { keysFoldOne: kbd("Ctrl", "Shift", "["), keysUnfoldOne: kbd("Ctrl", "Shift", "]") } };
 $("keysBtn").onclick = () => { showMore(false); showKeys(true); };
 // Sign out (⋯ menu): live.py forgets this browser's session, which is the address's (whatever the port), so every
 // preview there needs its link again; the page then says so (?signed-out=1).
 $("signOut").onclick = async () => {
   showMore(false);
   if (!confirm(`Sign out of latex-live in this browser? Every preview at ${location.hostname} will need its link (with ?t=) again.`)) return;
-  const r = await postJSON("logout", {}).catch(() => null);
-  if (!r || !r.ok) return setStatus(`couldn't sign out (${r ? r.status : "no answer"})`, "error");
+  const got = await sendJSON("logout", {});
+  if (!got.ok) return setStatus(`couldn't sign out: ${got.error}`, "error");
   location.replace(`viewer.html?${new URLSearchParams({ file, "signed-out": "1" })}`);
 };
 $("keys").querySelector(".close").onclick = () => showKeys(false);
 document.addEventListener("mousedown", (e) => { // (not the welcome guide: it closes with its own buttons, or Esc)
   for (const m of menus) if (!m.menu.hidden && !m.menu.contains(e.target) && !m.button.contains(e.target)) showMenu(m, false);
-  if (!$("keys").hidden && !$("keys").contains(e.target)) showKeys(false);
+  if (!$("keys").hidden && !$("keys").contains(e.target)) showKeys(false, false);
   if (!$("fileMenu").hidden && !$("fileMenu").contains(e.target) && !$("filePick").contains(e.target)) $("fileMenu").hidden = true;
 });
 

@@ -1,12 +1,13 @@
 // The change highlights (Delta in the toolbar): the words and figures that changed since the previous build, the last
 // commit, or the last push.
 
-import { $, docFile, file, isDiff, setStatus } from "./page.js";
+import { $, docFile, file, isDiff, plural, setStatus } from "./page.js";
 import { diffWords } from "./diff.js";
 import { assets, docSeq, pageFrame, pdfjsLib, shownVariant } from "./pdfview.js";
 import { pageText } from "./pagetext.js";
 import { reveal } from "./navigation.js";
 import { drawAllMarks, marks } from "./marks.js";
+import { registerCommands } from "./palette.js";
 
 // What changed since the previous build: a word-level diff of the two PDFs' text (robust to
 // reflow), highlighted in green, with deletions as red bars. Replaced on every rebuild.
@@ -45,10 +46,10 @@ function showChanges(oldWords, newWords, figures, against) {
     changeList.push({ page: f.page, rect: f.rect });
   }
   changeList.sort((a, b) => a.page - b.page || a.rect[1] - b.rect[1]);
-  const figs = figures.length ? `${figures.length} figure${figures.length === 1 ? "" : "s"}` : "";
+  const figs = figures.length ? plural(figures.length, "figure") : "";
   // In a git checkout the group stays, to switch baselines (and to say there are no changes).
   $("changes").hidden = !changeList.length && !headInfo;
-  $("changeCount").textContent = [texts || !figs ? `${texts} change${texts === 1 ? "" : "s"}` : "", figs].filter(Boolean).join(" · ");
+  $("changeCount").textContent = [texts || !figs ? plural(texts, "change") : "", figs].filter(Boolean).join(" · ");
   drawAllMarks();
 }
 
@@ -149,6 +150,9 @@ export function toggleChanges() {
   updateChanges();
 }
 $("changesBtn").onclick = toggleChanges;
+registerCommands(() => (isDiff ? [] : [
+  { title: changesOn ? "Change highlights off" : "Change highlights on", sub: "Changes (d)", icon: "diff", run: toggleChanges },
+  ...(changesOn && changeList.length ? [{ title: "Next change", sub: "Changes (.)", icon: "diff", run: () => goToChange(1) }] : [])]));
 $("changeBase").onclick = () => { // push (when there is a pushed commit), head, build
   do changeBase = BASES[(BASES.indexOf(baseKind()) + 1) % BASES.length];
   while (changeBase === "push" && !pushInfo);

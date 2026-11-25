@@ -1,7 +1,7 @@
 // The source pane's file picker.
 
 import { $, el } from "./page.js";
-import { cmView, ed, openFile, setSrcFiles, srcFiles } from "./editor.js";
+import { cmView, ed, fetchFiles, openFile, srcFiles } from "./editor.js";
 
 // The file picker: the editable sources (live.py /files), grouped by folder, with a filter.
 async function showFileMenu(open) {
@@ -10,9 +10,8 @@ async function showFileMenu(open) {
   $("fileFilter").value = "";
   renderFileList();
   $("fileFilter").focus();
-  const r = await fetch("files", { cache: "no-store" }).catch(() => null);
-  if (r?.ok) setSrcFiles(await r.json());
-  if (!$("fileMenu").hidden) renderFileList(r?.ok ? null : "The list of files did not load.");
+  const got = await fetchFiles();
+  if (!$("fileMenu").hidden) renderFileList(got.ok ? null : `The list of files did not load: ${got.error}`);
 }
 function renderFileList(problem = null) {
   const query = $("fileFilter").value.trim().toLowerCase();
