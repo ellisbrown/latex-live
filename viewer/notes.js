@@ -8,6 +8,7 @@ import { columnAt, columnMid, norm, textLines } from "./pagetext.js";
 import { openSource, showSource } from "./links.js";
 import { noteTools } from "./comments.js";
 import { setNoteMacros } from "./cm.js";
+import { getJSON } from "./net.js";
 
 // Notes (\todo and per-author note macros) from live.py, in reading order. Click one to see
 // it in the PDF; click its file:line to open it in the editor.
@@ -16,8 +17,14 @@ const AUTHOR_COLORS = { TODO: "#ef5350", EB: "#26a69a", CH: "#4fc3f7", SX: "#bca
 const authorColor = (a) => AUTHOR_COLORS[a] || `hsl(${[...a].reduce((h, c) => h * 31 + c.charCodeAt(0), 7) % 360} 60% 70%)`;
 const hiddenAuthors = new Set(JSON.parse(localStorage.getItem(`latex-live:${hubBase}hiddenAuthors`) || "[]"));
 let noteList = [];
+// A list of notes that live.py sends (getJSON); a failure throws, which keeps what is shown (the callers carry on).
+async function listOf(path) {
+  const got = await getJSON(path);
+  if (!got.ok || !Array.isArray(got.body)) throw new Error(got.error || "not a list of notes");
+  return got.body;
+}
 export async function loadNotes() {
-  noteList = await (await fetch(`notes/${encodeURIComponent(file)}`)).json();
+  noteList = await listOf(`notes/${encodeURIComponent(file)}`);
   document.querySelector("#tabs [data-tab=notes] .n").textContent = noteList.length || "";
   renderNotes();
   if (editorAllowed()) markNotes();
@@ -97,7 +104,7 @@ $("marginBtn").onclick = () => {
 };
 
 export async function loadMargin(d) {
-  const notes = await (await fetch(`margin/${encodeURIComponent(cleanFile)}`)).json();
+  const notes = await listOf(`margin/${encodeURIComponent(cleanFile)}`);
   const anchors = new Map();
   for (const n of notes) {
     const a = await anchorNote(d, n);

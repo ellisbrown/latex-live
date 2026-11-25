@@ -35,7 +35,7 @@ export const unreachable = (r, body) => (r.status >= 502 && r.status <= 504 && !
 // answer.
 export const getJSON = (path, { signal } = {}) => answer(fetch(path, { cache: "no-store", signal }));
 export const sendJSON = (path, body, { signal } = {}) => answer(postJSON(path, body, false, signal));
-const NO_ANSWER = "can't reach the preview server";
+export const NO_ANSWER = "can't reach the preview server";
 async function answer(sent) {
   let r;
   try { r = await sent; } catch { return { ok: false, status: 0, body: {}, error: NO_ANSWER }; }
