@@ -116,6 +116,9 @@ def docs_checks():
     contributing = read_text(os.path.join(HERE, "CONTRIBUTING.md"))
     if not any("LATEX_LIVE_USERS" in p for p in settings_problems(docs="", contributing=contributing)) \
             or not any("LATEX_LIVE_RUN" in p for p in settings_problems(contributing="")) \
+            or not any("LATEX_LIVE_GONE" in p for p in settings_problems(docs="LATEX_LIVE_GONE", contributing=contributing)) \
+            or not any("['nohub']" in p for p in module_map_problems("latexlive", "### The server (`latexlive/`)",
+                                                                   contributing.replace("| `hub` |", "| `hub`, `nohub` |"))) \
             or not any("lacks ['hub']" in p for p in module_map_problems("latexlive", "### The server (`latexlive/`)",
                                                                        contributing.replace("| `hub` |", "| hub |"))):
         problems.append("the docs' guards miss a setting or a module left out (settings_problems, module_map_problems)")
@@ -131,9 +134,10 @@ def module_map_problems(package, heading, contributing=None):
     missing, a name that is no module, or a module listed after one that it imports."""
     text = contributing if contributing is not None else read_text(os.path.join(HERE, "CONTRIBUTING.md"))
     modules = {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(HERE, package, "*.py"))} - {"__init__"}
-    table = re.search(r"^\|.*(?:\n\|.*)*", text.split(heading, 1)[1], re.M) if heading in text else None  # (its first table)
+    section = re.split(r"\n#{2,3} ", text.split(heading, 1)[1], maxsplit=1)[0] if heading in text else ""
+    table = re.search(r"^\|.*(?:\n\|.*)*", section, re.M)  # (its first table)
     rows = re.findall(r"^\|[^|\n]*\|([^|\n]*)\|", table.group(0) if table else "", re.M)
-    order = list(dict.fromkeys(re.findall(r"`([^`]+)`", re.sub(r"\([^()]*\)", "", "".join(rows)))))
+    order = list(dict.fromkeys(re.findall(r"`([^`]+)`", re.sub(r"\([^()]*\)", "", "\n".join(rows)))))
     if not order:
         return [f"CONTRIBUTING.md has no table of modules under {heading!r}"]
     parts = re.split(r"from the bottom up[^:]*:", read_text(os.path.join(HERE, package, "__init__.py")), maxsplit=1, flags=re.I)
@@ -150,6 +154,10 @@ def module_map_problems(package, heading, contributing=None):
         for node in ast.walk(ast.parse(read_text(os.path.join(HERE, package, f"{name}.py")))):
             if isinstance(node, ast.ImportFrom) and node.level == 1:
                 deps |= {node.module.split(".")[0]} if node.module else {a.name for a in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and (node.module or "").split(".")[0] == package:
+                deps |= {node.module.split(".")[1]} if "." in node.module else {a.name for a in node.names}
+            elif isinstance(node, ast.Import):
+                deps |= {a.name.split(".")[1] for a in node.names if a.name.startswith(package + ".")}
         later = sorted(d for d in deps if d in order[i + 1:])
         if later:
             problems.append(f"{package}/{name}.py imports {later}, listed after it in CONTRIBUTING.md")
@@ -169,7 +177,7 @@ def settings_problems(docs=None, contributing=None):
     used |= {n for path in glob.glob(os.path.join(HERE, "checks", "*.py"))
              for n in re.findall(r"""environ(?:\.get\(|\[)\s*["'](LATEX_LIVE_CHECK_[A-Z0-9_]+)""", read_text(path))}
     if docs is None:
-        docs = "".join(read_text(path) for path in glob.glob(os.path.join(HERE, "docs", "*.md")))
+        docs = "\n".join(read_text(path) for path in glob.glob(os.path.join(HERE, "docs", "*.md")))
     text = contributing if contributing is not None else read_text(os.path.join(HERE, "CONTRIBUTING.md"))
     heading = "### Settings that only latex-live sets"
     internal = set(name_re.findall(re.split(r"\n#{2,3} ", text.split(heading, 1)[1], maxsplit=1)[0])) if heading in text else set()
