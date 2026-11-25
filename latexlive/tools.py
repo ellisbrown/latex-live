@@ -17,6 +17,7 @@ import time
 
 from . import config
 from .files import redact_root
+from .standby import remove_containers
 
 
 def image_pulled():
@@ -236,11 +237,5 @@ def stop_containers(run=None, kind=None):
     instance stops its process group) leaves the container created, which nothing else would remove."""
     if not config.SHARED:
         return
-    filters = ["--filter", f"label=latex-live.instance={config.INSTANCE}"]
-    filters += ["--filter", f"label=latex-live.run={run}"] if run else ["--filter", f"label=latex-live.kind={kind}"] if kind else []
-    try:
-        ids = subprocess.run(["podman", "ps", "-aq", *filters], capture_output=True, text=True, timeout=30).stdout.split()
-        if ids:
-            subprocess.run(["podman", "rm", "-f", "-t", "0", *ids], capture_output=True, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        pass
+    remove_containers(f"latex-live.instance={config.INSTANCE}",
+                      *([f"latex-live.run={run}"] if run else [f"latex-live.kind={kind}"] if kind else []))

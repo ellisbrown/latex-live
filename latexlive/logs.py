@@ -9,8 +9,8 @@ from .build import build_status
 from .files import job_file, open_output, redact_root, redactor, within
 from .sources import editable_real
 
-PARSE_LIMIT = 4 << 20  # (the most of the log's end that is read: the paper decides how much TeX writes)
-RAW_TAIL = 64 << 10  # (the most of that sent as it is)
+PARSE_LIMIT = 4_000_000  # (the most of the log's end that is read: the paper decides how much TeX writes)
+RAW_TAIL = 64_000  # (the most of that sent as it is)
 MAX_DIAG = 250  # (errors, warnings, and boxes, each)
 RESOLVE_LIMIT = 2000  # (the most names of files one parse looks up: a paper reads far fewer)
 STACK_LIMIT = 1000  # (the deepest file stack kept: TeX's own is far shallower)

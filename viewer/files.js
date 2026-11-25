@@ -60,7 +60,7 @@ onPresence((byFile) => {
 });
 
 const folderOf = (path) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "");
-const size = (n) => (n < 1024 ? `${n} B` : n < 1 << 20 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / (1 << 20)).toFixed(1)} MB`);
+const size = (n) => (n < 1000 ? `${n} B` : n < 1e6 ? `${Math.max(1, Math.round(n / 1000))} KB` : `${(n / 1e6).toFixed(1)} MB`); // (decimal, as the server's limits)
 
 function drawTree() {
   if (panel.hidden && drawn) return; // (drawn when it shows again: refresh)

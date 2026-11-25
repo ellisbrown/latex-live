@@ -9,12 +9,12 @@ import json
 import os
 import re
 import signal
-import subprocess
 import time
 import urllib.error
 import urllib.request
 
 from . import config
+from .standby import command_line
 
 
 def take_lock(doc):
@@ -60,7 +60,7 @@ def is_live_instance(pid):
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             argv = f.read().decode(errors="replace").split("\0")[:-1]
     except OSError:  # macOS: ps prints it joined, unquoted (a path may have spaces)
-        command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        command = command_line(pid).strip()
         return bool(re.match(r"(?i)\S*python[0-9.]*\s+(-(?![cm]\b)\S+\s+)*(?!-)((?!\.py\s).)*?(^|/)live\.py(\s|$)", command))
     return is_live_argv(argv)
 

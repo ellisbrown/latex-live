@@ -113,7 +113,7 @@ def watch_build_size(server):
         if size is None or size > config.BUILD_LIMIT:
             server.shared["overflow"] = time.time_ns()
             stop_containers()
-            print(f"=== latex-live: {config.BUILD}/ took more than {config.BUILD_LIMIT >> 20} MB (LATEX_LIVE_BUILD_LIMIT); stopped the"
+            print(f"=== latex-live: {config.BUILD}/ took more than {config.BUILD_LIMIT // 1_000_000} MB (LATEX_LIVE_BUILD_LIMIT); stopped the"
                   " build and emptied it", flush=True)
             for name in os.listdir(root):
                 path = os.path.join(root, name)

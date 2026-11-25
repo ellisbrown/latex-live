@@ -268,7 +268,7 @@ def read_output(paper_root, path, encoding=None):
 
 def too_big(name, limit, what=""):
     """What a download says when a file of TeX's output is past its limit (read_output, run_probe, synctex_pages)."""
-    return f"{name} is over {limit >> 20} MB{what}, more than the downloads read (does the paper write to it in a loop?)"
+    return f"{name} is over {limit // 1_000_000} MB{what}, more than the downloads read (does the paper write to it in a loop?)"
 
 
 def read_build(path, limit=config.READ_LIMIT):

@@ -177,7 +177,7 @@ def taken_key(keys, entries):
 # (holding its slot meanwhile); the check against Crossref, in the background, waits.
 HOSTS = {"export.arxiv.org": 3.0, "api.crossref.org": 1.0}
 NET_SLOTS = threading.BoundedSemaphore(2)
-NET_TIMEOUT, NET_READ, NET_WAIT = 8, 1 << 20, 3.0
+NET_TIMEOUT, NET_READ, NET_WAIT = 8, 1_000_000, 3.0
 net_lock, net_next = threading.Lock(), {}  # (host: when its next request may go, time.monotonic)
 
 

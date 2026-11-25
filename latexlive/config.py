@@ -159,10 +159,10 @@ else:
     COMMIT_IDLE = 60.0
 BUILD_LIMIT = os.environ.get("LATEX_LIVE_BUILD_LIMIT", "").strip() or "2048"  # (MB: watch_build_size)
 if re.fullmatch(r"[0-9]{1,7}", BUILD_LIMIT) and int(BUILD_LIMIT) > 0:
-    BUILD_LIMIT = int(BUILD_LIMIT) << 20
+    BUILD_LIMIT = int(BUILD_LIMIT) * 1_000_000
 else:
     SHARED_PROBLEMS.append(f"LATEX_LIVE_BUILD_LIMIT must be a number of MB, not {BUILD_LIMIT!r}")
-    BUILD_LIMIT = 2048 << 20
+    BUILD_LIMIT = 2048 * 1_000_000
 INSTANCE = f"{os.getpid()}-{secrets.token_hex(4)}"  # (tex-exec labels a shared instance's containers with it)
 
 
@@ -238,12 +238,13 @@ if any(name.startswith("LATEX_LIVE_") for name in AGENT_ENV):
           file=sys.stderr, flush=True)
 
 
+# Sizes are in decimal units throughout (a MB is 1,000,000 bytes), as the docs and the viewer give them.
 # What the server reads of a file that TeX (or BibTeX, Biber) wrote: the paper's TeX decides how big it is,
 # so every read is bounded. READ_LIMIT for one file (an .aux, an .fls), AUX_BUDGET for the .aux files one
 # reads (\@input), JSON_LIMIT for a small JSON file, RECORD_LIMIT for the records parsed from one.
-READ_LIMIT, AUX_BUDGET, JSON_LIMIT, RECORD_LIMIT = 16 << 20, 64 << 20, 1 << 20, 2_000_000
+READ_LIMIT, AUX_BUDGET, JSON_LIMIT, RECORD_LIMIT = 16_000_000, 64_000_000, 1_000_000, 2_000_000
 # The most of TeX's output that the downloads read: of a log, an .aux or a .bbl, which they read whole, and of a
 # SyncTeX file, uncompressed (synctex_pages, whose records take about ten times that in memory). The paper decides
 # how much TeX writes (in shared mode, an editor's paper): past these, a download fails and says so, rather than
 # the server's memory growing with it. A 50-page paper's log is a few hundred KB, and its SyncTeX 3 MB.
-OUTPUT_LIMIT, SYNCTEX_LIMIT = 64 << 20, 32 << 20
+OUTPUT_LIMIT, SYNCTEX_LIMIT = 64_000_000, 32_000_000

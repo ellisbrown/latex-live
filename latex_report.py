@@ -48,7 +48,7 @@ MULTI_RE = re.compile(r"Label [`'](.+?)' multiply defined")
 COMMENT_RE = re.compile(r"(?<!\\)%.*")
 BOX_RE = re.compile(r"^Overfull \\hbox \((.+?)\) (?:in paragraph|in alignment|detected) at lines? (?:\d+--)?(\d+)")
 FILE_TOKEN_RE = re.compile(r"[^\s()]+")
-LOG_LIMIT = 64 << 20  # (the most of a log read: the paper decides how much TeX writes)
+LOG_LIMIT = 64_000_000  # (the most of a log read: the paper decides how much TeX writes)
 
 
 def note_time(root, event, detail="", when=None):
@@ -302,7 +302,7 @@ def start_notes_free_build(root, doc):
     try:
         with open(os.path.join(out, "pid")) as f:
             pid = int(f.read())
-        command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+        command = standby_module().command_line(pid)
         if ("--notes-free" in command or "--early" in command) and f" {doc} " in f" {command.strip()} ":  # (an early pass kept: run_early)
             os.killpg(pid, signal.SIGTERM)
     except (OSError, ValueError):
@@ -442,14 +442,8 @@ def stop_early(early):
                 time.sleep(0.01)
             if not group_alive(pid):
                 break
-    if early.get("label") and not early.get("texDone") and shutil.which("podman"):  # (its TeX run's container, which may outlive its podman client)
-        try:
-            ids = subprocess.run(["podman", "ps", "-aq", "--filter", f"label=latex-live.early={early['label']}"], capture_output=True,
-                                 text=True, timeout=30).stdout.split()
-            if ids:
-                subprocess.run(["podman", "rm", "-f", "-t", "0", *ids], capture_output=True, timeout=60)
-        except (OSError, subprocess.SubprocessError):
-            pass
+    if early.get("label") and not early.get("texDone"):  # (its TeX run's container, which may outlive its podman client)
+        standby_module().remove_containers(f"latex-live.early={early['label']}")
     if isinstance(pid, int) and os.path.isdir(os.path.join(BUILD, "standby")):
         standby_module().stop_taken(BUILD, pid)  # (the warm standby it ran from, and its container: notes_free_pass)
     out, stash = os.path.join(BUILD, "clean"), os.path.join(EARLY, "stash")
@@ -620,7 +614,7 @@ def running_notes_free(doc, pid=None):
         if pid is None:
             with open(os.path.join(BUILD, "clean", "pid")) as f:
                 pid = int(f.read())
-        command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+        command = standby_module().command_line(pid)
     except (OSError, ValueError):
         return False
     return ("--notes-free" in command or "--early" in command) and f" {doc} " in f" {command.strip()} "
