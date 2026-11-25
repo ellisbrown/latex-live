@@ -3,7 +3,7 @@
 // that the main window shows in the PDF, and has the main window open those double-clicked in it.
 
 import { $, file, HOLD, isDiff, isPopout, setStatus } from "./page.js";
-import { postJSON, readBody } from "./net.js";
+import { getJSON, readBody, sendJSON } from "./net.js";
 import { canOpenFile, editable, editorAllowed, me, opensInBrowser, opensSources } from "./role.js";
 import { container, eventBus, pageFrame, pagesReady, shownVariant, viewer } from "./pdfview.js";
 import { askWindows, layoutMode, onWindowMessage, tellWindows } from "./layout.js";
@@ -128,12 +128,11 @@ export function showForward(t) {
 const cleanParam = () => (shownVariant === "clean" ? { clean: 1 } : {}); // SyncTeX of the notes-free build
 export async function showSource(file, line, openIfMissing = false) {
   const elsewhere = isPopout ? null : askWindows({ kind: "showSource", file, line });
-  const r = await fetch(`forward?${new URLSearchParams({ file, line, ...cleanParam() })}`);
-  const body = await r.json().catch(() => ({ error: `${file}:${line} is not in the PDF (${r.status})` }));
-  if (r.ok && layoutMode === "source" && !(await elsewhere)) await showEditor(true, { mode: "split", focus: false });
-  if (r.ok) return showForward(body);
+  const got = await getJSON(`forward?${new URLSearchParams({ file, line, ...cleanParam() })}`);
+  if (got.ok && layoutMode === "source" && !(await elsewhere)) await showEditor(true, { mode: "split", focus: false });
+  if (got.ok) return showForward(got.body);
   if (openIfMissing && canOpenFile(file)) return openSource(file, line);
-  setStatus(body.error, "error");
+  setStatus(got.error || `${file}:${line} is not in the PDF (${got.status})`, "error");
 }
 
 // Open a source line: in the source pane beside the PDF when that is open (for a collaborator who
@@ -148,10 +147,10 @@ export async function openSource(file, line, column = 0) {
   if (!me.can.openHost) return setStatus(`${file} can't be opened here`, "error");
   if (hostFailed !== null && !isPopout && editorAllowed() && editable(file)) return inPane(file, line, column); // (said once)
   try {
-    const r = me.legacy ? await fetch(`open?${new URLSearchParams({ file, line })}`)
-                        : await postJSON("open", { file, line, ...(column ? { column } : {}) });
-    if (r.ok) return;
-    const why = (await readBody(r)).error; // e.g. latex-live is not running in a VS Code terminal
+    const got = me.legacy ? await getJSON(`open?${new URLSearchParams({ file, line })}`)
+                          : await sendJSON("open", { file, line, ...(column ? { column } : {}) });
+    if (got.ok) return;
+    const why = got.error; // e.g. latex-live is not running in a VS Code terminal
     if (!editorAllowed() || !editable(file)) return setStatus(why, "error");
     if (!isPopout) hostFailed = why;
     paneSaying(() => inPane(file, line, column), `${file}:${line} is in the source pane (VS Code did not open: ${why})`, true);

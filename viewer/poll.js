@@ -20,11 +20,12 @@ import { fillSectionPages, renderOutline } from "./outline.js";
 import { loadMargin, loadNotes, marginOn, resetMargin, showMarginButton } from "./notes.js";
 import { updateCut } from "./cut.js";
 import { baseKind, changesOn, setBaselines, trackDocument, updateChanges, wordsPromise } from "./changes.js";
-import { refreshTab } from "./sidebar.js";
+import { noteHead, refreshTab } from "./sidebar.js";
 import { showDiffInfo } from "./compare.js";
 import { openDoc } from "./docs.js";
 import { noteBuild } from "./logs.js";
 import { showPresence } from "./presence.js";
+import { registerCommands } from "./palette.js";
 
 // Which build to show: "notes" (the live build) or "clean" (the notes-free build, when there is one).
 let view = localStorage.getItem("latex-live:view") === "notes" ? "notes" : "clean"; // notes-free unless chosen otherwise
@@ -37,13 +38,17 @@ function showNotesButton() {
   b.title = view === "notes" ? "Showing the inline notes; click to show the notes-free build (what you would submit)"
                              : "Showing the notes-free build; click to show the inline notes";
 }
-$("notesView").onclick = () => {
+function toggleNotesView() {
   view = view === "notes" ? "clean" : "notes";
   localStorage.setItem("latex-live:view", view);
   showNotesButton();
   poll();
-};
+}
+$("notesView").onclick = toggleNotesView;
 showNotesButton();
+registerCommands(() => ($("notesView").hidden ? [] : [
+  { title: view === "notes" ? "Notes: off (the notes-free build, as submitted)" : "Notes: on (the notes in the text)", sub: "PDF", icon: "notes",
+    run: toggleNotesView }]));
 
 let loading = false;
 let baselineAsked = 0; // (when this tab last asked for a baseline: POST /baseline)
@@ -190,6 +195,7 @@ export async function poll() {
     if (!info.version) return info.building || liveStatus(`waiting for ${file}…`);
     setBuildVersion(info.version);
     setBaselines(info.head || null, info.push || null);
+    noteHead(info.head?.sha); // (the History tab follows new commits)
     if (me.shared && (against === "head" || against === "push") && info[against]?.state === "waiting" && Date.now() - baselineAsked > 3000) {
       baselineAsked = Date.now(); // (in shared mode a GET builds nothing: the baseline is asked for with a POST)
       postJSON("baseline", { kind: against }).catch(() => {});

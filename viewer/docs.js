@@ -1,7 +1,7 @@
 // The document menu.
 
 import { $, docFile, el, hubBase, isDiff, isPopout, setStatus } from "./page.js";
-import { postJSON } from "./net.js";
+import { getJSON, sendJSON } from "./net.js";
 import { me } from "./role.js";
 import { ed, flushSource } from "./editor.js";
 
@@ -31,8 +31,11 @@ function viewerOf(i) {
                          : `${location.protocol}//${location.hostname}:${i.port}/viewer.html?${query}`;
 }
 export async function loadDocs() {
-  const { doc: building, docs } = await (await fetch("docs", { signal: AbortSignal.timeout(10000) })).json();
-  const { self, instances } = await (await fetch("instances", { signal: AbortSignal.timeout(10000) })).json().catch(() => ({ instances: [] }));
+  const got = await getJSON("docs", { signal: AbortSignal.timeout(10000) });
+  if (!got.ok || !Array.isArray(got.body.docs)) throw new Error(got.error || "no documents in the answer"); // (start and its timer ignore it)
+  const { doc: building, docs } = got.body;
+  const listed = await getJSON("instances", { signal: AbortSignal.timeout(10000) });
+  const { self, instances } = listed.ok && Array.isArray(listed.body.instances) ? listed.body : { instances: [] };
   const others = otherPreviews = instances.filter((i) => i.pid !== self);
   const pick = $("docPick");
   pick.replaceChildren(...docs.map((d) => el("option", { value: d, textContent: `${d}.tex`, selected: `${d}.pdf` === docFile })));
@@ -53,13 +56,13 @@ $("docPick").onchange = async (e) => {
   }
   if (value.startsWith("open:")) return (location.href = viewerOf(otherPreviews[+value.slice(5)]));
   setStatus(`switching to ${value}.tex…`, "busy");
-  const r = me.legacy ? await fetch(`switch?${new URLSearchParams({ doc: value })}`) : await postJSON("switch", { doc: value });
-  const body = await r.json().catch(() => ({ error: `switch failed (${r.status})` }));
-  if (r.ok) return openDoc(`${value}.pdf`);
+  const got = me.legacy ? await getJSON(`switch?${new URLSearchParams({ doc: value })}`) : await sendJSON("switch", { doc: value });
+  const body = got.body;
+  if (got.ok) return openDoc(`${value}.pdf`);
   if (body.port) { // (another instance builds it: its viewer, through the hub unless it predates it)
     const other = otherPreviews.find((i) => i.port === body.port);
     const id = other ? other.id : hubBase && decodeURIComponent(hubBase.split("/")[2]); // (not listed yet: the same paper, so this one's id)
     return (location.href = viewerOf({ port: body.port, doc: value, id }));
   }
-  setStatus(body.error, "error");
+  setStatus(`switch failed: ${got.error}`, "error");
 };

@@ -257,7 +257,7 @@ function closingBrace(text, from) {
 // What the source pane completes and shows in its cards: live.py /completions ({labels, labelContext, keys, figures}),
 // asked again when what it said is more than 5 s old.
 let known = null; // ({at, promise}: the last answer)
-export function completionData() {
+function completionData() {
   if (!known || performance.now() - known.at > 5000) {
     const none = { labels: [], labelContext: {}, keys: [], figures: [] };
     known = { at: performance.now(), promise: fetch("completions", { cache: "no-store" })

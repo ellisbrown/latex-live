@@ -1,6 +1,6 @@
 // The keyboard shortcuts.
 
-import { $, editorShown, isDiff, isPopout, setStatus } from "./page.js";
+import { $, editorShown, IS_MAC, isDiff, isPopout, keepFocusIn, setStatus } from "./page.js";
 import { canComment, editorAllowed, isCollaborator, me, notSetUp, ownerName } from "./role.js";
 import { viewer } from "./pdfview.js";
 import { find } from "./search.js";
@@ -9,7 +9,7 @@ import { ahead, back, travel } from "./navigation.js";
 import { ed, saveSource, showEditor } from "./editor.js";
 import { revealControl, showKeys, showMore } from "./toolbar.js";
 import { showDownloads } from "./downloads.js";
-import { keepFocusIn, showWelcome } from "./welcome.js";
+import { showWelcome } from "./welcome.js";
 import { closeNotePop, startComment } from "./comments.js";
 import { goToChange, toggleChanges } from "./changes.js";
 import { closePalette, openPalette, paletteOpen } from "./palette.js";
@@ -18,7 +18,6 @@ import { showLogsKey } from "./logs.js";
 // The viewer's own shortcuts with Cmd (on a Mac) or Ctrl (elsewhere), which also work in the source pane, unless the
 // editor took the key first (on a Mac, Ctrl+K there deletes to the end of the line): [key, shift, what it does (false:
 // nothing for this user, and the key goes on)].
-const IS_MAC = /^Mac|^iP/.test(navigator.platform);
 const APP_KEYS = [["k", false, () => openPalette("go")], ["f", true, () => editorAllowed() && !isPopout && openPalette("search")],
                   ["l", true, showLogsKey]]; // (in the source, Cmd/Ctrl+Shift+L with text selected selects its other matches)
 
@@ -31,11 +30,17 @@ window.addEventListener("keydown", (e) => {
     else if (e.key === "Tab" && !e.defaultPrevented) keepFocusIn($("welcome"), e); // (not a Tab the source pane took, to indent)
     return;
   }
+  if (!$("keys").hidden && (e.key === "Tab" || e.key === "Escape")) { // (the shortcuts' list: Tab stays in it, Esc closes it)
+    if (e.key === "Tab") keepFocusIn($("keys"), e);
+    else showKeys(false);
+    return;
+  }
   const appKey = (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.altKey && !e.defaultPrevented &&
                  APP_KEYS.find(([key, shift]) => e.key.toLowerCase() === key && e.shiftKey === shift);
   if (appKey && appKey[2]() !== false) return void e.preventDefault();
-  if (paletteOpen()) { // (its own keys, in its box; Esc also from elsewhere)
+  if (paletteOpen()) { // (its own keys, in its box; Esc also from elsewhere, and Tab stays in it)
     if (e.key === "Escape") closePalette();
+    else if (e.key === "Tab") keepFocusIn($("palette"), e);
     return;
   }
   if (e.target.closest?.("#editorPane")) { // (keys typed in the source pane are the editor's: c, d, Cmd+F, ...)
@@ -51,7 +56,7 @@ window.addEventListener("keydown", (e) => {
   else if (typing(e.target)) return; // (keys typed in a text box or a menu are its own: word-wise cursor keys, BibTeX's d and e)
   else if ((e.altKey && e.key === "ArrowLeft") || (e.metaKey && e.key === "[")) { e.preventDefault(); travel(back, ahead); }
   else if ((e.altKey && e.key === "ArrowRight") || (e.metaKey && e.key === "]")) { e.preventDefault(); travel(ahead, back); }
-  else if (e.key === "Escape") { hidePreview(); $("comparePanel").hidden = true; closeNotePop(); showMore(false); showKeys(false); showDownloads(false); }
+  else if (e.key === "Escape") { hidePreview(); $("comparePanel").hidden = true; closeNotePop(); showMore(false); showDownloads(false); }
   else if (!mod && !e.altKey && e.key === "?") { e.preventDefault(); showKeys($("keys").hidden); }
   else if (!mod && !e.altKey && e.key === "c") {
     if (!$("commentBtn").hidden) { e.preventDefault(); startComment(); }

@@ -272,6 +272,11 @@ the arXiv package, which holds every source file, is the owner's.
 
 ## The sidebar
 
+Each tab refreshes when it opens and after each build; Checks, Refs, Files
+and History also have a refresh button (↻) in their top bar. Files looks
+again every 10 seconds while it shows, and History when a new commit comes.
+Where the tabs don't fit with their names, they show their icons alone.
+
 - **Outline:** numbered as in the paper (appendix letters too), with pages per
   section.
 - **Pages:** thumbnails, with pages over the limit shaded.
@@ -365,8 +370,9 @@ The Checks tab of the sidebar lists, each as ok, info, warning or failure:
 ## The palette
 
 Cmd/Ctrl+K (or Go to… in the top bar) opens a box that goes to a source file,
-a heading of the outline, or a command (the theme, the layout, rebuilding,
-citing or adding a reference…);
+a heading of the outline, or a command (the theme, the layout, the sidebar and
+its tabs, the change highlights, Notes on or off, the downloads, Compare,
+rebuilding, citing or adding a reference…);
 type to narrow it down, or start with `>` for the commands alone. Editors also
 search the text of every source file in it (Cmd/Ctrl+Shift+F, or Search): each
 match opens its file at that spot. Aa matches case, and `.*` takes the text as
@@ -375,13 +381,18 @@ typed).
 
 ## Keyboard shortcuts
 
-`?` in the viewer lists the ones your role can use.
+`?` in the viewer lists the ones your role can use. The tabs of the sidebar,
+the source pane and the build log are one stop for Tab each: the arrow keys
+move along them, and Enter opens one (Delete closes a file's tab). Rows of the
+Files tab and the build log open with Enter, and a file's row shows its
+buttons while it has the focus.
 
 | Key | Does |
 | --- | --- |
 | Cmd/Ctrl K | The [palette](#the-palette): go to a file, a heading or a command |
 | Cmd/Ctrl Shift F | Search the text of every source file (editors) |
 | Cmd/Ctrl F | Search; Enter / Shift Enter for the next / previous match, Esc to clear |
+| Cmd/Ctrl G / Shift Cmd/Ctrl G | Next / previous match of the search |
 | Ctrl + / Ctrl − | Zoom in / out |
 | Ctrl 0 | Fit width |
 | Alt ← / Alt → (or Cmd [ / Cmd ]) | Back / forward after a link |
@@ -390,6 +401,9 @@ typed).
 | `c` | Comment on the selected text |
 | `e` | Split or PDF: the source pane beside the PDF, or not (Cmd/Ctrl S there saves at once) |
 | Cmd/Ctrl B, I, / | In the source pane: bold, italic, comment out or back in |
+| Ctrl Shift [ / ] (Cmd Alt [ / ] on a Mac) | In the source pane: fold / unfold at the cursor; Ctrl Alt [ / ] folds or unfolds all |
+| Esc, then Tab | Leave the source pane for the controls after it (Tab alone indents) |
+| Cmd/Ctrl Enter, Esc | On the agent's revision: accept it, dismiss it |
 | Cmd/Ctrl Shift L | The build log under the source (editors; in the source pane, with no text selected) |
 | Double-click | Open the source line |
 | `?` | The list of shortcuts |

@@ -2,17 +2,17 @@
 // command; and, for editors, search the text of every source file (Cmd/Ctrl+Shift+F). Other parts of the viewer add
 // their commands (registerCommands).
 
-import { $, editorShown, el, isPopout } from "./page.js";
+import { $, editorShown, el, IS_MAC, isPopout } from "./page.js";
+import { getJSON } from "./net.js";
 import { editorAllowed, me } from "./role.js";
 import { rebuild } from "./build.js";
-import { cmView, ed, setSrcFiles, showEditor, srcFiles } from "./editor.js";
+import { cmView, ed, fetchFiles, showEditor, srcFiles } from "./editor.js";
 import { toggleFoldAll } from "./cm.js";
 import { outlineHeadings } from "./outline.js";
 import { showKeys } from "./toolbar.js";
 import { pdfInvert, setPdfInvert, setTheme, setTint, theme, TINTS } from "./theme.js";
 import { icon } from "./icons.js";
 
-const IS_MAC = /^Mac|^iP/.test(navigator.platform);
 $("paletteBtn").querySelector("kbd").textContent = IS_MAC ? "⌘K" : "Ctrl K";
 
 const editsHere = () => editorAllowed() && !isPopout; // (a pop-out window shows the PDF alone)
@@ -68,10 +68,9 @@ async function searchItems(typed) {
   const seq = ++searchSeq;
   if (!typed.trim()) return show([], "Type to search the text of every source file.");
   const query = new URLSearchParams({ q: typed, case: pressed("searchCase") ? "1" : "0", regex: pressed("searchRegex") ? "1" : "0" });
-  const r = await fetch(`search?${query}`, { cache: "no-store" }).catch(() => null);
-  const found = r ? await r.json().catch(() => ({})) : {};
+  const got = await getJSON(`search?${query}`), found = got.body;
   if (seq !== searchSeq || mode !== "search") return;
-  if (!r?.ok || !Array.isArray(found.matches)) return show([], found.error || "The search did not answer.");
+  if (!got.ok || !Array.isArray(found.matches)) return show([], got.error || "The search did not answer.");
   show(found.matches.map((m) => ({ group: m.file, icon: "file", title: m.text, sub: `${m.line}`, mark: [m.at, m.len],
                                    run: () => showEditor(true, { path: m.file, line: m.line, column: m.col }) })),
        found.matches.length ? (found.truncated ? `The first ${found.matches.length} matches.` : "") : "No matches.");
@@ -95,7 +94,7 @@ function show(list, note = "") {
       main.textContent = it.title;
     }
     if (it.depth) main.style.paddingLeft = `${Math.min(it.depth, 3) * 12}px`;
-    const row = el("div", { className: "pal-row", onclick: () => run(it), onmousemove: () => i !== chosen && choose(i) },
+    const row = el("div", { className: "pal-row", id: `pal-${i}`, onclick: () => run(it), onmousemove: () => i !== chosen && choose(i) },
                    icon(it.icon || "file", 14), main, el("span", { className: "pal-sub", textContent: it.sub || "" }));
     row.setAttribute("role", "option");
     rows.push(row);
@@ -111,6 +110,8 @@ function choose(i) {
     row.setAttribute("aria-selected", String(j === i));
     if (j === i) row.scrollIntoView({ block: "nearest" });
   });
+  if (items[i]) $("paletteInput").setAttribute("aria-activedescendant", `pal-${i}`); // (the input keeps the focus: the box says which)
+  else $("paletteInput").removeAttribute("aria-activedescendant");
 }
 function run(it) {
   closePalette(false);
@@ -135,14 +136,13 @@ export const paletteOpen = () => !$("paletteBackdrop").hidden;
 export async function openPalette(want = "go") {
   if (!paletteOpen()) before = document.activeElement;
   $("paletteBackdrop").hidden = false;
+  $("paletteInput").setAttribute("aria-expanded", "true");
   $("palette").querySelector(".palette-modes").hidden = !editsHere();
   setMode(want);
   $("paletteInput").select();
   $("paletteInput").focus();
   if (editsHere() && !srcFiles) { // (the source pane did not list them yet)
-    const r = await fetch("files", { cache: "no-store" }).catch(() => null);
-    const list = r?.ok ? await r.json().catch(() => null) : null;
-    if (Array.isArray(list?.files)) setSrcFiles(list);
+    await fetchFiles();
     if (paletteOpen() && mode === "go") refresh();
   }
 }
@@ -151,6 +151,7 @@ export function closePalette(refocus = true) {
   clearTimeout(searchTimer);
   searchSeq++; // (a search on its way shows nothing)
   $("paletteBackdrop").hidden = true;
+  $("paletteInput").setAttribute("aria-expanded", "false");
   if (refocus && before?.isConnected) before.focus();
   before = null;
 }

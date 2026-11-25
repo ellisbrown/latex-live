@@ -7,7 +7,7 @@
 // The panel's controls (the search, the add box) are made once: a build or an added entry redraws only the list and the
 // check's findings, so whatever is being typed in them keeps its text and the focus.
 
-import { editorShown, el, isPopout, panelError, setStatus } from "./page.js";
+import { editorShown, el, isPopout, panelError, plural, refreshButton, setStatus } from "./page.js";
 import { getJSON, sendJSON } from "./net.js";
 import { editorAllowed } from "./role.js";
 import { insertText, showEditor } from "./editor.js";
@@ -20,25 +20,26 @@ let index = null, loadError = ""; // (/papers/index: {entries, bibFiles, lookups
 let verify = null, verifyTimer = 0, verifyMisses = 0; // (/bib/verify's last answer; the poll while it runs, and its misses)
 
 const panel = addTab("refs", { label: "Refs", icon: "refs", title: "The bibliography: citations, adding and checking entries",
-                               refresh: () => loadRefs() });
-const search = el("input", { type: "search", placeholder: "Filter by key, title, author, venue, year" });
-const sort = el("select", { title: "Order" }, ...[["cited", "Most cited"], ["year", "Newest"], ["title", "Title"],
+                               refresh: () => loadRefs(), early: true });
+const search = el("input", { type: "search", placeholder: "Filter", title: "Filter by key, title, author, venue or year", ariaLabel: "Filter the entries" });
+const sort = el("select", { title: "Order", ariaLabel: "Order" }, ...[["cited", "Most cited"], ["year", "Newest"], ["title", "Title"],
                                                     ["uncited", "Not cited"]].map(([value, textContent]) => el("option", { value, textContent })));
 const addBtn = el("button", { title: "Add an entry by arXiv ID, DOI or BibTeX" }, icon("plus", 13));
 const checkBtn = el("button", { title: "" }, icon("checks", 13));
 const query = el("textarea", { className: "refs-query", rows: 1, spellcheck: false, ariaLabel: "An arXiv ID, a DOI or BibTeX" }); // (BibTeX keeps its lines)
 const lookupBtn = el("button", { className: "primary", textContent: "Look up" });
-const offNote = el("div", { className: "refs-note" });
-const addError = el("div", { className: "refs-error" });
+const offNote = el("div", { className: "panel-note" });
+const addError = el("div", { className: "box-error" });
 const preview = el("textarea", { className: "refs-preview", spellcheck: false, hidden: true, ariaLabel: "The entry to add, as BibTeX" });
 const target = el("select", { hidden: true, title: "The .bib file to add it to" });
 const saveBtn = el("button", { className: "primary", textContent: "Add to the .bib", hidden: true });
-const addBox = el("div", { className: "refs-add", hidden: true },
-                  query, offNote, addError, preview, el("div", { className: "refs-row" }, target, lookupBtn, saveBtn));
-const verifyBox = el("div", { className: "refs-verify", hidden: true });
+const addBox = el("div", { className: "panel-box refs-add", hidden: true },
+                  query, offNote, addError, preview, el("div", { className: "panel-row" }, target, lookupBtn, saveBtn));
+const verifyBox = el("div", { className: "panel-box", hidden: true });
 const list = el("div", { className: "refs-list" });
 panel.classList.add("refs");
-panel.append(el("div", { className: "refs-bar" }, search, sort, addBtn, checkBtn), addBox, verifyBox, list);
+panel.append(el("div", { className: "panel-bar" }, search, sort, addBtn, checkBtn, refreshButton("Look again", () => loadRefs())),
+             addBox, verifyBox, list);
 
 // The list, and what depends on whether this preview goes online; again after each build and each added entry. When it
 // doesn't load, the list says why (over the one loaded before, if any).
@@ -90,7 +91,7 @@ function card(e) {
   const authors = (e.author || "").split(" and ");
   const meta = [authors.length > 1 ? `${authors[0]} et al.` : authors[0], e.venue, e.year].filter(Boolean).join(" · ");
   const count = el("button", { className: `refs-count${e.citeCount ? " used" : ""}`, textContent: `${e.citeCount}×`,
-                               title: e.citeCount ? `Cited ${e.citeCount} time${e.citeCount === 1 ? "" : "s"}: go to the first` : "Not cited",
+                               title: e.citeCount ? `Cited ${plural(e.citeCount, "time")}: go to the first` : "Not cited",
                                disabled: !e.citeCount,
                                onclick: () => e.citedIn[0] && showEditor(true, { path: e.citedIn[0].file, line: e.citedIn[0].line }) });
   return el("div", { className: "refs-card" },
@@ -204,16 +205,16 @@ function renderVerify() {
   const close = el("button", { title: "Close (a check on its way goes on)", onclick: () => { verify = null; clearTimeout(verifyTimer); renderVerify(); } },
                   icon("close", 12));
   if (verify.state !== "done") {
-    verifyBox.replaceChildren(el("div", { className: "refs-row" }, el("span", {
+    verifyBox.replaceChildren(el("div", { className: "panel-row" }, el("span", {
       textContent: verify.state === "running" ? "Checking the bibliography against Crossref…" : `The check failed: ${verify.error || "no reason given"}` }),
       close));
     return;
   }
   const findings = verify.findings || [];
-  const head = findings.length ? `${findings.length} finding${findings.length === 1 ? "" : "s"}` : `No findings in ${verify.total} entries`;
+  const head = findings.length ? plural(findings.length, "finding") : `No findings in ${verify.total} entries`;
   verifyBox.replaceChildren(
-    el("div", { className: "refs-row" }, el("strong", { textContent: `${head} (${verify.checked} checked against Crossref)` }), close),
-    ...(verify.offline ? [el("div", { className: "refs-note", textContent: "Crossref didn't answer: only the checks here." })] : []),
+    el("div", { className: "panel-row" }, el("strong", { textContent: `${head} (${verify.checked} checked against Crossref)` }), close),
+    ...(verify.offline ? [el("div", { className: "panel-note", textContent: "Crossref didn't answer: only the checks here." })] : []),
     ...findings.slice(0, 50).map((f) => el("button", { className: `refs-finding ${f.severity}`, title: `Open ${f.file}:${f.line}`,
                                                       onclick: () => showEditor(true, { path: f.file, line: f.line }) },
                                            el("span", { className: "sev", textContent: { fail: "✗", warn: "!", info: "i" }[f.severity] || "i" }),

@@ -49,14 +49,6 @@ export function welcomeDue() {
   const state = localStorage.getItem("latex-live:welcome");
   return !isDiff && me.shared && (state === "later" || (state === null && (isCollaborator() || firstVisit)));
 }
-// Tab and Shift+Tab stay within the guide while it is open.
-export function keepFocusIn(box, e) {
-  const stops = [...box.querySelectorAll("button, input, a[href], textarea")].filter((n) => !n.disabled && n.getClientRects().length);
-  const i = stops.indexOf(document.activeElement);
-  if (i >= 0 && !(e.shiftKey ? i === 0 : i === stops.length - 1)) return; // (the browser moves on within it)
-  e.preventDefault(); // (from its last stop, its first; from its first, back to its last; from outside it, in)
-  stops.at(e.shiftKey ? -1 : 0)?.focus();
-}
 $("welcome").querySelector(".close").onclick = () => showWelcome(false);
 $("welcome").querySelector(".ok").onclick = () => showWelcome(false);
 $("welcomeBtn").onclick = () => showWelcome(true);

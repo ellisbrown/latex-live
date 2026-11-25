@@ -2,8 +2,8 @@
 // conflicts, reloading it when it changes on disk, the notice above the text, the edits this browser keeps until they
 // are saved, and the rail of its headings beside the text.
 
-import { $, editorShown, el, hubBase, isPopout, setStatus, SIGNED_OUT } from "./page.js";
-import { fitsKeepalive, postJSON, readBody, signInPage, unreachable } from "./net.js";
+import { $, activatable, editorShown, el, hubBase, IS_MAC, isPopout, rovingTabs, setStatus, SIGNED_OUT, tabKeys } from "./page.js";
+import { fitsKeepalive, getJSON, postJSON, readBody, signInPage, unreachable } from "./net.js";
 import { lineHunks } from "./diff.js";
 import { dropKept, EDITOR_ID, keptKey, newSaveId, readKept } from "./drafts.js";
 import { editorAllowed, me, openTitles, ownerName } from "./role.js";
@@ -29,7 +29,14 @@ let saveId = EDITOR_ID;
 export let cmView = null; // the open file's editor (CodeMirror's view)
 
 export let srcFiles = null; // live.py /files: {files: [{path, size}], main, assets: [{path, size}], uploadSize}
-export function setSrcFiles(list) { srcFiles = list; }
+// The paper's files again (live.py /files: for the source pane, its file picker, the palette and the Files tab): the
+// answer, as net.js getJSON gives it ({ok, body, error}), with srcFiles set when it is a list.
+export async function fetchFiles() {
+  const got = await getJSON("files");
+  if (got.ok && Array.isArray(got.body.files)) srcFiles = got.body;
+  else if (got.ok) Object.assign(got, { ok: false, error: "no list in the answer" });
+  return got;
+}
 // For other parts of the viewer (the Files tab): fn() each time a file opens in the pane, or the pane closes its last.
 const fileOpened = [];
 export const onFileOpen = (fn) => fileOpened.push(fn);
@@ -82,10 +89,8 @@ export async function showEditor(on, { path = null, line = 0, column = 0, focus 
 }
 // The file to open first: [path, whether that is just the main file (nothing remembered)].
 async function firstFile() {
-  const r = await fetch("files", { cache: "no-store" });
-  const list = await readBody(r);
-  if (!r.ok || !Array.isArray(list.files)) throw new Error(list.error || `the list of files did not load (${r.status})`);
-  srcFiles = list;
+  const got = await fetchFiles();
+  if (!got.ok) throw new Error(`the list of files did not load: ${got.error}`);
   const paths = srcFiles.files.map((f) => f.path), last = localStorage.getItem(`latex-live:${hubBase}editorFile`);
   setTabs(openTabs.filter((p) => paths.includes(p))); // (files the paper no longer has)
   return paths.includes(last) ? [last, false] : [srcFiles.main || paths[0] || null, true];
@@ -143,7 +148,8 @@ export function insertText(text) {
 
 // The tabs above the text: the files opened in this paper (remembered across visits), the open one marked, with a dot
 // while it has edits not saved, and a colored one for each other person who has it open (setTabPeers). A click opens
-// one (once the open one is saved), and its × closes it.
+// one (once the open one is saved), and its × closes it. From the keyboard, the tabs are one stop: the arrow keys go
+// along them, Enter or Space opens one, and Delete closes it.
 const TABS_KEY = `latex-live:${hubBase}editorTabs`, MAX_TABS = 12;
 let openTabs = [];
 try { openTabs = JSON.parse(localStorage.getItem(TABS_KEY) || "[]").filter((p) => typeof p === "string").slice(0, MAX_TABS); } catch {}
@@ -153,22 +159,32 @@ function setTabs(paths) {
   showTabs();
 }
 function showTabs() {
+  const focused = document.activeElement?.closest?.("#editorTabs .tab")?.dataset.path; // (drawn anew: the focus stays on its tab)
   $("editorTabs").replaceChildren(...openTabs.map((path) => {
     const name = path.slice(path.lastIndexOf("/") + 1);
-    const close = el("button", { className: "x", textContent: "✕", title: `Close ${name}`, onclick: (e) => { e.stopPropagation(); closeTab(path); } });
-    const tab = el("div", { className: `tab${path === ed?.path ? " on" : ""}`, title: path, dataset: { path },
-                            onclick: () => openFile(path).then(() => cmView?.focus()) },
+    const close = el("button", { className: "x", textContent: "✕", title: `Close ${name}`, tabIndex: -1, // (Delete closes the tab focused)
+                                 onclick: (e) => { e.stopPropagation(); closeTab(path); } });
+    const open = () => openFile(path).then(() => cmView?.focus());
+    const tab = el("div", { className: `tab${path === ed?.path ? " on" : ""}`, title: path, dataset: { path }, onclick: open },
                    el("span", { className: "name", textContent: name }), el("span", { className: "peers" }),
                    el("span", { className: "dot", title: "Not saved yet" }), close);
     tab.setAttribute("role", "tab");
     tab.setAttribute("aria-selected", String(path === ed?.path));
+    tab.setAttribute("aria-controls", "editorHost");
     close.setAttribute("aria-label", `Close ${name}`);
+    activatable(tab, open);
+    tab.addEventListener("keydown", (e) => {
+      if ((e.key === "Delete" || e.key === "Backspace") && e.target === tab) { e.preventDefault(); closeTab(path); }
+    });
     return tab;
   }));
+  rovingTabs($("editorTabs"));
+  if (focused) ([...$("editorTabs").children].find((t) => t.dataset.path === focused) || $("editorTabs").querySelector(".tab.on"))?.focus();
   $("editorTabs").querySelector(".tab.on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
   showTabState();
   showTabPeers();
 }
+tabKeys($("editorTabs"));
 function showTabState() { // (the open file's dot)
   for (const tab of $("editorTabs").children) tab.classList.toggle("dirty", tab.dataset.path === ed?.path && !!ed?.dirty);
 }
@@ -212,6 +228,27 @@ export async function closeTab(path, { discard = false } = {}) {
   }
   closeFile(); // (no other tab, or it did not open)
 }
+// A file renamed (the Files tab, once live.py has renamed it): its tab keeps its place under the new name, and the open
+// file stays open as it is (its cursor, scroll and undo), saving under the new name from then on (its version, a hash
+// of its bytes, is the same). A save of it that left under the old name meanwhile may have found the file gone: it
+// is sent again under the new one.
+export async function renameOpen(from, to) {
+  setTabs(openTabs.map((p) => (p === from ? to : p)));
+  if (ed?.path !== from) return;
+  while (busy) await busy.done;
+  if (ed?.path !== from) return;
+  const wasGone = ed.gone;
+  Object.assign(ed, { path: to, gone: false, error: wasGone ? null : ed.error });
+  sourceEpoch++; // (a status answer about the old name is stale)
+  if (wasGone) hideNotice("gone");
+  dropKept(from);
+  keepUnsaved(true); // (unsaved edits are kept under the new name)
+  localStorage.setItem(`latex-live:${hubBase}editorFile`, to);
+  showTabs();
+  showSaveState();
+  for (const fn of fileOpened) fn();
+  if (ed.dirty && !ed.markers) scheduleSave(0);
+}
 // The pane with no file open: no editor to type into (its text would go nowhere), just a hint.
 function closeFile() {
   ++openSeq; // (a file on its way does not open after all)
@@ -222,7 +259,7 @@ function closeFile() {
   hideNotice("restore"); // (a notice with text to copy stays, as on a switch to another file)
   localStorage.removeItem(`latex-live:${hubBase}editorFile`);
   $("editorHost").replaceChildren(el("div", { className: "msg", textContent: "No file open: pick one with the button above, or press " +
-                                              `${/^Mac|^iP/.test(navigator.platform) ? "Cmd" : "Ctrl"}+K.` }));
+                                              `${IS_MAC ? "Cmd" : "Ctrl"}+K.` }));
   $("cursorPos").textContent = $("wordCount").textContent = "";
   showTabs();
   showRail();
@@ -231,16 +268,19 @@ function closeFile() {
 }
 
 // The status bar under the text: the cursor's line and column, and the words of the text, or of the selection (counted
-// a moment after typing stops, as that reads the whole file).
-let countTimer = 0;
+// a moment after typing stops). The text's count, which reads the whole file, is kept until the text changes.
+let countTimer = 0, totalWords = null;
 function showCursor(update = null) {
   if (!cmView || (update && !update.docChanged && !update.selectionSet)) return;
+  if (!update || update.docChanged) totalWords = null; // (another file, or the text changed)
   const { state } = cmView, at = state.selection.main, line = state.doc.lineAt(at.head);
   $("cursorPos").textContent = `Ln ${line.number}, Col ${at.head - line.from + 1}`;
   clearTimeout(countTimer);
   countTimer = setTimeout(() => {
     if (!cmView) return;
-    const { state: now } = cmView, sel = now.selection.main, total = countWords(now.doc.toString()).toLocaleString();
+    const { state: now } = cmView, sel = now.selection.main;
+    totalWords ??= countWords(now.doc.toString());
+    const total = totalWords.toLocaleString();
     $("wordCount").textContent = sel.empty ? `${total} words` : `${countWords(now.sliceDoc(sel.from, sel.to)).toLocaleString()} / ${total} words`;
   }, update?.docChanged ? 250 : 50);
 }
@@ -264,8 +304,12 @@ function showRail(update = null) {
 function markRail() {
   if (!cmView || $("outlineRail").hidden) return;
   const line = cmView.state.doc.lineAt(cmView.state.selection.main.head).number;
-  const at = railHeadings.findLastIndex((h) => h.line <= line);
-  [...$("outlineRail").children].forEach((tick, i) => tick.classList.toggle("on", i === at));
+  const at = railHeadings.findLastIndex((h) => h.line <= line), rail = $("outlineRail");
+  [...rail.children].forEach((tick, i) => tick.classList.toggle("on", i === at));
+  const tick = rail.children[at]; // (in view, where the rail scrolls: not with scrollIntoView, which would scroll the pane too)
+  if (tick && (tick.offsetTop < rail.scrollTop || tick.offsetTop + tick.offsetHeight > rail.scrollTop + rail.clientHeight)) {
+    rail.scrollTop = tick.offsetTop - rail.clientHeight / 2;
+  }
 }
 
 // The words of LaTeX text: between \begin{document} and \end{document} when it has them, without comments, commands,
@@ -429,9 +473,8 @@ export async function saveSource({ keepalive = false } = {}) {
 // Whether the server still lists a file whose save it answered with 404: then it is not gone from the
 // paper, it just wasn't saved this once (e.g. a build was rewriting the list just then).
 async function stillListed(path) {
-  const r = await fetch("files", { cache: "no-store" }).catch(() => null);
-  const list = r?.ok ? await readBody(r) : null;
-  return !Array.isArray(list?.files) || list.files.some((f) => f.path === path);
+  const got = await fetchFiles();
+  return !got.ok || got.body.files.some((f) => f.path === path);
 }
 // A save that failed but may work later: sent again (soon while the owner updates the copy, else
 // backing off), and from the next status poll once the server answers again. After 30 s of that, the

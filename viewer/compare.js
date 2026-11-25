@@ -1,10 +1,11 @@
 // Compare (latexdiff against a commit).
 
 import { $, docFile, el, isDiff, setStatus } from "./page.js";
-import { postJSON, readBody } from "./net.js";
+import { getJSON, sendJSON } from "./net.js";
 import { me } from "./role.js";
 import { flushSource } from "./editor.js";
 import { placeItem, showMore } from "./toolbar.js";
+import { registerCommands } from "./palette.js";
 
 // Compare: latexdiff against a commit (live.py builds <doc>-diff.pdf), shown in its own tab.
 $("compare").onclick = async () => {
@@ -15,7 +16,12 @@ $("compare").onclick = async () => {
   panel.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - Math.min(460, window.innerWidth - 24) - 12))}px`;
   panel.replaceChildren(el("div", { className: "head", textContent: "Loading commits…" }));
   panel.hidden = false;
-  const { dirty, commits } = await (await fetch("commits")).json();
+  const got = await getJSON("commits");
+  if (panel.hidden) return; // (closed meanwhile)
+  if (!got.ok || !Array.isArray(got.body.commits)) {
+    return panel.replaceChildren(el("div", { className: "head error", textContent: `The commits did not load: ${got.error || "no list in the answer"}` }));
+  }
+  const { dirty, commits } = got.body;
   const row = (rev, date, text, title, sha = rev) => {
     const div = el("div", { className: "commit", title }, el("span", { className: "rev", textContent: rev }),
                    el("span", { className: "date", textContent: date }), el("span", { textContent: text }));
@@ -30,8 +36,8 @@ $("compare").onclick = async () => {
 export async function startDiff(rev) {
   $("comparePanel").hidden = true;
   await flushSource(); // (the diff is of the files on disk)
-  const r = me.legacy ? await fetch(`diff?${new URLSearchParams({ rev })}`) : await postJSON("diff", { rev });
-  if (!r.ok && r.status !== 409) return setStatus((await readBody(r)).error, "error");
+  const got = me.legacy ? await getJSON(`diff?${new URLSearchParams({ rev })}`) : await sendJSON("diff", { rev });
+  if (!got.ok && got.status !== 409) return setStatus(`The comparison did not start: ${got.error}`, "error"); // (409: one is on its way)
   const url = `viewer.html?${new URLSearchParams({ file: docFile.replace(/\.pdf$/, "-diff.pdf") })}`;
   if (isDiff) return; // this tab already shows the diff; it reloads when the new one is built
   if (!window.open(url, "latex-live-diff")) location.href = url;
@@ -41,6 +47,14 @@ if (isDiff) { // (the diff tab's main control, so in the toolbar)
   $("compare").textContent = "Compare with…";
   $("compare").title = "Compare with another commit";
 }
+// The panel closes on a click elsewhere (and on Esc: keys.js).
+document.addEventListener("mousedown", (e) => {
+  const panel = $("comparePanel");
+  if (!panel.hidden && !panel.contains(e.target) && !$("compare").contains(e.target)) panel.hidden = true;
+});
+registerCommands(() => ($("compare").hidden || isDiff ? [] : [
+  { title: "Compare with an earlier version…", sub: "Changes", icon: "diff", run: () => $("compare").click() }]));
+
 export function showDiffInfo(d) {
   if (!isDiff || !d?.sha) return;
   const info = $("diffInfo");

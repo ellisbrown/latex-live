@@ -16,7 +16,7 @@ const TICK = 500, HEARTBEAT = 12000;
 let started = false, listed = false, sending = false, told = false, sentAt = 0, sentKey = "", seenKey = "", ownTab = "";
 
 const PALETTE = ["#2563eb", "#0d9488", "#d97706", "#7c3aed", "#db2777", "#16a34a", "#0284c7", "#dc2626"];
-export function peerColor(key) {
+function peerColor(key) {
   let h = 7;
   for (const ch of String(key || "")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   return PALETTE[h % PALETTE.length];

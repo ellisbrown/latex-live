@@ -1,6 +1,7 @@
 // The sidebar's pre-submission check.
 
-import { $, el, file } from "./page.js";
+import { $, el, file, panelError, plural, refreshButton } from "./page.js";
+import { getJSON } from "./net.js";
 import { canOpenFile, opensAt } from "./role.js";
 import { doc, shownVariant } from "./pdfview.js";
 import { buildVersion, shown } from "./build.js";
@@ -20,7 +21,11 @@ export async function runChecks() {
   const panel = $("checks");
   if (!panel.querySelector(".check")) panel.replaceChildren(el("div", { className: "empty", textContent: "Checking…" }));
   try {
-    const results = await (await fetch(`check/${encodeURIComponent(file)}`)).json();
+    const got = await getJSON(`check/${encodeURIComponent(file)}`), results = got.body;
+    if (!got.ok || !Array.isArray(results)) {
+      checksVersion = null; // (asked again when the tab next shows, or with Try again)
+      return panel.replaceChildren(panelError(`The checks did not run: ${got.error || "no list in the answer"}`, () => runChecks()));
+    }
     const r = cleanResult || pageResult;
     if (r?.limit) results.unshift({ title: "Page limit", level: r.cls === "over" ? "fail" : r.cls === "tight" ? "warn" : "ok",
                              detail: `main text ${r.value.toFixed(1)} of ${r.limit} pages${cleanResult ? " without the notes" : ""}: ${r.range}`,
@@ -30,13 +35,14 @@ export async function runChecks() {
       const spots = await cutSpots(doc, shownR);
       const lines = spots.reduce((n, s) => n + s.lines, 0);
       results.splice(r?.limit ? 1 : 0, 0, { title: "Space to reclaim", level: spots.length ? "info" : "ok",
-        detail: spots.length ? `≈${lines} line(s) in ${spots.length} spot(s) of the main text (${shownVariant === "clean" ? "notes-free build" : "with notes"}); ✂ in the toolbar marks them`
+        detail: spots.length ? `≈${plural(lines, "line")} in ${plural(spots.length, "spot")} of the main text (${shownVariant === "clean" ? "notes-free build" : "with notes"}); ✂ in the toolbar marks them`
                              : "no short last lines or large gaps in the main text",
         items: spots.map((s) => ({ text: `${s.label}: ${s.text}`, page: s.page, rect: s.rect })) });
     }
     renderChecks(results);
   } catch (e) {
-    panel.replaceChildren(el("div", { className: "empty", textContent: `Check failed: ${e.message || e}` }));
+    checksVersion = null;
+    panel.replaceChildren(panelError(`The checks did not run: ${e.message || e}`, () => runChecks()));
   } finally {
     checksRunning = false;
   }
@@ -44,8 +50,6 @@ export async function runChecks() {
 function renderChecks(results) {
   const panel = $("checks");
   const open = new Set([...panel.querySelectorAll("details[open]")].map((d) => d.dataset.title));
-  const rerun = el("button", { textContent: "Run again" });
-  rerun.onclick = runChecks;
   const bad = results.filter((r) => r.level === "fail" || r.level === "warn").length;
   document.querySelector("#tabs [data-tab=checks] .n").textContent = bad || "";
   const rows = results.map((r) => {
@@ -79,5 +83,6 @@ function renderChecks(results) {
     }
     return details;
   });
-  panel.replaceChildren(el("div", { className: "toolbar" }, rerun, el("span", { className: "when", textContent: `checked ${new Date().toLocaleTimeString()}` })), ...rows);
+  panel.replaceChildren(el("div", { className: "panel-bar" }, el("span", { className: "panel-note", textContent: `Checked at ${new Date().toLocaleTimeString()}` }),
+                           refreshButton("Run the checks again", runChecks)), ...rows);
 }

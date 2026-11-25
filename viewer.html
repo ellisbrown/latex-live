@@ -54,7 +54,7 @@
      actions. What doesn't fit moves into the ⋯ menu (toolbar.js fitRow). Below it, the workspace: the sidebar, the
      source pane and the PDF, each with a header of its own. -->
 <header id="bar">
-  <button id="toggleSide" class="icon-btn" title="Sidebar: outline, pages, notes, checks, figures" aria-label="Sidebar"></button>
+  <button id="toggleSide" class="icon-btn" title="Sidebar: the outline, pages, notes, checks and figures (and for editors the bibliography, files and history)" aria-label="Sidebar"></button>
   <select id="docPick" data-priority="7" title="Main document: build another root .tex file" hidden></select>
   <span id="historyNav" class="grp" data-priority="3" data-label="History">
     <button id="back" class="icon-btn" title="Back (Alt+&larr; or Cmd+[)" aria-label="Back" disabled></button>
@@ -121,11 +121,12 @@
   <button id="downloadAnnotated" role="menuitem" hidden title="Save the pages as submitted with each note as a PDF comment where it sits, to read and reply to in Acrobat, Preview or Zotero (built with the copy with notes in the margin)">PDF with notes as comments</button>
   <button id="downloadArxiv" role="menuitem" hidden title="Save the sources for an arXiv submission: the files the exact build without notes reads, with their comments, notes and hidden blocks taken out and its .bbl, checked by building them alone and comparing the PDF">arXiv package (.tar.gz)</button>
 </div>
-<div id="keys" class="modal-card" hidden>
-  <div class="head">Keyboard shortcuts <button class="welcome">Welcome guide</button><button class="close" title="Close (Esc)" aria-label="Close">&#10005;</button></div>
+<div id="keys" class="modal-card" role="dialog" aria-modal="true" aria-labelledby="keysTitle" hidden>
+  <div class="head"><span id="keysTitle">Keyboard shortcuts</span> <button class="welcome">Welcome guide</button><button class="close" title="Close (Esc)" aria-label="Close">&#10005;</button></div>
   <table>
     <tr><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>K</kbd></td><td>go to a file, a heading or a command</td></tr>
     <tr><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>F</kbd></td><td>search; <kbd>Enter</kbd> / <kbd>Shift</kbd> <kbd>Enter</kbd> next / previous match, <kbd>Esc</kbd> clear</td></tr>
+    <tr><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>G</kbd></td><td>the search's next match (with <kbd>Shift</kbd>: the previous one)</td></tr>
     <tr id="keysSearch" hidden><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>F</kbd></td><td>search the text of every source file</td></tr>
     <tr><td><kbd>Ctrl</kbd> <kbd>+</kbd> / <kbd>Ctrl</kbd> <kbd>&minus;</kbd></td><td>zoom in / out</td></tr>
     <tr><td><kbd>Ctrl</kbd> <kbd>0</kbd></td><td>fit width</td></tr>
@@ -135,6 +136,9 @@
     <tr id="keysComment"><td><kbd>c</kbd></td><td>comment on the selected text</td></tr>
     <tr id="keysEdit" hidden><td><kbd>e</kbd></td><td>the LaTeX source beside the PDF, or not: Split or PDF (<kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>S</kbd> there saves at once)</td></tr>
     <tr id="keysLogs" hidden><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>L</kbd></td><td>the build's log and warnings, under the source (in the source, with no text selected)</td></tr>
+    <tr id="keysFold" hidden><td><span id="keysFoldOne"></span> / <span id="keysUnfoldOne"></span></td><td>in the source: fold / unfold the heading or environment at the cursor (<kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>[</kbd> / <kbd>]</kbd>: all of them)</td></tr>
+    <tr id="keysLeave" hidden><td><kbd>Esc</kbd> then <kbd>Tab</kbd></td><td>leave the source for the controls after it (<kbd>Tab</kbd> alone indents)</td></tr>
+    <tr id="keysAgent" hidden><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>Enter</kbd> / <kbd>Esc</kbd></td><td>on the agent's revision: accept / dismiss it</td></tr>
     <tr id="keysFormat" hidden><td><kbd>Cmd</kbd>/<kbd>Ctrl</kbd> <kbd>B</kbd> / <kbd>I</kbd> / <kbd>/</kbd></td><td>in the source: bold, italic, comment out (or back in)</td></tr>
     <tr id="keysDblclickRow"><td>double-click</td><td id="keysDblclick">open the source line</td></tr>
     <tr><td><kbd>?</kbd></td><td>this list</td></tr>
@@ -144,7 +148,8 @@
 <div id="paletteBackdrop" hidden>
   <div id="palette" role="dialog" aria-modal="true" aria-label="Go to, or search the sources">
     <div id="paletteHead">
-      <input id="paletteInput" autocomplete="off" spellcheck="false" aria-label="Go to, or search">
+      <input id="paletteInput" autocomplete="off" spellcheck="false" aria-label="Go to, or search" role="combobox"
+             aria-expanded="false" aria-controls="paletteResults" aria-autocomplete="list">
       <span id="searchOptions" hidden>
         <button id="searchCase" title="Match case" aria-pressed="false">Aa</button>
         <button id="searchRegex" title="Regular expression" aria-pressed="false">.*</button>
@@ -154,7 +159,7 @@
         <button data-mode="search" title="Search the text of every source file (Cmd/Ctrl+Shift+F)">Search</button>
       </span>
     </div>
-    <div id="paletteResults" role="listbox"></div>
+    <div id="paletteResults" role="listbox" aria-label="Results"></div>
     <div id="paletteFoot"><span><kbd>&uarr;</kbd><kbd>&darr;</kbd> choose</span><span><kbd>Enter</kbd> open</span><span><kbd>Esc</kbd> close</span>
       <span class="hint">Type &gt; for commands only</span></div>
   </div>
@@ -206,19 +211,26 @@
 </div>
 <div id="workspace">
   <aside id="side" hidden>
-    <!-- (the tabs: sidebar.js addTab, which gives each its icon and label, and adds the panels of tabs not here) -->
-    <div id="tabs" role="tablist">
-      <button data-tab="outline" title="The outline, numbered as in the paper"></button>
-      <button data-tab="thumbs" title="The pages"></button>
-      <button data-tab="notes" title="The notes, by author"></button>
-      <button data-tab="checks" title="Pre-submission checks"></button>
-      <button data-tab="figures" title="Figures and tables"></button>
+    <!-- The tabs, in order, and their panels: sidebar.js addTab gives each tab its icon, label and title, and how its
+         panel refreshes; the modules named fill the panels. -->
+    <div id="tabs" role="tablist" aria-label="Sidebar">
+      <button id="tab-outline" role="tab" aria-controls="outline" data-tab="outline"></button>
+      <button id="tab-thumbs" role="tab" aria-controls="thumbs" data-tab="thumbs"></button>
+      <button id="tab-notes" role="tab" aria-controls="notes" data-tab="notes"></button>
+      <button id="tab-checks" role="tab" aria-controls="checks" data-tab="checks"></button>
+      <button id="tab-figures" role="tab" aria-controls="figures" data-tab="figures"></button>
+      <button id="tab-refs" role="tab" aria-controls="refs" data-tab="refs"></button>
+      <button id="tab-files" role="tab" aria-controls="files" data-tab="files"></button>
+      <button id="tab-history" role="tab" aria-controls="history" data-tab="history"></button>
     </div>
-    <nav id="outline" class="panel" hidden></nav>
-    <div id="thumbs" class="panel" hidden></div>
-    <div id="notes" class="panel" hidden></div>
-    <div id="checks" class="panel" hidden></div>
-    <div id="figures" class="panel" hidden></div>
+    <nav id="outline" class="panel" role="tabpanel" aria-labelledby="tab-outline" hidden></nav> <!-- outline.js -->
+    <div id="thumbs" class="panel" role="tabpanel" aria-labelledby="tab-thumbs" hidden></div> <!-- pages.js -->
+    <div id="notes" class="panel" role="tabpanel" aria-labelledby="tab-notes" hidden></div> <!-- notes.js -->
+    <div id="checks" class="panel panel-ui" role="tabpanel" aria-labelledby="tab-checks" hidden></div> <!-- checks.js -->
+    <div id="figures" class="panel" role="tabpanel" aria-labelledby="tab-figures" hidden></div> <!-- floats.js -->
+    <div id="refs" class="panel panel-ui" role="tabpanel" aria-labelledby="tab-refs" hidden></div> <!-- refs.js -->
+    <div id="files" class="panel panel-ui" role="tabpanel" aria-labelledby="tab-files" hidden></div> <!-- files.js -->
+    <div id="history" class="panel panel-ui" role="tabpanel" aria-labelledby="tab-history" hidden></div> <!-- history.js -->
   </aside>
   <div id="sideGrip" class="grip" title="Drag to resize"></div>
   <section id="editorPane" tabindex="-1" hidden>
@@ -230,7 +242,7 @@
       <button id="editorClose" class="icon-btn" title="Close the source pane (E)" aria-label="Close the source pane"></button>
     </div>
     <div id="fileMenu" hidden>
-      <input id="fileFilter" placeholder="Filter files" title="Enter: open, &uarr;/&darr;: choose, Esc: close">
+      <input id="fileFilter" placeholder="Filter files" aria-label="Filter the source files" title="Enter: open, &uarr;/&darr;: choose, Esc: close">
       <div id="fileList"></div>
     </div>
     <div id="editorHint" hidden><button class="close" title="Close" aria-label="Close">&#10005;</button>Double-click the PDF to jump to its source.</div>

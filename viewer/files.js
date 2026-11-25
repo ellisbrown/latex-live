@@ -8,11 +8,11 @@
 // again only when what it shows changes (the list, the open file, a folder folded), so that whatever is being typed keeps
 // its text and the focus. A dot in a file's row for each other person who has it open (presence.js).
 
-import { editorShown, el, isPopout, panelError, setStatus } from "./page.js";
-import { getJSON, sendJSON } from "./net.js";
+import { activatable, editorShown, el, isPopout, panelError, refreshButton, setStatus } from "./page.js";
+import { sendJSON } from "./net.js";
 import { editorAllowed } from "./role.js";
 import { assets as pdfAssets, pdfjsLib } from "./pdfview.js";
-import { closeTab, cmView, ed, flushSource, insertText, onFileOpen, openFile, setSrcFiles, showEditor, srcFiles } from "./editor.js";
+import { closeTab, ed, fetchFiles, flushSource, insertText, onFileOpen, openFile, renameOpen, showEditor, srcFiles } from "./editor.js";
 import { setFigurePreview } from "./cm.js";
 import { onPresence } from "./presence.js";
 import { addTab, showSide, showTab } from "./sidebar.js";
@@ -21,37 +21,34 @@ import { icon } from "./icons.js";
 
 const FIGURES = ".png,.jpg,.jpeg,.pdf,.svg,.eps,.webp,.gif"; // (live.py's ASSET_EXTS: what Upload takes)
 const panel = addTab("files", { label: "Files", icon: "folder", title: "The paper's sources and figures: open, add, rename, remove",
-                                refresh: () => loadFiles() });
-const filter = el("input", { type: "search", placeholder: "Filter files" });
+                                refresh: () => loadFiles(), every: 10000 }); // (often: a coauthor's upload builds nothing)
+const filter = el("input", { type: "search", placeholder: "Filter files", ariaLabel: "Filter the files" });
 const newBtn = el("button", { title: "New source file (.tex, .bib, .sty, .cls)" }, icon("plus", 13));
 const uploadBtn = el("button", { title: `Upload a figure (${FIGURES.replaceAll(",", " ")})` }, icon("upload", 13));
 const picker = el("input", { type: "file", accept: FIGURES, hidden: true });
-const formLabel = el("div", { className: "files-note" });
+const formLabel = el("div", { className: "panel-note" });
 const nameInput = el("input", { type: "text", spellcheck: false, ariaLabel: "The file's name, with its folder" });
-const formError = el("div", { className: "files-error" });
+const formError = el("div", { className: "box-error" });
 const okBtn = el("button", { className: "primary" });
 const cancelBtn = el("button", { textContent: "Cancel" });
-const form = el("div", { className: "files-form", hidden: true },
-                formLabel, nameInput, formError, el("div", { className: "files-row" }, cancelBtn, okBtn));
+const form = el("div", { className: "panel-box files-form", hidden: true },
+                formLabel, nameInput, formError, el("div", { className: "panel-row" }, cancelBtn, okBtn));
 const tree = el("div", { className: "files-tree" });
 panel.classList.add("files");
-panel.append(el("div", { className: "files-bar" }, filter, newBtn, uploadBtn, picker), form, tree);
+panel.append(el("div", { className: "panel-bar" }, filter, newBtn, uploadBtn, picker, refreshButton("Look again", () => loadFiles())), form, tree);
 
 let folded = new Set(), preview = null, drawn = "", peers = {}; // (folders folded; the figure previewed; what the tree shows)
 let loadError = ""; // (why the list did not load, while none has)
 let action = null; // the form's: {kind: "new" | "upload" | "rename", path?, file?}
 
-// The list, again when the tab shows, after each build and each change made here, and every 10 s while it shows (a
-// coauthor's upload builds nothing); other parts of the viewer that change the paper's files call it too. Until a list
-// has loaded, the tree says why it didn't; after, it keeps the last one.
+// The list, again as the tab refreshes (sidebar.js) and after each change made here; other parts of the viewer that
+// change the paper's files call it too. Until a list has loaded, the tree says why it didn't; after, it keeps the last one.
 export async function loadFiles() {
   if (!editorAllowed()) return;
-  const got = await getJSON("files");
-  loadError = got.ok && Array.isArray(got.body.files) ? "" : `The files did not load: ${got.error || "no list in the answer"}`;
-  if (!loadError) setSrcFiles(got.body);
+  const got = await fetchFiles();
+  loadError = got.ok ? "" : `The files did not load: ${got.error}`;
   drawTree();
 }
-setInterval(() => { if (!panel.hidden && !document.hidden) loadFiles(); }, 10000);
 onFileOpen(() => drawTree());
 
 // Who else has each file open (presence.js, on each change): a dot for each person in the file's row.
@@ -74,6 +71,7 @@ function drawTree() {
   if (key === drawn) return;
   drawn = key;
   const scroll = tree.scrollTop;
+  const focused = tree.contains(document.activeElement) ? document.activeElement.closest("[data-key]")?.dataset.key : null;
   const rows = [];
   for (const [label, list, figure] of [["Sources", files, false], ["Figures", figures, true]]) {
     const shown = list.filter((f) => !q || f.path.toLowerCase().includes(q));
@@ -83,7 +81,8 @@ function drawTree() {
     for (const folder of folders) {
       const id = `${figure ? "f" : "s"}:${folder}`, closed = folder && folded.has(id) && !q;
       if (folder) {
-        rows.push(el("button", { className: "files-folder", title: closed ? "Show its files" : "Hide its files",
+        rows.push(el("button", { className: "files-folder", title: closed ? "Show its files" : "Hide its files", dataset: { key: id },
+                                 ariaExpanded: String(!closed),
                                  onclick: () => { folded.has(id) ? folded.delete(id) : folded.add(id); drawTree(); } },
                      icon(closed ? "chevronRight" : "chevronDown", 12), icon("folder", 14), el("span", { textContent: folder })));
       }
@@ -94,10 +93,11 @@ function drawTree() {
   if (!rows.length && !srcFiles && loadError) {
     rows.push(panelError(loadError, () => loadFiles()));
   } else if (!rows.length) {
-    rows.push(el("div", { className: "files-note empty", textContent: !srcFiles ? "Loading…" : q ? "No file matches." : "No files." }));
+    rows.push(el("div", { className: "panel-note empty", textContent: !srcFiles ? "Loading…" : q ? "No file matches." : "No files." }));
   }
   tree.replaceChildren(...rows);
   tree.scrollTop = scroll;
+  if (focused) [...tree.querySelectorAll("[data-key]")].find((n) => n.dataset.key === focused)?.focus(); // (drawn anew: the focus stays)
 }
 
 function fileRow(f, figure, folder, here) {
@@ -107,9 +107,10 @@ function fileRow(f, figure, folder, here) {
                   ...(figure ? [act("plus", "Type its \\includegraphics at the cursor", () => includeFigure(f.path))] : []),
                   ...(main ? [] : [act("edit", "Rename or move", () => openForm({ kind: "rename", path: f.path })),
                                    act("trash", "Remove", () => removeFile(f.path))]));
+  const open = () => (figure ? showPreview(f.path) : openSource(f.path));
   const row = el("div", { className: `files-file${!figure && ed?.path === f.path ? " on" : ""}${folder ? " nested" : ""}`,
-                          title: `${f.path} (${size(f.size)})${main ? ", the main file" : ""}`,
-                          onclick: () => (figure ? showPreview(f.path) : openSource(f.path)) },
+                          title: `${f.path} (${size(f.size)})${main ? ", the main file" : ""}`, onclick: open,
+                          dataset: { key: `${figure ? "f" : "s"}:${f.path}` } },
                  icon(figure ? "figures" : "file", 14), el("span", { className: "name", textContent: name }),
                  ...here.slice(0, 3).map(([who, color]) => {
                    const dot = el("span", { className: "files-peer", title: `${who} has it open` });
@@ -117,6 +118,7 @@ function fileRow(f, figure, folder, here) {
                    return dot;
                  }),
                  el("span", { className: "size", textContent: size(f.size) }), acts);
+  activatable(row, open); // (Tab goes on to its buttons, shown while it has the focus)
   if (figure && preview === f.path) {
     return [row, el("div", { className: "files-preview" }, figureThumb(f.path),
                     el("button", { textContent: "Type its \\includegraphics at the cursor", onclick: () => includeFigure(f.path) }))];
@@ -147,7 +149,7 @@ function includeFigure(path) {
 // PDF's first page drawn as a PNG (PDF.js, in this browser: nothing is drawn on the server), kept for 30 s. An EPS file
 // has none.
 const thumbs = new Map(); // (a PDF's path -> {at, url: a promise of its first page's data: URL})
-export function figureThumb(path) {
+function figureThumb(path) {
   const box = el("div", { className: "fig-thumb" });
   const none = (text = "No preview") => box.replaceChildren(el("span", { textContent: text }));
   if (/\.eps$/i.test(path)) {
@@ -162,7 +164,7 @@ export function figureThumb(path) {
       thumbs.set(path, kept);
       if (thumbs.size > 24) thumbs.delete(thumbs.keys().next().value); // (the oldest goes)
     }
-    kept.url.then((url) => (url ? box.replaceChildren(el("img", { src: url, alt: path })) : none()));
+    kept.url.then((url) => (url ? box.replaceChildren(el("img", { src: url, alt: path, className: "pdf-page" })) : none())); // (inverted with the PDF)
   }
   return box;
 }
@@ -245,7 +247,7 @@ okBtn.onclick = async () => {
 };
 
 // Each action, once live.py has done it: the list again, the source pane following (the file made opens; a renamed
-// file's tab goes, and it opens under its new name if it was open; a removed one's goes, with its edits). Each returns
+// file's tab takes its new name in its place, and open, it stays open as it was; a removed one's goes, with its edits). Each returns
 // what went wrong, for the form, or nothing.
 async function send(path, body) {
   const got = await sendJSON(path, body);
@@ -278,22 +280,15 @@ async function uploadFigure(name, { file }) {
   await loadFiles();
 }
 async function renameFile(name, { path }) {
-  const open = ed?.path === path;
-  if (open && !(await flushSource())) return `${path} is not saved yet, so it was not renamed`;
+  if (ed?.path === path && !(await flushSource())) return `${path} is not saved yet, so it was not renamed`;
   const [done, error] = await send("file/rename", { from: path, to: name });
   if (error) return error;
   setStatus(`Renamed ${path} to ${done.path}`, "fresh");
   thumbs.delete(path);
   thumbs.delete(done.path);
   if (preview === path) preview = done.path;
-  const typed = ed?.path === path && ed.dirty ? cmView.state.doc.toString() : null; // (typed meanwhile: they go to the new name)
-  await closeTab(path, { discard: true });
+  await renameOpen(path, done.path); // (its tab, in place; open, it stays open as it is, under its new name)
   await loadFiles();
-  if (!open) return;
-  await openFile(done.path);
-  if (typed !== null && ed?.path === done.path && cmView.state.doc.toString() !== typed) {
-    cmView.dispatch({ changes: { from: 0, to: cmView.state.doc.length, insert: typed }, userEvent: "input" });
-  }
 }
 async function removeFile(path) {
   const unsaved = ed?.path === path && ed.dirty ? " Its edits not saved yet go too." : "";

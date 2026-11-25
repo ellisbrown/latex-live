@@ -5,9 +5,9 @@ import { SIGNED_OUT } from "./page.js";
 
 const KEEPALIVE = 60000; // (a keepalive request outlives the page, for a body of up to 64 KB)
 export const fitsKeepalive = (body) => new TextEncoder().encode(JSON.stringify(body)).length < KEEPALIVE;
-export const postJSON = (path, body, keepalive = false) => {
+export const postJSON = (path, body, keepalive = false, signal = undefined) => {
   const data = JSON.stringify(body);
-  return fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: data,
+  return fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: data, signal,
                        keepalive: keepalive && new TextEncoder().encode(data).length < KEEPALIVE });
 };
 
@@ -31,9 +31,10 @@ export const unreachable = (r, body) => (r.status >= 502 && r.status <= 504 && !
 // A request that a panel makes, and its answer as {ok, status, body, error}: ok only for the server's own JSON answer
 // of success, else error says why in words to show: a sign-in page (SIGNED_OUT), no answer or a preview that can't be
 // reached just now, too many requests at once (429: the server takes only so many of one person's at a time), or the
-// server's own message.
-export const getJSON = (path) => answer(fetch(path, { cache: "no-store" }));
-export const sendJSON = (path, body) => answer(postJSON(path, body));
+// server's own message. signal: an AbortSignal that ends the wait (a timeout, a request cancelled), which counts as no
+// answer.
+export const getJSON = (path, { signal } = {}) => answer(fetch(path, { cache: "no-store", signal }));
+export const sendJSON = (path, body, { signal } = {}) => answer(postJSON(path, body, false, signal));
 const NO_ANSWER = "can't reach the preview server";
 async function answer(sent) {
   let r;
