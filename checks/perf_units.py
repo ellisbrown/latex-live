@@ -486,14 +486,19 @@ def group_alive_checks():
         return (latex_report.process_fields(pid) or ["gone"])[0]
     if not os.path.isdir("/proc"):
         return print("skip: no /proc, so a process group of zombies is not checked", flush=True)
-    # A group whose only member is a zombie: a session leader that has exited, which this process (its parent) doesn't reap yet.
-    zombie = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
-    # A group whose leader is a zombie but another member runs: the leader starts a sleeper (pid on its output) and exits.
-    leader = subprocess.Popen([sys.executable, "-c", "import subprocess, sys; print(subprocess.Popen(['sleep', '60']).pid)"],
-                              start_new_session=True, stdout=subprocess.PIPE, text=True)
-    member = int(leader.stdout.readline())
-    running = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    procs, member = [], None
     try:
+        # A group whose only member is a zombie: a session leader that has exited, which this process (its parent) doesn't
+        # reap yet.
+        zombie = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+        procs.append(zombie)
+        # A group whose leader is a zombie but another member runs: the leader starts a sleeper (pid on its output), exits.
+        leader = subprocess.Popen([sys.executable, "-c", "import subprocess, sys; print(subprocess.Popen(['sleep', '60']).pid)"],
+                                  start_new_session=True, stdout=subprocess.PIPE, text=True)
+        procs.append(leader)
+        member = int(leader.stdout.readline())
+        running = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        procs.append(running)
         wait_for("the leaders to exit", lambda: state(zombie.pid) == "Z" and state(leader.pid) == "Z", timeout=10)
         with patched(latex_report, PROC=os.path.join(HERE, "no-such-folder")):
             fallback = latex_report.group_alive(zombie.pid)
@@ -501,12 +506,14 @@ def group_alive_checks():
         os.kill(member, signal.SIGKILL)  # (the sleeper this check started: its exact pid)
         wait_for("the group's last running member to end", lambda: not latex_report.group_alive(leader.pid), timeout=10)
     finally:
-        for proc in (running, zombie, leader):
+        for proc in procs:
             proc.kill()
             proc.wait()
+            if proc.stdout:
+                proc.stdout.close()
         try:
-            os.kill(member, signal.SIGKILL)
-        except OSError:
+            os.kill(member, signal.SIGKILL)  # (the sleeper this check started: its exact pid)
+        except (OSError, TypeError):
             pass
     if found != [False, True, True, False, False] or not fallback:
         fail(f"group_alive: zombies only, a zombie leader with a running member, running, 0, -1: {found}; without /proc,"

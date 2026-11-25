@@ -51,15 +51,19 @@ def standby_keepers(paper):
 
 
 def paper_processes(paper):
-    """(pid, command line, where it waits) of each process working in paper or a folder in it (on Linux, from /proc;
+    """(pid, arguments, where it waits) of each process working in paper or a folder in it (on Linux, from /proc;
     elsewhere none are found)."""
+    def wchan(pid):
+        with open(f"/proc/{pid}/wchan") as f:
+            return f.read()
     found, root = [], os.path.realpath(paper)
     for pid in filter(str.isdigit, os.listdir("/proc") if os.path.isdir("/proc") else []):
         try:
             cwd = os.readlink(f"/proc/{pid}/cwd")
             if cwd == root or cwd.startswith(root + os.sep):
-                with open(f"/proc/{pid}/cmdline", "rb") as f, open(f"/proc/{pid}/wchan") as g:
-                    found.append((int(pid), f.read().replace(b"\0", b" ").decode(errors="replace").strip(), g.read()))
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    argv = f.read().decode(errors="replace").split("\0")[:-1]
+                found.append((int(pid), argv, _quiet(lambda: wchan(pid)) or ""))
         except OSError:
             pass
     return found
@@ -241,10 +245,12 @@ def midpass_stop_check(paper, procs, extra, env, idle, body):
              lambda: _quiet(lambda: read_json_file(lock)["pid"] == procs[-1].pid) and idle())
     # (a body that takes TeX a second or so: the pass is still running when the instance is stopped)
     write_text(paper, "body.tex", body + "\\count255=0 \\loop\\advance\\count255 by 1 \\ifnum\\count255<4000000 \\repeat\n")
-    passes = wait_for("a pass of the instance", lambda: [(pid, command) for pid, command, _ in paper_processes(paper)
-                                                         if re.search(r"standby\.py pdflatex ", command)], timeout=60, step=0.01)
+    def is_pass(argv):  # (standby.py and pdflatex as arguments of their own: not the shell that latexmk starts it with)
+        return any(a.endswith("standby.py") and b == "pdflatex" for a, b in zip(argv, argv[1:]))
+    passes = wait_for("a pass of the instance", lambda: [(pid, argv) for pid, argv, _ in paper_processes(paper) if is_pass(argv)],
+                      timeout=60, step=0.01)
     python = os.path.realpath(sys.executable)  # (live.py's: check.py starts it with its own)
-    programs = [(pid, _quiet(lambda: os.path.realpath(os.readlink(f"/proc/{pid}/exe"))), command[:120]) for pid, command in passes]
+    programs = [(pid, _quiet(lambda: os.path.realpath(os.readlink(f"/proc/{pid}/exe"))), " ".join(argv)[:120]) for pid, argv in passes]
     others = [found for found in programs if found[1] not in (python, None)]
     stop(procs[-1])
     end = time.monotonic() + 30
@@ -254,7 +260,8 @@ def midpass_stop_check(paper, procs, extra, env, idle, body):
     if others:
         fail(f"a pass ran standby.py with another program than live.py's Python ({python}): {others}")
     if left:
-        fail(f"stopped in the middle of a pass, the instance left processes working in the paper: {left}")
+        fail("stopped in the middle of a pass, the instance left processes working in the paper: "
+             f"{[(pid, ' '.join(argv)[:160], waits) for pid, argv, waits in left]}")
     ok("stopped in the middle of a pass, the instance leaves no process behind; its passes run live.py's own Python")
 
 

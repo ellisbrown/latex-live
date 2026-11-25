@@ -116,7 +116,7 @@ def files_tab_checks(page, errors, redraws=True):
     if not redraws:
         return
     page.wait_for_selector(f'#files .files-file.on[data-key={json.dumps("s:" + path)}]', timeout=10_000)
-    page.evaluate("document.querySelector('#files .files-file').dataset.marked = 'yes'")
+    page.locator("#files .files-file").first.evaluate("row => { row.dataset.marked = 'yes'; }")
     with page.expect_response(lambda r: r.url.split("?")[0].endswith("/files"), timeout=10_000):
         page.click("#files .panel-refresh")
     page.wait_for_timeout(300)  # (the answer drawn, if it were)
