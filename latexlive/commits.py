@@ -57,32 +57,41 @@ SOURCE_RATE, SOURCE_WINDOW, ADDED_SOURCES_TOTAL = 100_000_000, 86400, 20_000_000
 
 def source_budget(server, user, rel, old, new, adding=False):
     """Whether user may write new (bytes) over old (b"" for a file made now: adding, as the Files tab adds it) at rel,
-    relative to the paper root: (None, what it costs their day, for charge) or (the refusal, 0). It costs, with
-    LATEX_LIVE_COMMIT, the whole of new when rel is not among their writes still to commit (their next commit stores
-    the file whole), else the bytes that changed (changed_bytes): typing costs a few bytes, writing a file anew its
-    size. Refused past SOURCE_RATE today (429, for a coauthor in shared mode), or when a source added through the
-    Files tab grows and the added sources would pass ADDED_SOURCES_TOTAL (413, for everyone). The caller holds NOTE_LOCK."""
+    relative to the paper root: (None, what it costs their day, for charge) or (the refusal, None). It costs, with
+    LATEX_LIVE_COMMIT, the whole of new unless a write of theirs to rel, still to commit, paid for it whole already
+    (server.paid: their next commit stores the file whole, once), else the bytes that changed (changed_bytes): typing
+    costs a few bytes, writing a file anew its size. Refused past SOURCE_RATE today (429, for a coauthor in shared
+    mode), or when a source added through the Files tab grows and the added sources would pass ADDED_SOURCES_TOTAL
+    (413, for everyone). The caller holds NOTE_LOCK."""
     added = adding or rel in server.added
     if added and len(new) > len(old) and added_size(server, rel) + len(new) > ADDED_SOURCES_TOTAL:
-        return (413, {"error": f"the sources added here would pass {ADDED_SOURCES_TOTAL // 1_000_000} MB: remove some first"}), 0
+        return (413, {"error": f"the sources added here would pass {ADDED_SOURCES_TOTAL // 1_000_000} MB: remove some first"}), None
     if not config.SHARED or user["role"] == "owner":
-        return None, 0
+        return None, None
     with server.pending_lock:
-        pending = rel in server.pending.get(user["id"], {}).get("paths", {})
-    cost = len(new) if server.autocommit and not pending else changed_bytes(old, new)
+        whole = server.autocommit and not (rel in server.paid.get(user["id"], ())
+                                           and rel in server.pending.get(user["id"], {}).get("paths", {}))
+    cost = len(new) if whole else changed_bytes(old, new)
     now = time.monotonic()
     writes = server.writes.setdefault(user["id"], [])
     writes[:] = [(t, n) for t, n in writes if now - t < SOURCE_WINDOW]
     if sum(n for _, n in writes) + cost > SOURCE_RATE:
         return (429, {"error": f"you saved {SOURCE_RATE // 1_000_000} MB of changes to the sources today, the most a coauthor"
-                               " writes in a day; try again tomorrow"}), 0
-    return None, cost
+                               " writes in a day; try again tomorrow"}), None
+    return None, (rel, cost, whole)
 
 
 def charge(server, user, cost):
-    """Count a write that source_budget allowed against user's day."""
-    if cost:
-        server.writes.setdefault(user["id"], []).append((time.monotonic(), cost))
+    """Count a write that source_budget allowed (cost: what it said) against user's day; one paid for whole marks rel
+    paid for until their commit of it (commit_pending)."""
+    if cost is None:
+        return
+    rel, n, whole = cost
+    if n:
+        server.writes.setdefault(user["id"], []).append((time.monotonic(), n))
+    if whole:
+        with server.pending_lock:
+            server.paid.setdefault(user["id"], set()).add(rel)
 
 
 def added_size(server, but):
@@ -356,8 +365,10 @@ def commit_pending(server, ids=None, only=None):
                 for rel, value in paths.items():
                     if entry["paths"].get(rel) == value:
                         del entry["paths"][rel]
+                        server.paid.get(uid, set()).discard(rel)  # (the next write of it is stored whole again)
                 if not entry["paths"]:
                     del server.pending[uid]
+                    server.paid.pop(uid, None)
                 save_pending(server)
         if failed:
             problem = problem or failed

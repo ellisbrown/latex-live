@@ -84,6 +84,7 @@ def build_diff(server, sha):
             raise RuntimeError("latexdiff failed")
         if len(text.encode()) > config.OUTPUT_LIMIT:
             raise RuntimeError(too_big("latexdiff's output", config.OUTPUT_LIMIT))
+        build_folder(root, "diff")  # (again after latexdiff's container: never a link now either)
         with create_output(os.path.join(out, f"{job}.tex")) as fh:
             fh.write(text.encode())
         for ext in (".aux", ".bbl", ".brf"):  # current references, so the diff needs no bibtex run

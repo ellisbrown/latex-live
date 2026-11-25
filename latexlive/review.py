@@ -157,6 +157,7 @@ def build_review(server, pdf, source):
                 server.review = {**server.review, "step": text}
 
     def keep(export):  # the export's PDF and SyncTeX, and the inputs of its last pass, for the probe
+        build_folder(root, os.path.join("review", doc))  # (again after the export's containers, as before each write here)
         for src, name in ((os.path.join(root, config.BUILD, f"{job}.pdf"), "export.pdf"),
                           (os.path.join(export, f"{job}.synctex.gz"), "export.synctex.gz")):
             if not copy_output(src, os.path.join(out, name)):
@@ -188,6 +189,7 @@ def build_review(server, pdf, source):
             plan = review_layout(placed, probe, geo, pages, project_macros(root, fls_file(root, pdf)),
                                  {page: shown_size(turn) for page, turn in turns.items()})
             step("typesetting the review copy")
+            build_folder(root, os.path.join("review", doc))
             with create_output(os.path.join(out, f"{doc}-review.json")) as f:
                 f.write(json.dumps(plan, indent=1).encode())
             # (TeX takes packages from its working folder first, and the paper's TeX writes into out: the last pass
@@ -200,6 +202,7 @@ def build_review(server, pdf, source):
                     os.replace(os.path.join(out, name), os.path.join(copy, name))
 
             def typeset(job, source, pages, what):
+                build_folder(root, os.path.join("review", doc, ".copy"))
                 with create_output(os.path.join(copy, f"{job}.tex")) as f:
                     f.write(source.encode("utf-8"))
                 code, _ = run_tool(tex_argv(server, "pdflatex", "-interaction=batchmode", "-halt-on-error", f"{job}.tex"), copy,

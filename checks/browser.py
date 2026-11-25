@@ -31,7 +31,8 @@ def browser_checks(url, editor=True, answer=None, who="the viewer"):
         try:
             page = browser.new_page(viewport={"width": 1400, "height": 900})
             if answer:
-                page.route("**/*", lambda route: fulfil(route, answer))
+                origin = "/".join(url.split("/", 3)[:3])
+                page.route("**/*", lambda route: fulfil(route, answer, origin))
             page.add_init_script("addEventListener('securitypolicyviolation', (e) => console.error("
                                  "`CSP refused ${e.violatedDirective}: ${e.blockedURI || 'inline'}`))")
             page.on("pageerror", lambda e: errors.append(f"page error: {e}"))
@@ -98,8 +99,10 @@ def browser_checks(url, editor=True, answer=None, who="the viewer"):
        " error, nor anything its CSP refuses")
 
 
-def fulfil(route, answer):
-    """Answer a request of the browser's with answer(method, path and query, body)."""
+def fulfil(route, answer, origin):
+    """Answer a request of the browser's to origin with answer(method, path and query, body); refuse any other."""
     request = route.request
-    status, headers, body = answer(request.method, "/" + request.url.split("/", 3)[3], request.post_data_buffer)
+    if not request.url.startswith(origin + "/"):
+        return route.abort()
+    status, headers, body = answer(request.method, request.url[len(origin):], request.post_data_buffer)
     route.fulfill(status=status, headers={key: value for key, value in headers if key.lower() != "content-length"}, body=body)

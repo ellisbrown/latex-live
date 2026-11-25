@@ -122,6 +122,7 @@ def exact_export(server, pdf, keep=None):
                 tex = ["pdflatex", "-interaction=batchmode", "-halt-on-error", "-file-line-error", "-synctex=1",
                        "-recorder", f"-output-directory={out}", f"-jobname={job}", f"{latex_report.NOTES_OFF}\\input{{{doc}}}"]
                 for passes in range(1, 7):
+                    build_folder(root, os.path.join("export", doc))  # (again after each pass's container)
                     keep_inputs(out)
                     if not run(tex, root):
                         first = next((l for l in log().splitlines() if l.startswith("! ") or re.match(r"^\S+:\d+: ", l)), "")

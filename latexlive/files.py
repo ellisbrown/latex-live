@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 
 from . import config
 
@@ -84,7 +85,7 @@ def build_folder(paper_root, rel, fresh=False):
     """The path of build/<rel>, made a folder of the build's own: each of its parts below the build folder a folder (made
     if missing), not a link or a file, which are removed first (the link, never what it points to), so that what the
     host writes there stays in build/, whatever TeX in a container left there; with fresh, the last part emptied first
-    (made anew). Each part is checked through the descriptor of the one before it."""
+    (made anew; OSError if it can't be). Each part is checked through the descriptor of the one before it."""
     base = os.path.join(paper_root, config.BUILD)
     parts = [part for part in os.path.normpath(rel).split(os.sep) if part]
     if not parts or any(part in (".", "..") for part in parts):
@@ -97,8 +98,11 @@ def build_folder(paper_root, rel, fresh=False):
                 st = os.stat(part, dir_fd=fd, follow_symlinks=False)
             except FileNotFoundError:
                 st = None
-            if st and stat.S_ISDIR(st.st_mode) and fresh and i == len(parts) - 1:
-                shutil.rmtree(os.path.join(base, *parts[:i + 1]), ignore_errors=True)  # (its parents checked just now)
+            if st and stat.S_ISDIR(st.st_mode) and fresh and i == len(parts) - 1:  # (what can't be removed: OSError)
+                if sys.version_info >= (3, 11):
+                    shutil.rmtree(part, dir_fd=fd)
+                else:  # (by its path: its parents were checked just now)
+                    shutil.rmtree(os.path.join(base, *parts[:i + 1]))
             elif st and not stat.S_ISDIR(st.st_mode):
                 os.unlink(part, dir_fd=fd)
             with contextlib.suppress(FileExistsError):
