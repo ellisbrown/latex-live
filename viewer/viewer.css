@@ -637,10 +637,10 @@ body.resizing { cursor: col-resize; user-select: none; }
   display: inline-flex; align-items: center; height: 19px; padding: 0 7px; border-radius: 99px; cursor: pointer;
   border: 1px solid var(--border); background: var(--bg-surface); color: var(--ink-2); font: inherit; font-weight: 500;
 }
-#buildState:hover { background-image: linear-gradient(var(--bg-hover), var(--bg-hover)); } /* (over its color, in either theme) */
 #buildState.ok { background: var(--ok-bg); color: var(--ok); border-color: var(--ok-border); }
 #buildState.busy, #buildState.warn { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-border); }
 #buildState.error { background: var(--err-bg); color: var(--err); border-color: var(--err-border); }
+#buildState:hover { background-image: linear-gradient(var(--bg-hover), var(--bg-hover)); } /* (over its color, in either theme; after the states, whose background would reset it) */
 #saveState.dirty, #saveState.busy { color: var(--warn); font-weight: 500; }
 #saveState.error { color: var(--err); font-weight: 500; }
 #saveState.conflict, #saveState.retry { cursor: pointer; text-decoration: underline; }

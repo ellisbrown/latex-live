@@ -173,8 +173,11 @@ function showTabs() {
     tab.setAttribute("aria-controls", "editorHost");
     close.setAttribute("aria-label", `Close ${name}`);
     activatable(tab, open);
-    tab.addEventListener("keydown", (e) => {
-      if ((e.key === "Delete" || e.key === "Backspace") && e.target === tab) { e.preventDefault(); closeTab(path); }
+    tab.addEventListener("keydown", async (e) => {
+      if ((e.key !== "Delete" && e.key !== "Backspace") || e.target !== tab) return;
+      e.preventDefault();
+      await closeTab(path); // (then the focus goes on, to the tab open now)
+      if (!$("editorTabs").contains(document.activeElement)) ($("editorTabs").querySelector(".tab.on") || $("editorTabs").querySelector(".tab"))?.focus();
     });
     return tab;
   }));
@@ -233,7 +236,7 @@ export async function closeTab(path, { discard = false } = {}) {
 // of its bytes, is the same). A save of it that left under the old name meanwhile may have found the file gone: it
 // is sent again under the new one.
 export async function renameOpen(from, to) {
-  setTabs(openTabs.map((p) => (p === from ? to : p)));
+  setTabs([...new Set(openTabs.map((p) => (p === from ? to : p)))]);
   if (ed?.path !== from) return;
   while (busy) await busy.done;
   if (ed?.path !== from) return;
