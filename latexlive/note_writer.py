@@ -30,6 +30,10 @@ TYPESETTABLE = set(map(chr, range(0x20, 0x7F))) | set(map(chr, range(0xA0, 0x100
 NOTE_LIMIT = 2000
 
 
+class Refused(Exception):
+    """A note's write that note_request turns down: its (status, JSON)."""
+
+
 def too_long(written):
     """An error message if written, a note's text as it goes into the source, is past NOTE_LIMIT, else None."""
     return f"a note holds at most {NOTE_LIMIT} characters as written into the source" if len(written) > NOTE_LIMIT else None
@@ -246,18 +250,24 @@ def note_request(server, req, user):
             if paused(server):
                 return updating()
             raw = read_source(src)
-            data = raw.encode("utf-8")  # (a note's own bytes are few, NOTE_LIMIT: what counts is a commit of the whole file)
-            refusal, cost = source_budget(server, user, rel, data, data)
-            if refusal:
-                return refusal
-            if not commit_others(server, user, rel):  # (LATEX_LIVE_COMMIT: others' edits there are theirs)
-                return updating()
-            if action == "add":
-                result = add_note(src, rel, raw, line, macro, kinds[macro], req, list(kinds))
-            else:
-                result = change_note(src, rel, raw, line, macro, action, req, kinds)
-            if result[0] == 200:
+
+            def write(path, old, new):  # (within what user may write today; others' edits there committed first, as theirs)
+                refusal, cost = source_budget(server, user, rel, old.encode("utf-8"), new.encode("utf-8"))
+                if refusal:
+                    raise Refused(*refusal)
+                if not commit_others(server, user, rel):  # (LATEX_LIVE_COMMIT)
+                    raise Refused(*updating())
+                write_source(path, old, new)
                 charge(server, user, cost)
+
+            try:
+                if action == "add":
+                    result = add_note(src, rel, raw, line, macro, kinds[macro], req, list(kinds), write)
+                else:
+                    result = change_note(src, rel, raw, line, macro, action, req, kinds, write)
+            except Refused as e:
+                return e.args
+            if result[0] == 200:
                 remember_write(server, user, rel, "notes")  # (to be committed as theirs: LATEX_LIVE_COMMIT)
                 wrote(server, user, rel)
         return result
@@ -271,8 +281,9 @@ def note_request(server, req, user):
         return 413, {"error": f"the source file would grow past {EDITABLE_SIZE // 1_000_000} MB, which the editor no longer opens"}
 
 
-def add_note(src, rel, raw, line, macro, author, req, note_macros):
-    """Write \\<macro>{text} after the selected words near line of raw (the text of src)."""
+def add_note(src, rel, raw, line, macro, author, req, note_macros, write=write_source):
+    """Write \\<macro>{text} after the selected words near line of raw (the text of src), with write (note_request's:
+    within what the user may write)."""
     typed = unicodedata.normalize("NFC", str(req["text"]))
     if error := untypesettable(typed):
         return 400, {"error": error}
@@ -285,7 +296,7 @@ def add_note(src, rel, raw, line, macro, author, req, note_macros):
     if pos is None:
         return 422, {"error": f"couldn't find the selected words near {rel}:{line}; select a few words of plain text"}
     site, protected = safe_site(raw, pos, note_macros)
-    write_source(src, raw, raw[:site] + f" \\{macro}{{{text}}}" + raw[site:])
+    write(src, raw, raw[:site] + f" \\{macro}{{{text}}}" + raw[site:])
     return 200, {"source": rel, "line": raw.count("\n", 0, site) + 1, "author": author, "protected": protected,
                  "dropped": dropped, "macro": macro, "tex": text}
 
@@ -303,9 +314,9 @@ def cut_note(raw, start, end):
     return new, new.find("\n", start - spaced) + 1 or len(new)
 
 
-def change_note(src, rel, raw, line, macro, action, req, kinds):
-    """Edit, resolve, reply to, or delete the \\<macro>{tex} use nearest line of raw (the text of src);
-    kinds is {note macro: author label}."""
+def change_note(src, rel, raw, line, macro, action, req, kinds, write=write_source):
+    """Edit, resolve, reply to, or delete the \\<macro>{tex} use nearest line of raw (the text of src), with write (as
+    add_note); kinds is {note macro: author label}."""
     text = re.sub(r"(?<!\\)%.*", lambda m: " " * len(m.group()), raw)  # (notes in comments don't count)
     want = " ".join(str(req["tex"]).split())
     uses = []
@@ -356,5 +367,5 @@ def change_note(src, rel, raw, line, macro, action, req, kinds):
             block = "".join(f"{indent}% {row.strip()}".rstrip() + nl for row in lines)
             new, after = cut_note(raw, start, end)
             new = new[:after] + ("" if after == 0 or new[after - 1] == "\n" else nl) + block + new[after:]
-    write_source(src, raw, new)
+    write(src, raw, new)
     return 200, out

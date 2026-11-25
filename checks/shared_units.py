@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 from .base import HERE, fail, ok
@@ -182,7 +183,7 @@ def build_folder_checks():
     pass's build/clean-<n>) is replaced by a folder of the build's own (files.build_folder) before the export, the diff,
     the baselines and the others write in it, and nothing where it leads is removed or written; the push baseline
     never links or copies a link to the HEAD baseline, nor what it leads to; a status file is never written through a
-    link at its temporary name (latex_report.write_json)."""
+    link at its temporary name (latex_report.write_json); a folder that can't be emptied is not taken as emptied."""
     from latexlive import baselines, config, export, files
     sys.path.insert(0, HERE)
     import latex_report
@@ -226,6 +227,14 @@ def build_folder_checks():
                 made = files.build_folder(root, rel, fresh=True)
                 with files.create_output(os.path.join(made, "x.tex")) as f:
                     f.write(b"written\n")
+            put(os.path.join(outside["diff"], "inner", "kept.txt"), "the owner's\n")  # (a link one folder further in)
+            before["diff"] = listing(outside["diff"])
+            shutil.rmtree(os.path.join(build, "diff", "old"))
+            os.symlink(os.path.join(outside["diff"], "inner"), os.path.join(build, "diff", "old"))
+            files.build_folder(root, os.path.join("diff", "old"), fresh=True)
+            shutil.rmtree(os.path.join(build, "export", "main", "inputs"))
+            os.symlink(outside["export"], os.path.join(build, "export", "main", "inputs"))
+            export.keep_inputs(os.path.join(build, "export", "main"))
             touched = [name for name, folder in outside.items() if listing(folder) != before[name]]
             linked = [name for name in outside if os.path.islink(os.path.join(build, name))]
             if touched or linked:
@@ -233,6 +242,16 @@ def build_folder_checks():
                      f" outside build/, {', '.join(linked) or 'none'} still links")
             if not os.path.isfile(os.path.join(build, "diff", "main-diff.tex")):
                 fail("with build/diff a link, the diff wrote no main-diff.tex in a folder of its own")
+            stuck = os.path.join(build, "stuck")
+            put(os.path.join(stuck, "x.tex"), "x\n")
+            os.chmod(stuck, 0o555)  # (a folder whose files can't be removed: not taken as emptied)
+            try:
+                files.build_folder(root, "stuck", fresh=True)
+                fail("build_folder took a folder it could not empty as emptied")
+            except OSError:
+                pass
+            finally:
+                os.chmod(stuck, 0o755)
             for rel in ("..", os.path.join("diff", ".."), os.path.join("diff", "..", "..", "away"), ""):
                 try:
                     files.build_folder(root, rel)
@@ -254,7 +273,7 @@ def build_folder_checks():
             status = os.path.join(build, "clean", "main-clean.status.json")
             target = os.path.join(tmp, "owners.json")
             put(target, "kept\n")
-            os.symlink(target, f"{status}.{os.getpid()}.tmp")
+            os.symlink(target, f"{status}.{os.getpid()}-{threading.get_ident()}.tmp")
             latex_report.write_json(status, {"ok": True})
             if read_text(target) != "kept\n" or json.loads(read_text(status)) != {"ok": True}:
                 fail("a status file was written through a link at its temporary name")

@@ -93,8 +93,8 @@ then shows "restart to update".
   run in a `SPAWNS` slot (the live build: `LIVE_SPAWN`, its own) and under a
   timeout, with `build/` watched for size (`watch_build_size`), and no host program parses what
   TeX wrote as commands (so no latexmk there). Treat every file in `build/` as
-  written by a coauthor: read and copy them with `files.open_output` and `copy_output`, and write
-  in folders there made with `files.build_folder`. Extend the role checks (`checks/shared_access.py`)
+  written by a coauthor: read and copy them with `files.open_output` and `copy_output`, write
+  them with `create_output`, in folders there made with `files.build_folder`. Extend the role checks (`checks/shared_access.py`)
   with each new endpoint.
 - **Test on scratch papers** in a temporary directory, as `check.py` does.
   Never edit a real paper's sources, and never commit a build of one.

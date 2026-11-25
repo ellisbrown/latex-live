@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -315,8 +316,9 @@ def shared_notes_free(server, job, doc):
                 return False
             build_folder(server.paper_root, "clean")
             for ext in (".synctex.gz", ".aux", ".bbl", ".log"):
-                if os.path.lexists(src := os.path.join(out, f"{doc}-clean{ext}")):
-                    os.replace(src, os.path.join(clean, f"{doc}-clean{ext}"))
+                with contextlib.suppress(OSError):
+                    if stat.S_ISREG(os.lstat(src := os.path.join(out, f"{doc}-clean{ext}")).st_mode):  # (never a link)
+                        os.replace(src, os.path.join(clean, f"{doc}-clean{ext}"))
             os.replace(pdf, os.path.join(config.BUILD, f"{doc}-clean.pdf"))
             return True
 

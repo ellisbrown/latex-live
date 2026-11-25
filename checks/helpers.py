@@ -49,7 +49,7 @@ def fake_server(root, state=None, **overrides):
              "pending_file": os.path.join(state, "pending.json")} if state else {}
     return types.SimpleNamespace(**{
         "paper_root": root, "paper_id": "paper-test", "default_pdf": "main.pdf", "tex_exec": "", "editable": None,
-        "assets": None, "added": set(), "uploads": {}, "writes": {}, "autocommit": False, "pending": {}, "write_seq": 0,
+        "assets": None, "added": set(), "uploads": {}, "writes": {}, "paid": {}, "autocommit": False, "pending": {}, "write_seq": 0,
         "pending_lock": threading.Lock(), "versions": collections.OrderedDict(), "versions_lock": threading.Lock(),
         "last_saves": collections.OrderedDict(), "last_writer": {}, "export": {}, "exported": {}, "review": {},
         "export_lock": threading.Lock(), "review_lock": threading.Lock(), "download_lock": threading.Lock(), "results": {},

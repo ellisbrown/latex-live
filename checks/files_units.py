@@ -269,6 +269,21 @@ def source_budget_checks():
             fail(f"a coauthor's note in a file not among their writes to commit, past what they may write today: {refused}")
         server.writes["ed"] = []
         want(note_writer.note_request(server, note, ed), 200, "a coauthor's note within their day")
+        server.autocommit, server.pending, server.paid, server.writes = False, {}, {}, {}
+        want(note_writer.note_request(server, {**note, "tex": "y", "action": "reply", "text": "r" * 300}, ed), 200, "a coauthor's reply")
+        if not 300 <= spent() < 400:
+            fail(f"a coauthor's reply of 300 characters cost {spent()} bytes of their day")
+        server.autocommit, server.writes = True, {}
+        want(editor.rename_request(server, {"from": "two.tex", "to": "moved.tex"}, ed), 200, "a coauthor's rename")
+        want(save(ed, read_text(os.path.join(root, "moved.tex")) + "x", "moved.tex"), 200, "a coauthor's edit of a file they renamed")
+        if spent() != 901:
+            fail(f"with auto-commit, a coauthor's first edit of a file they renamed cost {spent()} bytes, not its 901 (its commit"
+                 " stores it whole)")
+        server.autocommit = False
+        want(editor.create_request(server, {"path": "more.bib", "text": "@misc{c,\n  title = {C},\n}\n"}, owner), 200, "making more.bib")
+        added = bib.add_request(server, {"bibtex": "@misc{d,\n  title = {" + "t" * 1200 + "},\n}", "file": "more.bib"}, owner)
+        if added[0] != 413 or "added" not in added[1].get("error", ""):
+            fail(f"an entry added in the Refs tab past the added sources' total: {added}")
     ok(f"in shared mode, a coauthor writes at most {commits.SOURCE_RATE // 1_000_000} MB to the sources a day (saves, the Refs"
        " tab, new files, restores, notes; what changed, or with auto-commit what their commit stores), the owner and anyone outside"
        f" shared mode without limit; the sources added hold at most {commits.ADDED_SOURCES_TOTAL // 1_000_000} MB")

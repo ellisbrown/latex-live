@@ -159,9 +159,12 @@ def page_policy(page=b""):
     """The Content-Security-Policy of a response: frame_policy, scripts only from this server's own files (and the
     WebAssembly that PDF.js's worker compiles) and the inline scripts of page (an HTML page's bytes, as sent: the
     viewer's import map), each by its hash, no plugins, and no <base> that would move where the page's relative URLs
-    lead. Nothing else is restricted: the viewer sets styles inline."""
-    hashes = "".join(f" 'sha256-{base64.b64encode(hashlib.sha256(m.group(1)).digest()).decode()}'"
-                      for m in INLINE_SCRIPT_RE.finditer(page))
+    lead. Nothing else is restricted: the viewer sets styles inline. page is the checkout's own (never made from a
+    request: its scripts would run), and its line ends are hashed as a browser reads them."""
+    hashes = ""
+    for m in INLINE_SCRIPT_RE.finditer(page):
+        text = re.sub(rb"\r\n?", b"\n", m.group(1))
+        hashes += f" 'sha256-{base64.b64encode(hashlib.sha256(text).digest()).decode()}'"
     return f"{frame_policy()}; script-src 'self' 'wasm-unsafe-eval'{hashes}; object-src 'none'; base-uri 'none'"
 
 
@@ -391,7 +394,8 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
             return self.send_error(404)
         with f:
             self.send_response(200)
-            self.csp_override = frame_policy()  # (a PDF opened in a tab: Chrome's viewer of it is a plugin, object-src)
+            if content_type == "application/pdf":  # (opened in a tab, Chrome shows it with a plugin: object-src)
+                self.csp_override = frame_policy()
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(os.fstat(f.fileno()).st_size))
             self.send_header("Cache-Control", "no-store")
