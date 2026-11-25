@@ -269,7 +269,10 @@ def main():
         threading.Thread(target=open_in_editor, args=(pdf_path(os.getcwd(), f"{doc}.pdf"),), daemon=True).start()
 
     server.no_build = args.no_build
-    server.env = {**os.environ, "LATEX_LIVE_HOME": config.HERE, "max_print_line": "10000"}
+    # (LATEX_LIVE_PYTHON: latexmkrc runs the Python helpers with this interpreter, not with whatever python3 is on the
+    # PATH, which may be another Python, or a launcher that starts one as its child and can hang when stopped)
+    server.env = {**os.environ, "LATEX_LIVE_HOME": config.HERE, "LATEX_LIVE_PYTHON": sys.executable or "python3",
+                  "max_print_line": "10000"}
     if config.SHARED:  # (the image even with --no-build: the baselines and downloads build too, never with the host's TeX)
         server.env["LATEX_LIVE_EXEC"] = os.environ["LATEX_LIVE_EXEC"] = server.tex_exec
         threading.Thread(target=watch_build_size, args=(server,), daemon=True).start()

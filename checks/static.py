@@ -87,6 +87,11 @@ def static_checks():
     if missing:
         fail(f"the vendored pdf_viewer.mjs lacks what the margin bubbles' gutters (layout.js) rely on: {missing}")
     ok("the vendored PDF.js viewer measures as the margin bubbles' gutters expect")
+    code_lines = [re.sub(r"(^|\s)#.*", "", line) for line in read_text(os.path.join(HERE, "latexmkrc")).splitlines()]
+    bare = [line.strip() for line in code_lines if re.search(r"(?<![$\w])python", line) and "LATEX_LIVE_PYTHON" not in line]
+    if bare or "LATEX_LIVE_PYTHON" not in read_text(os.path.join(HERE, "latexlive", "main.py")):
+        fail(f"latexmkrc runs Python other than through live.py's own (LATEX_LIVE_PYTHON, which main.py sets): {bare}")
+    ok("latexmkrc runs its Python helpers with live.py's own interpreter (LATEX_LIVE_PYTHON), not a python3 from the PATH")
     with tempfile.TemporaryDirectory(prefix="latex-live-token-") as state:  # (instances starting at once)
         racers = [subprocess.Popen([sys.executable, "-c", "from latexlive.auth import load_token; print(load_token())"], cwd=HERE,
                                    env={**ENV, "LATEX_LIVE_STATE": state}, stdout=subprocess.PIPE, text=True)

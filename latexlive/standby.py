@@ -100,7 +100,7 @@ its TeX run when live.py dies (also after kill -9) or the pass that took it does
 SIGTERM if the keeper dies (on Linux); a container stops at its deadline (DEADLINE) whatever happens, and
 live.py removes leftovers by label (stop_standbys); once live.py begins to stop, no pass starts one (stop_owner).
 
-This file imports nothing from latexlive: latexmkrc runs it as a script (python3 -I).
+This file imports nothing from latexlive: latexmkrc runs it as a script (-I, with live.py's Python: LATEX_LIVE_PYTHON).
 """
 
 import ctypes
