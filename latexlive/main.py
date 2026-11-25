@@ -67,6 +67,7 @@ def serve(paper_root, default_pdf, port, page_limit, hub_port=None):
     server.editable, server.assets = None, None  # (editable_files, project_assets)
     load_added(server)  # (the Files tab's added files: server.added, server.added_file)
     server.uploads = {}  # (upload_request: each user's uploads of the last day)
+    server.writes = {}  # (source_budget: each user's writes to the sources in the last day)
     server.versions, server.versions_lock = collections.OrderedDict(), threading.Lock()  # (remember_version)
     server.bib_verify, server.bib_lock = {}, threading.Lock()  # (the Refs panel's check: start_verify)
     server.presence, server.presence_lock = {}, threading.Lock()  # (who has the paper open: presence_request)

@@ -1,7 +1,8 @@
 """The unit checks of the Files tab's server side (latexlive.sources, latexlive.editor, latexlive.commits), without an
 instance: the names a new file may have, making, uploading, renaming and removing files (never over another, never
 through a link, never into the build directory in any case, a source never uploaded, a kind never changed by a rename),
-the upload limits, a coauthor's figures pinned to the document, the files added kept for a restart, and the commits of
+the upload limits, what a coauthor writes to the sources in a day and the size of the sources added (source_budget),
+a coauthor's figures pinned to the document, the files added kept for a restart, and the commits of
 what the Files tab changed (new files added to git, removed ones committed as removed)."""
 
 import contextlib
@@ -15,7 +16,7 @@ from .helpers import fake_server, git, git_out, patched, put, put_bytes, read_te
 
 
 def files_checks():
-    for check in (name_checks, change_checks, request_checks, commit_checks, csp_checks):
+    for check in (name_checks, change_checks, request_checks, source_budget_checks, commit_checks, csp_checks):
         check()
 
 
@@ -190,6 +191,76 @@ def request_checks():
     ok("the Files tab's requests: a source made, never uploaded; the main file kept; the limits on uploads (a coauthor's"
        " bytes a day, not the owner's); a coauthor's figures are the document's; the files added listed and kept for a"
        " restart; every change remembered for its commit")
+
+
+def source_budget_checks():
+    """In shared mode, a coauthor's writes to the sources (a save, an entry added in the Refs tab, a file made, a restore)
+    count against editor.SOURCE_RATE bytes a day: the bytes that changed (changed_bytes), or with auto-commit the whole
+    file when it is not among their writes still to commit; past that, 429 with a message, nothing written; the owner's
+    and anyone's outside shared mode are not counted, nor a save that changes nothing. A source added through the Files
+    tab may not grow once the added sources pass ADDED_SOURCES_TOTAL (413, for everyone), but may shrink."""
+    from latexlive import bib, config, editor, sources
+    owner = {"id": "owner", "name": "Owner", "role": "owner", "macro": "", "email": None, "via": "token"}
+    ed = {"id": "ed", "name": "Eden", "role": "editor", "macro": "ed", "email": None, "via": "proxy"}
+    for old, new, want in (("abc", "abXc", 1), ("aaaa", "aaaaa", 1), ("", "xyz", 3), ("xyz", "", 0), ("abab", "ab", 0),
+                           ("same", "same", 0), ("one two", "one three two", 6)):
+        if editor.changed_bytes(old.encode(), new.encode()) != want:
+            fail(f"changed_bytes({old!r}, {new!r}) is {editor.changed_bytes(old.encode(), new.encode())}, not {want}")
+    with tempfile.TemporaryDirectory(prefix="latex-live-budget-") as root, tempfile.TemporaryDirectory() as state, \
+            patched(config, STATE=state, SHARED=True), patched(editor, paused=lambda s: None, SOURCE_RATE=1000, ADDED_SOURCES_TOTAL=3000), \
+            patched(bib, paused=lambda s: None):
+        main = os.path.join(root, "main.tex")
+        put(main, "\\documentclass{article}\n\\begin{document}\nx\n\\end{document}\n")
+        put(os.path.join(root, "refs.bib"), "@misc{a,\n  title = {A},\n}\n")
+        for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "x"]):
+            git(root, *args)
+        sha = git_out(root, "rev-parse", "HEAD")
+        server = fake_server(root, state)
+        want = lambda result, status, what: result[0] == status or fail(f"{what}: {result}, not {status}")
+        spent = lambda: sum(n for _, n in server.writes.get("ed", []))
+
+        def save(user, text, path="main.tex"):
+            version = sources.file_version(open(os.path.join(root, path), "rb").read())
+            return editor.save_request(server, {"path": path, "base": version, "text": text}, user)
+
+        text = read_text(main)
+        want(save(ed, text.replace("x\n", "xy\n")), 200, "a coauthor's small edit")
+        want(save(ed, text.replace("x\n", "xy\n")), 200, "a save that changes nothing")
+        if spent() != 1:
+            fail(f"a coauthor's edit of one byte (and a save that changed nothing) cost {spent()} bytes of their day")
+        big = text.replace("x\n", "z" * 1200 + "\n")
+        refused = save(ed, big)
+        if refused[0] != 429 or "a day" not in refused[1].get("error", "") or "z" * 10 in read_text(main):
+            fail(f"a coauthor's save past {editor.SOURCE_RATE} bytes in a day: {refused}")
+        want(save(owner, big), 200, "the owner's save of as much")
+        with patched(config, SHARED=False):
+            want(save(ed, big.replace("z", "w")), 200, "a save of as much outside shared mode")
+        added = bib.add_request(server, {"bibtex": "@misc{b,\n  title = {" + "t" * 1200 + "},\n}"}, ed)
+        if added[0] != 429 or "a day" not in added[1].get("error", ""):
+            fail(f"an entry added in the Refs tab past a coauthor's day: {added}")
+        want(editor.create_request(server, {"path": "made.tex", "text": "m" * 1200}, ed), 429, "a coauthor's new file past their day")
+        git(root, "commit", "-qam", "big")
+        want(editor.restore_request(server, {"rev": sha, "path": "main.tex"}, owner), 200, "the owner's restore of the small file")
+        want(editor.restore_request(server, {"rev": git_out(root, "rev-parse", "HEAD"), "path": "main.tex"}, ed), 429, "a coauthor's restore past their day")
+        server.writes.clear()
+        server.autocommit = True
+        want(save(ed, read_text(main) + "%first\n"), 200, "a coauthor's edit with auto-commit")
+        first, size = spent(), len(open(main, "rb").read())
+        want(save(ed, read_text(main) + "%next\n"), 200, "another, before their commit")
+        if first != size or spent() - first != 6:
+            fail(f"with auto-commit, a coauthor's first write of a file cost {first} bytes (the file has {size}), the next"
+                 f" one {spent() - first} (6 changed)")
+        server.autocommit = False
+        want(editor.create_request(server, {"path": "one.tex", "text": "a" * 2000}, owner), 200, "making a source of 2000 bytes")
+        refused = editor.create_request(server, {"path": "two.tex", "text": "b" * 1500}, owner)
+        if refused[0] != 413 or "added" not in refused[1].get("error", "") or os.path.exists(os.path.join(root, "two.tex")):
+            fail(f"a new source past the added sources' {editor.ADDED_SOURCES_TOTAL} bytes: {refused}")
+        want(editor.create_request(server, {"path": "two.tex", "text": "b" * 900}, owner), 200, "a new source within them")
+        want(save(owner, "a" * 2200, "one.tex"), 413, "an added source grown past the added sources' total")
+        want(save(owner, "a" * 1000, "one.tex"), 200, "an added source shrunk")
+    ok(f"in shared mode, a coauthor writes at most {editor.SOURCE_RATE // 1_000_000} MB to the sources a day (saves, the Refs"
+       " tab, new files, restores; what changed, or with auto-commit what their commit stores), the owner and anyone outside"
+       f" shared mode without limit; the sources added hold at most {editor.ADDED_SOURCES_TOTAL // 1_000_000} MB")
 
 
 def commit_checks():
