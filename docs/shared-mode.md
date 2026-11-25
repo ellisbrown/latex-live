@@ -403,6 +403,13 @@ instance treats the paper and everything TeX writes as theirs.
 - **This machine only.** It drops connections from other machines without
   answering, and serves exactly `--port`, never the hub of your own previews.
   Its pages can't be framed by another site.
+- **Requests at once.** A connection must send its request line and headers
+  within 10 seconds. Each coauthor may have 32 requests in progress at once
+  (the viewer's own files aside), and 2 of those that may start a program
+  (SyncTeX lookups, forward search, a commit's diff, a note); past that, the
+  instance answers "too many requests" at once, so one coauthor's browser or
+  script can't hold the others' connections or the SyncTeX slots. Your own
+  requests are never refused this way.
 - **The identity header counts only from the proxy.** Any program on this
   machine can connect to the port and send that header, so latex-live trusts
   it only as exactly one header, with the `Host` in `LATEX_LIVE_PROXY_HOST`,
@@ -424,7 +431,9 @@ instance treats the paper and everything TeX writes as theirs.
   `.bib`, `.sty` and `.cls` files, in effect any such file in the copy (an
   `\input` adds one to the paper). The LaTeX they write can read any file below
   the copy's paper folder and typeset it. Keep nothing in the copy that they
-  shouldn't see. Commenters write plain text only. The browser editor and the
+  shouldn't see. Commenters write plain text only, up to 2,000 characters a
+  note, and no note grows a file past the 4 MB the editor opens (History's
+  restore still puts back one that grew past it). The browser editor and the
   notes read and write a file only as it was checked: a folder or file that
   something on this machine swaps for a link meanwhile is not followed.
 - **The Files tab** shows a coauthor the document's files only: the sources the
@@ -473,7 +482,8 @@ instance treats the paper and everything TeX writes as theirs.
   rather than reading them back, serves the PDF without following links, reads
   the files there (the `.aux` files and the ones they name, file lists,
   SyncTeX, logs, JSON) only within the folder, without links, and up to a
-  bound, and never sends its token to a port that a file there names. The
+  bound, copies none of them through a link (for the downloads, the diff, the
+  baselines and the notes-free pass), and never sends its token to a port that a file there names. The
   messages of downloads, diffs and baselines that fail, and the build's log that
   editors read, name the paper's files relative to it, never the server's
   folders. The build
@@ -520,6 +530,11 @@ instance treats the paper and everything TeX writes as theirs.
   personal links.
 - **A killed server** (`kill -9`) can't stop its containers; each still stops
   itself after 10 minutes.
+- **Connections can still run out.** The instance takes 64 connections at
+  once. Anything that reaches the port (the proxy, a tunnel, a program on this
+  machine) can open that many and hold each for up to 10 seconds before
+  sending a request, without signing in, and keep doing so: meanwhile, others
+  can't connect. The per-coauthor limits only apply once someone is signed in.
 - **No hard disk quota.** The build folder's size is checked every second,
   not enforced by the file system, so a build can pass
   `LATEX_LIVE_BUILD_LIMIT` by what TeX writes in that second before it is

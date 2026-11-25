@@ -11,6 +11,7 @@ import os
 import shutil
 import tempfile
 import threading
+import types
 
 from .base import fail, ok
 from .helpers import git, git_out, put, read_text
@@ -101,8 +102,22 @@ def listing_checks(repo, root):
     if sorted((f["status"], f["path"]) for f in dirty) != [("A", "moved.tex"), ("M", "sec.tex")]:
         fail(f"the uncommitted changes, with a file moved in from outside the paper's folder: {dirty}")
     git(repo, "reset", "-q", "--hard")
+    listed = history.commits(root)
+    if [c["subject"] for c in listed["commits"]] != subjects or listed["dirty"] or any(
+            c["sha"] not in json.dumps(found) or c["rev"] != c["sha"][:9] for c in listed["commits"]):
+        fail(f"the compare menu's commits (GET /commits) are not the History tab's: {listed}")
+    if any(secret in json.dumps(listed) for secret in ("OUTSIDE-ONLY", "DOT-SECRET", "BUILD-SECRET", "ELSEWHERE")):
+        fail(f"the compare menu's commits show a commit of outside the paper's shown files: {listed}")
+    put(os.path.join(repo, "outside.tex"), "Changed, outside the paper.\n")
+    if history.commits(root)["dirty"]:
+        fail("the compare menu counts an uncommitted change outside the paper's folder as the paper's")
+    put(os.path.join(root, "sec.tex"), "Uncommitted.\n")
+    if not history.commits(root)["dirty"] or len(history.commits(root, limit=2)["commits"]) != 2:
+        fail("the compare menu misses an uncommitted change of the paper, or its limit")
+    git(repo, "reset", "-q", "--hard")
     ok("history: only commits that changed the paper's files (not dot files or build/, nor their messages), a merge with"
-       " what it brought in, the limit counted after; the uncommitted changes name nothing outside the paper's folder")
+       " what it brought in, the limit counted after; the uncommitted changes name nothing outside the paper's folder; the"
+       " compare menu lists the same commits")
 
 
 def diff_checks(repo, root):
@@ -153,8 +168,28 @@ def diff_checks(repo, root):
             or history.file_at_commit(root, linked, "main.tex", 10)[0] is not None:
         fail("file_at_commit of main.tex (and of it, over a limit)")
     git(repo, "reset", "-q", "--hard", "HEAD^")
+    from latexlive import baselines
+    saved, baselines.build_diff = baselines.build_diff, lambda server, sha: None  # (no latexdiff: what start_diff takes)
+    try:
+        def start(rev, any_rev=True):
+            server = types.SimpleNamespace(paper_root=root, diff={})
+            code, state = baselines.start_diff(server, rev, any_rev)
+            return code, state.get("rev"), state.get("sha")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "written")
+            for rev in (f"--output={out}", "-x", "HEAD~1", "main", "elsewhere", head[:6], f"{head}^", "", "HEAD^{commit}"):
+                if start(rev)[0] != 400:
+                    fail(f"POST /diff takes {rev!r} as a commit")
+            if os.path.exists(out):
+                fail("POST /diff passed a rev to git as an option")
+        if start("a" * 40)[0] != 404 or start(elsewhere, any_rev=False)[0] != 403 or start(elsewhere)[:2] != (200, elsewhere[:9]):
+            fail("POST /diff: an unknown commit (404), one HEAD doesn't build on (403 for a coauthor, the owner's to compare)")
+        if start("HEAD", any_rev=False) != (200, "HEAD", head[:9]) or start(head[:9], any_rev=False) != (200, head[:9], head[:9]):
+            fail(f"POST /diff of HEAD and of a short id: {start('HEAD', any_rev=False)} {start(head[:9], any_rev=False)}")
+    finally:
+        baselines.build_diff = saved
     ok("a commit's diff: the paper's shown files only, first (whatever a dot file's size), a merge against its first parent;"
-       " only ids name commits; a coauthor sees only commits the branch builds on; a file read from a commit is a regular"
+       " only ids name commits (also the latexdiff's, or HEAD); a coauthor sees only commits the branch builds on; a file read from a commit is a regular"
        " file shown")
 
 
@@ -203,9 +238,20 @@ def restore_checks(repo, root, state):
     if git_out(repo, "show", "-s", "--format=%an", "HEAD") != "Eden Doyle" or "paper/gone.tex" not in git_out(repo, "ls-files"):
         fail("a file restored after it was removed is not committed as its restorer's")
     want(editor.restore_request(server, {"rev": shas["merge the side"], "path": "gone.tex"}, ed), 200, "restoring it again (as it is)")
+    put(sec, "% grown by notes\n" + "%" * sources.EDITABLE_SIZE + "\n")  # (past what the editor opens)
+    if "sec.tex" in sources.editable_files(server):
+        fail("the editor opens a source past 4 MB")
+    want(editor.restore_request(server, {"rev": shas["start"], "path": "sec.tex", "version": "0" * 20}, ed), 409,
+         "a restore over a source past 4 MB, at another version")
+    want(editor.restore_request(server, {"rev": shas["start"], "path": "sec.tex"}, ed), 200, "restoring sec.tex, grown past 4 MB")
+    if read_text(sec) != "Section one.\n" or "sec.tex" not in sources.editable_files(server):
+        fail(f"sec.tex, grown past 4 MB and restored: {read_text(sec)[:80]!r}")
+    put(os.path.join(root, "zlast.tex"), "%" * (sources.EDITABLE_SIZE + 10) + "\n")
+    want(editor.restore_request(server, {"rev": shas["remove gone.tex"], "path": "zlast.tex"}, owner), 409,
+         "a restore over a file past 4 MB that is not the document's")
     shutil.rmtree(os.path.join(root, "sections"))
     result = editor.restore_request(server, {"rev": shas["start"], "path": "sections/intro.tex"}, ed)
     if result[:1] != (200,) or read_text(os.path.join(root, "sections", "intro.tex")) != "In a folder.\n":
         fail(f"restoring sections/intro.tex, whose folder is gone too: {result}")
-    ok("restore: over the file the editor opens (at the version given), a removed file made again, listed and committed as"
+    ok("restore: over the file the editor opens (at the version given), or a source of the document past 4 MB, a removed file made again, listed and committed as"
        " its restorer's, never over another file, sources only; a coauthor only from commits the branch builds on")

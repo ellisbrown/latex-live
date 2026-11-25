@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 
 from .files import in_build
 
@@ -55,14 +56,14 @@ def git_read_env():
     return {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
 
 
-def commits(paper_root):
-    """Recent commits for the viewer's compare menu."""
-    out = subprocess.run(["git", "-C", paper_root, "log", "-n", "40", "--date=format:%b %d %H:%M",
-                          "--format=%h%x09%ad%x09%an%x09%s"], capture_output=True, text=True).stdout
-    dirty = bool(subprocess.run(["git", "-C", paper_root, "status", "--porcelain", "--untracked-files=no"], capture_output=True,
-                                text=True, env=git_read_env()).stdout.strip())
-    return {"dirty": dirty, "commits": [dict(zip(("rev", "date", "author", "subject"), l.split("\t", 3)))
-                                        for l in out.splitlines()]}
+def commits(paper_root, limit=40):
+    """GET /commits, the viewer's compare menu: the History tab's commits (history: those of the paper's folder that changed
+    a file it shows, read with time limits), at most limit of them, as {"rev" (short), "sha", "date", "author", "subject"},
+    and whether the files it shows have uncommitted changes (dirty)."""
+    found = history(paper_root)
+    return {"dirty": bool(found["dirty"]),
+            "commits": [{"rev": c["sha"][:9], "sha": c["sha"], "date": time.strftime("%b %d %H:%M", time.localtime(c["time"])),
+                         "author": c["author"], "subject": c["subject"]} for c in found["commits"][:limit]]}
 
 
 def pushed_commit(paper_root):

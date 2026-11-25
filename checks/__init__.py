@@ -11,7 +11,9 @@ does).
    that don't fit after the paper; its matching tells apart two authors' notes with the same text.
    In shared mode, the downloads built on request say plainly that the TeX Live image is missing, the
    review copy reads its notes from the files of the last good build (only the paper's own), and
-   the inputs kept for its probe leave out symbolic links; shared mode's builder prints the page
+   the inputs kept for its probe leave out symbolic links; the host's reads and copies of the build's files (the
+   downloads, the diff, the baselines, the kept recorder file, the notes-free pass's seed, the log) follow no link,
+   and no copy is written through one; shared mode's builder prints the page
    layout as latexmkrc does, runs biber again when a data source changes, and reads a chapter's .aux
    for bibtex; a failed diff or baseline names no folder of the server's there. LATEX_LIVE_TIMING=1's lines
    leave out the events of a notes-free pass that a newer run superseded. The editor and the notes never read or
@@ -21,7 +23,11 @@ does).
    boxes in the file TeX opened last, shows the paper's folder as ./, reads only a long log's end, and parses a log
    once until it changes; a build is timed from its first pass. On turned pages (/Rotate 90 or
    270), SyncTeX's records of a rotated body go where it is drawn and back, and nothing changes without poppler.
-   Every server keeps to 64 connections at once. The Refs panel's bibliography lists the entries with their citation
+   Every server keeps to 64 connections at once, and takes a request's line and headers within 10 s however slowly
+   they come (a body may take longer); in shared mode a coauthor has at most 32 requests in progress at once (the
+   viewer's own files aside) and 2 that may start a program, the owner and others uncounted. Notes, replies and
+   reasons take at most 2,000 characters as written; no write takes a source past 4 MB; a note's refusal names a
+   file as asked, not where its link leads. The Refs panel's bibliography lists the entries with their citation
    counts, adds entries through the editor's save (no key twice, braces paired, within 4 MB), turns what arXiv and
    Crossref answer (stand-ins: never online) into plain BibTeX, and looks up only with LATEX_LIVE_LOOKUPS (off in
    shared mode by default), over https to those hosts (redirects too), two at once and spaced per host. Who has the
@@ -34,8 +40,9 @@ does).
    their writer's. A figure's sandboxing CSP is its response's only. The History tab, on a paper in a folder of a bigger
    repository, lists only the commits that changed its shown files (no dot files, build/ or the rest of the repository,
    nor their messages; a merge with what it brought in; its limit counted after), names nothing outside the paper's
-   folder in the uncommitted changes, diffs the shown files first, names commits only by their ids, and restores a
-   source over the file the editor opens (at the version given) or a removed one anew, committed as its restorer's,
+   folder in the uncommitted changes, diffs the shown files first, names commits only by their ids (the compare
+   menu's too, which lists the same commits, and its latexdiff's, or HEAD), and restores a source over the file the
+   editor opens (at the version given), or a source of the document grown past 4 MB, or a removed one anew, committed as its restorer's,
    never over another file, a coauthor only from commits the branch builds on. The agent hook takes a plugin's answer
    only as one JSON object with a replacement (or its error), stops a plugin past its timeout or its output limit with
    everything it started (and what an answered one left running), stalls on no pipe, runs its command without a shell
@@ -132,7 +139,8 @@ does).
      non-owners pinned to the document, and the viewer's security headers; the Refs panel for editors, without
      online lookups; who has the paper open for editors and the owner (names, files and lines, no ids or roles),
      never for viewers or commenters; the History tab for editors and the owner, an editor's without another
-     branch's commits (nor restoring from one);
+     branch's commits (nor restoring from one); a viewer's SyncTeX lookups past two at once refused while the
+     editor's requests go through, and a viewer's first load in two tabs at once refused nothing;
    - sessions: a personal link's session cookie is new each time, never the token, and works only
      while its token does; sign-out is offered to those who came with a token and expires the cookie
      only from the viewer's page, and through the proxy there is nothing to forget; the instance's

@@ -1,12 +1,16 @@
 """The paper's files and the build's: where each is (job_file, pdf_path...), which of them are the
-paper's own (in_paper) or in the build directory (in_build), and reading what TeX wrote within bounds (open_output, read_capped, read_output),
-since the paper's TeX decides how big those files are."""
+paper's own (in_paper) or in the build directory (in_build), and reading and copying what TeX wrote within bounds and
+without following a link (open_output, read_capped, read_output, copy_output), since the paper's TeX decides how big those
+files are, and in shared mode writes them in containers."""
 
+import contextlib
 import glob
 import hashlib
+import io
 import json
 import os
 import re
+import shutil
 import stat
 
 from . import config
@@ -65,6 +69,25 @@ def open_output(path):
         f.close()
         return None
     return f
+
+
+def create_output(path):
+    """A new file of the build's at path, open for writing in binary: whatever is there first removed, a link too (the
+    link, never what it points to), so that nothing is written through a link that TeX in a container left there."""
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(path)
+    return open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644), "wb")
+
+
+def copy_output(src, dst):
+    """Copy a file of the build's (open_output: in shared mode never through a link) to dst (create_output); whether
+    there was one (if not, dst is left as it was)."""
+    f = open_output(src)
+    if f is None:
+        return False
+    with f, create_output(dst) as g:
+        shutil.copyfileobj(f, g)
+    return True
 
 
 def read_capped(path, limit=config.READ_LIMIT, whole=False):
@@ -172,12 +195,13 @@ def file_hash(path, cache={}):
 
 def read_output(paper_root, path, encoding=None):
     """A file that TeX or BibTeX wrote (a log, an .aux, a .bbl), read whole for the downloads: its text (bytes
-    that don't decode replaced), or None if there is none. Raises RuntimeError past OUTPUT_LIMIT."""
-    try:
-        with open(path, encoding=encoding, errors="replace") as f:
-            text = f.read(config.OUTPUT_LIMIT + 1)
-    except OSError:
+    that don't decode replaced), or None if there is none (open_output: in shared mode never through a link). Raises
+    RuntimeError past OUTPUT_LIMIT."""
+    f = open_output(path)
+    if f is None:
         return None
+    with io.TextIOWrapper(f, encoding=encoding, errors="replace") as text_file:
+        text = text_file.read(config.OUTPUT_LIMIT + 1)
     if len(text) > config.OUTPUT_LIMIT:
         raise RuntimeError(too_big(os.path.relpath(path, paper_root), config.OUTPUT_LIMIT))
     return text

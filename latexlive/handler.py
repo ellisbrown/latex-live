@@ -1,10 +1,12 @@
 """An instance's requests: the viewer and its files, the JSON endpoints and the actions, each as
 the asker's role allows (Handler)."""
 
+import collections
 import contextlib
 import json
 import os
 import re
+import threading
 import urllib.parse
 
 from . import config
@@ -78,6 +80,41 @@ def static_file(path):
     return os.path.realpath(os.path.join(config.HERE, path.lstrip("/"))).startswith(os.path.join(folder, ""))
 
 
+# Requests of one coauthor in progress at once, in shared mode (in_flight): at most USER_REQUESTS of any kind but the
+# viewer's own files (static_file: a page loads dozens of modules at once), half the server's connections
+# (DualStackServer.CONNECTIONS), and at most USER_SPAWNS of those that may start a process each time (SPAWNING: SyncTeX,
+# which shares three slots with the builds made on request, git, and a note's inverse search). Past that, 429. Counted per
+# user, so a person's tabs and sign-ins share them; the owner's are not counted.
+USER_REQUESTS, USER_SPAWNS = 32, 2
+SPAWNING = {("GET", "/synctex"), ("GET", "/forward"), ("GET", "/history/diff"), ("POST", "/note")}
+IN_FLIGHT, IN_FLIGHT_LOCK = collections.Counter(), threading.Lock()
+
+
+@contextlib.contextmanager
+def in_flight(user, method, path):
+    """Whether user's request (method, path) may go ahead now (see USER_REQUESTS), counted while it runs."""
+    if not config.SHARED or user["role"] == "owner" or method == "GET" and (path == "/favicon.ico" or static_file(path)):
+        yield True
+        return
+    keys = [(user["id"], "requests")] + ([(user["id"], "spawns")] if (method, path) in SPAWNING else [])
+    with IN_FLIGHT_LOCK:
+        admitted = all(IN_FLIGHT[key] < (USER_SPAWNS if key[1] == "spawns" else USER_REQUESTS) for key in keys)
+        if admitted:
+            IN_FLIGHT.update(keys)
+    try:
+        yield admitted
+    finally:
+        if admitted:
+            with IN_FLIGHT_LOCK:
+                IN_FLIGHT.subtract(keys)
+                for key in keys:
+                    if IN_FLIGHT[key] <= 0:
+                        del IN_FLIGHT[key]
+
+
+BUSY = {"error": "too many of your requests at once; try again in a moment", "retry": True}
+
+
 class Handler(BaseHandler):
     """An instance's requests: who is asking (authorize), whether their role allows the request
     (permitted), then the answer: the viewer and its files and the JSON endpoints (GET), and the actions
@@ -120,6 +157,14 @@ class Handler(BaseHandler):
             return self.deny()
         if self.misdirected() or not self.permitted("GET", path, query):
             return
+        with in_flight(self.principal, "GET", path) as admitted:
+            if admitted:
+                self.get(path, query)
+            else:
+                self.send_json(429, BUSY)
+
+    def get(self, path, query):
+        """do_GET's answer, once the request may be made."""
         if path == "/":
             self.send_response(302)
             self.send_header("Location", f"viewer.html?file={urllib.parse.quote(self.server.default_pdf)}")  # (relative: also under the hub)
@@ -253,14 +298,18 @@ class Handler(BaseHandler):
             return self.send_error(403, "not from this preview's own page (Origin)")
         if not self.permitted("POST", path, {}, before=drain):
             return
-        if path == "/file/upload" and not UPLOAD_SLOTS.acquire(blocking=False):  # (each upload's body is held in memory)
-            drain()
-            return self.send_json(429, {"error": "other uploads are on their way; try again in a moment", "retry": True})
-        try:
-            self.post(path, length)
-        finally:
-            if path == "/file/upload":
-                UPLOAD_SLOTS.release()
+        with in_flight(self.principal, "POST", path) as admitted:
+            if not admitted:
+                drain()
+                return self.send_json(429, BUSY)
+            if path == "/file/upload" and not UPLOAD_SLOTS.acquire(blocking=False):  # (each upload's body is held in memory)
+                drain()
+                return self.send_json(429, {"error": "other uploads are on their way; try again in a moment", "retry": True})
+            try:
+                self.post(path, length)
+            finally:
+                if path == "/file/upload":
+                    UPLOAD_SLOTS.release()
 
     def post(self, path, length):
         """do_POST's reading of the body and its answer, once the request may be made."""

@@ -132,7 +132,9 @@ Notes are the paper's note macros: one-argument commands that go through
   you comment as yourself), select text in the PDF, and press 💬 or `c`. Your
   note goes into the source right after the selected words, and the rebuild
   shows it. Typed text is escaped, so `%`, `&` and `_` are safe; characters
-  pdflatex can't set (✓, →, emoji) are refused.
+  pdflatex can't set (✓, →, emoji) are refused, and so is a note, reply or
+  reason longer than 2,000 characters as written into the source (where `\`
+  takes 16).
 - **Reply, resolve, edit, delete.** In the bubbles and the sidebar, notes get
   ✓ (resolve), others' notes ↩ (reply: your note goes right after theirs), and
   your own ✎ (edit). ✕ (delete) appears only on notes written from the same
@@ -212,7 +214,8 @@ comments.
   (`HEAD`, rebuilt when it moves; the default when nothing was pushed), or the
   previous build. `,` and `.` (or the arrows in the top bar) step through the changes.
 - **Compare with an earlier version** (in the ⋯ menu): latexdiff of the working
-  tree against any git commit, in a new tab. When the document with latexdiff's
+  tree against a commit that changed the paper's files (those the History tab
+  lists), in a new tab. When the document with latexdiff's
   marks doesn't build, it is built again with plainer marks (changes in math,
   figures and citations unmarked), and the tab says "plainer marks". Files that
   `\input` each other in a loop stop the comparison with a message naming them.

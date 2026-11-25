@@ -5,6 +5,7 @@ timing lines, the restart prompt, the static files the server sends, the bibliog
 (files_units), the History tab (history_units) and the agent hook (agent_units)."""
 
 import collections
+import contextlib
 import glob
 import gzip
 import json
@@ -20,7 +21,7 @@ import types
 
 from .base import HERE, fail, ok, wait_for
 from .helpers import put, put_bytes, read_bytes, tex_stand_in
-from .shared_units import baseline_failure_checks, confinement_checks, shared_build_checks
+from .shared_units import baseline_failure_checks, build_link_checks, confinement_checks, shared_build_checks
 from .bib_units import bib_checks
 from .files_units import files_checks
 from .history_units import history_checks
@@ -29,11 +30,11 @@ from .agent_units import agent_checks
 
 def unit_checks():
     """The checks of the server's parts on their own, without an instance (made-up input, stand-ins for TeX)."""
-    for check in (layout_checks, matching_checks, confinement_checks, shared_build_checks, bounds_checks, failed_export_checks,
+    for check in (layout_checks, matching_checks, confinement_checks, build_link_checks, shared_build_checks, bounds_checks, failed_export_checks,
                   bib_span_checks, waiting_download_checks, tool_timeout_checks, standby_snapshot_checks, timing_checks,
                   code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, completion_checks, assets_checks, search_checks, logs_checks, presence_checks, word_column_checks, venue_checks, diff_retry_checks,
                   arxiv_strip_checks, graphics_synctex_checks, turned_page_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks,
-                  bib_checks, files_checks, history_checks, agent_checks):
+                  header_deadline_checks, in_flight_checks, note_limit_checks, bib_checks, files_checks, history_checks, agent_checks):
         check()
 
 
@@ -1201,13 +1202,16 @@ def presence_checks():
 
 def connection_cap_checks():
     """Every server (an instance's, a shared one's, the hub's) takes at most DualStackServer.CONNECTIONS connections
-    at once: past that, it closes a new one at once, and takes new ones again as the others end."""
+    at once: past that, it closes a new one at once, and takes new ones again as the others end; as many may wait to be
+    taken (a burst of them is not reset)."""
     import http.server
     import socket
     from latexlive import hub, web
     if not (issubclass(hub.HubServer, web.DualStackServer) and issubclass(web.LoopbackServer, web.DualStackServer)
             and web.DualStackServer.CONNECTIONS == 64):
         fail("not every server of latex-live keeps to the connection cap")
+    if web.DualStackServer.request_queue_size < web.DualStackServer.CONNECTIONS:  # (where a full queue resets: a burst)
+        fail(f"a server queues {web.DualStackServer.request_queue_size} connections to be taken, fewer than it takes at once")
 
     class Quiet(http.server.BaseHTTPRequestHandler):
         timeout = 10
@@ -1244,3 +1248,172 @@ def connection_cap_checks():
         fail(f"a server at its connection cap: the next connection {'was dropped' if dropped else 'was served'}, and once"
              f" the others ended, a new one {'was' if answered else 'was not'} served")
     ok("every server takes at most 64 connections at once, dropping new ones past that, and takes them again as others end")
+
+
+def header_deadline_checks():
+    """Every server reads a request's line and headers within BaseHandler.HEADER_DEADLINE seconds, however slowly they
+    trickle in (a byte now and then would otherwise hold a connection for ever), then closes the connection without an
+    answer; a request sent at once is answered, and a body may take longer than the deadline (only the socket's own
+    timeout bounds it)."""
+    import socket
+    from latexlive import web
+    if web.BaseHandler.HEADER_DEADLINE != 10:
+        fail(f"BaseHandler.HEADER_DEADLINE is {web.BaseHandler.HEADER_DEADLINE}, not 10 s")
+
+    class Quick(web.BaseHandler):
+        HEADER_DEADLINE = 1
+
+        def do_GET(self):
+            self.send_json(204 if self.path == "/" else 404, {})
+
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            self.send_json(200, {"read": len(body)})
+
+    server = type("Deadline", (web.DualStackServer,), {"daemon_threads": True})(("::", 0), Quick)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as slow:
+            began, closed = time.monotonic(), False
+            try:
+                for byte in b"GET / HTTP/1.0\r\nX-Slow: " + b"y" * 40:
+                    slow.sendall(bytes([byte]))
+                    time.sleep(0.2)
+            except OSError:
+                closed = True  # (reset: closed by the server)
+            slow.settimeout(5)
+            try:
+                closed = closed or slow.recv(100) == b""
+            except OSError:
+                closed = True
+            took = time.monotonic() - began
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as quick:
+            quick.sendall(b"GET / HTTP/1.0\r\n\r\n")
+            answered = quick.recv(100).startswith(b"HTTP/1.0 204")
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as body:
+            body.sendall(b"POST /x HTTP/1.0\r\nContent-Length: 8\r\n\r\n")
+            for byte in b"12345678":
+                body.sendall(bytes([byte]))
+                time.sleep(0.25)
+            reply = body.recv(1000)
+    finally:
+        server.shutdown()
+        server.server_close()
+    if not closed or took > 4:
+        fail(f"a request whose headers trickle in past the deadline (1 s here) was {'closed after' if closed else 'still open after'}"
+             f" {took:.1f} s")
+    if not answered or b'{"read": 8}' not in reply:
+        fail(f"with the header deadline, a request sent at once was {'' if answered else 'not '}answered, and a body slower"
+             f" than the deadline got {reply[:200]!r}")
+    ok("every server takes a request's line and headers within 10 s however slowly they come, while a body may take longer")
+
+
+def in_flight_checks():
+    """In shared mode, a coauthor has at most handler.USER_REQUESTS requests in progress at once (the viewer's own files
+    and /favicon.ico aside) and at most USER_SPAWNS of those that may start a process (SyncTeX, forward search, a
+    commit's diff, a note): past that, refused; another user and the owner are not counted, nor anyone outside shared mode;
+    a request that ends, also with an error, frees its place."""
+    from latexlive import config, handler
+    viewer = {"id": "vw", "role": "viewer"}
+    saved = config.SHARED
+    try:
+        config.SHARED = True
+        with contextlib.ExitStack() as held:
+            spawns = [held.enter_context(handler.in_flight(viewer, "GET", "/synctex")) for _ in range(3)]
+            if spawns != [True, True, False]:
+                fail(f"a viewer's SyncTeX lookups at once, {handler.USER_SPAWNS} allowed: {spawns}")
+            for method, path in (("GET", "/forward"), ("GET", "/history/diff"), ("POST", "/note")):
+                with handler.in_flight(viewer, method, path) as admitted:
+                    if admitted:
+                        fail(f"{method} {path} is not counted with the requests that may start a process")
+            with handler.in_flight({"id": "ed", "role": "editor"}, "GET", "/synctex") as admitted:
+                if not admitted:
+                    fail("another user's SyncTeX lookup was refused for the viewer's")
+            others = [held.enter_context(handler.in_flight(viewer, "GET", "/status/main.pdf"))
+                      for _ in range(handler.USER_REQUESTS)]
+            if others.count(True) != handler.USER_REQUESTS - 2 or others[-1]:
+                fail(f"a viewer's requests at once, {handler.USER_REQUESTS} allowed: {others.count(True)} admitted with 2 lookups")
+            for method, path in (("GET", "/viewer/main.js"), ("GET", "/pdfjs/pdf.mjs"), ("GET", "/viewer.html"),
+                                 ("GET", "/favicon.ico")):
+                with handler.in_flight(viewer, method, path) as admitted:
+                    if not admitted:
+                        fail(f"{method} {path}, one of the viewer's own files, was counted")
+            with handler.in_flight(viewer, "GET", "/viewer/../live.py") as admitted:
+                if admitted:
+                    fail("a path that is not one of the viewer's files was not counted")
+            with handler.in_flight({"id": "o", "role": "owner"}, "GET", "/synctex") as admitted:
+                if not admitted:
+                    fail("the owner's request was counted")
+        try:
+            with handler.in_flight(viewer, "GET", "/synctex"):
+                raise ValueError("failed")
+        except ValueError:
+            pass
+        if handler.IN_FLIGHT:
+            fail(f"requests that ended still hold places: {dict(handler.IN_FLIGHT)}")
+        config.SHARED = False
+        with contextlib.ExitStack() as held:
+            if not all(held.enter_context(handler.in_flight(viewer, "GET", "/synctex")) for _ in range(5)):
+                fail("requests were counted outside shared mode")
+    finally:
+        config.SHARED = saved
+    ok(f"in shared mode, a coauthor has at most {handler.USER_REQUESTS} requests in progress (the viewer's own files aside)"
+       f" and {handler.USER_SPAWNS} that may start a process; others and the owner are not counted, nor anyone outside shared"
+       " mode")
+
+
+def note_limit_checks():
+    """A note's text, a reply's and a resolve's reason take at most note_writer.NOTE_LIMIT characters as written into
+    the source (a backslash escaped is 16), and an edit's LaTeX as much; no note takes a file past sources.EDITABLE_SIZE,
+    which the editor no longer opens (write_source refuses any such write); a file that isn't the paper's is named in
+    the refusal as asked, never by where its link leads."""
+    from latexlive import config, note_writer, sources
+    tmp = tempfile.mkdtemp(prefix="latex-live-check-")
+    saved = config.SHARED
+    try:
+        root = os.path.join(tmp, "paper")
+        main = os.path.join(root, "main.tex")
+        put(main, "\\newcommand{\\eb}[1]{\\todotxt{\\textbf{EB:} #1}}\n\\begin{document}\nSome words here. \\eb{first note}\n"
+                  "\\end{document}\n")
+        put(os.path.join(tmp, "outside", "secret.tex"), "x\n")
+        os.symlink(os.path.join(tmp, "outside", "secret.tex"), os.path.join(root, "away.tex"))
+        put(os.path.join(root, "build", "main-live.fls"), f"PWD {root}\nINPUT main.tex\nINPUT away.tex\n")
+        server = types.SimpleNamespace(paper_root=root, default_pdf="main.pdf", last_writer={}, autocommit=False, pending={},
+                                       pending_lock=threading.Lock(), git_name="Owner")
+        owner = {"id": "owner", "name": None, "role": "owner", "macro": "", "via": "token"}
+        note = {"pdf": "main.pdf", "source": "main.tex", "line": 3, "macro": "eb", "tex": "first note", "who": "eb"}
+        before = read_bytes(main)
+        long = "x" * (note_writer.NOTE_LIMIT + 1)
+        for what, req in (("a reply of backslashes", {**note, "action": "reply", "text": "\\" * 200}),
+                          ("a long reply", {**note, "action": "reply", "text": long}),
+                          ("a long reason to resolve", {**note, "action": "resolve", "text": long}),
+                          ("a long edit", {**note, "action": "edit", "text": long}),
+                          ("long LaTeX in an edit", {**note, "action": "edit", "latex": long})):
+            if note_writer.note_request(server, req, owner)[0] != 413:
+                fail(f"{what} past {note_writer.NOTE_LIMIT} characters as written was taken")
+        added = note_writer.add_note(main, "main.tex", before.decode(), 3, "eb", "EB", {"text": "\\" * 200, "selection": "words here"}, ["eb"])
+        if added[0] != 413 or read_bytes(main) != before:
+            fail(f"a note of 200 backslashes (3200 characters escaped) was added: {added}")
+        if note_writer.note_request(server, {**note, "action": "reply", "text": "y" * note_writer.NOTE_LIMIT}, owner)[0] != 200:
+            fail(f"a reply of {note_writer.NOTE_LIMIT} characters was refused")
+        grown = read_bytes(main).decode()
+        padded = grown.replace("\\end{document}", "%" + "p" * (sources.EDITABLE_SIZE - len(grown) - 200) + "\n\\end{document}")
+        put(main, padded)
+        result = note_writer.note_request(server, {**note, "action": "reply", "text": "z" * 300}, owner)
+        if result[0] != 413 or read_bytes(main).decode() != padded:
+            fail(f"a reply that takes the file past {sources.EDITABLE_SIZE} bytes: {result}")
+        try:
+            sources.write_source(main, padded, padded + "q" * 300)
+            fail("write_source took a file past EDITABLE_SIZE")
+        except sources.SourceTooBig:
+            pass
+        config.SHARED = True
+        result = note_writer.note_request(server, {**note, "action": "edit", "source": "away.tex", "line": 1, "text": "y"}, owner)
+        if result[0] != 403 or "away.tex" not in result[1].get("error", "") or "secret" in str(result) or ".." in str(result):
+            fail(f"a note in a link to a file outside the paper: {result} (want it named as asked)")
+    finally:
+        config.SHARED = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+    ok(f"notes, replies and reasons take at most {note_writer.NOTE_LIMIT} characters as written; no write takes a source past"
+       " 4 MB; a refusal names a file as asked, not where its link leads")

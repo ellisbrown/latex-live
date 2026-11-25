@@ -3,6 +3,7 @@ GET me per role (identity_checks); every endpoint per role (and who has the pape
 tab: history_checks), non-owners pinned to the document, the Origin rules for POSTs, POST body limits, the viewer's
 security headers, and SyncTeX as JSON (role_checks). Extend role_checks with each new endpoint."""
 
+import concurrent.futures
 import gzip
 import json
 import os
@@ -397,6 +398,30 @@ def role_checks(sh):
         fail(f"synctex for line 99999 of body.tex, which has {last}: {clamped}, not its last line, with a note")
     ok("SyncTeX answers JSON for everyone in shared mode (file: null where the editor can't go, the last line for one past"
        " the end), and opens nothing")
+    in_flight_checks(query + "&json=1")
+
+
+def in_flight_checks(lookup):
+    """A coauthor's requests in progress at once (handler.in_flight): a viewer's SyncTeX lookups past two at once are
+    refused (429, to be tried again) while the editor's requests go through; the viewer's first load in two tabs at
+    once (its JSON, the PDFs and its own files, which are never counted) is refused nothing."""
+    with concurrent.futures.ThreadPoolExecutor(32) as pool:
+        lookups = [pool.submit(via_proxy, "vw", lookup) for _ in range(8)]
+        editor = [pool.submit(via_proxy, "ed", path) for path in ("/me", "/status/main.pdf", lookup)]
+        codes = sorted(f.result()[0] for f in lookups)
+        if any(f.result()[0] != 200 for f in editor):
+            fail(f"the editor's requests while a viewer sends many lookups: {[f.result()[0] for f in editor]}")
+        if 200 not in codes or 429 not in codes or set(codes) - {200, 429}:
+            fail(f"8 SyncTeX lookups at once by a viewer (2 allowed at once): {codes}")
+        busy = next(f.result() for f in lookups if f.result()[0] == 429)
+        if expect(busy, 429, "a lookup past the viewer's limit").get("retry") is not True:
+            fail(f"a lookup past the viewer's limit is not to be tried again: {busy[2][:200]!r}")
+        load = [pool.submit(via_proxy, "vw", path) for _ in range(2) for path in READS + ("/pdfjs/web/pdf_viewer.mjs",)]
+        codes = [f.result()[0] for f in load]
+        if any(code != 200 for code in codes):
+            fail(f"the viewer's first load in two tabs at once: {sorted(set(codes))} ({len(codes)} requests)")
+    ok("a viewer's SyncTeX lookups past two at once are refused (to be tried again), and the editor's requests go through"
+       " meanwhile; a viewer's first load in two tabs at once is refused nothing")
 
 
 def bib_checks():

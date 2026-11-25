@@ -16,13 +16,23 @@ from .files import fls_file, project_tex_files
 from .latex import blank_comments, brace_group, read_tex
 from .notes import escape_note, note_kinds
 from .roles import at_least
-from .sources import NOTE_LOCK, SourceChanged, read_source, write_source, wrote
+from .sources import EDITABLE_SIZE, NOTE_LOCK, SourceChanged, SourceTooBig, read_source, write_source, wrote
 from .synctex import inverse_search
 
 
 # Characters pdflatex sets from UTF-8 without extra packages: ASCII, Latin-1, and the usual
 # typographic ones. Others (✓, →, emoji) would stop the build, so notes refuse them.
 TYPESETTABLE = set(map(chr, range(0x20, 0x7F))) | set(map(chr, range(0xA0, 0x100))) | set("‘’“”–—…•€")
+
+
+# Characters of a note's text as written into the source (escaped: a \ becomes \textbackslash{}), of a reply's, and
+# of a resolve's reason: a long note is better in the paper's text, and notes must not grow a file without bound.
+NOTE_LIMIT = 2000
+
+
+def too_long(written):
+    """An error message if written, a note's text as it goes into the source, is past NOTE_LIMIT, else None."""
+    return f"a note holds at most {NOTE_LIMIT} characters as written into the source" if len(written) > NOTE_LIMIT else None
 
 
 CMD_RE = re.compile(r"\\([a-zA-Z@]+)\*?|\\.?", re.S)
@@ -187,7 +197,8 @@ def note_request(server, req, user):
     macro whatever macro or who the request names, edits and deletes only their own notes, writes
     LaTeX (latex) only as an editor, and only in the shared document; anyone who may comment may
     resolve anyone's note. While the shared copy can't take a write (a git merge in progress, or
-    others' edits there can't be committed first), 503 (updating).
+    others' edits there can't be committed first), 503 (updating). A note's text, a reply's and a resolve's reason
+    take at most NOTE_LIMIT characters as written, and no note takes a file past EDITABLE_SIZE (413).
     """
     root = server.paper_root
     try:
@@ -224,10 +235,11 @@ def note_request(server, req, user):
                 return 400, {"error": f"\\{req['who']} is not a note macro of this paper"}
         else:
             return 400, {"error": f"unknown action {action}"}
+        asked = str(req["source"]) if action != "add" else os.path.relpath(src, root)  # (as asked: never where a link leads)
         src = os.path.realpath(src)
         rel = os.path.relpath(src, root)
         if src not in files:
-            return 403, {"error": f"{rel} is not one of the paper's .tex files"}
+            return 403, {"error": f"{asked} is not one of the paper's .tex files"}
         with NOTE_LOCK:
             if paused(server) or not commit_others(server, user, rel):  # (LATEX_LIVE_COMMIT: others' edits there are theirs)
                 return updating()
@@ -246,6 +258,8 @@ def note_request(server, req, user):
         return 400, {"error": f"bad request ({type(e).__name__}: {e})"}
     except SourceChanged:
         return 409, {"error": "the source file changed meanwhile (saved in an editor?); try again"}
+    except SourceTooBig:
+        return 413, {"error": f"the source file would grow past {EDITABLE_SIZE // 1_000_000} MB, which the editor no longer opens"}
 
 
 def add_note(src, rel, raw, line, macro, author, req, note_macros):
@@ -256,6 +270,8 @@ def add_note(src, rel, raw, line, macro, author, req, note_macros):
     text = escape_note(typed)
     if not text:
         return 400, {"error": "empty note"}
+    if error := too_long(text):
+        return 413, {"error": error}
     pos, dropped = note_site(raw, line, str(req.get("selection", "")))
     if pos is None:
         return 422, {"error": f"couldn't find the selected words near {rel}:{line}; select a few words of plain text"}
@@ -303,6 +319,8 @@ def change_note(src, rel, raw, line, macro, action, req, kinds):
         body = typed if "latex" in req else escape_note(typed)
         if not body.strip():
             return 400, {"error": "empty note (delete it instead)"}
+        if error := too_long(body):
+            return 413, {"error": error}
         if brace_group("{" + body + "}", 0)[1] != len(body) + 2 or re.search(r"(?<!\\)%|\n[ \t]*\n", body):
             return 400, {"error": "unbalanced braces, a % comment, or a blank line in the note's LaTeX"}
         new = raw[:brace + 1] + body + raw[end - 1:]
@@ -313,6 +331,8 @@ def change_note(src, rel, raw, line, macro, action, req, kinds):
             return 400, {"error": error}
         if not typed:
             return 400, {"error": "say why it is resolved" if action == "resolve" else "empty reply"}
+        if error := too_long(typed if action == "resolve" else escape_note(typed)):  # (a reason is written as typed, in a comment)
+            return 413, {"error": error}
         who = req["who"]
         if action == "reply":  # right after the note (or after the protected text it sits in)
             site, out["protected"] = safe_site(raw, end, list(kinds))
