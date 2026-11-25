@@ -134,6 +134,7 @@ function setMode(next) {
 
 export const paletteOpen = () => !$("paletteBackdrop").hidden;
 export async function openPalette(want = "go") {
+  showKeys(false, false); // (one dialog at a time)
   if (!paletteOpen()) before = document.activeElement;
   $("paletteBackdrop").hidden = false;
   $("paletteInput").setAttribute("aria-expanded", "true");

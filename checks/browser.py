@@ -67,7 +67,7 @@ def browser_checks(url):
                 errors.append(f"the sidebar's tabs take {len(set(tops))} rows")
             if "files" in tabs:  # (a file's row opens from the keyboard)
                 page.click('#tabs [data-tab="files"]')
-                row = page.wait_for_selector(".files-file:not(.on)", timeout=10_000)
+                row = page.wait_for_selector('.files-file[data-key^="s:"]:not(.on)', timeout=10_000)  # (a source: a figure previews)
                 path = row.get_attribute("data-key")[2:]
                 row.focus()
                 page.keyboard.press("Enter")
