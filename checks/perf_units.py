@@ -121,7 +121,7 @@ def bib_merge_checks():
     with StubSyncTeX() as stub:
         synctex, files = stub.synctex, stub.files
         put(os.path.join(stub.bin, "delay"), "0.3")
-        workers, version = 0, 10
+        workers, version, began = 0, 10, time.monotonic()
         for _ in range(30):  # (a new build every 20 ms, each polled at once)
             version += 1
             os.utime(files[0], ns=(1, version * 1_000_000_000))
@@ -129,10 +129,11 @@ def bib_merge_checks():
                 fail("refs_start answered a build it had not looked up yet")
             workers = max(workers, len(synctex.BIB_WORKERS))
             time.sleep(0.02)
+        took = time.monotonic() - began  # (longer on a slow machine, with as many lookups back to back meanwhile)
         found = wait_for("the merged lookups to end", lambda: not synctex.BIB_WORKERS and (lambda r: r if r is not synctex.PENDING else None)(
             synctex.refs_start(stub.tmp, "main.pdf", wait=False)), timeout=30)
-        if found != WANT[0] or workers != 1 or len(stub.runs) > 5 or synctex.BIB_SPANS[files[0]][0][0] != version * 1_000_000_000:
-            fail(f"30 builds polled while each lookup takes 0.3 s: {len(stub.runs)} lookups, {workers} workers at most, found"
+        if found != WANT[0] or workers != 1 or len(stub.runs) > max(5, took / 0.3 + 2) or synctex.BIB_SPANS[files[0]][0][0] != version * 1_000_000_000:
+            fail(f"30 builds polled in {took:.1f} s while each lookup takes 0.3 s: {len(stub.runs)} lookups, {workers} workers at most, found"
                  f" {found}, kept for {synctex.BIB_SPANS[files[0]][0]}")
 
         os.remove(os.path.join(stub.bin, "delay"))
