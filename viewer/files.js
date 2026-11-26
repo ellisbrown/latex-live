@@ -67,7 +67,7 @@ function drawTree() {
   const q = filter.value.trim().toLowerCase();
   const files = srcFiles?.files || [], figures = srcFiles?.assets || [];
   const peersOf = (path) => (peers[path] || []).map((p) => [p.name, p.color]);
-  const key = JSON.stringify([q, loadError && !srcFiles, files, figures, srcFiles?.main, ed?.path, [...folded], preview,
+  const key = JSON.stringify([q, !srcFiles && loadError, files, figures, srcFiles?.main, ed?.path, [...folded], preview,
                               [...files, ...figures].map((f) => peersOf(f.path))]);
   if (key === drawn) return;
   drawn = key;

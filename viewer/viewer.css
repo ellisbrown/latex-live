@@ -35,10 +35,10 @@
   --ok: #15803d;
   --ok-bg: rgba(22, 163, 74, 0.11);
   --ok-border: rgba(22, 163, 74, 0.24);
-  --warn: #b45309;
+  --warn: #9a4507; /* (4.5:1 or more on --warn-bg over every light surface) */
   --warn-bg: rgba(217, 119, 6, 0.12);
   --warn-border: rgba(217, 119, 6, 0.26);
-  --err: #dc2626;
+  --err: #b91c1c; /* (4.5:1 or more on --err-bg over every light surface) */
   --err-bg: rgba(220, 38, 38, 0.10);
   --err-border: rgba(220, 38, 38, 0.25);
 
@@ -294,7 +294,7 @@ body.pdf-invert .float .crop { background: #1f1f1f; } /* (white, as the filter t
   border: 1px solid var(--border); background: var(--bg-surface); color: var(--ink-2); box-shadow: var(--shadow-pop);
   font-size: 12px; line-height: 1.45; cursor: pointer;
 }
-.status-whole.error { background: var(--err-bg); color: var(--err); border-color: var(--err-border); }
+.status-whole.error { background: linear-gradient(var(--err-bg), var(--err-bg)), var(--bg-surface); color: var(--err); border-color: var(--err-border); } /* (the tint over the surface: the note sits over the page) */
 #texImage { color: var(--warn); font-size: 12px; font-weight: 500; cursor: help; }
 #updated { color: var(--accent-ink); font-size: 12px; font-weight: 500; cursor: help; }
 
@@ -419,10 +419,10 @@ body.pdf-invert .float .crop { background: #1f1f1f; } /* (white, as the filter t
   border-bottom: 1px solid var(--hairline);
 }
 .chip {
-  border-radius: 99px; padding: 1px 8px; font-size: 11px; cursor: pointer;
-  color: #111; font-weight: 600; user-select: none;
+  border-radius: 99px; padding: 0 7px; font-size: 11px; cursor: pointer;
+  color: #111; font-weight: 600; user-select: none; background: var(--chip); border: 1px solid var(--chip);
 }
-.chip.off { opacity: 0.32; }
+.chip.off { background: none; color: var(--ink-2); border-style: dashed; border-color: var(--ink-3); } /* (unfilled: readable, unlike a faded chip) */
 .note {
   margin: 6px 8px; padding: 8px 10px; cursor: pointer;
   background: var(--bg-surface); border: 1px solid var(--border); border-radius: 8px;
@@ -520,6 +520,7 @@ body.pdf-invert .float .crop { background: #1f1f1f; } /* (white, as the filter t
 .files-acts { display: none; gap: 2px; }
 .files-file:hover .files-acts, .files-file:focus-within .files-acts { display: inline-flex; }
 .files-file:hover .size, .files-file:focus-within .size { display: none; }
+.files-file.on .size { color: var(--ink-2); } /* (ink-3 is too light on the selected row's background) */
 .files .files-acts button { width: 22px; height: 22px; padding: 0; justify-content: center; border: 0; background: none; color: var(--ink-2); }
 .files .files-acts button:hover { background: var(--bg-active); color: var(--ink); }
 .files-preview { margin: 2px 10px 8px 26px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
@@ -971,8 +972,13 @@ kbd {
 }
 #comparePanel .head { padding: 9px 12px; color: var(--ink-3); font-size: 12px; border-bottom: 1px solid var(--hairline); }
 #comparePanel .head.error { color: var(--err); }
-#comparePanel .commit { padding: 6px 12px; cursor: pointer; display: grid; grid-template-columns: 5.5em 7.5em 1fr; gap: 6px; font-size: 12.5px; }
-#comparePanel .commit:hover { background: var(--bg-hover); }
+#comparePanel .commit {
+  padding: 6px 12px; cursor: pointer; display: grid; grid-template-columns: 5.5em 7.5em 1fr; gap: 6px; font-size: 12.5px;
+  width: 100%; border: 0; background: none; color: inherit; font-family: inherit; text-align: left;
+}
+#comparePanel .commit:hover, #comparePanel .commit:focus-visible { background: var(--bg-hover); }
+#comparePanel .commit:focus-visible { outline-offset: -2px; }
+#comparePanel:focus { outline: none; } /* (it holds the focus only until its commits are there) */
 #comparePanel .commit span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #comparePanel .rev { font-family: var(--font-mono); color: var(--accent-ink); }
 #comparePanel .date { color: var(--ink-3); }

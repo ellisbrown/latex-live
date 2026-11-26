@@ -2,8 +2,9 @@
 role): headless Chromium, through Playwright, loads the viewer and the PDF, opens every sidebar tab, the shortcuts'
 list, the palette and (for an editor) the source pane, and no page error or console error comes up meanwhile, nor
 anything the page's Content-Security-Policy refuses; and the keyboard gets around (the sidebar's tabs, the shortcuts'
-dialog, the palette's box, a file's row in the Files tab), with the tabs in one row; and looking again in the Files tab with
-nothing changed draws no row anew. Optional: without the playwright
+dialog, which keeps the viewer's other keys from acting behind it, the palette's box, the Compare panel opened from the
+palette, a file's row in the Files tab), with the tabs in one row; looking again in the Files tab with nothing changed
+draws no row anew; and a request whose answer's body is cut off, or JSON null, is no success (net.js). Optional: without the playwright
 package or a Chromium for it, it says so
 and checks nothing (pip install playwright, then playwright install chromium; or LATEX_LIVE_CHECK_CHROMIUM, a
 Chromium's path). Only the checks use Playwright: latex-live itself needs nothing beyond Python's standard library."""
@@ -23,7 +24,7 @@ def browser_checks(url, editor=True, answer=None, who="the viewer"):
     except ImportError:
         return print("skip: no playwright (pip install playwright; playwright install chromium), so the viewer is not checked"
                      " in a browser", flush=True)
-    errors = []
+    errors, compared = [], False
     with sync_playwright() as p:
         try:
             browser = p.chromium.launch(executable_path=os.environ.get("LATEX_LIVE_CHECK_CHROMIUM") or None)
@@ -65,6 +66,12 @@ def browser_checks(url, editor=True, answer=None, who="the viewer"):
             page.keyboard.press("Tab")
             if not page.evaluate("!!document.activeElement.closest('#keys')"):
                 errors.append("the shortcuts' list doesn't keep the focus")
+            highlights = page.evaluate("document.getElementById('changesBtn').classList.contains('on')")
+            for key in ("d", "e", "."):
+                page.keyboard.press(key)
+            if (page.locator("#keys").is_hidden() or page.locator("#editorPane").is_visible()
+                    or page.evaluate("document.getElementById('changesBtn').classList.contains('on')") != highlights):
+                errors.append("the viewer's shortcuts act behind the shortcuts' list")
             page.keyboard.press("Escape")
             if page.evaluate("document.activeElement.dataset.tab") != (tabs or [None])[0] or page.locator("#keys").is_visible():
                 errors.append("Esc doesn't close the shortcuts' list, giving the focus back")
@@ -74,6 +81,10 @@ def browser_checks(url, editor=True, answer=None, who="the viewer"):
             if page.get_attribute("#paletteInput", "role") != "combobox" or not chosen or not page.locator(f"#{chosen}[role=option]").count():
                 errors.append("the palette's box doesn't say which option is chosen (combobox, aria-activedescendant)")
             page.keyboard.press("Escape")
+            if page.evaluate("!document.getElementById('compare').hidden"):  # (in the ⋯ menu, which is closed: its own hidden)
+                compare_checks(page, errors)
+                compared = True
+            net_checks(page, errors)
             if editor:
                 page.click("#layoutSplit")
                 page.wait_for_selector("#editorPane:not([hidden]) .cm-content", timeout=10_000)
@@ -92,8 +103,60 @@ def browser_checks(url, editor=True, answer=None, who="the viewer"):
     if errors:
         fail(f"in a browser, {who}:\n" + "\n".join(errors))
     ok(f"in a browser (headless Chromium), {who} loads the PDF and opens every sidebar tab ({len(tabs)}, in one row), the"
-       f" shortcuts, the palette{' and the source pane' if editor else ''}, from the keyboard too, with no page or console"
-       " error, nor anything its CSP refuses")
+       f" shortcuts, the palette{', the Compare panel' if compared else ''}{' and the source pane' if editor else ''}, from the"
+       " keyboard too, with no page or console"
+       " error, nor anything its CSP refuses; a cut-off or null answer is no success")
+
+
+def compare_checks(page, errors):
+    """The Compare panel from the palette: its first commit takes the focus, the arrow keys move along the commits, and
+    Esc closes it, giving the focus to a control rather than dropping it."""
+    page.keyboard.press("Meta+k" if page.evaluate("/^Mac|^iP/.test(navigator.platform)") else "Control+k")
+    page.wait_for_selector("#paletteBackdrop:not([hidden])", timeout=10_000)
+    page.keyboard.type("compare with")
+    page.wait_for_selector("#paletteResults [role=option]", timeout=10_000)
+    page.keyboard.press("Enter")
+    page.wait_for_selector("#comparePanel button.commit", timeout=10_000)
+    rows = page.locator("#comparePanel .commit").count()
+    at = "[...document.querySelectorAll('#comparePanel .commit')].indexOf(document.activeElement)"
+    if page.evaluate(at) != 0:
+        errors.append("the Compare panel's first commit doesn't take the focus when it opens")
+    page.keyboard.press("ArrowDown")
+    if page.evaluate(at) != min(1, rows - 1):
+        errors.append("ArrowDown doesn't move along the Compare panel's commits")
+    page.keyboard.press("Escape")
+    if page.locator("#comparePanel").is_visible() or page.evaluate("document.activeElement === document.body"):
+        errors.append("Esc doesn't close the Compare panel, giving the focus back")
+
+
+def net_checks(page, errors):
+    """getJSON's answer (net.js) when the body of a 200 is cut off after its headers, and when it is JSON null: no
+    success either way (no answer, status 0, for the first), while a list is one."""
+    got = page.evaluate("""async () => {
+        const net = await import(new URL("viewer/net.js", document.baseURI).href);
+        const fake = {
+          "check-cut": () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('{"a')); c.error(new Error("cut")); } }),
+                                          { status: 200, headers: { "Content-Type": "application/json" } }),
+          "check-null": () => new Response("null", { status: 200, headers: { "Content-Type": "application/json" } }),
+          "check-list": () => new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } }),
+        };
+        const real = window.fetch;
+        window.fetch = (url, options) => (fake[url] ? Promise.resolve(fake[url]()) : real(url, options));  // (only these: polls go on)
+        try {
+          const out = {};
+          for (const path of Object.keys(fake)) out[path] = await net.getJSON(path);
+          return { ...out, NO_ANSWER: net.NO_ANSWER };
+        } finally {
+          window.fetch = real;
+        }
+    }""")
+    cut, null, listed = got["check-cut"], got["check-null"], got["check-list"]
+    if cut["ok"] or cut["status"] != 0 or cut["error"] != got["NO_ANSWER"]:
+        errors.append(f"a 200 whose body is cut off reads as {cut!r}, not as no answer")
+    if null["ok"] or not null["error"]:
+        errors.append(f"a 200 whose body is JSON null reads as {null!r}, not as a failure")
+    if not listed["ok"]:
+        errors.append(f"a 200 whose body is a list reads as {listed!r}, not as a success")
 
 
 def files_tab_checks(page, errors, redraws=True):

@@ -14,6 +14,7 @@ import { closeNotePop, startComment } from "./comments.js";
 import { goToChange, toggleChanges } from "./changes.js";
 import { closePalette, openPalette, paletteOpen } from "./palette.js";
 import { showLogsKey } from "./logs.js";
+import { closeCompare } from "./compare.js";
 
 // The viewer's own shortcuts with Cmd (on a Mac) or Ctrl (elsewhere), which also work in the source pane, unless the
 // editor took the key first (on a Mac, Ctrl+K there deletes to the end of the line): [key, shift, what it does (false:
@@ -30,9 +31,9 @@ window.addEventListener("keydown", (e) => {
     else if (e.key === "Tab" && !e.defaultPrevented) keepFocusIn($("welcome"), e); // (not a Tab the source pane took, to indent)
     return;
   }
-  if (!$("keys").hidden && (e.key === "Tab" || e.key === "Escape")) { // (the shortcuts' list: Tab stays in it, Esc closes it)
+  if (!$("keys").hidden) { // (while the shortcuts' list is open, only its own keys: Tab stays in it, Esc or ? closes it)
     if (e.key === "Tab") keepFocusIn($("keys"), e);
-    else showKeys(false);
+    else if (e.key === "Escape" || (e.key === "?" && !mod && !e.altKey)) { e.preventDefault(); showKeys(false); }
     return;
   }
   const appKey = (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.altKey && !e.defaultPrevented &&
@@ -56,7 +57,9 @@ window.addEventListener("keydown", (e) => {
   else if (typing(e.target)) return; // (keys typed in a text box or a menu are its own: word-wise cursor keys, BibTeX's d and e)
   else if ((e.altKey && e.key === "ArrowLeft") || (e.metaKey && e.key === "[")) { e.preventDefault(); travel(back, ahead); }
   else if ((e.altKey && e.key === "ArrowRight") || (e.metaKey && e.key === "]")) { e.preventDefault(); travel(ahead, back); }
-  else if (e.key === "Escape") { hidePreview(); $("comparePanel").hidden = true; closeNotePop(); showMore(false); showDownloads(false); }
+  else if (e.key === "Escape") { // (and the focus, if it was in a menu or the Compare panel, goes back to its button)
+    hidePreview(); closeCompare(); closeNotePop(); showDownloads(false, true); showMore(false, true);
+  }
   else if (!mod && !e.altKey && e.key === "?") { e.preventDefault(); showKeys($("keys").hidden); }
   else if (!mod && !e.altKey && e.key === "c") {
     if (!$("commentBtn").hidden) { e.preventDefault(); startComment(); }

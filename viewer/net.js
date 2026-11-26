@@ -37,13 +37,18 @@ export const getJSON = (path, { signal } = {}) => answer(fetch(path, { cache: "n
 export const sendJSON = (path, body, { signal } = {}) => answer(postJSON(path, body, false, signal));
 export const NO_ANSWER = "can't reach the preview server";
 async function answer(sent) {
-  let r;
-  try { r = await sent; } catch { return { ok: false, status: 0, body: {}, error: NO_ANSWER }; }
-  const body = (await readBody(r).catch(() => null)) ?? { error: `failed (${r.status})` };
+  let r, read;
+  try { // (a body cut off after the headers, a connection lost or a request aborted, is no answer too)
+    r = await sent;
+    read = await readBody(r);
+  } catch {
+    return { ok: false, status: 0, body: {}, error: NO_ANSWER };
+  }
+  const body = read && typeof read === "object" ? read : { error: `failed (${r.status})` }; // (JSON null or a number: no answer of the server's)
   const fail = (error) => ({ ok: false, status: r.status, body, error });
   if (signInPage(r, body)) return fail(SIGNED_OUT);
   if (unreachable(r, body)) return fail(NO_ANSWER);
-  if (r.status === 429) return fail(body.error && !body.html ? body.error : "The preview is busy: try again in a moment");
-  if (!r.ok || !body || typeof body !== "object" || body.html) return fail(body?.error || `failed (${r.status})`);
+  if (r.status === 429) return fail(body === read && body.error && !body.html ? body.error : "The preview is busy: try again in a moment");
+  if (!r.ok || body !== read || body.html) return fail(body.error || `failed (${r.status})`);
   return { ok: true, status: r.status, body, error: "" };
 }
