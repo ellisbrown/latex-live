@@ -8,6 +8,8 @@ preview on one port. It is built on `latexmk -pvc`, SyncTeX and PDF.js, builds
 in a TeX Live 2024 image close to Overleaf's, and needs no editor extension and
 nothing beyond Python's standard library.
 
+![latex-live in its light and dark themes: a two-column paper with coauthors' notes in margin bubbles and in the sidebar](docs/preview.png)
+
 ## Features
 
 - Rebuild on save, with errors as a clickable banner, in VS Code's Problems panel, and marked in
