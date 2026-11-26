@@ -205,6 +205,7 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
     def handle_one_request(self):
         self.reader.deadline = time.monotonic() + self.HEADER_DEADLINE
         self.parsed = self.answered = False
+        self.set_cookie = None  # (the last request's on this connection: authorize sets this one's)
         try:
             super().handle_one_request()
         except Exception as e:
@@ -221,16 +222,16 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
             self.headers_read()
 
     def send_response_only(self, code, message=None):
-        self.answered = True
+        self.answered = self.answered or code >= 200  # (not 100 Continue, which comes before the handler runs)
         super().send_response_only(code, message)
 
     def answer_failure(self, error):
         """Answer 500, with a message, a request whose handler failed before it began its answer, rather than close the
-        connection without one, which the hub and the viewer take for a preview they can't reach. Not when the client
-        left or went quiet, nor once an answer has begun. The message doesn't say what failed: in shared mode, that
-        could name the paper's folders to a coauthor; the preview's terminal shows it."""
+        connection without one, which the hub and the viewer take for a preview they can't reach. Not once an answer
+        has begun (nor to a client that has left: writing to it fails). The message doesn't say what failed: in shared
+        mode, that could name the paper's folders to a coauthor; the preview's terminal shows it."""
         self.close_connection = True
-        if not self.parsed or self.answered or isinstance(error, (ConnectionError, socket.timeout)):
+        if not self.parsed or self.answered:
             return
         self.csp_override = None  # (a session the request began is still sent: it was signed in)
         try:
