@@ -235,8 +235,8 @@ def pdf_pages_and_text(pdf):
 
 def texlive_image():
     """(The TeX Live image that live.py builds in, its config.TEXLIVE_IMAGE; whether podman has it here.)"""
-    with open(os.path.join(HERE, "latexlive", "config.py"), encoding="utf-8") as f:
-        image = re.search(r'^TEXLIVE_IMAGE = "([^"]+)"', f.read(), re.M).group(1)
+    from latexlive import config
+    image = config.TEXLIVE_IMAGE
     return image, bool(shutil.which("podman")) and subprocess.run(["podman", "image", "exists", image], timeout=60).returncode == 0
 
 

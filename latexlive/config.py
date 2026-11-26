@@ -16,7 +16,8 @@ import urllib.parse
 HERE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 if HERE not in sys.path:  # (latex_report.py, which the downloads, the baselines, the checks and shared mode import)
     sys.path.insert(0, HERE)
-TEXLIVE_IMAGE = "docker.io/minidocks/texlive:2024-full"
+# The TeX Live image that TeX runs in (LATEX_LIVE_IMAGE, e.g. a smaller one with what the papers use).
+TEXLIVE_IMAGE = os.environ.get("LATEX_LIVE_IMAGE", "").strip() or "docker.io/minidocks/texlive:2024-full"
 IMAGE_MISSING = f"{TEXLIVE_IMAGE} is not pulled (to fix: podman pull {TEXLIVE_IMAGE})"
 # Build directory, relative to the paper root (--build-dir; LATEX_LIVE_BUILD for latexmkrc,
 # latex_report.py, and forward.py). With a non-default one, <doc>.pdf is published there too,

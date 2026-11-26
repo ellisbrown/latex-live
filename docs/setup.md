@@ -364,6 +364,9 @@ instance refuses to start with one in `LATEX_LIVE_COMMIT` or
   `localhost:8100` for a port forwarded to another number.
 - `LATEX_LIVE_PORT`: the hub's port (see [Ports and the token](#ports-and-the-token)).
 - `LATEX_LIVE_STATE`: the state folder (default `~/.config/latex-live`).
+- `LATEX_LIVE_IMAGE`: the TeX Live image that TeX runs in (default
+  `docker.io/minidocks/texlive:2024-full`), e.g. a smaller one that has what
+  your papers use.
 
 ## Keeping the image
 

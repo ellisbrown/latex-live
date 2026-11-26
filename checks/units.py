@@ -482,8 +482,15 @@ def settings_checks():
     from latexlive import standby
     if "check.py" not in standby.command_line(os.getpid()) and "checks" not in standby.command_line(os.getpid()):
         fail(f"a process's command line (standby.command_line): {standby.command_line(os.getpid())!r}")
+    probe = "import sys; sys.path.insert(0, '.'); from latexlive import config; print(config.TEXLIVE_IMAGE, config.IMAGE_MISSING)"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("LATEX_LIVE_")}
+    images = [subprocess.run([sys.executable, "-c", probe], env={**env, **extra}, cwd=config.HERE, capture_output=True,
+                             text=True).stdout.split(" ", 1) for extra in ({}, {"LATEX_LIVE_IMAGE": " localhost/small:1 "})]
+    if [image for image, _ in images] != ["docker.io/minidocks/texlive:2024-full", "localhost/small:1"] \
+            or any(f"podman pull {image}" not in missing for image, missing in images):
+        fail(f"LATEX_LIVE_IMAGE (unset, set) gives the images {images}")
     ok("an on/off setting is 1 or 0 (unset: its default; else its default, with a warning), and the build's environment"
-       " drops an inherited LATEX_LIVE_EXEC; a process's command line read one way")
+       " drops an inherited LATEX_LIVE_EXEC; a process's command line read one way; LATEX_LIVE_IMAGE chooses the TeX image")
 
 
 def handler_routes():
