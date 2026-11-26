@@ -471,7 +471,7 @@ def stale_source_checks():
             server = fake_server(root, stopping=False, shared=shared_state())
             thread = threading.Thread(target=shared_build.shared_build, args=(server,), daemon=True)
             thread.start()
-            thread.join(2)
+            thread.join(3 if whole else 2)  # (the second run comes about a second after the first)
             server.stopping = True
             thread.join(5)
         if len(runs) != want or (digests and not whole):
@@ -486,7 +486,8 @@ def stale_source_checks():
     def tool(server, argv, kind="main", cwd=None, env=None):
         if kind != "main":
             return True
-        done = subprocess.run(argv, cwd=server.paper_root, capture_output=True, timeout=120).returncode == 0
+        done = subprocess.run(argv, cwd=server.paper_root, env={**os.environ, **server.env}, capture_output=True,
+                              timeout=120).returncode == 0
         while edits:  # (after TeX read it: an edit during the pass, that keeps the file's mtime and size)
             path, text = edits.pop()
             st = os.stat(path)
@@ -501,7 +502,7 @@ def stale_source_checks():
         main = os.path.join(root, "main.tex")
         put(main, STALE_PAPER)
         os.makedirs(os.path.join(root, "build"))
-        server = fake_server(root, env={}, stopping=False, shared=shared_state())
+        server = fake_server(root, env={"max_print_line": "10000"}, stopping=False, shared=shared_state())
         os.chdir(root)  # (shared_run names the build's files relative to the paper, as its tools see them)
         try:
             first = shared_build.shared_run(server) == notes.source_digests(root, "main.pdf")
@@ -648,7 +649,8 @@ def tex_checks(root, published):
             ("long document command", "\\DeclareDocumentCommand{\\todotxt}{+m}{\\ifshowtodos\\textcolor{red}{#1}\\fi}", again),
             ("expandable document command", "\\NewExpandableDocumentCommand{\\todotxt}{m}{\\ifshowtodos\\textcolor{red}{#1}\\fi}", want),
             ("two arguments", "\\newcommand{\\todotxt}[2][red]{\\ifshowtodos\\textcolor{#1}{#2}\\fi}", []),
-            ("two-argument document command", "\\NewDocumentCommand{\\todotxt}{O{red}m}{\\ifshowtodos\\textcolor{#1}{#2}\\fi}", [])):
+            ("two-argument document command", "\\NewDocumentCommand{\\todotxt}{O{red}m}{\\ifshowtodos\\textcolor{#1}{#2}\\fi}", []),
+            ("optional-argument document command", "\\NewDocumentCommand{\\todotxt}{O{red}}{\\ifshowtodos\\color{#1}\\fi}", [])):
         put(os.path.join(root, "main.tex"), SHOWN_PAPER.replace(plain, todotxt))
         for ext in (".aux", ".toc", ".out", ".log", ".pdf"):
             for job in ("main-live", "main-plain", "main-image", "main-off"):
