@@ -1,5 +1,6 @@
-# The parts of check.py that need neither TeX nor podman: the static checks and the unit checks, on Linux and macOS.
-# (The preview and shared-mode parts need a TeX Live image; run python3 check.py locally for those.)
+# check: the parts of check.py that need neither TeX nor podman (the static and unit checks), on Linux and macOS.
+# full: all of check.py on Linux, with Debian's TeX Live in a small image (LATEX_LIVE_IMAGE) in place of the 8 GB one,
+# so it doesn't replace python3 check.py locally.
 name: check
 
 on:
@@ -31,3 +32,47 @@ jobs:
         with:
           node-version: 22
       - run: python3 check.py static units
+
+  full:
+    # The TeX image: Debian's TeX Live 2024, with TeX Live's latexdiff (an older one writes in the read-only paper),
+    # built here and cached until this file changes. On the host: TeX Live's latexmk 4.88 (Ubuntu's has no hooks for
+    # latexmkrc), poppler, Playwright's Chromium, and the image's pdflatex and kpsewhich for checks that run them.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      LATEX_LIVE_IMAGE: localhost/latex-live-ci-tex
+      TEX_PACKAGES: texlive-latex-base texlive-latex-recommended texlive-plain-generic texlive-pictures texlive-bibtex-extra biber libalgorithm-diff-perl lmodern
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: |
+            3.9
+            3.12
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: actions/cache@v4
+        with:
+          path: ~/tex-image.tar
+          key: tex-image-${{ hashFiles('.github/workflows/check.yml') }}
+      - name: TeX image
+        run: |
+          if [ -f ~/tex-image.tar ]; then podman load -q -i ~/tex-image.tar; exit; fi
+          podman build -t "$LATEX_LIVE_IMAGE" -f - "$RUNNER_TEMP" <<EOF
+          FROM docker.io/library/debian:trixie-slim
+          RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $TEX_PACKAGES && rm -rf /var/lib/apt/lists/*
+          ADD --chmod=755 https://raw.githubusercontent.com/ftilmann/latexdiff/1.3.4/latexdiff /usr/local/bin/latexdiff
+          EOF
+          podman save -o ~/tex-image.tar "$LATEX_LIVE_IMAGE"
+      - name: Host tools, and Playwright's Chromium
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends poppler-utils
+          curl -sSfL https://raw.githubusercontent.com/TeX-Live/texlive-source/26fc9db997741825f3f094d14b7c1b8966138311/texk/texlive/linked_scripts/latexmk/latexmk.pl | sudo install /dev/stdin /usr/local/bin/latexmk
+          for tool in pdflatex kpsewhich; do  # (on the scratch papers, in /tmp)
+            printf '#!/bin/sh\nexec %s/tex-exec "$LATEX_LIVE_IMAGE" /tmp %s "$@"\n' "$PWD" $tool | sudo install /dev/stdin /usr/local/bin/$tool
+          done
+          pip install -q playwright==1.40.0 && playwright install chromium
+      - name: check.py, with no part skipped
+        shell: bash
+        run: python3 -u check.py 2>&1 | tee check.log && ! grep '^skip:' check.log
