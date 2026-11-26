@@ -238,6 +238,7 @@ Expected output, in order:
 4. `=== latex-live: each user's edits are committed as theirs after 60 s of quiet (LATEX_LIVE_COMMIT)`
 5. `=== latex-live <version>: building <doc>.tex`
 6. `=== latex-live: TeX Live 2024 (podman), confined, each run in a container of its own`
+   (with `LATEX_LIVE_IMAGE`, the image's name)
 7. `=== latex-live: published <doc>.pdf at <time>` once the first build is
    done, and again after each later one (no latexmk output: a shared instance
    runs the TeX tools itself).

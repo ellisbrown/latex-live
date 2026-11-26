@@ -78,7 +78,7 @@ OUT_LOCK, START_LOCK, STOPPING = threading.Lock(), threading.Lock(), threading.E
 # the user's own settings but the TeX image (LATEX_LIVE_IMAGE: the TeX the checks build with).
 ENV = {k: v for k, v in os.environ.items()
        if (not k.startswith("LATEX_LIVE_") or k == "LATEX_LIVE_IMAGE") and k != "VSCODE_IPC_HOOK_CLI"}
-ENV["LATEX_LIVE_PROTECTED"] = r"\\eb\{human-written\}"
+ENV["LATEX_LIVE_PROTECTED"] = r"\\eb\{left as is\}"
 
 
 def redact(text):

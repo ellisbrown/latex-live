@@ -48,7 +48,7 @@ REQUEST = {"selection": "two  words", "paragraph": "Before. two  words. After.",
 
 def agent_checks():
     from latexlive import agent, config
-    settings = {"SHARED": False, "AGENT_ENV": [], "PROTECTED_RE": re.compile(r"\\eb\{human-written\}"),
+    settings = {"SHARED": False, "AGENT_ENV": [], "PROTECTED_RE": re.compile(r"\\eb\{as written\}"),
                 "AGENT_CMD": config.AGENT_CMD}  # (as it is: request_checks sets it)
     with tempfile.TemporaryDirectory(prefix="latex-live-agent-check-") as tmp, patched(config, **settings):
         for name, code in PLUGINS.items():
@@ -184,19 +184,19 @@ def request_checks(agent, config, cmd, tmp):
     if agent.revise_request(REQUEST)[0] != 404 or agent.enabled() or os.path.exists(ran):
         fail("POST /agent/revise in shared mode, with LATEX_LIVE_AGENT_CMD set, is not 404 (or ran the plugin)")
     config.SHARED = False
-    marked = "Kept as written.\\eb{human-written}"
+    marked = "Kept as written.\\eb{as written}"
     bad = [{**REQUEST, "line": True}, {**REQUEST, "line": 0}, {**REQUEST, "file": ""}, {**REQUEST, "selection": "  "},
            {**REQUEST, "paragraph": "elsewhere"}, {**REQUEST, "note": "a\0b"}, {**REQUEST, "note": "n" * 2001},
            {**REQUEST, "selection": "s" * 16_001, "paragraph": "s" * 16_001}, {k: v for k, v in REQUEST.items() if k != "file"}]
     for req in bad:
         if agent.revise_request(req)[0] != 400:
             fail(f"POST /agent/revise takes {str(req)[:120]}")
-    for req in ({**REQUEST, "paragraph": f"{marked}\ntwo  words"}, {**REQUEST, "note": "write \\eb{human-written}"},
+    for req in ({**REQUEST, "paragraph": f"{marked}\ntwo  words"}, {**REQUEST, "note": "write \\eb{as written}"},
                 {**REQUEST, "selection": marked, "paragraph": marked}):
         code, body = agent.revise_request(req)
         if code != 409 or "protected" not in body.get("error", "") or os.path.exists(ran):
             fail(f"POST /agent/revise with protected text in {str(req)[:100]}: {code} {body} (the plugin ran: {os.path.exists(ran)})")
-    config.AGENT_CMD = cmd("marks", tmp, "two \\eb{human-written}")
+    config.AGENT_CMD = cmd("marks", tmp, "two \\eb{as written}")
     code, body = agent.revise_request(REQUEST)
     if code != 409 or "answer holds" not in body.get("error", ""):
         fail(f"POST /agent/revise whose plugin answers protected text: {code} {body}")

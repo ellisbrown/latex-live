@@ -25,7 +25,7 @@ moves the text below it. A note long enough that hiding it moves the text below 
 See \ref{sec:method}. A sentence with a note \eb{a note in a paragraph, about \ref{sec:method}} and more
 words after it.\footnote{A footnote \eb{a note in a footnote}.} \ifnum0=1 \eb{a note in a branch that is off}\fi
 % \eb{a resolved note}
-\eb{human-written}
+\eb{left as is}
 % In the review copy's probe pass only: a package that TeX writes into that pass's folder, which the
 % copy's last pass uses and must not load from there.
 \makeatletter\ifdefined\latexlive@record\newwrite\planted\immediate\openout\planted=lmodern.sty

@@ -127,11 +127,11 @@ Notes are the paper's note macros: one-argument commands that go through
 
 ```latex
 \newcommand{\todotxt}[1]{\textcolor{red}{#1}}   % (with xcolor)
-\newcommand{\ch}[1]{\todotxt{[CH: #1]}}
+\newcommand{\ab}[1]{\todotxt{[AB: #1]}}
 ```
 
 Each author's notes take the color their macro's definition gives them (with
-`\newcommand{\ch}[1]{\todotxt{\textcolor{teal}{[CH: #1]}}}`, teal), lightened
+`\newcommand{\ab}[1]{\todotxt{\textcolor{teal}{[AB: #1]}}}`, teal), lightened
 where it would be hard to read, or a color of their own without one. The
 sidebar lists each note in full, and it and the bubbles show notes as typeset
 rather than as typed: curly quotes, dashes, and simple math (`$\alpha$` as α).
@@ -159,8 +159,8 @@ rather than as typed: curly quotes, dashes, and simple math (`$\alpha$` as α).
   paragraph):
 
   ```
-  % RESOLVED 2026-10-19 (EB): defined the control in App. D.2.
-  % \ch{The control is never defined ...}
+  % RESOLVED 2026-10-19 (EB): defined the baseline in Sec. 4.
+  % \ab{Define the baseline.}
   ```
 
 - **Where notes don't go.** A note never lands inside a heading, another note,

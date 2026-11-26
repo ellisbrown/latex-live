@@ -106,6 +106,11 @@ def build_env():
             "max_print_line": "10000"}
 
 
+def image_label():
+    """The TeX image as the startup line names it: the default's TeX Live, or the one LATEX_LIVE_IMAGE chose."""
+    return "TeX Live 2024" if config.TEXLIVE_IMAGE == config.DEFAULT_IMAGE else f"the image {config.TEXLIVE_IMAGE}"
+
+
 def print_urls(port, path="/"):
     token = load_token()
     print(f"=== latex-live: viewer (on a remote machine, forward port {port} first): http://localhost:{port}{path}?t={token}", flush=True)
@@ -286,7 +291,7 @@ def main():
         server.env["LATEX_LIVE_EXEC"] = os.environ["LATEX_LIVE_EXEC"] = server.tex_exec
         threading.Thread(target=watch_build_size, args=(server,), daemon=True).start()
         if not args.no_build:
-            print("=== latex-live: TeX Live 2024 (podman), confined, each run in a container of its own" if image_pulled()
+            print(f"=== latex-live: {image_label()} (podman), confined, each run in a container of its own" if image_pulled()
                   else f"=== latex-live: {config.IMAGE_MISSING}; until then nothing builds (never the host's TeX here)", flush=True)
             start_shared_build(server)
     elif args.no_build:
@@ -297,7 +302,7 @@ def main():
               flush=True)
     else:
         server.env["LATEX_LIVE_EXEC"] = server.tex_exec = container_exec(os.path.realpath(os.getcwd()))
-        print("=== latex-live: TeX Live 2024 (podman)" if image_pulled()
+        print(f"=== latex-live: {image_label()} (podman)" if image_pulled()
               else f"=== latex-live: {config.IMAGE_MISSING}; until then, the host's TeX runs", flush=True)
     if not config.SHARED:
         stop_doc_standbys(server)  # (what an instance that was killed left)

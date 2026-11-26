@@ -29,7 +29,7 @@ from .tools import failure, pdf_pages_text, pdf_tool, run_tool, tex_argv
 ARCHIVE_EXTS = (".tar.gz", ".tgz", ".zip")
 COMMENT_RE = re.compile(r"(?<!\\)(?:\\\\)*%(.*)")  # (also right after a \\ line break)
 PARAM_RE = re.compile(r"(?<!\\)(?:\\\\)*#")  # (a macro parameter, as in a definition's body: not \#)
-PERSONAL_PATH_RE = re.compile(r"(?<![\w.~])/(?:home|Users|checkpoint)/[^\s{}]*|(?<![\w~])~/[^\s{}]*"
+PERSONAL_PATH_RE = re.compile(r"(?<![\w.~}])/(?:home|Users|checkpoint|scratch|mnt|data)/[^\s{}]*|(?<![\w~])~/[^\s{}]*"
                               r"|(?<![\w\\])[A-Za-z]:[\\/](?:[\w .-]+[\\/])+[^\s{}]*|\b(?i:file):/[^\s{}]*")
 
 
@@ -39,7 +39,7 @@ LEFTOVER_RE = re.compile(r"\.(?:aux|log|out|toc|lof|lot|fls|fdb_latexmk|synctex(
 
 def arxiv_package(paper_root, doc=None):
     """The paper root's newest arXiv package, a .tar.gz, .tgz or .zip file or a directory with
-    "arxiv" in its name (a directory with a root document, so not, e.g., sections-arxiv/), or the
+    "arxiv" in its name (a directory with a root document, so not, e.g., arxiv-figures/), or the
     one the viewer made for doc (build/<doc>-arxiv.tar.gz: make_package): (mtime, is archive, path),
     or None. A directory's mtime is its newest file's; on a tie the archive wins (it is what gets
     uploaded)."""

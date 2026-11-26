@@ -196,7 +196,7 @@ def prose_lines(paper_root, pdf_name):
         text = re.sub(r"\\(?:[a-zA-Z]*ref|label|cite[a-z]*|include\w*|input|url|href|begin|end|usepackage|graphicspath|"
                       r"hypersetup|bibliography\w*|newcommand|renewcommand|def|vspace|hspace|setlength|addtolength)\*?"
                       r"\s*(?:\[[^\]]*\]\s*)*\{[^{}]*\}", blank, text)
-        text = re.sub(r"\$\\Delta\$", "Δ", text)  # keep names like $\Delta$Fusion
+        text = re.sub(r"\$\\Delta\$", "Δ", text)  # keep names like $\Delta$Net
         text = re.sub(r"\$\$.*?\$\$|\$[^$]*\$|\\\(.*?\\\)|\\\[.*?\\\]", blank, text, flags=re.S)
         rel = os.path.relpath(path, paper_root)
         for n, line in enumerate(text.split("\n"), 1):
@@ -234,8 +234,8 @@ def lint(paper_root, pdf_name, pages, in_bib):
     shown = lambda v: surface[v].most_common(1)[0][0]  # as most often written, not lowercased
     terms = []
     for k, variants in forms.items():
-        # "encoder free models" next to "encoder-free models" (not "trained from scratch" next to
-        # "from-scratch encoder": hyphenating a modifier before its noun is right).
+        # "long term memory" next to "long-term memory" (not "in the long term" next to "long-term
+        # memory": hyphenating a modifier before its noun is right).
         for v, nxt, entry in spaced.get(k, []):
             if nxt and nxt in hyphen_next.get(k, ()):
                 variants.setdefault(v, []).append(entry)

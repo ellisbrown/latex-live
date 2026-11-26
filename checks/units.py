@@ -372,15 +372,15 @@ def matching_checks():
     matched = {k: [r[4] for r in v] for k, v in review_anchors.match_records(notes, records).items()}
     if matched != {1: [100.0], 2: [300.0]}:
         fail(f"two authors' notes with the same text got each other's records: {matched}")
-    note = {"id": 3, "macro": "eb", "file": "b.tex", "line": 43, "last": 44, "body": "human-written",
-            "typeset": review_anchors.squeeze(templates["eb"].replace("#1", "human-written"))}
-    own = ("pos", "b.tex", 44, 8, 415.0, 207.0, r"{\color {Emerald}[\textbf {EB:} human-written]}")
+    note = {"id": 3, "macro": "eb", "file": "b.tex", "line": 43, "last": 44, "body": "as written",
+            "typeset": review_anchors.squeeze(templates["eb"].replace("#1", "as written"))}
+    own = ("pos", "b.tex", 44, 8, 415.0, 207.0, r"{\color {Emerald}[\textbf {EB:} as written]}")
     for where in ("a.tex", "b.tex"):  # (the marker's record comes first, as its page does)
-        marker = ("pos", where, 213, 5, 170.0, 222.0, r"{\color {Cyan}{[\textbf {CH:} human-written]}}")
+        marker = ("pos", where, 213, 5, 170.0, 222.0, r"{\color {Orange}{[\textbf {AB:} as written]}}")
         matched = {k: [r[3] for r in v] for k, v in review_anchors.match_records([note], [marker, own]).items()}
         if matched != {3: [8]}:
             fail(f"a protected marker in {where} (page 5) and a note with its text in b.tex (page 8): the note got pages {matched}")
-    odd = {**note, "typeset": "[EB:human-written]"}  # (as review_notes would make it of a macro it reads otherwise than TeX)
+    odd = {**note, "typeset": "[EB:aswritten]"}  # (as review_notes would make it of a macro it reads otherwise than TeX)
     if review_anchors.match_records([odd], [own]) != {3: [own]}:
         fail("a note whose typeset text no record has lost the record that holds its text")
     ok("the review copy tells apart two authors' notes with the same text, and gives no note a protected marker's record")
@@ -489,8 +489,15 @@ def settings_checks():
     if [image for image, _ in images] != ["docker.io/minidocks/texlive:2024-full", "localhost/small:1"] \
             or any(f"podman pull {image}" not in missing for image, missing in images):
         fail(f"LATEX_LIVE_IMAGE (unset, set) gives the images {images}")
+    labels = []
+    for image in (config.DEFAULT_IMAGE, "localhost/small:1"):
+        with patched(config, TEXLIVE_IMAGE=image):
+            labels.append(main.image_label())
+    if labels != ["TeX Live 2024", "the image localhost/small:1"]:
+        fail(f"the startup line names the default image and another one {labels}")
     ok("an on/off setting is 1 or 0 (unset: its default; else its default, with a warning), and the build's environment"
-       " drops an inherited LATEX_LIVE_EXEC; a process's command line read one way; LATEX_LIVE_IMAGE chooses the TeX image")
+       " drops an inherited LATEX_LIVE_EXEC; a process's command line read one way; LATEX_LIVE_IMAGE chooses the TeX image,"
+       " which the startup line names")
 
 
 def handler_routes():
@@ -1059,8 +1066,13 @@ def arxiv_strip_checks():
     if same is not None or not other or old is not None or not made or not made[2].endswith("build/main-arxiv.tar.gz"):
         fail(f"comparing the arXiv package's PDF: dates and IDs apart {same!r}, otherwise {other!r};"
              f" the package the viewer made: {old}, {made}")
+    paths = ("\\input{/data/u/a.tex} /scratch/u/b.pdf (/mnt/d/c) data/d.csv ./data/e ../mnt/f figures/data/g"
+             " https://example.org/data/h \\texttt{repo}/data/i")
+    if [m.group(0) for m in arxiv.PERSONAL_PATH_RE.finditer(paths)] != ["/data/u/a.tex", "/scratch/u/b.pdf", "/mnt/d/c)"]:
+        fail(f"the personal paths the arXiv check finds: {[m.group(0) for m in arxiv.PERSONAL_PATH_RE.finditer(paths)]}")
     ok("the arXiv package's sources lose their comments (a trailing one keeps its %), whole-line hidden blocks and their notes'"
-       " text, not what TeX reads verbatim; its PDF is compared dates and IDs aside; the arXiv check reads the package made")
+       " text, not what TeX reads verbatim; its PDF is compared dates and IDs aside; the arXiv check reads the package made;"
+       " absolute paths under the usual mounts are personal, relative ones are not")
 
 
 def completion_checks():

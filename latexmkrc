@@ -42,7 +42,8 @@ my $pass = $ENV{LATEX_LIVE_STANDBY_OWNER} ? "$py -I '$here/latexlive/standby.py'
 $pdflatex = "touch $build/%R.building; [ -s $build/%R.began ] || echo run > $build/%R.began; $pass pdflatex -synctex=1 -file-line-error -halt-on-error %O %P && $py '$here/latex_report.py' --pass %R";
 # LATEX_LIVE_TIMING=1 (live.py; latexlive/timing.py): note when each run and pass begins, when a pass's command
 # returns and latexmk has read what it wrote, when the run ends, and when bibtex starts, in build/<job>.timing.
-# The hooks need latexmk 4.80 or later; with an older one, only the other processes' notes are there.
+# The run's hooks (compile_begin, compile_end) need latexmk 4.88 or later, the pass's are older; with an older one,
+# the notes it has no hook for are missing.
 my $timing = ($ENV{LATEX_LIVE_TIMING} // '') eq '1';
 require Time::HiRes;
 if ($timing && defined &add_hook) {
