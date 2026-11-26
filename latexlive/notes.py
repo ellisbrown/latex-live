@@ -404,7 +404,8 @@ def defined_colors(paper_root, pdf_name):
     found = {}
     for path in project_tex_files(paper_root, fls_file(paper_root, pdf_name)):
         for m in DEFINECOLOR_RE.finditer(read_tex(path)):
-            found.setdefault(m.group(1).strip(), (m.group(2).strip(), m.group(3).strip()))
+            if m.group(2).strip():  # (a definition names its model)
+                found.setdefault(m.group(1).strip(), (m.group(2).strip(), m.group(3).strip()))
     return found
 
 
@@ -422,14 +423,21 @@ def css_color(model, spec, defined=None, depth=0):
             rgb = [int(spec.strip()[k:k + 2], 16) / 255 for k in (0, 2, 4)] if re.fullmatch(r"\s*[0-9A-Fa-f]{6}\s*", spec) else None
         elif model:
             v = [float(x) for x in spec.split(",")]
+            if not all(0 <= x <= (255 if model == "RGB" else 1) for x in v):  # (also not nan)
+                return None
             rgb = {"rgb": v, "RGB": [x / 255 for x in v], "gray": v * 3, "cmy": [1 - x for x in v],
                    "cmyk": [1 - min(1, x + v[-1]) for x in v[:3]] if len(v) == 4 else None}.get(model)
         else:
             parts = spec.replace(" ", "").split("!")
+            if len(parts) > 9:  # (a mix of five colors at most: each may be the paper's own, a mix too)
+                return None
             rgb = named(parts[0])
             for i in range(1, len(parts), 2):
-                other, share = named(parts[i + 1] if i + 1 < len(parts) else "white"), min(100, max(0, float(parts[i]))) / 100
-                rgb = rgb and other and [a * share + b * (1 - share) for a, b in zip(rgb, other)]
+                share = float(parts[i])
+                if not 0 <= share <= 100:  # (also not nan)
+                    return None
+                other = named(parts[i + 1] if i + 1 < len(parts) else "white")
+                rgb = rgb and other and [a * share / 100 + b * (1 - share / 100) for a, b in zip(rgb, other)]
     except ValueError:
         return None
     if not rgb or len(rgb) != 3 or not all(0 <= x <= 1 for x in rgb):
