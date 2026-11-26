@@ -478,7 +478,8 @@ def stop_notes_free_checks():
                     f.write(str(pid))
                 with patched(latex_report, standby_module=lambda: stand_in):
                     latex_report.stop_notes_free("docmainx")
-            early_ok = removed == {False: [f"latex-live.early={passes['earlyFalse']}-1"]} and not running(passes["earlyFalse"])
+            early_ok = removed == {False: [f"latex-live.early={passes['earlyFalse']}-1"]} and wait_for(
+                "the kept early passes to end", lambda: not running(passes["earlyFalse"]) and not running(passes["earlyTrue"]), timeout=5)
         finally:
             os.chdir(cwd)
             for pid in passes.values():

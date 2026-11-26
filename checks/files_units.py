@@ -435,7 +435,7 @@ def rebuild_checks():
                 ("a removal of another file", "/file/delete", {"path": "figures/b.png"}, False),
                 ("a removal of a file the build read", "/file/delete", {"path": "sections/x.tex"}, True)):
             status, jobs = post(path, req)
-            if status != 200 or (jobs != [build.rebuild_doc]) is want:
+            if status != 200 or jobs != ([build.rebuild_doc] if want else []):
                 fail(f"{what} in the owner's preview: {status}, jobs for the main thread {jobs} (want a rebuild: {want})")
         put(os.path.join(root, "sections", "x.tex"), "x\n")
         server.no_build = True

@@ -176,7 +176,7 @@ def rebuild_if_read(server, rels):
     roots = {server.paper_root, os.path.realpath(server.paper_root)}
     read = {os.path.normpath(os.path.join(root, os.path.normpath(p)))
             for p in fls_inputs(fls_file(server.paper_root, server.default_pdf)) for root in roots}
-    if any(os.path.join(root, rel) in read for rel in rels for root in roots):
+    if any(os.path.normpath(os.path.join(root, rel)) in read for rel in rels for root in roots):
         on_main_thread(server, rebuild_doc, wait=False)  # (stopping latexmk may take seconds: the answer doesn't wait)
 
 
