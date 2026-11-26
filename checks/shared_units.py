@@ -19,7 +19,7 @@ import threading
 import time
 
 from .base import HERE, fail, ok
-from .helpers import fake_server, git, git_out, patched, put, read_text, tex_stand_in
+from .helpers import fake_server, git, git_out, patched, put, read_text, tex_stand_in, texlive_image
 
 
 def confinement_checks():
@@ -616,19 +616,23 @@ def shown_notes_checks():
 
 def tex_checks(root, published):
     """shown_notes_checks with the host's pdflatex, if there is one: shown_tex's records of SHOWN_PAPER are just those
-    of SHOWN_RECORDS (and the contents' one) and show just those notes, also when the paper's \\todotxt is \\protected
-    or robust, none for one with two arguments, and the PDF's text, the log but for the records, and the .aux, .toc
-    and .out are as without shown_tex. One that writes its argument into the contents writes none of shown_tex's
+    of SHOWN_RECORDS (and the contents' one) and show just those notes, also when the paper's \\todotxt is \\protected,
+    robust or a document command of one mandatory argument (also in the TeX Live image, if it is here; and whose notes
+    the notes-free build blanks too), none for one with two arguments, and the PDF's text, the log but for the records,
+    and the .aux, .toc and .out are as without shown_tex. One that writes its argument into the contents writes none of shown_tex's
     commands there (but for a group: {}), and one that highlights its argument with soul still builds."""
+    import latex_report
     from latexlive import config, notes
     if not shutil.which("pdflatex"):
         print("skip: no pdflatex here, so notes.shown_tex is not run", flush=True)
         return
     build = os.path.join(root, config.BUILD)
+    image, pulled = texlive_image()
 
-    def run(job, pre):
+    def run(job, pre, in_image=False):
+        tex = [os.path.join(HERE, "tex-exec"), image, root] if in_image else []  # (shared mode's TeX: the image's)
         for _ in range(2):
-            subprocess.run(["pdflatex", "-interaction=batchmode", f"-output-directory={build}", f"-jobname={job}",
+            subprocess.run([*tex, "pdflatex", "-interaction=batchmode", f"-output-directory={build}", f"-jobname={job}",
                             f"{pre}\\input{{main}}"], cwd=root, env={**os.environ, "max_print_line": "10000"},
                            capture_output=True, timeout=120)
         with open(os.path.join(build, f"{job}.log"), errors="replace") as f:
@@ -640,10 +644,14 @@ def tex_checks(root, published):
             ("one argument", plain, want),
             ("\\protected", "\\protected\\long\\def\\todotxt#1{\\ifshowtodos\\textcolor{red}{#1}\\fi}", again),
             ("robust", "\\DeclareRobustCommand{\\todotxt}[1]{\\ifshowtodos\\textcolor{red}{#1}\\fi}", again),
-            ("two arguments", "\\newcommand{\\todotxt}[2][red]{\\ifshowtodos\\textcolor{#1}{#2}\\fi}", [])):
+            ("document command", "\\NewDocumentCommand{\\todotxt}{m}{\\ifshowtodos\\textcolor{red}{#1}\\fi}", again),
+            ("long document command", "\\DeclareDocumentCommand{\\todotxt}{+m}{\\ifshowtodos\\textcolor{red}{#1}\\fi}", again),
+            ("expandable document command", "\\NewExpandableDocumentCommand{\\todotxt}{m}{\\ifshowtodos\\textcolor{red}{#1}\\fi}", want),
+            ("two arguments", "\\newcommand{\\todotxt}[2][red]{\\ifshowtodos\\textcolor{#1}{#2}\\fi}", []),
+            ("two-argument document command", "\\NewDocumentCommand{\\todotxt}{O{red}m}{\\ifshowtodos\\textcolor{#1}{#2}\\fi}", [])):
         put(os.path.join(root, "main.tex"), SHOWN_PAPER.replace(plain, todotxt))
         for ext in (".aux", ".toc", ".out", ".log", ".pdf"):
-            for job in ("main-live", "main-plain"):
+            for job in ("main-live", "main-plain", "main-image", "main-off"):
                 if os.path.exists(os.path.join(build, job + ext)):
                     os.remove(os.path.join(build, job + ext))
         log, before = run("main-live", notes.shown_tex(key)), run("main-plain", "")
@@ -664,11 +672,20 @@ def tex_checks(root, published):
         for ext in (".aux", ".toc", ".out"):
             if read_text(os.path.join(build, "main-live" + ext)) != read_text(os.path.join(build, "main-plain" + ext)).replace("main-plain", "main-live"):
                 fail(f"shown_tex changes the {ext} of a paper with a {name} \\todotxt")
+        if name.endswith("document command") and pulled:  # (whose kernel defines document commands its own way)
+            log = run("main-image", notes.shown_tex(key), in_image=True)
+            if sorted((line, texts.get(digest, digest)) for _, line, digest in notes.note_records(log, key)) != want:
+                fail(f"shown_tex with a {name} \\todotxt, in the TeX Live image: {log[-1500:]}")
         if shutil.which("pdftotext"):
             text = [subprocess.run(["pdftotext", os.path.join(build, f"{job}.pdf"), "-"], capture_output=True).stdout
                     for job in ("main-live", "main-plain")]
             if text[0] != text[1]:
                 fail(f"shown_tex changes the PDF's text with a {name} \\todotxt")
+            if name.endswith("document command") and want:  # (the notes-free build blanks it, as one made with \newcommand)
+                run("main-off", latex_report.NOTES_OFF)
+                clean = subprocess.run(["pdftotext", os.path.join(build, "main-off.pdf"), "-"], capture_output=True).stdout
+                if b"EB:" in clean or b"Hello world" not in clean:
+                    fail(f"the notes-free build of a paper with a {name} \\todotxt: {clean[:300]!r}")
     put(os.path.join(root, "main.tex"), "\\documentclass{article}\\usepackage{xcolor}\n"
         "\\newcommand{\\todotxt}[1]{\\addcontentsline{toc}{subsection}{#1}\\textcolor{red}{#1}}\n"
         "\\newcommand{\\eb}[1]{\\todotxt{[EB: #1]}}\n\\begin{document}\\tableofcontents\nWords \\eb{one note} more.\n\\end{document}\n")

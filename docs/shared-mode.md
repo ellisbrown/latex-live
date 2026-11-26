@@ -50,9 +50,10 @@ Viewers and commenters see the current PDF and what it shows, nothing more:
 - the notes the PDF shows (not those in `\iffalse` or a switch that is off,
   nor any while `\todotxt` hides them, and none until the PDF has been
   built since the instance started or the sources last changed). This needs a
-  `\todotxt` of one argument made with `\newcommand`, `\def` or
-  `\DeclareRobustCommand`; with any other (one made with
-  `\NewDocumentCommand`, say), they see no notes at all;
+  `\todotxt` of one argument made with `\newcommand`, `\def`,
+  `\DeclareRobustCommand` or `\NewDocumentCommand` (with one `m` argument;
+  `\DeclareDocumentCommand` and `\NewExpandableDocumentCommand` too); with any
+  other (one with an optional argument, say), they see no notes at all;
 - whether the build failed and how many errors it had, not the messages, which
   quote the sources;
 - the figures without their labels and source lines, and not the list of

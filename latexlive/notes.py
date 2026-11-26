@@ -47,9 +47,10 @@ def blank_notes(text, kinds):
 # latex-live|shown|<key>|<folder>|<file>|<line>|<MD5 of the text without its spaces>. So a note that isn't typeset,
 # in \iffalse or a switch that is off, dropped by \todotxt (\showtodosfalse) or only measured (a box thrown away),
 # records nothing. In what is written to files (moving arguments, a running head), \todotxt is the paper's as it
-# was, and the record vanishes. Only a \todotxt of one argument (or a robust one: its inner command) gets the record,
-# \protected if the paper's was; without one, no note counts. key, new for each run, keeps the paper's text from
-# passing for a record (a commenter's note in a box TeX shows in the log, say).
+# was, and the record vanishes. Only a \todotxt of one argument (a robust one: its inner command; a document command
+# of one m argument, from \NewDocumentCommand and the like: its body, which the kernel names "\todotxt code") gets the
+# record, \protected if the paper's was; without one, no note counts. key, new for each run, keeps the paper's text
+# from passing for a record (a commenter's note in a box TeX shows in the log, say).
 SHOWN_TEX = (r"\makeatletter\protected\long\def\latexlive@record#1{\edef\latexlive@w{\write-1{latex-live|shown|<KEY>|"
              r"\ifdefined\CurrentFile\detokenize\expandafter{\CurrentFilePath}|\detokenize\expandafter{\CurrentFile}\else|\fi"
              r"|\the\inputlineno|\pdfmdfivesum{\expandafter\zap@space\detokenize{#1} \@empty}}}\latexlive@w}"
@@ -64,7 +65,10 @@ SHOWN_TEX = (r"\makeatletter\protected\long\def\latexlive@record#1{\edef\latexli
              r"\ifdefined\pdfstringdefDisableCommands\pdfstringdefDisableCommands{\let\latexlive@shown\@gobble}\fi\fi}"
              r"\def\latexlive@notes{\ifdefined\todotxt\ifdefined\pdfmdfivesum"
              r"\ifnum\pdfmatch{^macro:->\string\\protect \string\\todotxt }{\meaning\todotxt}=1 \latexlive@wrap{todotxt }"
-             r"\else\latexlive@wrap{todotxt}\fi\fi\fi}"
+             r"\else\ifnum\pdfmatch{^(\string\\protected )?macro:->\string\\__[a-z]+_start(_optimized: |[a-z_]*:[a-zA-Z]+ "
+             r"\string\{ *\string\+? *m *\string\})}{\meaning\todotxt}=1 "
+             r"\ifcsname todotxt code\endcsname\latexlive@wrap{todotxt code}\fi"
+             r"\else\latexlive@wrap{todotxt}\fi\fi\fi\fi}"
              r"\ifdefined\AddToHook\AddToHook{begindocument/end}{\latexlive@notes}\else\AtBeginDocument{\latexlive@notes}\fi"
              r"\makeatother")
 
