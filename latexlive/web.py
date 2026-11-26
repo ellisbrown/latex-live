@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import socket
+import socketserver
 import sys
 import threading
 import time
@@ -52,7 +53,10 @@ class DualStackServer(http.server.ThreadingHTTPServer):
 
     def server_bind(self):
         self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)  # accept IPv4 too
-        super().server_bind()
+        # (not HTTPServer's, which looks the address's name up (socket.getfqdn) for nothing: on macOS that can take a
+        # minute, before the server takes its first request)
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
     def server_activate(self):
         self.slots, self.holding, self.slots_lock = threading.BoundedSemaphore(self.CONNECTIONS), set(), threading.Lock()

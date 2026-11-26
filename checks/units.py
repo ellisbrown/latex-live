@@ -1352,7 +1352,8 @@ def presence_checks():
 def connection_cap_checks():
     """Every server (an instance's, a shared one's, the hub's) takes at most DualStackServer.CONNECTIONS connections
     at once: past that, it closes a new one at once, and takes new ones again as the others end; as many may wait to be
-    taken (a burst of them is not reset)."""
+    taken (a burst of them is not reset). It starts without looking its address's name up (http.server's
+    socket.getfqdn), which can take a minute on macOS."""
     import http.server
     import socket
     from latexlive import hub, web
@@ -1372,7 +1373,8 @@ def connection_cap_checks():
         def log_message(self, *args):
             pass
 
-    server = type("Capped", (web.DualStackServer,), {"CONNECTIONS": 2, "daemon_threads": True})(("::", 0), Quiet)
+    with patched(socket, getfqdn=lambda *a: fail("a server looks its address's name up as it starts (slow on macOS)")):
+        server = type("Capped", (web.DualStackServer,), {"CONNECTIONS": 2, "daemon_threads": True})(("::", 0), Quiet)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     port, held = server.server_address[1], []
     try:
@@ -1396,7 +1398,8 @@ def connection_cap_checks():
     if not dropped or not answered:
         fail(f"a server at its connection cap: the next connection {'was dropped' if dropped else 'was served'}, and once"
              f" the others ended, a new one {'was' if answered else 'was not'} served")
-    ok("every server takes at most 64 connections at once, dropping new ones past that, and takes them again as others end")
+    ok("every server takes at most 64 connections at once, dropping new ones past that, and takes them again as others end;"
+       " it starts without looking its address's name up")
 
 
 def header_deadline_checks():
