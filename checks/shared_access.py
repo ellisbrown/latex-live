@@ -438,7 +438,8 @@ def role_checks(sh):
         fail(f"synctex for line 99999 of body.tex, which has {last}: {clamped}, not its last line, with a note")
     ok("SyncTeX answers JSON for everyone in shared mode (file: null where the editor can't go, the last line for one past"
        " the end), and opens nothing")
-    in_flight_checks(query + "&json=1")
+    # (each lookup at a spot of its own, a point apart: a kept one answers too quickly for them to overlap)
+    in_flight_checks([f"/synctex?file=main.pdf&page={page}&x={x + i:.2f}&y={y:.2f}&json=1" for i in range(1, 9)])
 
 
 def object_body_checks(owner):
@@ -458,13 +459,13 @@ def object_body_checks(owner):
     ok("every action takes a JSON object (400 for another value, for each role that may ask; 403 for one that may not)")
 
 
-def in_flight_checks(lookup):
-    """A coauthor's requests in progress at once (handler.in_flight): a viewer's SyncTeX lookups past two at once are
-    refused (429, to be tried again) while the editor's requests go through; the viewer's first load in two tabs at
-    once (its JSON, the PDFs and its own files, which are never counted) is refused nothing."""
+def in_flight_checks(spots):
+    """A coauthor's requests in progress at once (handler.in_flight): a viewer's SyncTeX lookups (of the 8 spots) past
+    two at once are refused (429, to be tried again) while the editor's requests go through; the viewer's first load in
+    two tabs at once (its JSON, the PDFs and its own files, which are never counted) is refused nothing."""
     with concurrent.futures.ThreadPoolExecutor(32) as pool:
-        lookups = [pool.submit(via_proxy, "vw", lookup) for _ in range(8)]
-        editor = [pool.submit(via_proxy, "ed", path) for path in ("/me", "/status/main.pdf", lookup)]
+        lookups = [pool.submit(via_proxy, "vw", spot) for spot in spots]
+        editor = [pool.submit(via_proxy, "ed", path) for path in ("/me", "/status/main.pdf", spots[0])]
         codes = sorted(f.result()[0] for f in lookups)
         if any(f.result()[0] != 200 for f in editor):
             fail(f"the editor's requests while a viewer sends many lookups: {[f.result()[0] for f in editor]}")
