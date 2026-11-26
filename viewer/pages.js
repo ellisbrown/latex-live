@@ -87,22 +87,35 @@ export async function measureVariant(variant, info) {
   }
 }
 
-// Page thumbnails (rendered as they scroll into view), with the page limit marked.
+// Page thumbnails (rendered as they scroll into view), with the page limit marked. A call that a newer PDF
+// overtakes (its own reads cancelled, or another call drawing the newer one) leaves the panel to the newer one.
 let thumbsDoc = null, thumbObserver = null;
 export async function renderThumbs() {
   if (thumbsDoc === doc) return markThumbLimit();
   thumbsDoc = doc;
   const d = doc, panel = $("thumbs");
   thumbObserver?.disconnect();
-  thumbObserver = new IntersectionObserver((entries) => {
+  thumbObserver = null;
+  let labels, first;
+  try {
+    labels = await d.getPageLabels();
+    first = await d.getPage(1);
+  } catch (e) {
+    if (thumbsDoc === d) thumbsDoc = null; // (the next refresh draws them)
+    if (d !== doc) return;
+    throw e;
+  }
+  if (thumbsDoc !== d || d !== doc) {
+    if (thumbsDoc === d) thumbsDoc = null;
+    return;
+  }
+  const observer = thumbObserver = new IntersectionObserver((entries) => {
     for (const e of entries) {
       if (!e.isIntersecting || e.target.dataset.done) continue;
       e.target.dataset.done = "1";
       drawThumb(d, e.target).catch((err) => console.warn(err)); // (e.g. cancelled: a newer PDF replaced d meanwhile)
     }
   }, { root: panel, rootMargin: "300px" });
-  const labels = await d.getPageLabels();
-  const first = await d.getPage(1);
   const ratio = first.view[3] / first.view[2];
   panel.replaceChildren();
   for (let n = 1; n <= d.numPages; n++) {
@@ -112,7 +125,7 @@ export async function renderThumbs() {
     thumb.dataset.page = n;
     thumb.onclick = () => goToPage(n);
     panel.append(thumb);
-    thumbObserver.observe(thumb);
+    observer.observe(thumb);
   }
   markCurrentThumb(viewer.currentPageNumber);
   markThumbLimit();

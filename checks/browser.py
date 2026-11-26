@@ -31,7 +31,7 @@ def browser_checks(url, editor=True, answer=None, who="the viewer"):
         except Error as e:
             return print(f"skip: no Chromium for playwright ({str(e).strip().splitlines()[0]}), so the viewer is not checked in a"
                          " browser (playwright install chromium, or LATEX_LIVE_CHECK_CHROMIUM)", flush=True)
-        try:
+        def open_page():
             page = browser.new_page(viewport={"width": 1400, "height": 900})
             if answer:
                 origin = "/".join(url.split("/", 3)[:3])
@@ -41,6 +41,10 @@ def browser_checks(url, editor=True, answer=None, who="the viewer"):
             page.on("pageerror", lambda e: errors.append(f"page error: {e}"))
             # (a fetch of a PDF that a newer one replaced is aborted: PDF.js's normal net::ERR_ABORTED)
             page.on("console", lambda m: m.type == "error" and "ERR_ABORTED" not in m.text and errors.append(f"console error: {m.text}"))
+            return page
+
+        try:
+            page = open_page()
             policy = page.goto(url).header_value("content-security-policy") or ""
             if "script-src 'self'" not in policy or "object-src 'none'" not in policy:
                 errors.append(f"the page's Content-Security-Policy is {policy!r}")
@@ -95,6 +99,8 @@ def browser_checks(url, editor=True, answer=None, who="the viewer"):
                 if "files" in tabs:
                     files_tab_checks(page, errors, redraws=not answer)  # (shared mode: others' comings and goings redraw)
             page.wait_for_timeout(500)  # (for what the last click started)
+            if not answer:  # (the owner's preview: the same code as a coauthor's)
+                cut_checks(open_page(), url, errors)
         except Error as e:
             lines = str(e).strip().splitlines()
             errors.append(f"{type(e).__name__}: {lines[0]}{''.join(f' ({l.strip()})' for l in lines if l.strip().startswith('waiting for'))}")
@@ -105,7 +111,44 @@ def browser_checks(url, editor=True, answer=None, who="the viewer"):
     ok(f"in a browser (headless Chromium), {who} loads the PDF and opens every sidebar tab ({len(tabs)}, in one row), the"
        f" shortcuts, the palette{', the Compare panel' if compared else ''}{' and the source pane' if editor else ''}, from the"
        " keyboard too, with no page or console"
-       " error, nor anything its CSP refuses; a cut-off or null answer is no success")
+       " error, nor anything its CSP refuses; a cut-off or null answer is no success"
+       + ("; where to cut fails quietly when drawing a page is cancelled, and two looks at once mark each spot once"
+          if not answer else ""))
+
+
+def cut_checks(page, url, errors):
+    """Where to cut (✂, cut.js), in a page of its own: when drawing a page is cancelled while it looks (as a newer PDF
+    replacing this one does), it fails quietly, with no unhandled rejection, and looks again next time; and two looks at
+    once mark each spot once."""
+    page.goto(url)
+    page.wait_for_selector(".page canvas", timeout=30_000)
+    got = page.evaluate("""async () => {
+        const imp = (m) => import(new URL(`viewer/${m}`, document.baseURI).href);
+        const cut = await imp("cut.js"), marks = await imp("marks.js"), pages = await imp("pages.js"), pdfview = await imp("pdfview.js");
+        const until = async (done) => { for (let i = 0; i < 200 && !done(); i++) await new Promise((r) => setTimeout(r, 50)); return done(); };
+        if (!await until(() => pages.displayedResult())) return null;
+        const d = pdfview.doc, count = document.getElementById("cutCount");
+        const cancelled = () => ({ promise: Promise.reject(new pdfview.pdfjsLib.RenderingCancelledException("Rendering cancelled.")),
+                                   cancel() {} });
+        d.getPage = (n) => Object.getPrototypeOf(d).getPage.call(d, n).then((p) => Object.assign(Object.create(p), { render: cancelled }));
+        marks.setCutOn(true);
+        count.textContent = "";
+        cut.updateCut();  // (not awaited, as the viewer calls it)
+        await until(() => count.textContent);
+        const failed = count.textContent;
+        delete d.getPage;
+        await Promise.all([cut.updateCut(), cut.updateCut()]);
+        return { failed, marked: [...marks.marks.cut.values()].reduce((n, v) => n + v.length, 0),
+                 spots: (await cut.cutSpots(d, pages.displayedResult())).length };
+    }""")
+    page.wait_for_timeout(300)  # (for a page error, were a rejection unhandled)
+    if got is None:
+        errors.append("the main text was not measured within 10 s, so where to cut was not checked")
+    elif got["failed"] != "couldn't check":
+        errors.append(f"where to cut, when drawing a page is cancelled, says {got['failed']!r}, not that it couldn't check")
+    elif got["marked"] != got["spots"]:
+        errors.append(f"where to cut, looked for twice at once: {got['marked']} marks for {got['spots']} spots")
+    page.close()
 
 
 def compare_checks(page, errors):

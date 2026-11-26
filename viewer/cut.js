@@ -10,10 +10,16 @@ import { displayedResult } from "./pages.js";
 // Where to cut: paragraphs whose last line holds only a word or two, and large empty bands in the
 // text column (around figures and tables, or a page that ends early), in the main text of the PDF
 // as shown. Each spot estimates the lines it would give back.
-let cutList = [], cutIndex = -1;
+let cutList = [], cutIndex = -1, cutGen = 0;
 const cutCache = new WeakMap();
 export function cutSpots(d, r) {
-  if (!cutCache.has(d)) cutCache.set(d, findCutSpots(d, r));
+  if (!cutCache.has(d)) {
+    const found = findCutSpots(d, r).catch((e) => { // (not kept: a later call looks again)
+      if (cutCache.get(d) === found) cutCache.delete(d);
+      throw e;
+    });
+    cutCache.set(d, found);
+  }
   return cutCache.get(d);
 }
 async function findCutSpots(d, r) {
@@ -88,22 +94,31 @@ async function findCutSpots(d, r) {
   }
   return spots.sort((a, b) => a.page - b.page || (a.col || 1) - (b.col || 1) || a.top - b.top);
 }
+// Called without being awaited, and again before an earlier call ends (a new PDF, ✂): only the latest call
+// shows its spots, and a PDF replaced meanwhile (destroyed, so its pages' drawing is cancelled) fails quietly.
 export async function updateCut() {
   $("cut").classList.toggle("on", cutOn);
-  const d = doc, r = displayedResult();
+  const d = doc, r = displayedResult(), gen = ++cutGen;
   marks.cut.clear();
   cutList = [];
   cutIndex = -1;
   if (cutOn && d && r) {
-    const spots = await cutSpots(d, r);
-    if (d !== doc || !cutOn) return;
-    cutList = spots;
-    for (const s of spots) {
+    let spots;
+    try {
+      spots = await cutSpots(d, r);
+    } catch (e) {
+      if (gen !== cutGen || d !== doc || !cutOn) return;
+      console.warn(e);
+      $("cutCount").textContent = "couldn't check";
+    }
+    if (gen !== cutGen || d !== doc || !cutOn) return;
+    cutList = spots || [];
+    for (const s of cutList) {
       if (!marks.cut.has(s.page)) marks.cut.set(s.page, []);
       marks.cut.get(s.page).push({ rect: s.rect, cls: "cut", label: s.label });
     }
-    const lines = spots.reduce((n, s) => n + s.lines, 0);
-    $("cutCount").textContent = spots.length ? `${plural(spots.length, "spot")} · ≈${plural(lines, "line")}` : "nothing to cut";
+    const lines = cutList.reduce((n, s) => n + s.lines, 0);
+    if (spots) $("cutCount").textContent = spots.length ? `${plural(spots.length, "spot")} · ≈${plural(lines, "line")}` : "nothing to cut";
   }
   $("cutNav").hidden = !cutOn || !r;
   drawAllMarks();
