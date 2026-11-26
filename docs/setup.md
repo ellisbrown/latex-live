@@ -82,8 +82,8 @@ Expected output, in order:
    it private (`chmod 600`) and says so: delete it and restart your previews for
    a new token if anyone may have read it.
 2. `=== latex-live <version>: building <doc>.tex`, naming the other root files.
-3. `=== latex-live: TeX Live 2024 (podman)`, or without podman
-   `=== latex-live: TeX from the host (no podman)`.
+3. `=== latex-live: TeX Live 2024 (podman)` (with `LATEX_LIVE_IMAGE`, the image's
+   name), or without podman `=== latex-live: TeX from the host (no podman)`.
 4. latexmk output, ending with `=== Watching for updated files`. The first build
    takes about a minute.
 

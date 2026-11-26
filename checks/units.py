@@ -489,8 +489,15 @@ def settings_checks():
     if [image for image, _ in images] != ["docker.io/minidocks/texlive:2024-full", "localhost/small:1"] \
             or any(f"podman pull {image}" not in missing for image, missing in images):
         fail(f"LATEX_LIVE_IMAGE (unset, set) gives the images {images}")
+    labels = []
+    for image in (config.DEFAULT_IMAGE, "localhost/small:1"):
+        with patched(config, TEXLIVE_IMAGE=image):
+            labels.append(main.image_label())
+    if labels != ["TeX Live 2024", "the image localhost/small:1"]:
+        fail(f"the startup line names the default image and another one {labels}")
     ok("an on/off setting is 1 or 0 (unset: its default; else its default, with a warning), and the build's environment"
-       " drops an inherited LATEX_LIVE_EXEC; a process's command line read one way; LATEX_LIVE_IMAGE chooses the TeX image")
+       " drops an inherited LATEX_LIVE_EXEC; a process's command line read one way; LATEX_LIVE_IMAGE chooses the TeX image,"
+       " which the startup line names")
 
 
 def handler_routes():
