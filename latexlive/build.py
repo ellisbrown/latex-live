@@ -11,7 +11,7 @@ import threading
 import time
 
 from . import config
-from .files import clean_file, job_file, mtime, read_json
+from .files import clean_file, fls_file, fls_inputs, job_file, mtime, read_json
 from .instances import record_port, take_lock
 from .latex import root_docs
 from .sources import NOTE_LOCK, load_added
@@ -124,12 +124,14 @@ def stop_doc_standbys(server, doc=None):
             stop_standbys(server.paper_root, config.BUILD, f"{doc}-{job}")
 
 
-def on_main_thread(server, job):
-    """Run job(server) -> (status, body) on the main thread and return its result. Jobs that
-    (re)start latexmk must run there: its parent-death signal fires when the thread that started
-    it exits, so a request thread must not start it."""
+def on_main_thread(server, job, wait=True):
+    """Run job(server) -> (status, body) on the main thread and return its result (without wait, return
+    at once, with None). Jobs that (re)start latexmk must run there: its parent-death signal fires when
+    the thread that started it exits, so a request thread must not start it."""
     done, result = threading.Event(), {}
     server.requests.put((job, result, done))
+    if not wait:
+        return None
     if not done.wait(30):
         return 504, {"error": "this is taking a while; reload in a moment"}
     return result["status"], result["body"]
@@ -162,6 +164,20 @@ def switch_doc(server, doc):
     start_latexmk(server)
     print(f"=== latex-live: now building {doc}.tex", flush=True)
     return 200, {"doc": doc}
+
+
+def rebuild_if_read(server, rels):
+    """After the Files tab renamed or removed a file of the owner's preview (rels: its names, relative to the paper
+    root, before and after): build the document again from the top (rebuild_doc) if its last build read one of
+    them. latexmk -pvc waits for a file that is gone rather than build without it, so the PDF would go on showing
+    the last good build until the next edit. Shared mode's builder sees for itself."""
+    if config.SHARED or server.no_build:
+        return
+    roots = {server.paper_root, os.path.realpath(server.paper_root)}
+    read = {os.path.normpath(os.path.join(root, os.path.normpath(p)))
+            for p in fls_inputs(fls_file(server.paper_root, server.default_pdf)) for root in roots}
+    if any(os.path.join(root, rel) in read for rel in rels for root in roots):
+        on_main_thread(server, rebuild_doc, wait=False)  # (stopping latexmk may take seconds: the answer doesn't wait)
 
 
 def rebuild_doc(server):

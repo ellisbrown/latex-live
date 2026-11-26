@@ -36,7 +36,7 @@ def unit_checks():
                   waiting_download_checks, tool_timeout_checks, runner_checks, settings_checks, guard_checks, open_request_checks, standby_snapshot_checks, timing_checks,
                   code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, forward_script_checks, link_checks, completion_checks, assets_checks, search_checks, logs_checks, presence_checks, word_column_checks, venue_checks, diff_retry_checks,
                   arxiv_strip_checks, graphics_synctex_checks, turned_page_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks,
-                  header_deadline_checks, in_flight_checks, note_limit_checks, perf_checks, bib_checks, files_checks, history_checks, agent_checks):
+                  header_deadline_checks, tex_text_checks, failed_answer_checks, missing_source_checks, in_flight_checks, note_limit_checks, perf_checks, bib_checks, files_checks, history_checks, agent_checks):
         check()
 
 
@@ -180,6 +180,31 @@ def bounds_checks():
         except RuntimeError as e:
             if "build/review/main/main-export.log is over 1 MB" not in str(e):
                 fail(f"the probe's log past its bound: {e}")
+        put(os.path.join(stand_in, "log"), f"{records}Output written on main-export.pdf (1 page, 1234 bytes).\n")
+        put(os.path.join(tmp, "elsewhere.log"), records)
+        script = os.path.join(stand_in, "tex.py")  # (the stand-in leaves a link where the log goes, in place of the log)
+        relink = (f"os.remove(os.path.join(out, job + '.log'))\n"
+                  f"os.symlink({os.path.join(tmp, 'elsewhere.log')!r}, os.path.join(out, job + '.log'))\nsys.exit(")
+        put(script, read_text(script).replace("sys.exit(", relink, 1))
+        with patched(config, SHARED=True):
+            linked = review.run_probe(server, out, "main-export", "main", notes, geo)
+        if linked.get("pos") or linked.get("pages"):
+            fail(f"in shared mode, the probe's log was read through a link: {linked}")
+
+        if HERE not in sys.path:
+            sys.path.insert(0, HERE)
+        import latex_report
+        if latex_report.READ_LIMIT != config.READ_LIMIT:
+            fail(f"latex_report.READ_LIMIT ({latex_report.READ_LIMIT}) is not config.READ_LIMIT ({config.READ_LIMIT})")
+        lineno = os.path.join(tmp, "lineno.aux")
+        put(lineno, "\\relax\n\\@LN{1}{2}\n")
+        os.symlink(lineno, aux + ".link")
+        with patched(latex_report, READ_LIMIT=1000):
+            if not latex_report.uses_lineno(lineno) or latex_report.uses_lineno(aux + ".link"):
+                fail("latex_report.uses_lineno does not read an .aux with lineno's records, or reads one through a link")
+            put(lineno, "\\relax\n" * 200 + "\\@LN{1}{2}\n")
+            if latex_report.uses_lineno(lineno):
+                fail("latex_report.uses_lineno read an .aux past its bound")
 
         synctex = os.path.join(tmp, "export.synctex.gz")
         head = ("SyncTeX Version:1\nInput:1:/paper/body.tex\nContent:\n{1\n[1,7:4736286,4736286:30000000,40000000,0\n"
@@ -197,7 +222,8 @@ def bounds_checks():
             if "export.synctex.gz is over 1 MB uncompressed" not in str(e):
                 fail(f"a SyncTeX file past its bound: {e}")
     ok("the downloads read TeX's logs, .aux, .bbl and SyncTeX files only up to a bound, past which they stop and say so;"
-       " the probe's records are read from its log line by line; a log whose wrapping split a UTF-8 character reads")
+       " the probe's records are read from its log line by line (in shared mode, never through a link); a log whose"
+       " wrapping split a UTF-8 character reads; lineno's records are looked for in a bounded read, never through a link")
 
 
 def failed_export_checks():
@@ -1430,6 +1456,96 @@ def header_deadline_checks():
         fail(f"with the header deadline, a request sent at once was {'' if answered else 'not '}answered, and a body slower"
              f" than the deadline got {reply[:200]!r}")
     ok("every server takes a request's line and headers within 10 s however slowly they come, while a body may take longer")
+
+
+def missing_source_checks():
+    """A source that the last build read and that is gone since (renamed or removed in the Files tab) is left out of
+    the files the requests read (files.project_tex_files), so the checks (with an anonymous author block, which reads
+    each one for names), the margin notes and the arXiv check answer rather than fail until the next build."""
+    from latexlive import checks, config, files, notes
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp, patched(config, SHARED=False):
+        root = os.path.join(tmp, "paper")
+        put(os.path.join(root, "main.tex"), "\\newcommand{\\eb}[1]{\\todotxt{#1}}\n\\begin{document}\nSome words. \\eb{a note}\n"
+                                           "\\input{gone}\n\\end{document}\n")
+        fls = os.path.join(root, "build", "main-live.fls")
+        put(fls, f"PWD {root}\nINPUT main.tex\nINPUT gone.tex\n")
+        put(os.path.join(root, "main.pdf"), "%PDF-1.5\n")
+        put(os.path.join(root, "build", "clean", "main-clean.synctex.gz"), "not gzip")
+        if [os.path.basename(p) for p in files.project_tex_files(root, fls)] != ["main.tex"]:
+            fail(f"files.project_tex_files lists a source that is gone: {files.project_tex_files(root, fls)}")
+        server = fake_server(root, checks={}, checks_running={}, checks_lock=threading.Lock(), shared=None, no_build=True,
+                             latexmk=None)
+        try:
+            notes.margin_notes(root, "main.pdf")
+            with patched(checks, pdf_pages_text=lambda pdf: ["Anonymous Authors\nSome words."]):
+                found = checks.checks(server, "main.pdf")
+        except OSError as e:
+            return fail(f"a source the last build read, gone since, fails a request: {type(e).__name__}: {e}")
+        if not any(c["title"] == "Anonymity" and c["level"] != "info" for c in found):
+            fail(f"the checks did not look at the anonymous author block: {[c['title'] for c in found]}")
+    ok("a source the last build read and that is gone since is left out of the checks, the margin notes and the arXiv check")
+
+
+def tex_text_checks():
+    """The plain text of a note or a caption (latex.tex_to_text) keeps the spaces after a control symbol (\\% and \\&:
+    TeX skips those after a control word only), and drops a color's name (\\textcolor{red}{...}); the arXiv check says
+    a small package's size in KB, not as 0.0 MB (arxiv.size_text)."""
+    from latexlive import arxiv, latex
+    for tex, want in (("50\\% \\& under\\_score", "50% & under_score"), ("\\textcolor{red}{[EB: Caption note.]}", "[EB: Caption note.]"),
+                      ("\\textcolor [rgb]{1,0,0} {x} and \\color{blue}y", " x and y"), ("Fig.\\ 3 and \\LaTeX{} too", "Fig. 3 and  too"),
+                      ("\\emph{one} \\unknown two", "one two")):
+        if (found := latex.tex_to_text(tex, {})) != want:
+            fail(f"tex_to_text({tex!r}) is {found!r}, not {want!r}")
+    for size, want in ((0, "1 KB"), (12_345, "12 KB"), (999_000, "999 KB"), (1_000_000, "1.0 MB"), (23_460_000, "23.5 MB")):
+        if arxiv.size_text(size) != want:
+            fail(f"arxiv.size_text({size}) is {arxiv.size_text(size)!r}, not {want!r}")
+    ok("a note's or caption's plain text keeps the spaces after \\% and \\& and drops a color's name; a small arXiv"
+       " package's size is in KB")
+
+
+def failed_answer_checks():
+    """A request whose handler fails before it answers gets a 500 with a message (BaseHandler.answer_failure), which
+    the viewer shows, rather than a connection closed without an answer, which the hub and the viewer take for a
+    preview they can't reach; one that fails after its answer began gets nothing more."""
+    import socket
+    from latexlive import web
+
+    class Failing(web.BaseHandler):
+        def do_GET(self):
+            if self.path == "/late":
+                self.send_json(200, {"fine": True})
+            raise ValueError("a bug")
+
+        def log_message(self, *args):
+            pass
+
+    class Quiet(web.DualStackServer):
+        daemon_threads = True
+
+        def handle_error(self, request, client_address):  # (the traceback is expected here)
+            pass
+
+    server = Quiet(("::", 0), Failing)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    answers = {}
+    try:
+        for path in ("/early", "/late"):
+            with socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=5) as conn:
+                conn.sendall(f"GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode())
+                data = b""
+                while chunk := conn.recv(65536):
+                    data += chunk
+                answers[path] = data
+    finally:
+        server.shutdown()
+        server.server_close()
+    head, _, body = answers["/early"].partition(b"\r\n\r\n")
+    if not head.startswith(b"HTTP/1.0 500") and not head.startswith(b"HTTP/1.1 500") or b'"error"' not in body or b"a bug" in body:
+        fail(f"a request whose handler failed before answering got {answers['/early'][:300]!r} (want a 500 with a message"
+             " that doesn't say what failed)")
+    if answers["/late"].count(b"HTTP/1.") != 1 or b'{"fine": true}' not in answers["/late"]:
+        fail(f"a request whose handler failed after answering got {answers['/late'][:300]!r}")
+    ok("a request whose handler fails before answering gets a 500 with a message, not a closed connection")
 
 
 def in_flight_checks():

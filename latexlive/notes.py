@@ -255,8 +255,11 @@ def margin_notes(paper_root, pdf_name):
 
     found = []
     for path, text in texts.items():
-        with open(path, errors="replace") as f:
-            raw = f.read().split("\n")
+        try:
+            with open(path, errors="replace") as f:
+                raw = f.read().split("\n")
+        except OSError:  # (gone since the build read it)
+            continue
         # A commented-out line is not a paragraph break (\x7f keeps it from reading as blank), and
         # notes in \iffalse blocks are not typeset.
         text = "\n".join("\x7f" if r.lstrip().startswith("%") else t for r, t in zip(raw, text.split("\n")))

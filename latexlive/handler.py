@@ -15,7 +15,7 @@ from .arxiv import start_arxiv
 from .auth import owner_name
 from .baselines import baseline_request, start_diff
 from .bib import add_request, bib_index, lookup_request, start_verify, verify_status
-from .build import on_main_thread, rebuild_doc, request_switch
+from .build import on_main_thread, rebuild_doc, rebuild_if_read, request_switch
 from .checks import cached_checks
 from .commits import commit_request
 from .document import floats, graphics, toc_outline
@@ -341,6 +341,15 @@ class Handler(BaseHandler):
         answer(self, req)
 
 
+def moved(server, answer, *keys):
+    """A Files tab rename's or removal's answer (status, body), once the document builds again if its last build read
+    the file (rebuild_if_read: keys, the body's names for it, before and after)."""
+    status, body = answer
+    if status == 200:
+        rebuild_if_read(server, [body[k] for k in keys])
+    return answer
+
+
 # The actions (do_POST), each answered by a function of the handler and the request's body (a JSON object). SHARED_POSTS:
 # those of shared mode only.
 POSTS = {
@@ -348,8 +357,8 @@ POSTS = {
     "/file": lambda h, req: h.send_json(*save_request(h.server, req, h.principal)),
     "/file/create": lambda h, req: h.send_json(*create_request(h.server, req, h.principal)),
     "/file/upload": lambda h, req: h.send_json(*upload_request(h.server, req, h.principal)),
-    "/file/rename": lambda h, req: h.send_json(*rename_request(h.server, req, h.principal)),
-    "/file/delete": lambda h, req: h.send_json(*delete_request(h.server, req, h.principal)),
+    "/file/rename": lambda h, req: h.send_json(*moved(h.server, rename_request(h.server, req, h.principal), "from", "path")),
+    "/file/delete": lambda h, req: h.send_json(*moved(h.server, delete_request(h.server, req, h.principal), "path")),
     "/history/restore": lambda h, req: h.send_json(*restore_request(h.server, req, h.principal)),
     "/bib/lookup": lambda h, req: h.send_json(*lookup_request(req)),
     "/bib/add": lambda h, req: h.send_json(*add_request(h.server, req, h.principal)),

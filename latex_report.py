@@ -49,6 +49,7 @@ COMMENT_RE = re.compile(r"(?<!\\)%.*")
 BOX_RE = re.compile(r"^Overfull \\hbox \((.+?)\) (?:in paragraph|in alignment|detected) at lines? (?:\d+--)?(\d+)")
 FILE_TOKEN_RE = re.compile(r"[^\s()]+")
 LOG_LIMIT = 64_000_000  # (the most of a log read: the paper decides how much TeX writes)
+READ_LIMIT = 16_000_000  # (the most of an .aux read: config.READ_LIMIT, which this script doesn't import)
 
 
 def note_time(root, event, detail="", when=None):
@@ -463,6 +464,7 @@ def stop_notes_free(doc):
     gone, and the warm standby it ran from: live.py, before it stops the document's standbys (as it stops, switches
     documents, or rebuilds from scratch), so that the pass can't start one after them. Each pass runs in a session of
     its own, which neither stopping latexmk nor live.py's process group reaches. Run from the paper root."""
+    early = None
     if os.path.isdir(EARLY):  # (under the lock: an early pass may be starting, before it says so)
         with early_lock():
             early = read_early()
@@ -485,6 +487,9 @@ def stop_notes_free(doc):
             time.sleep(0.01)
         if not group_alive(pid):
             break
+    kept = early and early.get("state") == "kept" and early.get("pid") == pid
+    if kept and early.get("label") and not early.get("texDone"):  # (a kept early pass's TeX run: its container, as stop_early)
+        standby_module().remove_containers(f"latex-live.early={early['label']}")
     if os.path.isdir(os.path.join(BUILD, "standby")):
         standby_module().stop_taken(BUILD, pid)
 
@@ -671,12 +676,16 @@ def uses_lineno(aux):
     """Whether a pass's .aux holds lineno's records. lineno (the review-mode line numbers of
     CVPR-style classes) places each number from the previous pass's .aux, so a pass seeded with
     the .aux of the build with notes puts numbers in the wrong column or at the wrong height
-    wherever hiding the notes moved the text: such a document needs a second pass."""
-    try:
-        with open(aux, errors="replace") as f:
-            return "\\@LN" in f.read()
-    except OSError:
+    wherever hiding the notes moved the text: such a document needs a second pass. Its first READ_LIMIT bytes (in
+    shared mode, the paper decides how much TeX writes), never through a link (open_built)."""
+    f = open_built(aux)
+    if f is None:
         return False
+    with f:
+        try:
+            return b"\\@LN" in f.read(READ_LIMIT)
+        except OSError:
+            return False
 
 
 def tex_format(log):

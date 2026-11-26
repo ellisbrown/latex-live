@@ -204,16 +204,40 @@ class BaseHandler(http.server.SimpleHTTPRequestHandler):
 
     def handle_one_request(self):
         self.reader.deadline = time.monotonic() + self.HEADER_DEADLINE
+        self.parsed = self.answered = False
         try:
             super().handle_one_request()
+        except Exception as e:
+            self.answer_failure(e)
+            raise  # (handle_error prints it)
         finally:
             self.headers_read()
 
     def parse_request(self):
         try:
-            return super().parse_request()
+            self.parsed = super().parse_request()
+            return self.parsed
         finally:
             self.headers_read()
+
+    def send_response_only(self, code, message=None):
+        self.answered = True
+        super().send_response_only(code, message)
+
+    def answer_failure(self, error):
+        """Answer 500, with a message, a request whose handler failed before it began its answer, rather than close the
+        connection without one, which the hub and the viewer take for a preview they can't reach. Not when the client
+        left or went quiet, nor once an answer has begun. The message doesn't say what failed: in shared mode, that
+        could name the paper's folders to a coauthor; the preview's terminal shows it."""
+        self.close_connection = True
+        if not self.parsed or self.answered or isinstance(error, (ConnectionError, socket.timeout)):
+            return
+        self.csp_override = None  # (a session the request began is still sent: it was signed in)
+        try:
+            self.send_json(500, {"error": "the preview failed to answer this request (its terminal says why)"})
+            self.wfile.flush()
+        except OSError:
+            pass
 
     def headers_read(self):
         """Once the headers are in (or the request failed): reads and writes again only bounded by timeout."""

@@ -18,7 +18,8 @@ from . import config
 from .document import layout
 from .export import exact_export, links_in, waiting_for_build
 from .files import (
-    build_folder, copy_output, create_output, fls_file, job_file, mtime, pdf_path, project_tex_files, read_output, too_big)
+    build_folder, copy_output, create_output, fls_file, job_file, mtime, open_output, pdf_path, project_tex_files, read_output,
+    too_big)
 from .latex import blank_comments, brace_group, false_blocks, first_error, project_macros, read_tex
 from .notes import NOTE_DEF_RE, escape_note, note_kinds, note_use_re
 from .review_anchors import BP, note_source, review_anchors, squeeze, synctex_pages
@@ -298,13 +299,16 @@ def run_probe(server, out, job, doc, notes, geo):
         return {}
     probe = {"pos": [], "seen": [], "snippets": {}, "colors": {}, "synctex": os.path.join(out, f"{job}.synctex.gz")}
     log = os.path.join(out, f"{job}.log")
-    try:
-        if os.path.getsize(log) > config.OUTPUT_LIMIT:
-            raise RuntimeError(too_big(os.path.relpath(log, server.paper_root), config.OUTPUT_LIMIT))
-        with open(log, "rb") as f:  # (only its records, and the line that says how many pages it wrote)
-            lines = [line.decode("latin-1").rstrip("\r\n") for line in f if line.startswith((b"latex-live|", b"Output written on "))]
-    except OSError:
+    f = open_output(log)  # (in shared mode, never through a link)
+    if f is None:
         return {}
+    with f:
+        if os.fstat(f.fileno()).st_size > config.OUTPUT_LIMIT:
+            raise RuntimeError(too_big(os.path.relpath(log, server.paper_root), config.OUTPUT_LIMIT))
+        try:  # (only its records, and the line that says how many pages it wrote)
+            lines = [line.decode("latin-1").rstrip("\r\n") for line in f if line.startswith((b"latex-live|", b"Output written on "))]
+        except OSError:
+            return {}
     for line in lines:
         if not line.startswith("latex-live|"):
             continue

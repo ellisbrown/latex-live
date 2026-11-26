@@ -280,7 +280,7 @@ def wrote(server, user, rel, version=None):
     server.last_writer[rel] = (version, user["name"] or (owner_name(server) if user["role"] == "owner" else user["id"]))
 
 
-# The Files tab's changes (editor.py): files made, uploaded, renamed or removed through the server. A new name holds
+# The Files tab's changes (file_actions.py): files made, uploaded, renamed or removed through the server. A new name holds
 # NAME_RE's parts, at most ASSETS_DEPTH folders deep (where project_assets looks), never in the build directory nor a
 # .pdf in the paper root (a document's build); an upload is a figure (ASSET_EXTS), never a source, which only the
 # editor's save writes; and nothing is written over a file that is there.

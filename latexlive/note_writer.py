@@ -12,7 +12,7 @@ import unicodedata
 
 from . import config
 from .commits import charge, commit_others, paused, remember_write, source_budget, updating
-from .files import fls_file, project_tex_files
+from .files import fls_file, project_tex_files, within
 from .latex import blank_comments, brace_group, read_tex
 from .notes import escape_note, note_kinds
 from .roles import at_least
@@ -206,7 +206,7 @@ def note_request(server, req, user):
     count against what they write in a day (source_budget: with LATEX_LIVE_COMMIT, a file not among their writes still
     to commit costs its size), past which 429.
     """
-    root = server.paper_root
+    root, real_root = server.paper_root, os.path.realpath(server.paper_root)
     try:
         action, pdf = req.get("action", "add"), req["pdf"]
         if not isinstance(pdf, str) or not pdf.endswith(".pdf") or os.path.basename(pdf) != pdf:
@@ -241,9 +241,10 @@ def note_request(server, req, user):
                 return 400, {"error": f"\\{req['who']} is not a note macro of this paper"}
         else:
             return 400, {"error": f"unknown action {action}"}
-        asked = str(req["source"]) if action != "add" else os.path.relpath(src, root)  # (as asked: never where a link leads)
+        asked = (str(req["source"]) if action != "add"  # (as asked or found: never where a link leads)
+                 else os.path.relpath(src, root if within(src, root) else real_root))
         src = os.path.realpath(src)
-        rel = os.path.relpath(src, root)
+        rel = os.path.relpath(src, real_root)  # (as the editor and the Files tab name it, for the daily budget and commits)
         if src not in files:
             return 403, {"error": f"{asked} is not one of the paper's .tex files"}
         with NOTE_LOCK:

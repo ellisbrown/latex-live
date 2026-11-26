@@ -66,8 +66,8 @@ owner. The downloads with notes in the margin and as comments show every note
 outside a false branch, even while `\todotxt` hides them in the PDF.
 
 A badge in the top bar shows each person their name and role. Double-clicking
-the PDF opens the source pane for editors and names the source line for
-others. The first time a coauthor opens the preview, a short welcome guide for
+the PDF opens the source pane at that line for editors; for viewers and
+commenters, it just selects a word, as anywhere else. The first time a coauthor opens the preview, a short welcome guide for
 their role explains the live PDF, commenting, editing, finding your way, the
 downloads, and where their changes go; "Welcome guide" in the ⋯ menu reopens
 it.

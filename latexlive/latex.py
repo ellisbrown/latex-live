@@ -78,7 +78,9 @@ def pick_doc(paper_root, docs):
 
 
 TEX_SYMBOLS = {"Delta": "Δ", "alpha": "α", "beta": "β", "gamma": "γ", "times": "×", "&": "&", "%": "%", "_": "_", "xspace": " ",
-               "ldots": "…", "dots": "…"}
+               "ldots": "…", "dots": "…", " ": " ", "\n": " "}
+# The color a color command takes before its text, or alone (\color{red}): \textcolor[rgb]{1,0,0}{...} -> {...}.
+COLOR_SPEC_RE = re.compile(r"\\(?:textcolor|color|colorbox)\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}")
 MACRO_DEF_RE = re.compile(r"\\(?:(?:re|provide)?newcommand\*?|DeclareRobustCommand\*?)\s*\{?\\([a-zA-Z@]+)\}?\s*(?=\{)|\\def\\([a-zA-Z@]+)(?=\{)")
 INPUT_RE = re.compile(r"\\(?:input|include|subfile)\s*\{([^{}]+)\}")
 
@@ -231,12 +233,15 @@ def tex_to_text(tex, macros, depth=0, typeset=False):
     if typeset:  # conditionals: the \else branch (e.g. a glyph's non-bold form)
         tex = re.sub(r"\\if\w*(?:[^\\]|\\(?!else|fi\b))*?\\else((?:[^\\]|\\(?!fi\b))*)\\fi\b", lambda m: m.group(1).strip(), tex)
 
+    tex = COLOR_SPEC_RE.sub("", tex)  # (a color's name or values is no text: \textcolor{red}{...})
+
     def macro(m):
-        name = m.group(1)
+        name = m.group(1) or m.group(2)
         if name in macros and depth < 6:
             return tex_to_text(macros[name], macros, depth + 1, typeset)
         return TEX_SYMBOLS.get(name, "")
-    return re.sub(r"\\([a-zA-Z@]+|.)\s*", macro, tex).replace("{", "").replace("}", "")
+    # (spaces after a control word are TeX's to skip, not those after a control symbol: "50\% of")
+    return re.sub(r"\\(?:([a-zA-Z@]+)\s*|(.))", macro, tex, flags=re.S).replace("{", "").replace("}", "")
 
 
 def read_tex(path):

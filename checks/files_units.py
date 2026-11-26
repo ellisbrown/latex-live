@@ -10,13 +10,15 @@ import io
 import os
 import tempfile
 import time
+import types
 
 from .base import fail, ok
 from .helpers import fake_server, git, git_out, patched, put, put_bytes, read_text
 
 
 def files_checks():
-    for check in (containment_checks, name_checks, change_checks, request_checks, source_budget_checks, commit_checks, csp_checks):
+    for check in (containment_checks, name_checks, change_checks, request_checks, rebuild_checks, linked_root_checks, source_budget_checks,
+                  commit_checks, csp_checks):
         check()
 
 
@@ -399,6 +401,77 @@ def commit_checks():
             fail("a file that git ignores was committed")
     ok("the Files tab's changes are committed as their writer's: new files added to git (not ignored ones), renames and"
        " removals; an edit of a file made there keeps it new")
+
+
+def rebuild_checks():
+    """In the owner's preview, a Files tab rename or removal of a file that the last build read builds the document
+    again (build.rebuild_if_read, on the main thread: latexmk -pvc would wait for the file rather than fail), and so
+    does renaming a file to a name the build read; nothing builds for another file, in shared mode (whose builder sees
+    for itself), or with --no-build."""
+    import queue
+    from latexlive import build, config, file_actions, handler
+    owner = {"id": "owner", "name": "Owner", "role": "owner", "macro": "", "email": None, "via": "token"}
+    with tempfile.TemporaryDirectory(prefix="latex-live-rebuild-") as root, tempfile.TemporaryDirectory() as state, \
+            patched(config, STATE=state, SHARED=False), patched(file_actions, paused=lambda s: None):
+        put(os.path.join(root, "main.tex"), "\\begin{document}\n\\input{sections/x}\n\\end{document}\n")
+        for name in ("sections/x.tex", "figures/a.png", "figures/b.png"):
+            put(os.path.join(root, name), "x\n")
+        put(os.path.join(root, "build", "main-live.fls.done"), f"PWD {root}\nINPUT ./main.tex\nINPUT {root}/sections/x.tex\n")
+        server = fake_server(root, state, no_build=False, requests=queue.Queue())
+
+        def post(path, req):
+            answers = []
+            h = types.SimpleNamespace(server=server, principal=owner, send_json=lambda *a: answers.append(a))
+            handler.POSTS[path](h, req)
+            jobs = []
+            while not server.requests.empty():
+                jobs.append(server.requests.get()[0])
+            return answers[0][0], jobs
+
+        for what, path, req, want in (
+                ("a rename of a file the build read", "/file/rename", {"from": "sections/x.tex", "to": "sections/z.tex"}, True),
+                ("a rename back to its name", "/file/rename", {"from": "sections/z.tex", "to": "sections/x.tex"}, True),
+                ("a rename of another file", "/file/rename", {"from": "figures/a.png", "to": "figures/c.png"}, False),
+                ("a removal of another file", "/file/delete", {"path": "figures/b.png"}, False),
+                ("a removal of a file the build read", "/file/delete", {"path": "sections/x.tex"}, True)):
+            status, jobs = post(path, req)
+            if status != 200 or (jobs != [build.rebuild_doc]) is want:
+                fail(f"{what} in the owner's preview: {status}, jobs for the main thread {jobs} (want a rebuild: {want})")
+        put(os.path.join(root, "sections", "x.tex"), "x\n")
+        server.no_build = True
+        if post("/file/rename", {"from": "sections/x.tex", "to": "sections/w.tex"})[1]:
+            fail("with --no-build, a rename of a file the build read asked for a build")
+        server.no_build, config.SHARED = False, True
+        if post("/file/rename", {"from": "sections/w.tex", "to": "sections/x.tex"})[1]:
+            fail("in shared mode, a rename asked latexmk for a build")
+    ok("in the owner's preview, renaming or removing a file the last build read in the Files tab builds the document"
+       " again (not for other files, in shared mode, or with --no-build)")
+
+
+def linked_root_checks():
+    """A note written in a paper reached through a link (its folder, or a folder above it) is counted and committed as
+    the editor and the Files tab name its file (relative to the paper's real folder): an added source's notes count
+    against the added sources' total, and the writes to commit are keyed by the file's own name, never ../.."""
+    from latexlive import commits, config, note_writer
+    ed = {"id": "ed", "name": "Eden", "role": "editor", "macro": "ed", "email": None, "via": "proxy"}
+    with tempfile.TemporaryDirectory(prefix="latex-live-linked-") as tmp, tempfile.TemporaryDirectory() as state, \
+            patched(config, STATE=state, SHARED=True), patched(note_writer, paused=lambda s: None):
+        real = os.path.join(tmp, "real")
+        put(os.path.join(real, "main.tex"), "\\newcommand{\\ed}[1]{\\todotxt{#1}}\n\\begin{document}\n\\input{sec}\n\\end{document}\n")
+        put(os.path.join(real, "sec.tex"), "Words. \\ed{first note}\n")
+        put(os.path.join(real, "build", "main-live.fls"), f"PWD {real}\nINPUT main.tex\nINPUT sec.tex\n")
+        os.symlink(real, os.path.join(tmp, "link"))
+        server = fake_server(os.path.join(tmp, "link"), state, added={"sec.tex"})
+        note = {"action": "reply", "pdf": "main.pdf", "source": "sec.tex", "line": 1, "macro": "ed", "tex": "first note",
+                "text": "a reply"}
+        with patched(commits, ADDED_SOURCES_TOTAL=30):
+            refused = note_writer.note_request(server, note, ed)
+        if refused[0] != 413 or "added" not in refused[1].get("error", ""):
+            fail(f"a note that takes an added source past the added sources' total, in a paper reached through a link: {refused}")
+        result = note_writer.note_request(server, note, ed)
+        if result[0] != 200 or "sec.tex" not in server.last_writer or any(".." in rel for rel in server.last_writer):
+            fail(f"a note in a paper reached through a link: {result}, recorded as {sorted(server.last_writer)}")
+    ok("a note in a paper reached through a link is counted and recorded under its file's own name")
 
 
 def csp_checks():

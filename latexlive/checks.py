@@ -62,8 +62,11 @@ def checks(server, pdf_name):
     if pages and re.search(r"\banonymous\b", pages[0], re.I):
         names = set()  # people named in the note-macro comments, e.g. "\eb ... % Ellis Brown"
         for path in project_tex_files(root, fls_file(root, pdf_name)):
-            with open(path, errors="replace") as fh:
-                names |= {m.strip() for m in re.findall(r"\\todotxt.*%\s*([A-Z][a-z]+(?: [A-Z][a-z]+)+)\s*$", fh.read(), re.M)}
+            try:
+                with open(path, errors="replace") as fh:
+                    names |= {m.strip() for m in re.findall(r"\\todotxt.*%\s*([A-Z][a-z]+(?: [A-Z][a-z]+)+)\s*$", fh.read(), re.M)}
+            except OSError:  # (gone since the build read it)
+                pass
         if git_name := git_user(root):
             names.add(git_name)
         anon_terms = config.ANON_TERMS  # (affiliations and other terms that identify the authors)
