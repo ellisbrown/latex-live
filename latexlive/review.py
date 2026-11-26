@@ -21,7 +21,7 @@ from .files import (
     build_folder, copy_output, create_output, fls_file, job_file, mtime, open_output, pdf_path, project_tex_files, read_output,
     too_big)
 from .latex import blank_comments, brace_group, false_blocks, first_error, project_macros, read_tex
-from .notes import NOTE_DEF_RE, escape_note, note_kinds, note_use_re
+from .notes import NOTE_DEF_RE, escape_note, note_colors, note_kinds, note_use_re
 from .review_anchors import BP, note_source, review_anchors, squeeze, synctex_pages
 from .review_layout import comments_tex, review_geometry, review_layout, review_tex
 from .synctex import page_rotations, shown_point, shown_size
@@ -366,15 +366,3 @@ def note_citations(paper_root, pdf_name, bbl, notes):
             found[key] = label if label and not label.strip().isdigit() else name
     return found
 
-
-def note_colors(paper_root, pdf_name, macros):
-    """{note macro: (model, color)}: the first color its definition sets (\\color or \\textcolor),
-    e.g. ("", "Emerald") or ("rgb", "0.1,0.5,0.2"), for its number and wire."""
-    found = {}
-    for path in project_tex_files(paper_root, fls_file(paper_root, pdf_name)):
-        text = read_tex(path)
-        for m in NOTE_DEF_RE.finditer(text):
-            color = re.search(r"\\(?:text)?color\s*(?:\[([^\]]*)\])?\s*\{([^{}]*)\}", brace_group(text, m.end())[0])
-            if m.group(1) in macros and m.group(1) not in found and color:
-                found[m.group(1)] = (color.group(1) or "", color.group(2))
-    return found

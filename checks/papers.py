@@ -36,7 +36,7 @@ words after it.\footnote{A footnote \eb{a note in a footnote}.} \ifnum0=1 \eb{a 
 # The coauthors' note macros (the users of shared_setup), in a file of their own so that main.tex
 # keeps its line numbers.
 PEOPLE = r"""\newcommand{\ed}[1]{\todotxt{[ED: #1]}}
-\newcommand{\cm}[1]{\todotxt{[CM: #1]}}
+\newcommand{\cm}[1]{\todotxt{\textcolor{teal}{[CM: #1]}}}
 """
 # The start of body.tex, for the notes in shared mode (note_checks), near the top of page 1: a paragraph
 # with a note of the owner's, and one that the owner's protected-text marker ends (LATEX_LIVE_PROTECTED).

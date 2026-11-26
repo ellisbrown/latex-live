@@ -12,9 +12,37 @@ import { getJSON } from "./net.js";
 
 // Notes (\todo and per-author note macros) from live.py, in reading order. Click one to see
 // it in the PDF; click its file:line to open it in the editor.
-const AUTHOR_COLORS = { TODO: "#ef5350", EB: "#26a69a", CH: "#4fc3f7", SX: "#bcaaa4", Hu: "#ce93d8", MR: "#f06292",
-                        JV: "#9575cd", Shengyi: "#f8bbd0", Daniel: "#66bb6a" };
-const authorColor = (a) => AUTHOR_COLORS[a] || `hsl(${[...a].reduce((h, c) => h * 31 + c.charCodeAt(0), 7) % 360} 60% 70%)`;
+// Each note macro's color is the one the paper's definition of it sets (/authors), lightened where #111 on it (the
+// chips' text) would read at less than 4.5:1, which also keeps it at about 4:1 on the dark theme's surfaces; without
+// one, a color from the author's label.
+const luminance = (rgb) => rgb.map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4))
+  .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+function readable(hex) {
+  const rgb = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+  let mix = 0; // (the share of white)
+  const at = (t) => rgb.map((v) => v + (1 - v) * t);
+  while (mix < 1 && (luminance(at(mix)) + 0.05) / (luminance([17 / 255, 17 / 255, 17 / 255]) + 0.05) < 4.5) mix += 0.02;
+  return `#${at(Math.min(1, mix)).map((v) => Math.round(v * 255).toString(16).padStart(2, "0")).join("")}`;
+}
+const readableColors = new Map();
+function noteColor(macro, author) {
+  const color = authors.find((a) => a.macro === macro)?.color;
+  if (typeof color === "string" && /^#[0-9a-f]{6}$/i.test(color)) {
+    if (!readableColors.has(color)) readableColors.set(color, readable(color));
+    return readableColors.get(color);
+  }
+  return `hsl(${[...author].reduce((h, c) => h * 31 + c.charCodeAt(0), 7) % 360} 60% 70%)`;
+}
+let colorsShown = "";
+// Once /authors has come (after the notes, say): the notes again in their macros' colors, if those changed.
+export function recolorNotes() {
+  const key = JSON.stringify(authors.map((a) => [a.macro, a.color]));
+  if (key === colorsShown) return;
+  colorsShown = key;
+  renderNotes();
+  drawAllMargins();
+  if (editorAllowed()) markNotes();
+}
 const hiddenAuthors = new Set(JSON.parse(localStorage.getItem(`latex-live:${hubBase}hiddenAuthors`) || "[]"));
 let noteList = [];
 // A list of notes that live.py sends (getJSON); a failure throws, which keeps what is shown (the callers carry on).
@@ -32,18 +60,18 @@ export async function loadNotes() {
 // The note macros, marked in the source pane in their authors' colors: those of the notes, and those the paper defines.
 function markNotes() {
   const macros = new Map([...authors, ...noteList].filter((n) => n.macro).map((n) => [n.macro, n.author]));
-  setNoteMacros([...macros].map(([macro, author]) => ({ macro, author, color: authorColor(author) })));
+  setNoteMacros([...macros].map(([macro, author]) => ({ macro, author, color: noteColor(macro, author) })));
 }
 function renderNotes() {
   const panel = $("notes");
   const scroll = panel.scrollTop;
-  const counts = {};
-  for (const n of noteList) counts[n.author] = (counts[n.author] || 0) + 1;
+  const counts = {}, macros = {};
+  for (const n of noteList) { counts[n.author] = (counts[n.author] || 0) + 1; macros[n.author] ??= n.macro; }
   const filters = el("div", { className: "filters" });
   for (const [author, count] of Object.entries(counts)) {
     const chip = el("span", { className: `chip${hiddenAuthors.has(author) ? " off" : ""}`, textContent: `${author} ${count}`,
                               title: "Show or hide this author's notes" });
-    chip.style.setProperty("--chip", authorColor(author));
+    chip.style.setProperty("--chip", noteColor(macros[author], author));
     chip.onclick = () => {
       hiddenAuthors.has(author) ? hiddenAuthors.delete(author) : hiddenAuthors.add(author);
       localStorage.setItem(`latex-live:${hubBase}hiddenAuthors`, JSON.stringify([...hiddenAuthors]));
@@ -54,7 +82,7 @@ function renderNotes() {
   }
   const items = noteList.filter((n) => !hiddenAuthors.has(n.author)).map((n) => {
     const who = el("span", { className: "chip who", textContent: n.author });
-    who.style.setProperty("--chip", authorColor(n.author));
+    who.style.setProperty("--chip", noteColor(n.macro, n.author));
     const where = opensAt(el("span", { className: "where", textContent: `${n.file.replace(/^.*\//, "")}:${n.line}` }), `${n.file}:${n.line}`);
     where.onclick = (e) => { e.stopPropagation(); openSource(n.file, n.line); };
     const row = el("div", { className: "note", title: "Show in the PDF" }, who, ...(canOpenFile(n.file) ? [where] : []),
@@ -198,7 +226,7 @@ function drawMargin(pageNumber) {
   if (bubbles) layer.append(svg);
   pageView.div.append(layer);
   const items = list.map((a) => {
-    const n = a.note, color = authorColor(n.author), left = leftOfPage(a) && gutters.left;
+    const n = a.note, color = noteColor(n.macro, n.author), left = leftOfPage(a) && gutters.left;
     const bubble = el("div", { className: `ll-bubble${left ? " left" : ""}`, title: `${n.file}:${n.line}` },
                       el("div", { className: "text" }, el("b", { textContent: n.author }), n.text || "(empty)"));
     if (canOpenFile(n.file)) opensAt(bubble, `${n.file}:${n.line}`);
