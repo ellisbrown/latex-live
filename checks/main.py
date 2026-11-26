@@ -1,6 +1,7 @@
 """The smoke test from start to end, which check.py runs; or only some of its parts, by module (python3 check.py
 units, say, while you work on what those check)."""
 
+import os
 import sys
 import tempfile
 
@@ -40,6 +41,9 @@ FULL = ("static", "units", "preview")
 
 
 def main():
+    # The scratch papers' folders with links resolved, as a server's paper root is (os.getcwd()): macOS's temporary
+    # folder is under /var, a link to /private/var. (The checks of links make their own.)
+    tempfile.tempdir = os.path.realpath(tempfile.gettempdir())
     names = tuple(sys.argv[1:]) or FULL
     unknown = [name for name in names if name not in PARTS]
     if unknown:
