@@ -226,7 +226,7 @@ def container_argv(paper_root):
 def container_exec(paper_root):
     """Command prefix that runs a TeX tool in the TeX Live image (see tex-exec), or on the host
     while the image is missing."""
-    return f"'{os.path.join(config.HERE, 'tex-exec')}' '{config.TEXLIVE_IMAGE}' '{paper_root}'"
+    return f"'{os.path.join(config.HERE, 'tex-exec')}' {shlex.quote(config.TEXLIVE_IMAGE)} '{paper_root}'"
 
 
 def stop_containers(run=None, kind=None):
