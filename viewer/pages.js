@@ -98,7 +98,7 @@ export async function renderThumbs() {
     for (const e of entries) {
       if (!e.isIntersecting || e.target.dataset.done) continue;
       e.target.dataset.done = "1";
-      drawThumb(d, e.target);
+      drawThumb(d, e.target).catch((err) => console.warn(err)); // (e.g. cancelled: a newer PDF replaced d meanwhile)
     }
   }, { root: panel, rootMargin: "300px" });
   const labels = await d.getPageLabels();
