@@ -116,7 +116,7 @@ $("downloadReview").onclick = () => downloadBuilt("review", `${docName()}-review
   "the PDF with notes in the margin", reviewed("in the margin"));
 $("downloadAnnotated").onclick = () => downloadBuilt("review", `${docName()}-annotated.pdf`, `${docName()}-with-comments.pdf`,
   "the PDF with notes as comments", reviewed("as comments"));
-const packaged = (e) => [`${plural(e.files, "file")}, ${(e.size / 1e6).toFixed(1)} MB`,
+const packaged = (e) => [`${plural(e.files, "file")}, ${e.size < 1e6 ? `${Math.max(1, Math.round(e.size / 1000))} KB` : `${(e.size / 1e6).toFixed(1)} MB`}`,
   (e.comments || e.hidden || e.notes) && `${[e.comments && plural(e.comments, "comment"), e.hidden && plural(e.hidden, "hidden block"),
     e.notes && plural(e.notes, "note")].filter(Boolean).join(", ")} taken out`,
   e.same ? "its own build matches the PDF without notes" : `its own build differs from the PDF without notes: ${e.differs}`]

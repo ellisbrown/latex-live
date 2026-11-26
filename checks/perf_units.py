@@ -5,6 +5,7 @@ git calls, made only when a ref may have moved; the margin notes' points; LATEX_
 stopping the notes-free pass before the warm standbys, and telling when its process group has ended."""
 
 import gzip
+import json
 import os
 import shutil
 import signal
@@ -13,6 +14,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 
 from .base import HERE, fail, ok, wait_for
 from .helpers import fake_server, git, patched, put, put_bytes
@@ -227,7 +229,7 @@ def synctex_text_checks():
             nodes = [synctex.page_nodes(synctex_gz, page) for page in (1, 2, 3, 4)]
             # What reading the file record by record finds (as before the text was kept).
             inputs, boxes, points, page = {}, {}, {}, 0
-            for record in synctex.synctex_records(synctex_gz):
+            for record in gzip.open(synctex_gz, "rt", errors="replace"):
                 if record.startswith("Input:"):
                     tag, _, path = record[6:].rstrip("\n").partition(":")
                     inputs[tag] = os.path.normpath(path)
@@ -423,14 +425,16 @@ def bounded_cache_checks():
 
 def stop_notes_free_checks():
     """live.py stops a document's notes-free pass before its warm standbys (latex_report.stop_notes_free): the pass
-    runs in a session of its own, and was left to start a standby after them. Only that document's pass is stopped."""
+    runs in a session of its own, and was left to start a standby after them. Only that document's pass is stopped.
+    An early pass that was kept while its TeX run goes on has that run's container removed too (as stop_early does:
+    the podman client stopped may leave it), and one whose TeX runs have ended has none to remove."""
     if HERE not in sys.path:
         sys.path.insert(0, HERE)
     import latex_report
 
-    def start(doc):  # (as latex_report.py starts it: in a session of its own, its parent gone)
+    def start(doc, how="--notes-free"):  # (as latex_report.py starts it: in a session of its own, its parent gone)
         spawn = ("import subprocess, sys; p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)',"
-                 f" '--notes-free', '{doc}'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,"
+                 f" '{how}', '{doc}'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,"
                  " stderr=subprocess.DEVNULL); print(p.pid)")
         return int(subprocess.run([sys.executable, "-c", spawn], capture_output=True, text=True, timeout=30).stdout)
 
@@ -447,7 +451,7 @@ def stop_notes_free_checks():
             except OSError:
                 return False
     passes = {doc: start(doc) for doc in ("docmainx", "docotherx")}
-    cwd = os.getcwd()
+    cwd, removed, early_ok = os.getcwd(), {}, False
     with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
         try:
             os.chdir(tmp)
@@ -462,6 +466,19 @@ def stop_notes_free_checks():
             latex_report.stop_notes_free("docmainx")
             took = time.monotonic() - began
             stopped = wait_for("the notes-free pass to end", lambda: not running(passes["docmainx"]), timeout=5)
+            stand_in = types.SimpleNamespace(command_line=latex_report.standby_module().command_line,
+                                             remove_containers=lambda label: removed.setdefault(texdone, []).append(label))
+            for texdone in (False, True):
+                passes[f"early{texdone}"] = pid = start("docmainx", "--early")
+                os.makedirs(os.path.join("build", "clean-early"), exist_ok=True)
+                with open(os.path.join("build", "clean-early", "early.json"), "w") as f:
+                    json.dump({"pid": pid, "label": f"{pid}-1", "state": "kept", "seed": "s", "started": 1,
+                               **({"texDone": True} if texdone else {})}, f)
+                with open(os.path.join("build", "clean", "pid"), "w") as f:
+                    f.write(str(pid))
+                with patched(latex_report, standby_module=lambda: stand_in):
+                    latex_report.stop_notes_free("docmainx")
+            early_ok = removed == {False: [f"latex-live.early={passes['earlyFalse']}-1"]} and not running(passes["earlyFalse"])
         finally:
             os.chdir(cwd)
             for pid in passes.values():
@@ -471,7 +488,10 @@ def stop_notes_free_checks():
                     pass
     if not other_runs or not stopped or took > 10:
         fail(f"stop_notes_free: another document's pass left running {other_runs}, this one's stopped {stopped} in {took:.1f} s")
-    ok("live.py stops a document's notes-free pass (only that document's) before its warm standbys")
+    if not early_ok:
+        fail(f"stop_notes_free of a kept early pass: containers removed {removed} (want only the one whose TeX run goes on)")
+    ok("live.py stops a document's notes-free pass (only that document's) before its warm standbys, and a kept early"
+       " pass's TeX run with it")
 
 
 def group_alive_checks():

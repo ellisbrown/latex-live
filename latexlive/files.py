@@ -223,9 +223,10 @@ def in_paper(paper_root, path):
 
 
 def project_tex_files(paper_root, fls):
-    """The project's .tex files that the build read, in reading order (not generated ones in build/)."""
+    """The project's .tex files that the build read and that are still there, in reading order (not generated ones in
+    build/)."""
     paths = [os.path.normpath(os.path.join(paper_root, os.path.normpath(p))) for p in dict.fromkeys(fls_inputs(fls)) if p.endswith(".tex")]
-    return [p for p in dict.fromkeys(paths) if in_paper(paper_root, p)]
+    return [p for p in dict.fromkeys(paths) if in_paper(paper_root, p) and os.path.isfile(p)]
 
 
 def project_inputs(paper_root, fls):

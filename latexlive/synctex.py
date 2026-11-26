@@ -64,25 +64,6 @@ def run_synctexes(paper_root, runs):
     return (found + [[] for _ in runs])[:len(runs)]
 
 
-def synctex_records(synctex_gz):
-    """The lines of a build's SyncTeX file, decompressed as they are read, up to SYNCTEX_LIMIT bytes and
-    RECORD_LIMIT lines in all (a file the paper's TeX made could hold far more); none if there is no file."""
-    f = open_output(synctex_gz)
-    if f is None:
-        return
-    size = 0
-    with f, gzip.open(f, "rt", errors="replace") as text:
-        for n in range(config.RECORD_LIMIT):
-            try:
-                record = text.readline(1 << 16)  # (a line past that comes in parts)
-            except (OSError, EOFError, zlib.error):  # (not gzip, or cut off)
-                return
-            size += len(record)
-            if not record or size > config.SYNCTEX_LIMIT:
-                return
-            yield record
-
-
 def to_int(text, default=None):
     """int(text), or default for text that isn't a number (SyncTeX's output comes from files the paper's TeX wrote)."""
     try:
@@ -162,7 +143,7 @@ PAGE_START_RE = re.compile(r"^\{(\d+)$", re.M)  # (a page's first record: {page)
 def synctex_text(synctex_gz):
     """A build's SyncTeX file, read once for every lookup here (synctex_boxes, synctex_points, page_nodes, page_turns):
     ({tag: input path}, [(page, its {page line, its records)]: the text of each page's records, compressed (a long
-    paper's take megabytes), in order, from what comes before the first page as page 0), as far as synctex_records
+    paper's take megabytes), in order, from what comes before the first page as page 0), as far as read_synctex
     reads the file; empty if there is none. The pages' text: synctex_pages."""
     return SYNCTEX_TEXTS.get(kept_as(synctex_gz), version(synctex_gz), lambda: read_synctex(synctex_gz))
 
@@ -176,8 +157,9 @@ def synctex_pages(synctex_gz, wanted=None):
 
 
 def read_synctex(synctex_gz):
-    """synctex_text's value, read now: up to SYNCTEX_LIMIT bytes in whole lines and RECORD_LIMIT lines, as
-    synctex_records reads them. A page at a time, so that the whole text is never in memory at once."""
+    """synctex_text's value, read now: up to SYNCTEX_LIMIT bytes in whole lines and RECORD_LIMIT lines (a file the
+    paper's TeX made could hold far more), decompressed as they are read; a page at a time, so that the whole text is
+    never in memory at once. Nothing if there is no file."""
     f = open_output(synctex_gz)
     if f is None:
         return {}, []

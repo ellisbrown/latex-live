@@ -371,7 +371,7 @@ def shared_parsing_checks():
                 if time.monotonic() - began > 10 or sum(len(v) for v in points.values()) > 1 << 20:
                     fail("a SyncTeX file was read past config.SYNCTEX_LIMIT")
             put(synctex_gz, "not gzip at all")
-            if synctex.synctex_points(synctex_gz) or list(synctex.synctex_records(synctex_gz)):
+            if synctex.synctex_points(synctex_gz) or synctex.read_synctex(synctex_gz)[0] or any(t for _, _, t in synctex.synctex_pages(synctex_gz)):
                 fail("a SyncTeX file that isn't gzip gave records")
 
             server = fake_server(root)

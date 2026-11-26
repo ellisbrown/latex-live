@@ -149,9 +149,12 @@ def arxiv_source(paper_root, pdf_name):
                 and file_bytes(os.path.join(paper_root, name)) == data[name]}
         lines_at = {}
         for path in sources:
-            with open(path, errors="replace") as f:
-                for n, line in enumerate(f, 1):
-                    lines_at.setdefault(line.strip(), (os.path.relpath(path, paper_root), n))
+            try:
+                with open(path, errors="replace") as f:
+                    for n, line in enumerate(f, 1):
+                        lines_at.setdefault(line.strip(), (os.path.relpath(path, paper_root), n))
+            except OSError:  # (gone since the build read it)
+                pass
     else:
         same, lines_at = set(texts), {}
 
@@ -259,7 +262,7 @@ def arxiv_source(paper_root, pdf_name):
     counts = {"private": "private term(s)", "path": "personal path(s)", "bbl": "missing .bbl", "comment": "comment(s)",
               "note": "note(s)", "iffalse": "hidden block(s)", "unused": "unused file(s)", "large": "large file(s)",
               "leftover": "leftover build file(s)"}
-    where = (f"{label}{' (stale)' if found['stale'] else ''}, {len(files)} files, {total / 1e6:.1f} MB" if package
+    where = (f"{label}{' (stale)' if found['stale'] else ''}, {len(files)} files, {size_text(total)}" if package
              else f"no arXiv package; what a naive upload of the sources would expose ({len(files)} files)")
     summary = ", ".join(f"{len(found[k])} {what}" for k, what in counts.items() if found[k])
     level = ("fail" if found["private"] or found["path"] or found["bbl"] else
@@ -267,6 +270,11 @@ def arxiv_source(paper_root, pdf_name):
     if not package and level != "ok":  # (no upload yet: a preview)
         level = "warn" if level == "fail" else "info"
     return level, f"{where}: {summary or 'no comments, notes, hidden blocks, private terms or personal paths'}", items
+
+
+def size_text(n):
+    """A size in decimal units, as the viewer's Files tab shows them: in KB (at least 1) under 1 MB, else in MB."""
+    return f"{max(1, round(n / 1000))} KB" if n < 1e6 else f"{n / 1e6:.1f} MB"
 
 
 # The arXiv package (POST /arxiv): the files the exact export read, without the sources' comments and
