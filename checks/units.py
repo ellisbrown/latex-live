@@ -1511,13 +1511,15 @@ def note_display_checks():
         if found.get("be", {}).get("text") != long or found.get("cy", {}).get("plain") != "50%":
             fail(f"a long note's text is cut, or a plain one's source misread: {found}")
         colors = {a["macro"]: a.get("color") for a in notes.note_authors(tmp, "main.pdf")}
-        if colors != {"ad": "#00ff80", "be": "#84e38e", "cy": None}:
+        if colors != {"ad": "#00ff80", "be": "#84e48e", "cy": None}:
             fail(f"the note macros' colors are {colors}, not those their definitions set")
     for model, spec, want in (("rgb", "0.1,0.5,0.2", "#1a8033"), ("RGB", "255,0,10", "#ff000a"), ("HTML", "00A0B0", "#00a0b0"),
                               ("gray", "0.5", "#808080"), ("cmyk", "1,0,1,0", "#00ff00"), ("", "teal", "#008080"),
                               ("", "NavyBlue", "#0f75ff"), ("", "blue!60!black", "#000099"), ("", "red!50", "#ff8080"),
                               ("", "-red", None), ("", "nosuch", None), ("rgb", "2,0,0", None), ("rgb", "1,0", None),
-                              ("HTML", "zz", None), ("hsb", "1,1,1", None), ("", "red!x", None)):
+                              ("HTML", "zz", None), ("hsb", "1,1,1", None), ("", "red!x", None), ("", "red!nan", None),
+                              ("", "red!150", None), ("cmyk", "0.5,0.5,0.5,-0.5", None), ("rgb", "nan,0,0", None),
+                              ("", "!".join(["red", "50"] * 5 + ["red"]), None)):
         if notes.css_color(model, spec) != want:
             fail(f"css_color({model!r}, {spec!r}) is {notes.css_color(model, spec)!r}, not {want!r}")
     if notes.css_color("", "loop", {"loop": ("", "loop")}) is not None:
@@ -1534,8 +1536,8 @@ def tex_text_checks():
                       ("\\textcolor [rgb]{1,0,0} {x} and \\color{blue}y", " x and y"), ("Fig.\\ 3 and \\LaTeX{} too", "Fig. 3 and  too"),
                       ("\\emph{one} \\unknown two", "one two"),
                       ("``Quoted'' -- and --- don't, Fig.~3, \\~{n}", "“Quoted” – and — don’t, Fig. 3, n"),
-                      ("$k$-means, $\\alpha$ is $a \\leq b$, $\\Delta$Fusion, $p_1,\\dots,p_n$ and \\(x^2\\)",
-                       "k-means, α is a ≤ b, ΔFusion, p1,…,pn and x2"),
+                      ("$k$-means, $\\alpha$ is $a \\leq b$, $\\Delta$Score, $$x^2$$, $p_1,\\dots,p_n$ and \\(x^2\\)",
+                       "k-means, α is a ≤ b, ΔScore, x2, p1,…,pn and x2"),
                       ("\\$5 \\# 1 \\textasciitilde{}\\textasciicircum{}\\textbackslash{}", "$5 # 1 ~^\\")):
         if (found := latex.tex_to_text(tex, {})) != want:
             fail(f"tex_to_text({tex!r}) is {found!r}, not {want!r}")

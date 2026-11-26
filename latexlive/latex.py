@@ -85,8 +85,8 @@ TEX_SYMBOLS = {"times": "×", "&": "&", "%": "%", "_": "_", "$": "$", "#": "#", 
                           " psi omega Gamma Delta Theta Lambda Xi Pi Sigma Phi Psi Omega".split(), "αβγδϵεζηθλμνξπρστϕφχψωΓΔΘΛΞΠΣΦΨΩ"))}
 # How the PDF shows what is typed: quotes, dashes and ties (not escaped: \~ is an accent), in this order.
 TYPED_TEXT = (("---", "—"), ("--", "–"), ("``", "“"), ("''", "”"), ("`", "‘"), ("'", "’"), ("~", " "))
-# Inline math, $...$ or \(...\) (not \$): tex_to_text shows its letters and symbols.
-INLINE_MATH_RE = re.compile(r"(?<!\\)\$((?:\\.|[^$\\])+)\$|\\\((.*?)\\\)", re.S)
+# Math in the text, $$...$$, $...$ or \(...\) (not \$): tex_to_text shows its letters and symbols.
+INLINE_MATH_RE = re.compile(r"(?<!\\)\$\$?((?:\\.|[^$\\])+)\$\$?|\\\((.*?)\\\)", re.S)
 # The color a color command takes before its text, or alone (\color{red}): \textcolor[rgb]{1,0,0}{...} -> {...}.
 COLOR_SPEC_RE = re.compile(r"\\(?:textcolor|color|colorbox)\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}")
 MACRO_DEF_RE = re.compile(r"\\(?:(?:re|provide)?newcommand\*?|DeclareRobustCommand\*?)\s*\{?\\([a-zA-Z@]+)\}?\s*(?=\{)|\\def\\([a-zA-Z@]+)(?=\{)")
@@ -243,7 +243,7 @@ def tex_to_text(tex, macros, depth=0, typeset=False):
 
     tex = COLOR_SPEC_RE.sub("", tex)  # (a color's name or values is no text: \textcolor{red}{...})
     # Inline math as its letters and symbols ($p_1$: p1), in a group of its own so that a symbol's name ends at the
-    # math's end ($\Delta$Fusion), and spaces after a symbol kept ($a \leq b$).
+    # math's end ($\Delta$x), and spaces after a symbol kept ($a \leq b$).
     tex = INLINE_MATH_RE.sub(lambda m: "{" + re.sub(r"(\\[a-zA-Z]+)(?=\s)", r"\1{}",
                                                     re.sub(r"(?<!\\)[_^]", "", m.group(1) or m.group(2) or "")) + "}", tex)
     for typed, shown in TYPED_TEXT:
