@@ -201,7 +201,7 @@ def notes(paper_root, pdf_name):
         for m in note_use_re(kinds).finditer(text):
             body, end = brace_group(text, m.end())
             words = " ".join(tex_to_text(body, macros).split())
-            found.append({"author": kinds[m.group(1)], "text": words[:400], "file": os.path.relpath(path, paper_root),
+            found.append({"author": kinds[m.group(1)], "text": words, "file": os.path.relpath(path, paper_root),
                           "line": text.count("\n", 0, m.start()) + 1, **note_fields(text, m, end)})
     return found
 
@@ -299,7 +299,7 @@ def margin_notes(paper_root, pdf_name):
                 where, side = at(path, n), "near"
             if not where:
                 continue
-            found.append({"author": kinds[m.group(1)], "text": " ".join(tex_to_text(body, macros).split())[:600],
+            found.append({"author": kinds[m.group(1)], "text": " ".join(tex_to_text(body, macros).split()),
                           "file": os.path.relpath(path, paper_root), "line": line,
                           "points": spread(dict.fromkeys(where), turns), "side": side,
                           "before": before, "after": after, **note_fields(text, m, end)})
@@ -360,5 +360,78 @@ def paper_note_kinds(paper_root, pdf_name):
     return note_kinds(read_tex(p) for p in project_tex_files(paper_root, fls_file(paper_root, pdf_name)))
 
 def note_authors(paper_root, pdf_name):
-    """[{macro, author}]: the note macros the viewer can write, from their definitions."""
-    return [{"macro": macro, "author": author} for macro, author in paper_note_kinds(paper_root, pdf_name).items()]
+    """[{macro, author, color}]: the note macros the viewer can write, from their definitions, with the color each
+    one's definition sets as CSS (css_color), or None."""
+    kinds = paper_note_kinds(paper_root, pdf_name)
+    colors, defined = note_colors(paper_root, pdf_name, set(kinds)), defined_colors(paper_root, pdf_name)
+    return [{"macro": macro, "author": author, "color": css_color(*colors[macro], defined) if macro in colors else None}
+            for macro, author in kinds.items()]
+
+
+def note_colors(paper_root, pdf_name, macros):
+    """{note macro: (model, color)}: the first color its definition sets (\\color or \\textcolor),
+    e.g. ("", "Emerald") or ("rgb", "0.1,0.5,0.2"), for its number and wire."""
+    found = {}
+    for path in project_tex_files(paper_root, fls_file(paper_root, pdf_name)):
+        text = read_tex(path)
+        for m in NOTE_DEF_RE.finditer(text):
+            color = re.search(r"\\(?:text)?color\s*(?:\[([^\]]*)\])?\s*\{([^{}]*)\}", brace_group(text, m.end())[0])
+            if m.group(1) in macros and m.group(1) not in found and color:
+                found[m.group(1)] = (color.group(1) or "", color.group(2))
+    return found
+
+
+# xcolor's base colors and the dvipsnames (from their CMYK, as xcolor turns it into RGB), for css_color.
+XCOLOR_NAMES = dict(pair.split(":") for pair in """
+red:ff0000 green:00ff00 blue:0000ff brown:bf8040 lime:bfff00 orange:ff8000 pink:ffbfbf purple:bf0040
+teal:008080 violet:800080 cyan:00ffff magenta:ff00ff yellow:ffff00 olive:808000 black:000000 darkgray:404040
+gray:808080 lightgray:bfbfbf white:ffffff GreenYellow:d9ff4f Yellow:ffff00 Goldenrod:ffe629 Dandelion:ffb529
+Apricot:ffad7a Peach:ff804d Melon:ff8a80 YellowOrange:ff9400 Orange:ff6321 BurntOrange:ff7d00
+Bittersweet:c20300 RedOrange:ff3b21 Mahogany:a60000 Maroon:ad0000 BrickRed:b80000 Red:ff0000 OrangeRed:ff0080
+RubineRed:ff00de WildStrawberry:ff0a9c Salmon:ff789e CarnationPink:ff5eff Magenta:ff00ff VioletRed:ff30ff
+Rhodamine:ff2eff Mulberry:a314fa RedViolet:9600a8 Fuchsia:7303eb Lavender:ff85ff Thistle:e069ff Orchid:ad5cff
+DarkOrchid:9933cc Purple:8c24ff Plum:8000ff Violet:361fff RoyalPurple:4019ff BlueViolet:190df5
+Periwinkle:6e73ff CadetBlue:616ec4 CornflowerBlue:59deff MidnightBlue:007091 NavyBlue:0f75ff RoyalBlue:0080ff
+Blue:0000ff Cerulean:0fe3ff Cyan:00ffff ProcessBlue:0affff SkyBlue:61ffe0 Turquoise:26ffcc TealBlue:1ffaa3
+Aquamarine:2effb2 BlueGreen:26ffab Emerald:00ff80 JungleGreen:03ff7a SeaGreen:4fff80 Green:00ff00
+ForestGreen:00e000 PineGreen:00bf29 LimeGreen:80ff00 YellowGreen:8fff42 SpringGreen:bdff3d OliveGreen:009900
+RawSienna:8c0000 Sepia:4d0000 Brown:660000 Tan:db9470 Gray:808080 Black:000000 White:ffffff""".split())
+DEFINECOLOR_RE = re.compile(r"\\(?:define|provide)color\s*\{([^{}]+)\}\s*\{([^{}]+)\}\s*\{([^{}]+)\}")
+
+
+def defined_colors(paper_root, pdf_name):
+    """{name: (model, spec)} of the colors the paper defines (\\definecolor, \\providecolor), for css_color."""
+    found = {}
+    for path in project_tex_files(paper_root, fls_file(paper_root, pdf_name)):
+        for m in DEFINECOLOR_RE.finditer(read_tex(path)):
+            found.setdefault(m.group(1).strip(), (m.group(2).strip(), m.group(3).strip()))
+    return found
+
+
+def css_color(model, spec, defined=None, depth=0):
+    """A color as xcolor gives it, "#rrggbb", or None for one this doesn't know: a model's values (rgb, RGB, HTML, gray,
+    cmyk, cmy), or a name (xcolor's base colors, the dvipsnames, the paper's own: defined, from defined_colors) or a
+    mix of names, red!50 or blue!60!black (xcolor's: each percentage of the color so far, the rest of the next)."""
+    def named(name):
+        if name in XCOLOR_NAMES:
+            return [int(XCOLOR_NAMES[name][k:k + 2], 16) / 255 for k in (0, 2, 4)]
+        found = defined and name in defined and depth < 4 and css_color(*defined[name], defined, depth + 1)
+        return found and [int(found[k:k + 2], 16) / 255 for k in (1, 3, 5)]
+    try:
+        if model == "HTML":
+            rgb = [int(spec.strip()[k:k + 2], 16) / 255 for k in (0, 2, 4)] if re.fullmatch(r"\s*[0-9A-Fa-f]{6}\s*", spec) else None
+        elif model:
+            v = [float(x) for x in spec.split(",")]
+            rgb = {"rgb": v, "RGB": [x / 255 for x in v], "gray": v * 3, "cmy": [1 - x for x in v],
+                   "cmyk": [1 - min(1, x + v[-1]) for x in v[:3]] if len(v) == 4 else None}.get(model)
+        else:
+            parts = spec.replace(" ", "").split("!")
+            rgb = named(parts[0])
+            for i in range(1, len(parts), 2):
+                other, share = named(parts[i + 1] if i + 1 < len(parts) else "white"), min(100, max(0, float(parts[i]))) / 100
+                rgb = rgb and other and [a * share + b * (1 - share) for a, b in zip(rgb, other)]
+    except ValueError:
+        return None
+    if not rgb or len(rgb) != 3 or not all(0 <= x <= 1 for x in rgb):
+        return None
+    return "#" + "".join(f"{round(x * 255):02x}" for x in rgb)

@@ -77,8 +77,16 @@ def pick_doc(paper_root, docs):
     return max(docs, key=lambda doc: (edited(doc), doc == last))
 
 
-TEX_SYMBOLS = {"Delta": "Δ", "alpha": "α", "beta": "β", "gamma": "γ", "times": "×", "&": "&", "%": "%", "_": "_", "xspace": " ",
-               "ldots": "…", "dots": "…", " ": " ", "\n": " "}
+TEX_SYMBOLS = {"times": "×", "&": "&", "%": "%", "_": "_", "$": "$", "#": "#", "xspace": " ", "ldots": "…", "dots": "…",
+               "cdots": "⋯", " ": " ", "\n": " ", "textasciitilde": "~", "textasciicircum": "^", "textbackslash": "\\",
+               "leq": "≤", "le": "≤", "geq": "≥", "ge": "≥", "neq": "≠", "approx": "≈", "pm": "±", "cdot": "·", "infty": "∞",
+               "to": "→", "rightarrow": "→", "sim": "∼", "in": "∈",
+               **dict(zip("alpha beta gamma delta epsilon varepsilon zeta eta theta lambda mu nu xi pi rho sigma tau phi varphi chi"
+                          " psi omega Gamma Delta Theta Lambda Xi Pi Sigma Phi Psi Omega".split(), "αβγδϵεζηθλμνξπρστϕφχψωΓΔΘΛΞΠΣΦΨΩ"))}
+# How the PDF shows what is typed: quotes, dashes and ties (not escaped: \~ is an accent), in this order.
+TYPED_TEXT = (("---", "—"), ("--", "–"), ("``", "“"), ("''", "”"), ("`", "‘"), ("'", "’"), ("~", " "))
+# Inline math, $...$ or \(...\) (not \$): tex_to_text shows its letters and symbols.
+INLINE_MATH_RE = re.compile(r"(?<!\\)\$((?:\\.|[^$\\])+)\$|\\\((.*?)\\\)", re.S)
 # The color a color command takes before its text, or alone (\color{red}): \textcolor[rgb]{1,0,0}{...} -> {...}.
 COLOR_SPEC_RE = re.compile(r"\\(?:textcolor|color|colorbox)\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}")
 MACRO_DEF_RE = re.compile(r"\\(?:(?:re|provide)?newcommand\*?|DeclareRobustCommand\*?)\s*\{?\\([a-zA-Z@]+)\}?\s*(?=\{)|\\def\\([a-zA-Z@]+)(?=\{)")
@@ -234,6 +242,12 @@ def tex_to_text(tex, macros, depth=0, typeset=False):
         tex = re.sub(r"\\if\w*(?:[^\\]|\\(?!else|fi\b))*?\\else((?:[^\\]|\\(?!fi\b))*)\\fi\b", lambda m: m.group(1).strip(), tex)
 
     tex = COLOR_SPEC_RE.sub("", tex)  # (a color's name or values is no text: \textcolor{red}{...})
+    # Inline math as its letters and symbols ($p_1$: p1), in a group of its own so that a symbol's name ends at the
+    # math's end ($\Delta$Fusion), and spaces after a symbol kept ($a \leq b$).
+    tex = INLINE_MATH_RE.sub(lambda m: "{" + re.sub(r"(\\[a-zA-Z]+)(?=\s)", r"\1{}",
+                                                    re.sub(r"(?<!\\)[_^]", "", m.group(1) or m.group(2) or "")) + "}", tex)
+    for typed, shown in TYPED_TEXT:
+        tex = re.sub(r"(?<!\\)" + re.escape(typed), shown, tex)
 
     def macro(m):
         name = m.group(1) or m.group(2)

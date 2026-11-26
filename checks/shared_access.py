@@ -196,6 +196,9 @@ def role_checks(sh):
     authors = as_viewer("/authors/main.pdf")
     if not isinstance(authors, list) or not {"eb", "ed", "cm"} <= {a.get("macro") for a in authors if isinstance(a, dict)}:
         fail(f"/authors does not list every note macro for a viewer: {authors}")
+    colors = {a["macro"]: a.get("color") for a in authors if a.get("macro") in ("eb", "ed", "cm")}
+    if colors != {"eb": None, "ed": None, "cm": "#008080"} or any(set(a) - {"macro", "author", "color"} for a in authors):
+        fail(f"/authors gives a viewer other colors than the note macros' definitions set (only \\cm's, teal), or more: {authors}")
     # (\iffalse, and \ifnum0=1: not in the PDF, though the PDF has the words of the last two elsewhere)
     hidden = ("Quagga private draft note", "a note in a branch that is off", "PRIVATE: reviewer two", '"why?"')
     seen = {uid: json.dumps(expect(via_proxy(uid, "/notes/main.pdf"), 200, f"GET notes for {uid}")) for uid in ("vw", "cm", "ed")}

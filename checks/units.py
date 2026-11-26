@@ -36,7 +36,7 @@ def unit_checks():
                   waiting_download_checks, tool_timeout_checks, runner_checks, settings_checks, guard_checks, open_request_checks, standby_snapshot_checks, timing_checks,
                   code_updated_checks, static_file_checks, source_swap_checks, forward_cache_checks, forward_script_checks, link_checks, completion_checks, assets_checks, search_checks, logs_checks, presence_checks, word_column_checks, venue_checks, diff_retry_checks,
                   arxiv_strip_checks, graphics_synctex_checks, turned_page_checks, shown_synctex_checks, baseline_failure_checks, connection_cap_checks,
-                  header_deadline_checks, tex_text_checks, failed_answer_checks, missing_source_checks, in_flight_checks, note_limit_checks, perf_checks, bib_checks, files_checks, history_checks, agent_checks):
+                  header_deadline_checks, tex_text_checks, note_display_checks, failed_answer_checks, missing_source_checks, in_flight_checks, note_limit_checks, perf_checks, bib_checks, files_checks, history_checks, agent_checks):
         check()
 
 
@@ -1492,6 +1492,39 @@ def missing_source_checks():
     ok("a source the last build read and that is gone since is left out of the checks, the margin notes and the arXiv check")
 
 
+def note_display_checks():
+    """What the viewer shows of a note (notes.notes): its text as typeset, in full, while what editing and resolving
+    match stays the source as written; and each note macro's color (notes.note_authors), the one its definition sets,
+    as CSS (notes.css_color): xcolor's models, base and dvips names, mixes and the paper's own names, else none."""
+    from latexlive import config, notes
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as tmp:
+        long = " ".join(["word"] * 150)
+        put(os.path.join(tmp, "main.tex"), "\\newcommand{\\todotxt}[1]{#1}\\definecolor{mine}{RGB}{10,200,30}\n"
+            "\\newcommand{\\ad}[1]{\\todotxt{\\textcolor{Emerald}{[\\textbf{AD:} #1]}}}\n"
+            "\\newcommand{\\be}[1]{\\todotxt{{\\color{mine!50}[\\textbf{BE:} #1]}}}\n\\newcommand{\\cy}[1]{\\todotxt{[\\textbf{CY:} #1]}}\n"
+            "Text \\ad{``Why'' $k$--means~here?} and \\be{%s} \\cy{50\\%%}.\n" % long)
+        put(os.path.join(tmp, config.BUILD, "main-live.fls"), f"PWD {tmp}\nINPUT main.tex\n")
+        found = {n["macro"]: n for n in notes.notes(tmp, "main.pdf")}
+        ad = found.get("ad", {})
+        if ad.get("text") != "“Why” k–means here?" or ad.get("tex") != "``Why'' $k$--means~here?" or ad.get("plain") is not None:
+            fail(f"a note's text is not as typeset, or what editing it matches is not its source: {ad}")
+        if found.get("be", {}).get("text") != long or found.get("cy", {}).get("plain") != "50%":
+            fail(f"a long note's text is cut, or a plain one's source misread: {found}")
+        colors = {a["macro"]: a.get("color") for a in notes.note_authors(tmp, "main.pdf")}
+        if colors != {"ad": "#00ff80", "be": "#84e38e", "cy": None}:
+            fail(f"the note macros' colors are {colors}, not those their definitions set")
+    for model, spec, want in (("rgb", "0.1,0.5,0.2", "#1a8033"), ("RGB", "255,0,10", "#ff000a"), ("HTML", "00A0B0", "#00a0b0"),
+                              ("gray", "0.5", "#808080"), ("cmyk", "1,0,1,0", "#00ff00"), ("", "teal", "#008080"),
+                              ("", "NavyBlue", "#0f75ff"), ("", "blue!60!black", "#000099"), ("", "red!50", "#ff8080"),
+                              ("", "-red", None), ("", "nosuch", None), ("rgb", "2,0,0", None), ("rgb", "1,0", None),
+                              ("HTML", "zz", None), ("hsb", "1,1,1", None), ("", "red!x", None)):
+        if notes.css_color(model, spec) != want:
+            fail(f"css_color({model!r}, {spec!r}) is {notes.css_color(model, spec)!r}, not {want!r}")
+    if notes.css_color("", "loop", {"loop": ("", "loop")}) is not None:
+        fail("css_color of a color the paper defines as itself does not give up")
+    ok("a note shows as typeset and in full, and editing it still matches its source as written; a note macro's color is"
+       " the one its definition sets (xcolor's models, base and dvips names, mixes, the paper's own), as CSS, else none")
+
 def tex_text_checks():
     """The plain text of a note or a caption (latex.tex_to_text) keeps the spaces after a control symbol (\\% and \\&:
     TeX skips those after a control word only), and drops a color's name (\\textcolor{red}{...}); the arXiv check says
@@ -1499,14 +1532,18 @@ def tex_text_checks():
     from latexlive import arxiv, latex
     for tex, want in (("50\\% \\& under\\_score", "50% & under_score"), ("\\textcolor{red}{[EB: Caption note.]}", "[EB: Caption note.]"),
                       ("\\textcolor [rgb]{1,0,0} {x} and \\color{blue}y", " x and y"), ("Fig.\\ 3 and \\LaTeX{} too", "Fig. 3 and  too"),
-                      ("\\emph{one} \\unknown two", "one two")):
+                      ("\\emph{one} \\unknown two", "one two"),
+                      ("``Quoted'' -- and --- don't, Fig.~3, \\~{n}", "“Quoted” – and — don’t, Fig. 3, n"),
+                      ("$k$-means, $\\alpha$ is $a \\leq b$, $\\Delta$Fusion, $p_1,\\dots,p_n$ and \\(x^2\\)",
+                       "k-means, α is a ≤ b, ΔFusion, p1,…,pn and x2"),
+                      ("\\$5 \\# 1 \\textasciitilde{}\\textasciicircum{}\\textbackslash{}", "$5 # 1 ~^\\")):
         if (found := latex.tex_to_text(tex, {})) != want:
             fail(f"tex_to_text({tex!r}) is {found!r}, not {want!r}")
     for size, want in ((0, "1 KB"), (12_345, "12 KB"), (999_000, "999 KB"), (1_000_000, "1.0 MB"), (23_460_000, "23.5 MB")):
         if arxiv.size_text(size) != want:
             fail(f"arxiv.size_text({size}) is {arxiv.size_text(size)!r}, not {want!r}")
-    ok("a note's or caption's plain text keeps the spaces after \\% and \\& and drops a color's name; a small arXiv"
-       " package's size is in KB")
+    ok("a note's or caption's plain text keeps the spaces after \\% and \\& and drops a color's name, and shows quotes,"
+       " dashes, ties and simple math as typeset; a small arXiv package's size is in KB")
 
 
 def failed_answer_checks():

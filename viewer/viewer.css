@@ -429,10 +429,7 @@ body.pdf-invert .float .crop { background: #1f1f1f; } /* (white, as the filter t
   transition: border-color 0.12s, box-shadow 0.12s;
 }
 .note:hover { border-color: var(--border-strong); }
-.note .text {
-  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
-  overflow: hidden; margin-top: 4px; font-size: 12.5px; color: var(--ink);
-}
+.note .text { margin-top: 4px; font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; } /* (the whole note) */
 .note .where, .check .where { font-size: 11px; color: var(--accent-ink); cursor: pointer; font-family: var(--font-mono); }
 .note .where:hover, .check .where:hover { text-decoration: underline; }
 .note .who { float: right; }

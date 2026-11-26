@@ -17,7 +17,7 @@ import { showForward } from "./links.js";
 import { showAccessEnded, showBuild } from "./banner.js";
 import { checkPages, cleanShown, measureVariant, measuring, notesShown, renderPages, setResult, setUncounted } from "./pages.js";
 import { fillSectionPages, renderOutline } from "./outline.js";
-import { loadMargin, loadNotes, marginOn, resetMargin, showMarginButton } from "./notes.js";
+import { loadMargin, loadNotes, marginOn, recolorNotes, resetMargin, showMarginButton } from "./notes.js";
 import { updateCut } from "./cut.js";
 import { baseKind, changesOn, setBaselines, trackDocument, updateChanges, wordsPromise } from "./changes.js";
 import { noteHead, refreshTab } from "./sidebar.js";
@@ -116,7 +116,7 @@ async function load(name, version, variant, info, timed = () => {}) {
   updateChanges();
   renderOutline().catch(() => {});
   if (!isDiff) loadNotes().catch(() => {});
-  if (!isDiff) loadAuthors().catch(() => {});
+  if (!isDiff) loadAuthors().then(recolorNotes).catch(() => {});
   if (!isDiff && variant === "clean") loadMargin(next).catch((e) => { console.warn(e); setGutter(false); });
   const built = variant === "clean" ? info.clean : info;
   measureWhenRefs = !isDiff && built.refsPending ? { d: next, variant, version } : null;
