@@ -47,15 +47,24 @@ $("popoutBtn").hidden = isPopout || isDiff;
 // The ⋯ menus: the top bar's (the look, Compare and the rest, plus the top bar's controls that don't fit) and the PDF
 // bar's (its controls that don't fit), each under its button.
 const menus = [{ menu: $("moreMenu"), button: $("more") }, { menu: $("pdfMenu"), button: $("pdfMore") }];
-function showMenu({ menu, button }, open) {
+function showMenu({ menu, button }, open, refocus = false) {
   if (open && menu === $("pdfMenu")) { // (the top bar's sits at the window's right edge: CSS)
     const r = button.getBoundingClientRect();
     Object.assign(menu.style, { top: `${r.bottom + 4}px`, right: `${Math.max(8, innerWidth - r.right)}px` });
   }
+  const had = !open && refocus && !menu.hidden && menu.contains(document.activeElement);
   menu.hidden = !open;
   button.classList.toggle("on", open);
+  if (had) button.focus();
 }
-export const showMore = (open) => (open ? showMenu(menus[0], true) : menus.forEach((m) => showMenu(m, false))); // (closing: both, e.g. on Esc)
+// Open the top bar's menu, or close both (e.g. on Esc: refocus, the focus that was in one back on its button).
+export const showMore = (open, refocus = false) => (open ? showMenu(menus[0], true) : menus.forEach((m) => showMenu(m, false, refocus)));
+// Give the focus back to the control that opened a popup that closes: to node, or where node is in a ⋯ menu that is
+// closed by now (it didn't fit in its bar), to that menu's button.
+export function focusBack(node) {
+  const m = menus.find((m) => m.menu.contains(node));
+  (m?.menu.hidden ? m.button : node)?.focus();
+}
 for (const m of menus) m.button.onclick = () => showMenu(m, m.menu.hidden);
 export function revealControl(node) { // (before focusing a control that may be in a menu)
   for (const m of menus) if (m.menu.contains(node)) showMenu(m, true);
@@ -72,7 +81,7 @@ export function showKeys(open, refocus = true) {
     $("keysDblclickRow").hidden = isDiff || !opensSources();
     $("keysDblclick").textContent = `open the source line in ${openWhere()}`;
     $("keysFold").hidden = $("keysLeave").hidden = !editorAllowed() || isPopout;
-    $("keysAgent").hidden = !me.can.agent || isPopout;
+    $("keysAgent").hidden = !editorAllowed() || isPopout || !me.can.agent;
     for (const [id, text] of Object.entries(IS_MAC ? FOLD_KEYS.mac : FOLD_KEYS.other)) $(id).replaceChildren(...text);
   }
   $("keys").hidden = !open;

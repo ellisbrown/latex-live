@@ -4,37 +4,56 @@ import { $, docFile, el, isDiff, setStatus } from "./page.js";
 import { getJSON, sendJSON } from "./net.js";
 import { me } from "./role.js";
 import { flushSource } from "./editor.js";
-import { placeItem, showMore } from "./toolbar.js";
+import { focusBack, placeItem, showMore } from "./toolbar.js";
 import { registerCommands } from "./palette.js";
 
-// Compare: latexdiff against a commit (live.py builds <doc>-diff.pdf), shown in its own tab.
+// Compare: latexdiff against a commit (live.py builds <doc>-diff.pdf), shown in its own tab. The panel takes the focus
+// while it is open (its first commit once they are there; the arrow keys move along them), and gives it back to what
+// had it (opener; from the palette, the Compare button) when it closes.
+let opener = null;
 $("compare").onclick = async () => {
   const panel = $("comparePanel");
-  if (!panel.hidden) return (panel.hidden = true);
+  if (!panel.hidden) return closeCompare();
   const r = ($("moreMenu").contains($("compare")) ? $("more") : $("compare")).getBoundingClientRect();
+  const at = document.activeElement;
+  opener = at && at !== document.body && !$("palette").contains(at) ? at : null;
   showMore(false);
   panel.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - Math.min(460, window.innerWidth - 24) - 12))}px`;
   panel.replaceChildren(el("div", { className: "head", textContent: "Loading commits…" }));
   panel.hidden = false;
+  panel.focus();
   const got = await getJSON("commits");
   if (panel.hidden) return; // (closed meanwhile)
   if (!got.ok || !Array.isArray(got.body.commits)) {
     return panel.replaceChildren(el("div", { className: "head error", textContent: `The commits did not load: ${got.error || "no list in the answer"}` }));
   }
   const { dirty, commits } = got.body;
-  const row = (rev, date, text, title, sha = rev) => {
-    const div = el("div", { className: "commit", title }, el("span", { className: "rev", textContent: rev }),
-                   el("span", { className: "date", textContent: date }), el("span", { textContent: text }));
-    div.onclick = () => startDiff(sha);
-    return div;
-  };
+  const row = (rev, date, text, title, sha = rev) => el("button", { type: "button", className: "commit", title, onclick: () => startDiff(sha) },
+    el("span", { className: "rev", textContent: rev }), el("span", { className: "date", textContent: date }), el("span", { textContent: text }));
+  const waiting = document.activeElement === panel || document.activeElement === document.body; // (not if the focus went elsewhere meanwhile)
   panel.replaceChildren(el("div", { className: "head", textContent: "Show the changes since… (the paper as it is now, with what changed since that commit marked; in a new tab)" }),
     ...(dirty ? [row("HEAD", "", "uncommitted edits only", "the last commit vs. the working tree")] : []),
     ...commits.map((c) => row(c.rev, c.date, `${c.subject} — ${c.author}`, `${c.rev} ${c.date} ${c.author}: ${c.subject}`, c.sha ?? c.rev)));
+  if (waiting) panel.querySelector(".commit")?.focus();
 };
+$("comparePanel").addEventListener("keydown", (e) => {
+  const rows = [...$("comparePanel").querySelectorAll(".commit")], i = rows.indexOf(document.activeElement);
+  const to = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: rows.length - 1 }[e.key];
+  if (to === undefined || !rows.length || e.altKey || e.ctrlKey || e.metaKey) return;
+  e.preventDefault();
+  rows[Math.max(0, Math.min(rows.length - 1, to))].focus();
+});
+// Close the panel (Esc: keys.js; a commit chosen); the focus, if it was in it, goes back.
+export function closeCompare() {
+  const panel = $("comparePanel");
+  const had = panel.contains(document.activeElement);
+  panel.hidden = true;
+  if (had) focusBack(opener?.isConnected ? opener : $("compare"));
+  opener = null;
+}
 // Build the latexdiff against rev and show it in its own tab (also from the History tab).
 export async function startDiff(rev) {
-  $("comparePanel").hidden = true;
+  closeCompare();
   await flushSource(); // (the diff is of the files on disk)
   const got = me.legacy ? await getJSON(`diff?${new URLSearchParams({ rev })}`) : await sendJSON("diff", { rev });
   if (!got.ok && got.status !== 409) return setStatus(`The comparison did not start: ${got.error}`, "error"); // (409: one is on its way)

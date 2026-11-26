@@ -36,7 +36,7 @@ export async function renderFloats() {
   for (const [kind, text, color] of [["all", `All ${list.length}`, "#ccc"], ["figure", `Figures ${count("figure")}`, "#9cf"],
                                      ["table", `Tables ${count("table")}`, "#fc9"]]) {
     const chip = el("span", { className: `chip${floatKind === kind ? "" : " off"}`, textContent: text });
-    chip.style.background = color;
+    chip.style.setProperty("--chip", color);
     chip.onclick = () => { floatKind = kind; localStorage.setItem("latex-live:floatKind", kind); renderFloats(); };
     filters.append(chip);
   }

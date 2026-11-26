@@ -3,7 +3,7 @@
 import { $, building, docFile, el, file, isDiff, plural, setStatus, SIGNED_OUT, sleep } from "./page.js";
 import { sendJSON } from "./net.js";
 import { behind, buildFailed, buildVersion } from "./build.js";
-import { showMore } from "./toolbar.js";
+import { focusBack, showMore } from "./toolbar.js";
 import { registerCommands } from "./palette.js";
 
 // Downloads: the PDF as built (notes included); without notes, from an exact build that the server
@@ -21,24 +21,49 @@ function saveFile(url, name) {
   a.remove();
 }
 const docName = () => docFile.replace(/\.pdf$/, "");
-// The toolbar's download button opens its menu on hover (and on click, for keyboards and touch).
-export function showDownloads(open) {
+// The toolbar's download button opens its menu on hover, and on click (for keyboards and touch), which also puts the
+// focus on its first item: the arrow keys move along them, and Esc (keys.js: refocus) or Tab leaves it, closed, for its
+// button (Tab then goes on from there, rather than to the menu's place at the end of the page).
+let downloadsTimer = 0;
+export function showDownloads(open, refocus = false) {
   const menu = $("downloadMenu"), button = $("downloadBtn");
   if (open) {
     const r = button.getBoundingClientRect();
     menu.style.left = `${Math.max(4, Math.min(r.left, window.innerWidth - 270))}px`;
     menu.style.top = `${r.bottom + 2}px`;
+  } else {
+    clearTimeout(downloadsTimer);
   }
+  const had = !open && refocus && !menu.hidden && menu.contains(document.activeElement);
   menu.hidden = !open;
   button.setAttribute("aria-expanded", String(open));
   button.classList.toggle("on", open);
+  if (had) focusBack(button);
 }
-let downloadsTimer = 0;
 for (const node of [$("downloadBtn"), $("downloadMenu")]) {
   node.addEventListener("mouseenter", () => { clearTimeout(downloadsTimer); showDownloads(true); });
-  node.addEventListener("mouseleave", () => { downloadsTimer = setTimeout(() => showDownloads(false), 300); }); // (time to reach the menu)
+  node.addEventListener("mouseleave", () => { // (time to reach the menu; not while the keyboard is in it)
+    downloadsTimer = setTimeout(() => $("downloadMenu").contains(document.activeElement) || showDownloads(false), 300);
+  });
 }
-$("downloadBtn").onclick = () => showDownloads(true);
+const downloadItems = () => [...$("downloadMenu").querySelectorAll("button")].filter((b) => !b.hidden);
+$("downloadBtn").onclick = () => {
+  showDownloads(true);
+  downloadItems()[0]?.focus();
+};
+$("downloadMenu").addEventListener("keydown", (e) => {
+  if (e.key === "Tab") return showDownloads(false, true); // (the browser then moves the focus on from the button)
+  const items = downloadItems(), i = items.indexOf(document.activeElement);
+  const to = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: items.length - 1 }[e.key];
+  if (to === undefined || !items.length || e.altKey || e.ctrlKey || e.metaKey) return;
+  e.preventDefault();
+  items[(to + items.length) % items.length].focus();
+});
+// (a click elsewhere closes it: below; the focus leaving it for another control, too)
+$("downloadMenu").addEventListener("focusout", (e) => {
+  const to = e.relatedTarget; // (none: a click on a part of the page that takes no focus, or in the menu where a click doesn't focus)
+  if (to && !$("downloadMenu").contains(to) && !$("downloadBtn").contains(to)) showDownloads(false);
+});
 document.addEventListener("mousedown", (e) => {
   if (!$("downloadMenu").hidden && !$("downloadMenu").contains(e.target) && !$("downloadBtn").contains(e.target)) showDownloads(false);
 });

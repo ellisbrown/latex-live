@@ -43,7 +43,7 @@ function renderNotes() {
   for (const [author, count] of Object.entries(counts)) {
     const chip = el("span", { className: `chip${hiddenAuthors.has(author) ? " off" : ""}`, textContent: `${author} ${count}`,
                               title: "Show or hide this author's notes" });
-    chip.style.background = authorColor(author);
+    chip.style.setProperty("--chip", authorColor(author));
     chip.onclick = () => {
       hiddenAuthors.has(author) ? hiddenAuthors.delete(author) : hiddenAuthors.add(author);
       localStorage.setItem(`latex-live:${hubBase}hiddenAuthors`, JSON.stringify([...hiddenAuthors]));
@@ -54,7 +54,7 @@ function renderNotes() {
   }
   const items = noteList.filter((n) => !hiddenAuthors.has(n.author)).map((n) => {
     const who = el("span", { className: "chip who", textContent: n.author });
-    who.style.background = authorColor(n.author);
+    who.style.setProperty("--chip", authorColor(n.author));
     const where = opensAt(el("span", { className: "where", textContent: `${n.file.replace(/^.*\//, "")}:${n.line}` }), `${n.file}:${n.line}`);
     where.onclick = (e) => { e.stopPropagation(); openSource(n.file, n.line); };
     const row = el("div", { className: "note", title: "Show in the PDF" }, who, ...(canOpenFile(n.file) ? [where] : []),

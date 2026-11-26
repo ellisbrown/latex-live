@@ -3,7 +3,7 @@
 // that the main window shows in the PDF, and has the main window open those double-clicked in it.
 
 import { $, file, HOLD, isDiff, isPopout, setStatus, SIGNED_OUT } from "./page.js";
-import { getJSON, readBody, sendJSON } from "./net.js";
+import { getJSON, NO_ANSWER, readBody, sendJSON } from "./net.js";
 import { canOpenFile, editable, editorAllowed, me, opensInBrowser, opensSources } from "./role.js";
 import { container, eventBus, pageFrame, pagesReady, shownVariant, viewer } from "./pdfview.js";
 import { askWindows, layoutMode, onWindowMessage, tellWindows } from "./layout.js";
@@ -151,7 +151,8 @@ export async function openSource(file, line, column = 0) {
                           : await sendJSON("open", { file, line, ...(column ? { column } : {}) });
     if (got.ok) return;
     const why = got.error; // e.g. latex-live is not running in a VS Code terminal
-    if (!got.status || why === SIGNED_OUT) return setStatus(why, "error"); // (no answer: nothing about VS Code)
+    // (no answer, a preview that can't be reached or is busy just now, a server error: nothing about VS Code, so ask again next time)
+    if (!got.status || why === NO_ANSWER || why === SIGNED_OUT || got.status === 429 || got.status >= 500) return setStatus(why, "error");
     if (!editorAllowed() || !editable(file)) return setStatus(why, "error");
     if (!isPopout) hostFailed = why;
     paneSaying(() => inPane(file, line, column), `${file}:${line} is in the source pane (VS Code did not open: ${why})`, true);

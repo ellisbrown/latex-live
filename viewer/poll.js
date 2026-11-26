@@ -133,7 +133,7 @@ async function load(name, version, variant, info, timed = () => {}) {
 // One poll at a time, and none waits more than 10 s: a connection that died without closing (one the browser
 // kept from before the preview restarted, say) would otherwise hold its request, and every later poll would
 // queue behind the few connections the browser opens to this port, which every viewer on it shares.
-let polling = false, pollFailed = false; // (the status line says why the last poll failed)
+let polling = false, pollFailed = ""; // (why the last poll failed, which the status line says)
 const BUSY = "The preview is busy — retrying…";
 // While a new PDF is on its way (a build runs, the notes-free pass after it hasn't published yet, or where the
 // references start is being looked up), the owner's viewer polls every HURRY ms instead of the usual four times a
@@ -144,7 +144,7 @@ let hurry = false, hurryTimer = null, versionAt = 0, lastVersion = null; // (one
 // A tab in the background (or a minimized window) polls only every HIDDEN ms, and again as soon as it shows.
 const HIDDEN = 5000;
 let polledAt = 0;
-document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && polledAt) poll(); }); // (once start has polled: who is asking is known)
 export async function poll() {
   if (loading || polling || (document.hidden && Date.now() - polledAt < HIDDEN)) return;
   polling = true;
@@ -175,7 +175,7 @@ export async function poll() {
       && Date.now() - versionAt < HURRY_FOR;
     hurry = !isCollaborator() && !document.hidden && !!(info.building || cleanBehind || info.refsPending || info.clean?.refsPending);
     if (pollFailed) setStatus(""); // (it answers again)
-    pollFailed = false;
+    pollFailed = "";
     sourceStatus(info.source, epoch);
     if (!isDiff) seeBuild(!!info.building, info.build?.ok === false);
     if (!isDiff && info.doc && info.doc !== docFile) return openDoc(info.doc); // the server builds another document now
@@ -236,9 +236,12 @@ export async function poll() {
     }
   } catch (err) {
     const message = ["TimeoutError", "AbortError"].includes(err.name) ? "no answer from the preview" : `${err.message || err}`;
-    pollFailed = true;
+    const said = pollFailed;
+    pollFailed = [UNREACHABLE, SIGNED_OUT, BUSY].includes(message) ? message : `${message} (retrying)`;
     if (message === ACCESS_ENDED) showAccessEnded();
-    else setStatus([UNREACHABLE, SIGNED_OUT, BUSY].includes(message) ? message : `${message} (retrying)`, "error");
+    // (said already: it stays on the line, without holding it anew or showing it whole again, so a click dismisses it)
+    else if (pollFailed === said) liveStatus(pollFailed, "error");
+    else setStatus(pollFailed, "error");
   } finally {
     polling = loading = false;
     if (hurry && !hurryTimer) hurryTimer = setTimeout(() => { hurryTimer = null; poll(); }, HURRY);
