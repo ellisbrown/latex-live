@@ -32,7 +32,7 @@ export function addTab(name, { label, icon: iconName, title = label, refresh = n
   return $(name);
 }
 addTab("outline", { label: "Outline", icon: "outline", title: "The outline, numbered as in the paper", inDiff: true });
-addTab("thumbs", { label: "Pages", icon: "pages", title: "The pages", inDiff: true, refresh: () => doc && renderThumbs() });
+addTab("thumbs", { label: "Pages", icon: "pages", title: "The pages", inDiff: true, refresh: () => doc && renderThumbs().catch((e) => console.warn(e)) });
 addTab("notes", { label: "Notes", icon: "notes", title: "The notes, by author" });
 addTab("checks", { label: "Checks", icon: "checks", title: "Pre-submission checks",
                    refresh: () => doc && checksVersion !== `${buildVersion}/${shown}` && runChecks() });
