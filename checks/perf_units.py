@@ -106,11 +106,17 @@ def bib_span_checks():
             synctex.refs_start(stub.tmp, "main.pdf", wait=False)), timeout=20)
         if found != WANT[0]:
             fail(f"refs_start without wait, once looked up: {found}")
+        # Shared mode's notes-free pass reads its .bbl in a folder of its own (build/clean-<n>/), which SyncTeX records.
+        read = os.path.join(stub.tmp, "build", "clean-3", "main-live.bbl")
+        put_bytes(files[0], gzip.compress(f"SyncTeX Version:1\nInput:1:{stub.tmp}/main.tex\nInput:9:{read}\n".encode()))
+        os.utime(files[0], ns=(2, 2_000_000_000))
+        if synctex.bib_span(stub.tmp, files, cache={}) != WANT or stub.calls()[-9:] != [f"{n}:0:{read}" for n in (1, *range(10, 2, -1))]:
+            fail(f"bib_span of a .bbl that TeX read elsewhere (shared mode's notes-free pass) asks SyncTeX about {stub.calls()[-9:]}")
         os.remove(files[1])
         if synctex.refs_start(stub.tmp, "main.pdf", wait=False) is not None or synctex.BIB_WORKERS:
             fail("refs_start without a .bbl waits for a lookup, or starts one")
     ok("bib_span looks up the bibliography's extent in one SyncTeX run (each lookup as alone), and refs_start without wait"
-       " answers PENDING at once, then the result, and nothing without a .bbl")
+       " answers PENDING at once, then the result, and nothing without a .bbl; it asks about the .bbl by the name TeX read it as")
 
 
 def bib_merge_checks():

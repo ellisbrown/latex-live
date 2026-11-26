@@ -246,6 +246,10 @@ def look_up_bib(paper_root, files):
     if text is None:
         return None
     last = text.count("\n") + 1
+    # The .bbl as TeX read it, which SyncTeX matches: shared mode's notes-free pass reads it in a folder of its own
+    # (build/clean-<n>/) before it moves to build/clean/.
+    read = [path for path in synctex_text(synctex_gz)[0].values() if os.path.basename(path) == os.path.basename(bbl)]
+    bbl = os.path.normpath(bbl) if os.path.normpath(bbl) in read else read[-1] if read else bbl
 
     def where(records):
         rec = next((r for r in records if "Page" in r), None)
