@@ -1,4 +1,4 @@
-# The parts of check.py that need neither TeX nor podman: the static checks and the unit checks.
+# The parts of check.py that need neither TeX nor podman: the static checks and the unit checks, on Linux and macOS.
 # (The preview and shared-mode parts need a TeX Live image; run python3 check.py locally for those.)
 name: check
 
@@ -12,7 +12,12 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-24.04  # (Python 3.9 has no build for 26.04)
+    strategy:
+      fail-fast: false
+      matrix:
+        # (ubuntu-24.04: Python 3.9 has no build for 26.04; macos-26 is the arm64 image)
+        os: [ubuntu-24.04, macos-26]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
