@@ -1,11 +1,13 @@
 """The unit checks of shared mode's parts, without an instance: the downloads' guards (confinement_checks), the
 host's reads and copies of the build's files, which follow no link (build_link_checks), nor do its writes in the
 build's folders (build_folder_checks), the builder (shared_build_checks), what the host reads of the files the paper's
-TeX writes (shared_parsing_checks), and which notes viewers and commenters see (shown_notes_checks)."""
+TeX writes (shared_parsing_checks), which notes viewers and commenters see (shown_notes_checks), and that a source
+changed during a build that file times miss builds again (stale_source_checks)."""
 
 import contextlib
 import gzip
 import hashlib
+import io
 import json
 import os
 import re
@@ -422,6 +424,101 @@ def baseline_failure_checks():
     if not all(root in msg for msg in said[False]):
         fail(f"outside shared mode, a failed diff or baseline no longer names the file in full: {said[False]}")
     ok("in shared mode, a failed diff or change-highlight baseline names no folder of the server's")
+
+
+# A paper for stale_source_checks: one note, and a comment line whose spaces an edit of the same size can take.
+STALE_PAPER = r"""\documentclass{article}
+\usepackage{xcolor}
+\newcommand{\todotxt}[1]{\textcolor{red}{#1}}
+\newcommand{\eb}[1]{\todotxt{[EB: #1]}}
+\begin{document}
+Some words here. \eb{a note}
+\end{document}
+""" + "%" + " " * 20 + "\n"
+
+
+def shared_state():
+    """server.shared as main.make_server starts it, for checks that run shared mode's builder without an instance."""
+    return {"building": False, "status": None, "clean": None, "published": None, "shown": None, "wanted": threading.Event(),
+            "force": False, "rebuilt": -60, "proc": None, "clean_seq": 0, "bib": None, "biber": None, "idx": None,
+            "gen": 0, "retried": -60, "overflow": 0, "overflows": 0, "no_image": False, "missing": [], "deps": [],
+            "admit": threading.Lock(), "clean_lock": threading.Lock()}
+
+
+def stale_source_checks():
+    """A source whose text changes during a shared build without a new stat (file times in whole seconds, saved in
+    place at the same size) hides the notes from viewers and commenters, and the builder builds again: shared_run, with
+    the host's pdflatex for its passes, returns the sources as its last pass read them, which then differ from theirs;
+    and shared_build, told so, runs once more while the files' stats stay the same, where file times come in whole
+    seconds (and only there: elsewhere a save always changes them, and it reads no sources)."""
+    from latexlive import notes, shared_build
+    for whole, want in ((True, 2), (False, 1)):
+        runs, digests = [], []
+
+        def run(server):
+            runs.append(time.monotonic())
+            if len(runs) >= 3:
+                server.stopping = True
+            return {"main.tex": "as read"}
+
+        def source_digests(root, pdf):
+            digests.append(time.monotonic())
+            return {"main.tex": "changed" if len(runs) == 1 else "as read"}
+        stat = (1_000_000_000 if whole else 1_000_000_001, 2, 3)
+        with tempfile.TemporaryDirectory(prefix="latex-live-check-") as root, \
+                patched(shared_build, shared_run=run, shared_inputs=lambda server: {"main.tex": stat}, source_digests=source_digests,
+                        QUIET=0.05, MIN_GAP=0.05, RACY=0.5):
+            server = fake_server(root, stopping=False, shared=shared_state())
+            thread = threading.Thread(target=shared_build.shared_build, args=(server,), daemon=True)
+            thread.start()
+            thread.join(2)
+            server.stopping = True
+            thread.join(5)
+        if len(runs) != want or (digests and not whole):
+            fail(f"after a run whose sources changed, the stats the same, the builder ran {len(runs) - 1} more times"
+                 f" (file times in {'whole seconds' if whole else 'nanoseconds'}), not {want - 1}; it read the sources"
+                 f" {len(digests)} times")
+    if not shutil.which("pdflatex"):
+        print("skip: no pdflatex here, so shared_run is not run on an edit during its pass", flush=True)
+        return
+    edits = []
+
+    def tool(server, argv, kind="main", cwd=None, env=None):
+        if kind != "main":
+            return True
+        done = subprocess.run(argv, cwd=server.paper_root, capture_output=True, timeout=120).returncode == 0
+        while edits:  # (after TeX read it: an edit during the pass, that keeps the file's mtime and size)
+            path, text = edits.pop()
+            st = os.stat(path)
+            with open(path, "r+") as f:
+                f.write(text)
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+        return done
+    cwd = os.getcwd()
+    with tempfile.TemporaryDirectory(prefix="latex-live-check-") as root, \
+            patched(shared_build, shared_tool=tool, image_pulled=lambda: True, stop_containers=lambda *a, **k: None,
+                    shared_notes_free=lambda *a: None), contextlib.redirect_stdout(io.StringIO()):
+        main = os.path.join(root, "main.tex")
+        put(main, STALE_PAPER)
+        os.makedirs(os.path.join(root, "build"))
+        server = fake_server(root, env={}, stopping=False, shared=shared_state())
+        os.chdir(root)  # (shared_run names the build's files relative to the paper, as its tools see them)
+        try:
+            first = shared_build.shared_run(server) == notes.source_digests(root, "main.pdf")
+            seen = [n["text"] for n in notes.shown_notes(server, "main.pdf", notes.notes(root, "main.pdf"))]
+            hidden = STALE_PAPER.replace(r"\eb{a note}", r"\iffalse\eb{a note}\fi").replace("%" + " " * 20, "%" + " " * 9)
+            edits.append((main, hidden))
+            stale = shared_build.shared_run(server) != notes.source_digests(root, "main.pdf")
+            after = [n["text"] for n in notes.shown_notes(server, "main.pdf", notes.notes(root, "main.pdf"))]
+        finally:
+            os.chdir(cwd)
+    if len(hidden) != len(STALE_PAPER) or not first or seen != ["a note"]:
+        fail(f"shared_run on a paper left alone: returns the sources as they are: {first}; viewers see {seen}")
+    if after or not stale:
+        fail(f"after an edit during a shared pass that kept the file's mtime and size, viewers see {after}, and shared_run"
+             f" returns other sources than the pass read: {not stale}")
+    ok("an edit during a shared build that file times miss (whole seconds, saved in place at the same size) hides the"
+       " notes from viewers, and the builder builds again once, only where file times come in whole seconds")
 
 
 # A paper for shown_notes_checks: notes that the PDF shows, and notes that it doesn't (one only measured, one with the

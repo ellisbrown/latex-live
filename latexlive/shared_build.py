@@ -47,6 +47,7 @@ def start_shared_build(server):
 
 
 QUIET, MIN_GAP, MOST_WAIT = 1.0, 2.0, 10.0  # (s: shared_build's debounce, and the least time between two runs' starts)
+RACY = 2.0  # (s: the coarsest clock of file times, FAT's: how long after a run's start a save may keep the stats as they were)
 
 
 def shared_build(server):
@@ -56,14 +57,23 @@ def shared_build(server):
     image appears after a run found it missing. Never more than one run at a time, and for everyone
     alike: a change starts one once the files have been quiet for QUIET s (at most MOST_WAIT s after the
     first change), and no run starts within MIN_GAP s of the last one's start, so that saves in a row
-    make one build, and no one can keep the machine building."""
-    built, last_start, image_checked = None, -math.inf, time.monotonic()
+    make one build, and no one can keep the machine building. Where file times come in whole seconds, a
+    save in the same second as the one before it changes no stat (saved in place at the same size): then a
+    source whose text differs from what the run's last pass read (notes.source_digests), looked at after
+    the run and until RACY s after its start, counts as a change too."""
+    built, last_start, image_checked, racy = None, -math.inf, time.monotonic(), None
     while not server.stopping:
         asked = server.shared["wanted"].wait(0.5)
         if not asked and server.shared["no_image"] and time.monotonic() - image_checked > 5:
             image_checked = time.monotonic()
             asked = image_pulled()
         now = shared_inputs(server)
+        if racy and not asked and now == built:  # (racy: until when, and the sources as the last pass read them)
+            sources = source_digests(server.paper_root, server.default_pdf)
+            if any(racy[1].get(path) != digest for path, digest in sources.items()):
+                built, racy = None, None
+            elif time.monotonic() > racy[0]:
+                racy = None
         if not asked and now == built:  # (a file gone, or new, counts as a change too)
             continue
         if not asked:  # (a change: wait until the files are quiet)
@@ -85,14 +95,17 @@ def shared_build(server):
         newest = max(((st[0], path) for path, st in now.items() if st), default=None)  # (the save, for the run's timing)
         if newest:
             note(server, "saved", os.path.relpath(newest[1], server.paper_root), when=newest[0] / 1e9)
+        read = None
         try:
-            shared_run(server)
+            read = shared_run(server)
         except Exception:  # (said, and the next change tries again)
             print(f"=== latex-live: the build failed:\n{traceback.format_exc().rstrip()}", flush=True)
             server.shared.update(building=False, status={"ok": False, "time": time.strftime("%H:%M:%S"),
                                                          "errors": [{"file": None, "line": None, "msg": "the build failed (see the server's log)"}]})
         # The files the run depends on, as they were when it started (files it read for the first time: as they are now).
         built = {path: now.get(path, stat) for path, stat in shared_inputs(server).items()}
+        coarse = all(st is None or st[0] % 1_000_000_000 == 0 for st in now.values())
+        racy = (last_start + RACY, read) if read is not None and coarse else None
 
 
 def shared_tool(server, argv, kind="main", cwd=None, env=None):
@@ -157,7 +170,8 @@ def shared_run(server):
     files only, and what bibtex, biber or makeindex said when they failed), stays in memory; and a
     successful run starts the notes-free pass (shared_notes_free). A rebuild stops a run part way (its
     containers: stop_containers) and starts it again; a tool's state is kept only when it succeeded, and
-    only if no rebuild (server.shared["gen"]) came meanwhile, so that it runs again until it does."""
+    only if no rebuild (server.shared["gen"]) came meanwhile, so that it runs again until it does. Returns
+    the sources as the run's last pass read them (notes.source_digests), or None."""
     import latex_report
     root, pdf = server.paper_root, server.default_pdf
     doc, job = pdf[:-4], f"{pdf[:-4]}-live"
@@ -166,6 +180,7 @@ def shared_run(server):
     note(server, "run")
     began, gen = time.time_ns(), server.shared["gen"]  # (in its status: the run reflects the files as they were then)
     failed = {}  # (bibtex, biber or makeindex: why it failed, in this run)
+    read = None
     try:
         stop_containers(kind="main")  # (one that a rebuild's stop missed: its client had not started it yet)
         server.shared["no_image"] = not image_pulled()
@@ -259,6 +274,7 @@ def shared_run(server):
     finally:
         server.shared["building"] = False
         note(server, "run-end")
+    return read
 
 
 def shared_publish(server, job, records, sources):
