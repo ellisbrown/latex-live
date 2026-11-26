@@ -68,8 +68,8 @@ document.addEventListener("mousedown", (e) => {
   if (!$("downloadMenu").hidden && !$("downloadMenu").contains(e.target) && !$("downloadBtn").contains(e.target)) showDownloads(false);
 });
 $("downloadPdf").onclick = () => {
-  showMore(false);
-  showDownloads(false);
+  showDownloads(false, true); // (chosen from the keyboard: the focus back on the button)
+  showMore(false, true);
   const shown = isDiff ? file : docFile; // (a comparison tab saves the comparison)
   // ("-with-notes" when the paper has notes, so a version without them too: the Notes switch shows then)
   saveFile(`pdf/${encodeURIComponent(shown)}?v=${buildVersion}`, isDiff ? file : `${docName()}${$("notesView").hidden ? "" : "-with-notes"}.pdf`);
@@ -79,8 +79,8 @@ $("downloadPdf").onclick = () => {
 // done, showing its progress (poll leaves the status line to it meanwhile: liveStatus), then save. Right after
 // this tab writes a note, wait for the build that the write starts, which the server can't know of yet.
 async function downloadBuilt(endpoint, built, saveAs, what, done) { // (built: a PDF in build/, or the URL of another download)
-  showMore(false);
-  showDownloads(false);
+  showDownloads(false, true);
+  showMore(false, true);
   if (building.has(endpoint)) return;
   building.add(endpoint);
   try {

@@ -174,7 +174,7 @@ export async function poll() {
     const cleanBehind = !isDiff && view === "clean" && info.clean?.version && BigInt(info.clean.version) < BigInt(info.version || 0)
       && Date.now() - versionAt < HURRY_FOR;
     hurry = !isCollaborator() && !document.hidden && !!(info.building || cleanBehind || info.refsPending || info.clean?.refsPending);
-    if (pollFailed) setStatus(""); // (it answers again)
+    if (pollFailed) { setStatus(""); liveStatus(""); } // (it answers again: the error is no longer the live state either)
     pollFailed = "";
     sourceStatus(info.source, epoch);
     if (!isDiff) seeBuild(!!info.building, info.build?.ok === false);
