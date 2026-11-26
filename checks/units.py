@@ -1382,8 +1382,11 @@ def connection_cap_checks():
             held.append(socket.create_connection(("127.0.0.1", port), timeout=5))
         time.sleep(0.3)
         third = socket.create_connection(("127.0.0.1", port), timeout=5)
-        third.sendall(b"GET / HTTP/1.0\r\n\r\n")
-        dropped = third.recv(100) == b""
+        try:
+            third.sendall(b"GET / HTTP/1.0\r\n\r\n")
+            dropped = third.recv(100) == b""
+        except ConnectionResetError:  # (macOS resets a connection closed with the request unread)
+            dropped = True
         third.close()
         for s in held:
             s.close()
