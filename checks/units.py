@@ -1066,7 +1066,8 @@ def arxiv_strip_checks():
     if same is not None or not other or old is not None or not made or not made[2].endswith("build/main-arxiv.tar.gz"):
         fail(f"comparing the arXiv package's PDF: dates and IDs apart {same!r}, otherwise {other!r};"
              f" the package the viewer made: {old}, {made}")
-    paths = "\\input{/data/u/a.tex} /scratch/u/b.pdf (/mnt/d/c) data/d.csv ./data/e ../mnt/f figures/data/g https://example.org/data/h"
+    paths = ("\\input{/data/u/a.tex} /scratch/u/b.pdf (/mnt/d/c) data/d.csv ./data/e ../mnt/f figures/data/g"
+             " https://example.org/data/h \\texttt{repo}/data/i")
     if [m.group(0) for m in arxiv.PERSONAL_PATH_RE.finditer(paths)] != ["/data/u/a.tex", "/scratch/u/b.pdf", "/mnt/d/c)"]:
         fail(f"the personal paths the arXiv check finds: {[m.group(0) for m in arxiv.PERSONAL_PATH_RE.finditer(paths)]}")
     ok("the arXiv package's sources lose their comments (a trailing one keeps its %), whole-line hidden blocks and their notes'"

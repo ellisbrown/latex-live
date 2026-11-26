@@ -29,7 +29,7 @@ from .tools import failure, pdf_pages_text, pdf_tool, run_tool, tex_argv
 ARCHIVE_EXTS = (".tar.gz", ".tgz", ".zip")
 COMMENT_RE = re.compile(r"(?<!\\)(?:\\\\)*%(.*)")  # (also right after a \\ line break)
 PARAM_RE = re.compile(r"(?<!\\)(?:\\\\)*#")  # (a macro parameter, as in a definition's body: not \#)
-PERSONAL_PATH_RE = re.compile(r"(?<![\w.~])/(?:home|Users|checkpoint|scratch|mnt|data)/[^\s{}]*|(?<![\w~])~/[^\s{}]*"
+PERSONAL_PATH_RE = re.compile(r"(?<![\w.~}])/(?:home|Users|checkpoint|scratch|mnt|data)/[^\s{}]*|(?<![\w~])~/[^\s{}]*"
                               r"|(?<![\w\\])[A-Za-z]:[\\/](?:[\w .-]+[\\/])+[^\s{}]*|\b(?i:file):/[^\s{}]*")
 
 

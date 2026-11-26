@@ -128,25 +128,32 @@ def cut_checks(page, url, errors):
         const until = async (done) => { for (let i = 0; i < 200 && !done(); i++) await new Promise((r) => setTimeout(r, 50)); return done(); };
         if (!await until(() => pages.displayedResult())) return null;
         const d = pdfview.doc, count = document.getElementById("cutCount");
-        const cancelled = () => ({ promise: Promise.reject(new pdfview.pdfjsLib.RenderingCancelledException("Rendering cancelled.")),
-                                   cancel() {} });
+        let cancels = 0;
+        const cancelled = () => {
+          cancels++;
+          return { promise: Promise.reject(new pdfview.pdfjsLib.RenderingCancelledException("Rendering cancelled.")), cancel() {} };
+        };
         d.getPage = (n) => Object.getPrototypeOf(d).getPage.call(d, n).then((p) => Object.assign(Object.create(p), { render: cancelled }));
-        marks.setCutOn(true);
-        count.textContent = "";
-        cut.updateCut();  // (not awaited, as the viewer calls it)
-        await until(() => count.textContent);
-        const failed = count.textContent;
-        delete d.getPage;
+        let failed;
+        try {
+          marks.setCutOn(true);
+          count.textContent = "";
+          cut.updateCut();  // (not awaited, as the viewer calls it)
+          await until(() => count.textContent);
+          failed = count.textContent;
+        } finally {
+          delete d.getPage;
+        }
         await Promise.all([cut.updateCut(), cut.updateCut()]);
-        return { failed, marked: [...marks.marks.cut.values()].reduce((n, v) => n + v.length, 0),
+        return { failed, cancels, marked: [...marks.marks.cut.values()].reduce((n, v) => n + v.length, 0),
                  spots: (await cut.cutSpots(d, pages.displayedResult())).length };
     }""")
     page.wait_for_timeout(300)  # (for a page error, were a rejection unhandled)
     if got is None:
         errors.append("the main text was not measured within 10 s, so where to cut was not checked")
-    elif got["failed"] != "couldn't check":
+    elif not got["cancels"] or got["failed"] != "couldn't check":
         errors.append(f"where to cut, when drawing a page is cancelled, says {got['failed']!r}, not that it couldn't check")
-    elif got["marked"] != got["spots"]:
+    elif not got["spots"] or got["marked"] != got["spots"]:
         errors.append(f"where to cut, looked for twice at once: {got['marked']} marks for {got['spots']} spots")
     page.close()
 
