@@ -39,7 +39,8 @@ git --version
 - **macOS:** `xcode-select --install` (python3 and git),
   `brew install --cask mactex-no-gui` (TeX Live with latexmk and synctex), and
   `brew install poppler`. Skip podman: without it, latex-live uses the host's
-  TeX. macOS is not yet tried; please report problems.
+  TeX. On macOS, GitHub's CI runs the static and unit checks; the preview and
+  shared mode are untested there, so please report problems.
 
 ## 2. Get the code and the TeX image
 

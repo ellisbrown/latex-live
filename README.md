@@ -69,7 +69,7 @@ and troubleshooting.
 
 latex-live is at 0.x (see `VERSION`): no stability promise yet. Releases are
 tagged `v<VERSION>`; track `main` to follow development. It is used on Linux;
-macOS with MacTeX should work but has not been tried. Known limits:
+macOS with MacTeX should work, but there only the static and unit checks run (in CI). Known limits:
 
 - Notes are the paper's note macros that go through `\todotxt`.
 - Page limits are built in for [ten venues](docs/viewer.md#page-limit-and-space);

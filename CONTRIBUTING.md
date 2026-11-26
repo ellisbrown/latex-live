@@ -16,8 +16,8 @@ describes what it does and indexes the user docs in [docs/](docs/):
   does, and podman with the TeX Live image for its shared-mode part. When you
   change behavior that it doesn't cover, extend it. While you work, it can
   run only some of its parts: `python3 check.py units`, say (the parts are
-  modules of `checks/`). GitHub runs its `static` and `units` parts on every
-  push and pull request (`.github/workflows/check.yml`); they need neither TeX
+  modules of `checks/`). GitHub runs its `static` and `units` parts on Linux and
+  macOS for every push and pull request (`.github/workflows/check.yml`); they need neither TeX
   nor podman, so they don't replace the full run. With Playwright
   (`pip install playwright`, then `playwright install chromium`, or
   `LATEX_LIVE_CHECK_CHROMIUM` set to a Chromium), `preview` also checks the
