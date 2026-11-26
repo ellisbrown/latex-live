@@ -43,10 +43,11 @@ $("comparePanel").addEventListener("keydown", (e) => {
   e.preventDefault();
   rows[Math.max(0, Math.min(rows.length - 1, to))].focus();
 });
-// Close the panel (Esc: keys.js; a commit chosen); the focus, if it was in it, goes back.
-export function closeCompare() {
+// Close the panel (Esc: keys.js; a commit chosen); refocus: the focus, if it was in it, goes back (not on a click
+// elsewhere, which puts it there).
+export function closeCompare(refocus = true) {
   const panel = $("comparePanel");
-  const had = panel.contains(document.activeElement);
+  const had = refocus && panel.contains(document.activeElement);
   panel.hidden = true;
   if (had) focusBack(opener?.isConnected ? opener : $("compare"));
   opener = null;
@@ -69,7 +70,7 @@ if (isDiff) { // (the diff tab's main control, so in the toolbar)
 // The panel closes on a click elsewhere (and on Esc: keys.js).
 document.addEventListener("mousedown", (e) => {
   const panel = $("comparePanel");
-  if (!panel.hidden && !panel.contains(e.target) && !$("compare").contains(e.target)) panel.hidden = true;
+  if (!panel.hidden && !panel.contains(e.target) && !$("compare").contains(e.target)) closeCompare(false);
 });
 registerCommands(() => ($("compare").hidden || isDiff ? [] : [
   { title: "Compare with an earlier version…", sub: "Changes", icon: "diff", run: () => $("compare").click() }]));
