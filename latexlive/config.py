@@ -188,7 +188,7 @@ LOOKUPS = flag("LATEX_LIVE_LOOKUPS", not SHARED, strict=True, invalid=False)
 
 
 # LATEX_LIVE_PROTECTED, a regular expression, marks text that must stay as written, e.g.
-# r"\\ch\{human-written\}" at the end of a paragraph or inside a caption: a note written from the viewer
+# r"\\eb\{as written\}" at the end of a paragraph or inside a caption: a note written from the viewer
 # goes after the paragraph or caption it marks, and the marker itself can't be changed there (note_writer).
 try:
     PROTECTED_RE = re.compile(os.environ["LATEX_LIVE_PROTECTED"]) if os.environ.get("LATEX_LIVE_PROTECTED") else None

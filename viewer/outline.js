@@ -6,7 +6,7 @@ import { areaFraction, norm, shownArea, textLines } from "./pagetext.js";
 import { displayedResult } from "./pages.js";
 
 // Outline, rebuilt on each reload: the PDF's bookmarks (hyperref), or else the contents entries
-// from live.py (e.g. this ICLR draft, whose restored \addcontentsline skips hyperref). Headings show
+// from live.py (e.g. a paper whose restored \addcontentsline skips hyperref). Headings show
 // their numbers from the build (live.py), appendix letters included.
 // Each heading shows how many pages its section takes (up to the end of the main text for the
 // last main-text section).

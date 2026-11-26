@@ -186,9 +186,9 @@ def notes(paper_root, pdf_name):
     """The inline notes in the build's files, in reading order: [{author, text, file, line, ...}]
     (plus note_fields, for editing them from the viewer).
 
-    Note macros are the one-argument commands whose body goes through \\todotxt (this
-    project's show/hide switch), e.g. \\todo and the per-author \\eb, \\ch; the author label
-    is the bold "XX:" in the body.
+    Note macros are the one-argument commands whose body goes through \\todotxt (the
+    paper's switch for showing them), e.g. \\todo and per-author macros such as \\eb; the author
+    label is the bold "XX:" in the body.
     """
     files = project_tex_files(paper_root, fls_file(paper_root, pdf_name))
     texts = {path: read_tex(path) for path in files}

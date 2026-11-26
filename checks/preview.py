@@ -607,7 +607,7 @@ def agent_hook_checks(token):
             or big.get("replacement") != "€" * 5_000:
         fail(f"POST /agent/revise through the hub, with the example plugin: {got}, and for a big request {str(big)[:80]}")
     status, _, data = request(f"{hub['base']}main/agent/revise", method="POST", cookie=token,
-                              body={**tidy, "paragraph": "First. We utilize  it. Last.\\eb{human-written}"})
+                              body={**tidy, "paragraph": "First. We utilize  it. Last.\\eb{left as is}"})
     if status != 409:
         fail(f"POST /agent/revise of a paragraph marked LATEX_LIVE_PROTECTED: {status} {data[:200]!r}, not 409")
     if (status := request(f"{hub['base']}main/agent/revise", cookie=token)[0]) != 404:

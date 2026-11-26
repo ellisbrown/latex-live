@@ -256,8 +256,8 @@ def write_status(root, status, directory=BUILD):
     write_json(os.path.join(directory, f"{root}.status.json"), status)
 
 
-# Blank the inline notes: this paper's preamble routes \todo and the per-author note macros
-# through \todotxt (gated by \ifshowtodos); redefine both once the preamble has run.
+# Blank the inline notes, for a paper whose preamble routes its note macros (\todo and the per-author ones) through
+# \todotxt (gated by \ifshowtodos): redefine both once the preamble has run.
 NOTES_OFF = r"\AtBeginDocument{\ifdefined\todotxt\renewcommand\todotxt[1]{}\fi\ifdefined\showtodosfalse\showtodosfalse\fi}"
 
 

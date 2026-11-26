@@ -306,7 +306,7 @@ instance refuses to start with one in `LATEX_LIVE_COMMIT` or
   internal names that must never appear in the arXiv source, e.g.
   `(?i)projectx|cluster-a`, for the arXiv source check.
 - `LATEX_LIVE_PROTECTED`: a regular expression for a marker of text that must
-  stay as written, e.g. `\\ch\{human-written\}` at the end of a paragraph or
+  stay as written, e.g. `\\eb\{as written\}` at the end of a paragraph or
   inside a caption. Notes written from the viewer (replies too) go after the
   paragraph or caption it marks, and the note buttons can't edit, resolve, or
   delete the marker. The browser editor doesn't guard it: whoever may edit can
