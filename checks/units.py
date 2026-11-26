@@ -1502,6 +1502,9 @@ def note_display_checks():
         put(os.path.join(tmp, "main.tex"), "\\newcommand{\\todotxt}[1]{#1}\\definecolor{mine}{RGB}{10,200,30}\n"
             "\\newcommand{\\ad}[1]{\\todotxt{\\textcolor{Emerald}{[\\textbf{AD:} #1]}}}\n"
             "\\newcommand{\\be}[1]{\\todotxt{{\\color{mine!50}[\\textbf{BE:} #1]}}}\n\\newcommand{\\cy}[1]{\\todotxt{[\\textbf{CY:} #1]}}\n"
+            "\\definecolor{blue}{RGB}{0,0,0}\\definecolor{blue}{RGB}{20,150,30}\\providecolor{red}{RGB}{0,0,0}\n"
+            "\\providecolor{fresh}{HTML}{0A0B0C}\\providecolor{fresh}{HTML}{FFFFFF}\\newcommand{\\dz}[1]{\\todotxt{\\textcolor{blue}{#1}}}\n"
+            "\\newcommand{\\ey}[1]{\\todotxt{\\textcolor{red}{#1}}}\\newcommand{\\fx}[1]{\\todotxt{\\textcolor{fresh}{#1}}}\n"
             "Text \\ad{``Why'' $k$--means~here?} and \\be{%s} \\cy{50\\%%}.\n" % long)
         put(os.path.join(tmp, config.BUILD, "main-live.fls"), f"PWD {tmp}\nINPUT main.tex\n")
         found = {n["macro"]: n for n in notes.notes(tmp, "main.pdf")}
@@ -1511,7 +1514,7 @@ def note_display_checks():
         if found.get("be", {}).get("text") != long or found.get("cy", {}).get("plain") != "50%":
             fail(f"a long note's text is cut, or a plain one's source misread: {found}")
         colors = {a["macro"]: a.get("color") for a in notes.note_authors(tmp, "main.pdf")}
-        if colors != {"ad": "#00ff80", "be": "#84e48e", "cy": None}:
+        if colors != {"ad": "#00ff80", "be": "#84e48e", "cy": None, "dz": "#14961e", "ey": "#ff0000", "fx": "#0a0b0c"}:
             fail(f"the note macros' colors are {colors}, not those their definitions set")
     for model, spec, want in (("rgb", "0.1,0.5,0.2", "#1a8033"), ("RGB", "255,0,10", "#ff000a"), ("HTML", "00A0B0", "#00a0b0"),
                               ("gray", "0.5", "#808080"), ("cmyk", "1,0,1,0", "#00ff00"), ("", "teal", "#008080"),
@@ -1525,7 +1528,8 @@ def note_display_checks():
     if notes.css_color("", "loop", {"loop": ("", "loop")}) is not None:
         fail("css_color of a color the paper defines as itself does not give up")
     ok("a note shows as typeset and in full, and editing it still matches its source as written; a note macro's color is"
-       " the one its definition sets (xcolor's models, base and dvips names, mixes, the paper's own), as CSS, else none")
+       " the one its definition sets (xcolor's models, base and dvips names, mixes, the paper's own, which \\definecolor may"
+       " redefine), as CSS, else none")
 
 def tex_text_checks():
     """The plain text of a note or a caption (latex.tex_to_text) keeps the spaces after a control symbol (\\% and \\&:

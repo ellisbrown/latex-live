@@ -396,28 +396,34 @@ Blue:0000ff Cerulean:0fe3ff Cyan:00ffff ProcessBlue:0affff SkyBlue:61ffe0 Turquo
 Aquamarine:2effb2 BlueGreen:26ffab Emerald:00ff80 JungleGreen:03ff7a SeaGreen:4fff80 Green:00ff00
 ForestGreen:00e000 PineGreen:00bf29 LimeGreen:80ff00 YellowGreen:8fff42 SpringGreen:bdff3d OliveGreen:009900
 RawSienna:8c0000 Sepia:4d0000 Brown:660000 Tan:db9470 Gray:808080 Black:000000 White:ffffff""".split())
-DEFINECOLOR_RE = re.compile(r"\\(?:define|provide)color\s*\{([^{}]+)\}\s*\{([^{}]+)\}\s*\{([^{}]+)\}")
+DEFINECOLOR_RE = re.compile(r"\\(define|provide)color\s*\{([^{}]+)\}\s*\{([^{}]+)\}\s*\{([^{}]+)\}")
 
 
 def defined_colors(paper_root, pdf_name):
-    """{name: (model, spec)} of the colors the paper defines (\\definecolor, \\providecolor), for css_color."""
-    found = {}
+    """{name: (model, spec)} of the colors the paper defines, for css_color: the last \\definecolor of each name (of
+    xcolor's own too), else its first \\providecolor, of a name xcolor doesn't define."""
+    found, provided = {}, {}
     for path in project_tex_files(paper_root, fls_file(paper_root, pdf_name)):
         for m in DEFINECOLOR_RE.finditer(read_tex(path)):
-            if m.group(2).strip():  # (a definition names its model)
-                found.setdefault(m.group(1).strip(), (m.group(2).strip(), m.group(3).strip()))
-    return found
+            name, color = m.group(2).strip(), (m.group(3).strip(), m.group(4).strip())
+            if not color[0]:  # (a definition names its model)
+                continue
+            if m.group(1) == "define":
+                found[name] = color
+            elif name not in XCOLOR_NAMES:
+                provided.setdefault(name, color)
+    return {**provided, **found}
 
 
-def css_color(model, spec, defined=None, depth=0):
+def css_color(model, spec, defined=None, depth=0, seen=frozenset()):
     """A color as xcolor gives it, "#rrggbb", or None for one this doesn't know: a model's values (rgb, RGB, HTML, gray,
     cmyk, cmy), or a name (xcolor's base colors, the dvipsnames, the paper's own: defined, from defined_colors) or a
     mix of names, red!50 or blue!60!black (xcolor's: each percentage of the color so far, the rest of the next)."""
     def named(name):
-        if name in XCOLOR_NAMES:
-            return [int(XCOLOR_NAMES[name][k:k + 2], 16) / 255 for k in (0, 2, 4)]
-        found = defined and name in defined and depth < 4 and css_color(*defined[name], defined, depth + 1)
-        return found and [int(found[k:k + 2], 16) / 255 for k in (1, 3, 5)]
+        if defined and name in defined and name not in seen:  # (seen: the names being resolved, which mean xcolor's own)
+            found = depth < 4 and css_color(*defined[name], defined, depth + 1, seen | {name})
+            return found and [int(found[k:k + 2], 16) / 255 for k in (1, 3, 5)]
+        return [int(XCOLOR_NAMES[name][k:k + 2], 16) / 255 for k in (0, 2, 4)] if name in XCOLOR_NAMES else None
     try:
         if model == "HTML":
             rgb = [int(spec.strip()[k:k + 2], 16) / 255 for k in (0, 2, 4)] if re.fullmatch(r"\s*[0-9A-Fa-f]{6}\s*", spec) else None
